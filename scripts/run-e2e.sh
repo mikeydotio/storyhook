@@ -152,30 +152,24 @@ run_one_project() {
   echo "run-e2e.sh: === project=$project ===" >&2
   cd "$repo_root/e2e"
 
-  export STORYHOOK_DATA_DIR="$data_root/data"
-  export XDG_STATE_HOME="$data_root/state"
-
-  # STORYHOOK_STORE_PATH outranks STORYHOOK_DATA_DIR (SH-113); a developer
-  # debugging a second store would have it exported, and this run must not
-  # inherit it.
-  unset STORYHOOK_STORE_PATH
-
-  # Nothing of the developer's own reaches a fixture: not a credential, not a
-  # project selection somebody else made, and not an override that would disarm
-  # a guard this run may be testing. There is no harmless value for any of
-  # these, so they are removed rather than redirected. `story help
-  # test-environment` names each one and what it protects.
-  unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
-  unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
-
-  # Never the production port (3456), and never any port a parallel `cargo
-  # test` run (or this same script's own next-project iteration) might also
-  # pick -- this is a single daemon, not a pool, so an ephemeral bind is
-  # enough. Site 5 of the "nothing derives this list" note in this repo's
-  # CLAUDE.md.
-  export STORYHOOK_DAEMON_ADDR="127.0.0.1:0"
-  export STORYHOOK_PARENT_PID="$$"
+  # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
+  # header carries the parameters and the reason for each.
+  #
+  # It matters more here than anywhere else in this repository: this script
+  # starts `target/debug/story` directly -- a real, NON-test binary -- so
+  # `storyhook::env::is_test_build`'s refusal does not apply and this
+  # environment is the ONLY thing standing between an e2e run and the
+  # developer's actual store. There is no second guard behind it.
+  #
+  # `--home` is not passed: this leg also drives `npm`/playwright, whose
+  # browser cache lives under the real $HOME.
+  #
+  # `$$` inside this subshell is the OUTER script's pid, which is the one that
+  # should own these daemons -- a per-project subshell exits between projects
+  # and its daemon is stopped by `cleanup` above, not by dying with it.
+  # shellcheck source=test-env.sh
+  . "$repo_root/scripts/test-env.sh"
+  storyhook_isolate "$data_root"
 
   # --- Dispatch (SH-50): the daemon invokes this repo's own plugin script,
   # against the fake tmux the plugin test harness already uses -- no real
@@ -295,15 +289,6 @@ exec bash "$_real_dispatch_script" "\$@"
 WRAPPER
   chmod 600 "$STORYHOOK_DISPATCH_SCRIPT"
   unset _real_dispatch_script _dispatch_protocol
-
-  case "$STORYHOOK_DATA_DIR" in
-    /private/tmp/*) ;;
-    *)
-      echo "run-e2e.sh: refusing to run with STORYHOOK_DATA_DIR=$STORYHOOK_DATA_DIR" >&2
-      echo "  the e2e harness must never point at a real storyhook store" >&2
-      exit 1
-      ;;
-  esac
 
   # --- Seed four projects: Alpha/Beta with a checkout (switching between
   # them is the whole point of project-selector.spec.ts and

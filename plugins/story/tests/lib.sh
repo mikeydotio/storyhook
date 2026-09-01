@@ -40,37 +40,28 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
   _TMP_REPOS+=("$STORYHOOK_TEST_HOME")
-  export HOME="$STORYHOOK_TEST_HOME/home"
-  export XDG_DATA_HOME="$HOME/.local/share"
-  export XDG_CONFIG_HOME="$HOME/.config"
-  export XDG_STATE_HOME="$HOME/.local/state"
-  export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
-  # Outranks STORYHOOK_DATA_DIR (SH-113): an exported one in the developer's
-  # shell would point this whole suite at their own store.
-  unset STORYHOOK_STORE_PATH
 
-  # Nothing of the developer's own reaches a fixture: not a credential, not a
-  # project selection somebody else made, and not an override that would disarm
-  # a guard this run may be testing. There is no harmless value for any of
-  # these, so they are removed rather than redirected. `story help
-  # test-environment` names each one and what it protects.
-  unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
-  unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+  # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
+  # header carries the parameters and the reason for each. `--home` IS passed:
+  # this suite runs nothing but `story` and `git`.
+  #
+  # Sourcing one implementation is what finally ends the duplication
+  # `run-tests.sh` used to document as deliberate. It was deliberate for a real
+  # reason -- this branch is SKIPPED when run-tests.sh has already set
+  # $STORYHOOK_TEST_HOME, so a block written only here left the whole-suite run
+  # with no isolation at all, which is how the leaked daemons were found -- and
+  # that reason is answered by both call sites calling the same function rather
+  # than by both carrying the same twenty lines.
+  # shellcheck source=../../../scripts/test-env.sh
+  . "$TESTS_DIR/../../../scripts/test-env.sh"
+  storyhook_isolate --home "$STORYHOOK_TEST_HOME"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
-  # owned run must not be inherited and mistaken for this test's.
+  # owned run must not be inherited and mistaken for this test's. Not a
+  # test-environment parameter -- a harness legitimately SETS this one -- so it
+  # stays here rather than joining the shared table.
   unset STORYHOOK_GATE_PROGRESS
-  mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
-
-  # Every `story` this suite runs starts a daemon, because since SH-114 every
-  # `story` does. These two are what stop those daemons poisoning anything: one
-  # was found alive after a gate run, from this worktree's binary, having tried
-  # for the port a developer's own dashboard uses. A daemon started here can
-  # never take port 3456, and cannot outlive this run.
-  export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
-  export STORYHOOK_PARENT_PID="$$"
 fi
 
 # --- fake-tmux state isolation ---------------------------------------------
