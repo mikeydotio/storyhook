@@ -1225,6 +1225,38 @@ Standing rules for every wave:
   SH-94) so a failure carries what the process it was about actually said. Design of record:
   `docs/spec/test-tiers.md`'s "A fixture may not wait on a corpse for ever" section; the
   council's verdict is on the story (`story show SH-528`, never its own directory — SH-363).
+- **An unopenable tracker is a last resort, and the installed set is a projection of a
+  release** (SH-530). Storyhook's local installation is not one thing — the CLI, the
+  daemon, the Claude/Codex plugin and the store schema each had their own path from a
+  working tree to production. Measured on the filing machine: `story --version` said
+  `2.2.0 (build 52dd2acb2502)`, a tree **332 commits past the `v2.2.0` tag**; the store
+  sat at schema 21 while `v2.2.0` understands 18, so **the newest published release could
+  not open this machine's store** and `story update` would have taken the tracker down in
+  order to fix it. The moment was still on disk — a pre-migration backup named `…-v18.db`
+  dated 2026-08-28, with the next snapshot at 21: one `make install` carried the
+  production store past every release, silently and one-way. `migration_guard`
+  structurally could not catch it — it permits when the running exe *is* the `$PATH`
+  `story`, which is exactly what `make install` arranges. Four rules came out of it.
+  **A refusal that leaves data unopenable is a last resort**: an incompatible store now
+  opens **read-only**, because a newer schema's *additions* do not stop this build reading
+  columns it knows while its *invariants* are ones this build cannot maintain — and the
+  probe is a **capability** test (`SELECT read::STORY_COLUMNS … LIMIT 0`), never a
+  version-distance literal. **The degrade is only defensible because it is loud**, since a
+  newer migration can change an existing column's *meaning* (SH-372, SH-359 are both
+  precedents here), which makes a degraded read a wrong answer (rung 3) replacing a loud
+  refusal (rung 4). **A warning about the store must reach the person, not the daemon
+  log** — since SH-114 `open_store` runs inside the daemon, so notices travel back over
+  the wire; two mechanisms were refuted by running them rather than reading them (a notice
+  recorded at open fires for no request, because the daemon opens its store once at
+  startup; a thread-local is written on a thread `main` never reads, because
+  `HttpInvoker::exchange` runs on its own). And **a change to a release artifact belongs
+  in the checkout, never the installed copy**, which the next `story plugin install`
+  overwrites — so `hooks/protect-install.sh` refuses and *redirects*, and never says
+  "revert". `make install` stays deliberately **ungated**: `StoreError::SchemaTooNew`'s own
+  message prescribes building from source as the recovery, so guarding it would make the
+  store's advice a dead end (SH-404's documented trap, SH-405's defect). Design of record:
+  `docs/spec/release-lockstep.md`. The release channel itself is SH-537; the plugin's
+  distribution is SH-538.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
