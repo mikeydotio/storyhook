@@ -111,7 +111,7 @@ pub const STALL_CEILING_SECS: u64 = ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS
 ///
 /// A quarter of the ceiling, so a stall surfaces well inside it rather than up
 /// to a full ceiling late. Derived from [`STALL_CEILING_SECS`]; the timer that
-/// *uses* this belongs to the daemon wiring (SH-468), not to this module.
+/// *uses* this is `crate::daemon::engine::poll_engine` (SH-466).
 pub const RECONCILE_TICK_SECS: u64 = STALL_CEILING_SECS / 4;
 
 // Compile-time, not a test: these are `const`, so a runtime assertion over them
@@ -159,6 +159,31 @@ impl HardStopKind {
             Self::DispatchRefused => "dispatch-refused",
         }
     }
+}
+
+/// Which reconcile pass produced an observation (SH-466).
+///
+/// `Steady` is the ordinary tick- or bus-woken pass. `Restart` runs once per
+/// live run at daemon start, before any run resumes claiming (D11). The two
+/// differ in exactly two places: what a dead window means, and whether the
+/// stall clock is trusted across the gap the daemon just crossed — see
+/// [`classify`] and [`EngineService::record_progress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcilePass {
+    /// The ordinary pass: a dead window is [`HardStopKind::WindowGone`], read
+    /// as evidence someone watched it close, and the stall clock is read
+    /// normally.
+    Steady,
+    /// The daemon-start pass: a dead window is [`HardStopKind::Interrupted`]
+    /// — nobody watched it close, the daemon that would have watched just
+    /// restarted — and the stall clock is re-seeded rather than read, because
+    /// silence across an outage of unknown length is unobserved, not stalled
+    /// (SH-372). Never fills idle lanes, because the dispatch subprocess
+    /// calls back into this daemon over `/api/v1/invoke`, which is not yet
+    /// answering this early in startup, and never terminates the run: D11
+    /// says the run continues with fresh lanes, which happens on the first
+    /// steady pass that follows.
+    Restart,
 }
 
 /// What one reconcile pass decided about one occupied lane.
@@ -257,8 +282,21 @@ pub struct ReconcileReport {
 /// lane's own [`STALL_CEILING_SECS`] besides, so reading the clock next would
 /// eventually report the same success as `Stalled` instead. Neither is a
 /// failure; the story is exactly where it is supposed to be.
+///
+/// `pass` decides the last two rows only (SH-466). Under
+/// [`ReconcilePass::Restart`], a dead window is
+/// [`HardStopKind::Interrupted`] rather than `WindowGone` — nobody watched it
+/// close, the daemon that would have watched just restarted — and the stall
+/// check is skipped entirely: a window still alive across a restart proves
+/// nothing stalled, since [`EngineService::record_progress`] re-seeds the
+/// clock for exactly this pass rather than let it read the outage as
+/// silence (SH-372).
 #[must_use]
-pub fn classify(observation: &LaneObservation, stall_ceiling_secs: u64) -> LaneClassification {
+pub fn classify(
+    observation: &LaneObservation,
+    stall_ceiling_secs: u64,
+    pass: ReconcilePass,
+) -> LaneClassification {
     if observation.story_closed {
         return LaneClassification::Completed;
     }
@@ -269,7 +307,13 @@ pub fn classify(observation: &LaneObservation, stall_ceiling_secs: u64) -> LaneC
         return LaneClassification::Verifying;
     }
     if !observation.window_alive {
-        return LaneClassification::HardStop(HardStopKind::WindowGone);
+        return LaneClassification::HardStop(match pass {
+            ReconcilePass::Steady => HardStopKind::WindowGone,
+            ReconcilePass::Restart => HardStopKind::Interrupted,
+        });
+    }
+    if pass == ReconcilePass::Restart {
+        return LaneClassification::Progressing;
     }
     // A seq that moved is progress regardless of the clock; only a lane that
     // has BOTH failed to move and outrun the ceiling has stalled. `None` on
@@ -758,8 +802,27 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         self.set_acknowledged(run_id)
     }
 
+    /// The ordinary, steady-state reconcile pass over one run — see
+    /// [`ReconcilePass::Steady`].
+    ///
+    /// Woken by a project-change bus event, the coarse liveness tick derived
+    /// from [`STALL_CEILING_SECS`], or a control command
+    /// (`crate::daemon::engine::poll_engine`, SH-466).
+    pub fn reconcile(&self, run_id: &RunId) -> Result<ReconcileReport, AppError> {
+        self.reconcile_pass(run_id, ReconcilePass::Steady)
+    }
+
+    /// The daemon-start reconcile pass (D11, SH-466) — see
+    /// [`ReconcilePass::Restart`].
+    ///
+    /// Run once per live run before any run resumes claiming;
+    /// `crate::daemon::engine::poll_engine` is the only caller.
+    pub fn reconcile_after_restart(&self, run_id: &RunId) -> Result<ReconcileReport, AppError> {
+        self.reconcile_pass(run_id, ReconcilePass::Restart)
+    }
+
     /// One reconcile pass over one run: observe, classify, quarantine, break,
-    /// fill, terminate.
+    /// and — [`ReconcilePass::Steady`] only — fill and terminate.
     ///
     /// # Why the phases are separate transactions
     ///
@@ -769,14 +832,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// deadlock `docs/spec/dashboard-dispatch.md` documents. Each phase opens
     /// its own short write and the subprocess work happens between them — the
     /// shape [`Self::stop_now`] already uses.
-    ///
-    /// # What this deliberately does not do
-    ///
-    /// It never *starts* a pass on a schedule. The engine has no busy loop: a
-    /// caller wakes it on a project change, a coarse liveness tick derived from
-    /// [`STALL_CEILING_SECS`], or a control command. Owning that trigger is the
-    /// daemon wiring's job (SH-468), not this module's.
-    pub fn reconcile(&self, run_id: &RunId) -> Result<ReconcileReport, AppError> {
+    fn reconcile_pass(
+        &self,
+        run_id: &RunId,
+        pass: ReconcilePass,
+    ) -> Result<ReconcileReport, AppError> {
         let slug = self.project_slug()?;
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
@@ -789,13 +849,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         };
 
         // ---- observe + classify -------------------------------------------
-        let observed = self.observe_lanes(&slug, run_id)?;
+        let observed = self.observe_lanes(&slug, run_id, pass)?;
 
         // ---- apply: free completions, hold handoffs, quarantine hard stops
         for (lane, classification, observation) in observed {
             match classification {
                 LaneClassification::Progressing => {
-                    self.record_progress(&lane, observation.head_global_seq)?;
+                    self.record_progress(&lane, observation.head_global_seq, pass)?;
                 }
                 LaneClassification::Verifying => {
                     // Held, not freed: the story still owns a live worktree
@@ -804,7 +864,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     // the stall clock restarts the same way a Progressing
                     // lane's does.
                     report.verifying.push(lane.lane_index);
-                    self.record_progress(&lane, observation.head_global_seq)?;
+                    self.record_progress(&lane, observation.head_global_seq, pass)?;
                 }
                 LaneClassification::Completed => {
                     report.completed.push(lane.lane_index);
@@ -842,6 +902,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             return Ok(report);
         }
 
+        // A restart pass never fills and never terminates (D11): the
+        // dispatch subprocess calls back into this daemon over
+        // `/api/v1/invoke`, which is not yet answering this early in
+        // startup, and "the run continues with fresh lanes" is the *next*
+        // (steady) pass's job, not this one's.
+        if pass == ReconcilePass::Restart {
+            return Ok(report);
+        }
+
         // ---- fill ---------------------------------------------------------
         self.fill_idle_lanes(&slug, run_id, &mut report)?;
 
@@ -863,6 +932,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         &self,
         slug: &str,
         run_id: &RunId,
+        pass: ReconcilePass,
     ) -> Result<Vec<(EngineLaneRecord, LaneClassification, LaneObservation)>, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
@@ -917,7 +987,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .and_then(|at| elapsed_secs(at, &now)),
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
             };
-            let classification = classify(&observation, STALL_CEILING_SECS);
+            let classification = classify(&observation, STALL_CEILING_SECS, pass);
             observed.push((lane, classification, observation));
         }
         Ok(observed)
@@ -925,19 +995,29 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Records that a lane's story moved, so the stall clock restarts from the
     /// change rather than from the observation.
+    ///
+    /// Under [`ReconcilePass::Restart`] the reseed is forced regardless of
+    /// whether the seq moved: the daemon has no observation from anywhere
+    /// inside the outage it just crossed, so an unmoved seq states nothing
+    /// about whether the lane stalled during it (SH-372) — the clock starts
+    /// fresh from this pass rather than carrying a pre-outage timestamp that
+    /// would make an untouched, perfectly healthy lane read as `Stalled` on
+    /// the very next steady pass.
     fn record_progress(
         &self,
         lane: &EngineLaneRecord,
         head_global_seq: Option<i64>,
+        pass: ReconcilePass,
     ) -> Result<(), AppError> {
         let observed_at = self.ctx.now();
         let mut updated = lane.clone();
         updated.last_observed_at = observed_at.clone();
-        let moved = match (head_global_seq, lane.last_progress_seq.map(GlobalSeq::get)) {
-            (Some(head), Some(recorded)) => head != recorded,
-            (Some(_), None) => true,
-            _ => false,
-        };
+        let moved = pass == ReconcilePass::Restart
+            || match (head_global_seq, lane.last_progress_seq.map(GlobalSeq::get)) {
+                (Some(head), Some(recorded)) => head != recorded,
+                (Some(_), None) => true,
+                _ => false,
+            };
         if moved {
             updated.last_progress_seq = head_global_seq.map(GlobalSeq::new);
             updated.last_progress_at = Some(observed_at);

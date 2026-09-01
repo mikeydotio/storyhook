@@ -18,7 +18,7 @@ mod store_support;
 use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, DispatchOutcome, ENGINE_LANE_BUDGET, EngineService,
     GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, QUEUE_DRAINED,
-    RECONCILE_TICK_SECS, STALL_CEILING_SECS, STALL_MARGIN, StartRequest, classify,
+    RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS, STALL_MARGIN, StartRequest, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -56,7 +56,7 @@ fn a_closed_story_is_a_completion() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -69,7 +69,7 @@ fn an_agent_blocked_story_is_a_hard_stop() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
@@ -82,7 +82,7 @@ fn a_missing_window_on_an_open_story_is_a_hard_stop() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::WindowGone)
     );
 }
@@ -97,7 +97,7 @@ fn an_unmoved_seq_past_the_ceiling_is_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::Stalled)
     );
 }
@@ -115,7 +115,7 @@ fn a_moved_seq_is_progress_however_long_the_clock_says() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing
     );
 }
@@ -131,7 +131,7 @@ fn an_unmoved_seq_inside_the_ceiling_is_not_yet_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&at_ceiling, STALL_CEILING_SECS),
+        classify(&at_ceiling, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing,
         "a lane exactly at the ceiling has not passed it"
     );
@@ -154,7 +154,7 @@ fn a_lane_with_no_recorded_progress_is_never_stalled() {
             ..progressing()
         };
         assert_eq!(
-            classify(&observation, STALL_CEILING_SECS),
+            classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
             LaneClassification::Progressing,
             "seed the first observation, never punish it: recorded={recorded:?} elapsed={elapsed:?}"
         );
@@ -173,7 +173,7 @@ fn an_unresolvable_story_is_not_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing
     );
 }
@@ -194,7 +194,7 @@ fn a_verifying_story_with_a_dead_window_is_held_not_window_gone() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Verifying
     );
 }
@@ -212,7 +212,7 @@ fn a_verifying_story_past_the_ceiling_is_held_not_stalled() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Verifying,
         "the machine-wide verification queue can legitimately outrun one lane's own ceiling"
     );
@@ -239,7 +239,7 @@ fn a_closed_story_wins_over_a_closed_window() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed,
         "a finished agent whose pane exited is a completion, not a WindowGone hard stop"
     );
@@ -261,7 +261,7 @@ fn a_closed_story_wins_over_every_other_signal() {
         awaiting_reason: Some("the agent said why".to_string()),
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -277,7 +277,7 @@ fn an_agent_block_wins_over_a_closed_window() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
@@ -293,7 +293,7 @@ fn a_closed_story_wins_over_the_verifying_handoff() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -310,7 +310,7 @@ fn an_agent_block_wins_over_the_verifying_handoff() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
