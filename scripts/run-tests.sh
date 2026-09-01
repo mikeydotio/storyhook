@@ -53,6 +53,10 @@ case "$self" in
 (*) self="$PWD/$self" ;;
 esac
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=gate-progress.sh
+. "$script_dir/gate-progress.sh"
+
 cd "$(dirname "$0")/.."
 
 # THE MACHINE-WIDE `gate` LOCK -- SH-457, decision D4 of
@@ -209,7 +213,34 @@ esac
 # to have decided the run's outcome.
 log="$data_root/test-output.log"
 : >"$log"
+
+# SH-524: live per-test progress. `$STORYHOOK_GATE_PROGRESS_PATH` names which
+# checklist item ("release gate/rust-suite" or "release gate/rust-contracts")
+# this invocation's cases nest under -- set by run-rust-battery.sh per mode,
+# defaulting to the rust-suite leg's own path for run-changed.sh's selective
+# call, which is always that leg under `make test-changed`. This script emits
+# ONLY "case" lines, never "item" lines: leg.sh already owns the item
+# lifecycle (running/passed/failed) for both paths, since it wraps this
+# script's whole invocation.
+gate_progress_case_path="${STORYHOOK_GATE_PROGRESS_PATH:-release gate/rust-suite}"
 run_leg() {
+    if [ -n "$(gate_progress_journal)" ]; then
+        # `env -u` strips the journal (and its path hint) from cargo and every
+        # test binary it spawns -- the same containment idiom
+        # scripts/merge-watch.sh already uses for STORYHOOK_STORE_PATH. A
+        # nested test that shells out to leg.sh/gate-receipt.sh against a
+        # disposable fixture repo (tests/gate_leg_reuse.rs and siblings) must
+        # not see this run's own journal path, or its fixture-scoped emissions
+        # would interleave into THIS run's real journal.
+        env -u STORYHOOK_GATE_PROGRESS -u STORYHOOK_GATE_PROGRESS_PATH "$@" 2>&1 \
+            | tee -a "$log" \
+            | awk -f "$script_dir/test-progress.awk" \
+            | while IFS=$'\t' read -r _bin _name outcome; do
+                gate_progress_emit_case "$gate_progress_case_path" \
+                    "$([ "$outcome" = PASS ] && echo pass || echo fail)"
+            done
+        return "${PIPESTATUS[0]}"
+    fi
     "$@" 2>&1 | tee -a "$log"
     return "${PIPESTATUS[0]}"
 }

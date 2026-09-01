@@ -48,6 +48,10 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # Outranks STORYHOOK_DATA_DIR (SH-113): an exported one in the developer's
   # shell would point this whole suite at their own store.
   unset STORYHOOK_STORE_PATH
+  # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
+  # journal of its own to write to; an ambient one set by some other daemon-
+  # owned run must not be inherited and mistaken for this test's.
+  unset STORYHOOK_GATE_PROGRESS
   mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
 
   # Every `story` this suite runs starts a daemon, because since SH-114 every

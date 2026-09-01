@@ -33,6 +33,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 repo_root="$PWD"
+# shellcheck source=gate-progress.sh
+. "$repo_root/scripts/gate-progress.sh"
 story_bin="$repo_root/target/debug/story"
 results_root="$repo_root/e2e/test-results/current"
 
@@ -471,8 +473,26 @@ WRAPPER
   list_output="$(npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}" --list --reporter=list 2>/dev/null || true)"
   if printf '%s\n' "$list_output" | grep -q '^Total: 0 tests'; then
     echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
+    gate_progress_emit_item "release gate/e2e/$project" skipped
     exit 0
   fi
+
+  # SH-524: this project's own checklist row. `known_total` is read straight
+  # back out of Playwright's own `--list` count above rather than guessed --
+  # empty (never a guessed number) if that output's shape ever changes.
+  # e2e/gate-progress-reporter.ts owns only the per-test "case" lines below;
+  # the running/passed/failed "item" lifecycle for this project is this
+  # script's alone, so the two writers never race over one event shape.
+  # Portable BRE, not `\+`/`\?`: macOS's BSD sed does not support either
+  # GNU extension, and this script's shebang resolves to it.
+  known_total="$(printf '%s\n' "$list_output" | sed -n 's/^Total: \([0-9][0-9]*\) tests\{0,1\}.*/\1/p')"
+  export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$project"
+  if [ -n "$known_total" ]; then
+    gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
+  else
+    gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running
+  fi
+  e2e_start=$(date +%s)
   # The one spec in the suite that dispatches for real (`test.setTimeout` at
   # dispatch.spec.ts:125,210,278 and nowhere else that drives a real
   # dispatch; everything else stubs the route) -- consulted after the real
@@ -491,6 +511,9 @@ WRAPPER
   # exit 0 regardless of whether Playwright passed (SH-224).
   status=0
   npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
+  e2e_elapsed=$(( $(date +%s) - e2e_start ))
+  gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" \
+    "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$e2e_elapsed"
   if [ "$status" -ne 0 ]; then
     echo "run-e2e.sh: project=$project failed. If the error above is about a missing browser executable, run 'make e2e-install' and retry." >&2
     exit "$status"
@@ -534,6 +557,19 @@ for arg in "$@"; do
     --project=*) explicit_project="${arg#--project=}" ;;
     *) extra_args+=("$arg") ;;
   esac
+done
+
+if [ -n "$explicit_project" ]; then
+  projects_to_run=("$explicit_project")
+else
+  projects_to_run=("${ALL_PROJECTS[@]}")
+fi
+
+# SH-524: declare every project this run will attempt, before any of them
+# start, so a not-yet-reached project (sequential -- SH-335) shows in the
+# checklist as pending rather than being absent until its own turn arrives.
+for project in "${projects_to_run[@]}"; do
+  gate_progress_emit_item "release gate/e2e/$project" pending
 done
 
 overall_status=0
