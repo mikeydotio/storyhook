@@ -18,7 +18,7 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id> [--auto] [--full-auto] [--force] [--agent=claude|codex]
+#   dispatch <id> [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex]
 #                   [--model=<id>] [--effort=<id>] [--speed=standard|fast]
 #                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
@@ -115,7 +115,7 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force]
+# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force] [--resume]
 # [--agent=claude|codex] [--model=<id>] [--effort=<id>]
 # [--speed=standard|fast]`; before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
@@ -129,12 +129,14 @@ set -euo pipefail
 # Bump this only when the *invocation* contract changes for an existing
 # verb -- a new required global flag (like --project itself once did), a
 # renamed or removed verb, a change to the ONE-JSON-object-on-stdout
-# contract above. Do NOT bump it for a new optional flag (--auto), a new
+# contract above. Do NOT normally bump it for a new optional flag (--auto), a new
 # verb (`reap`), or any behavior a caller driving the old argv shape
 # wouldn't notice -- resolve_dispatch_script_from()'s check is
 # `declared >= required`, so a script that is merely newer must keep
-# resolving, not start refusing.
-DISPATCH_PROTOCOL=1
+# resolving, not start refusing. SH-523 is the deliberate exception: the
+# daemon now always sends optional `--resume`, so protocol 2 proves an installed
+# helper accepts the argv that this daemon requires.
+DISPATCH_PROTOCOL=2
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -433,6 +435,7 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
 CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
+RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
@@ -1011,6 +1014,59 @@ claim_rollback_note() {
   fi
 }
 
+# registered_worktree_branch <absolute-path> — print the local branch checked
+# out at exactly PATH and return 0. A detached worktree prints DETACHED. Return
+# 1 when PATH is not registered. Git's porcelain format is stable specifically
+# for machine parsing; path and branch are read as whole lines so spaces remain
+# intact.
+registered_worktree_branch() {
+  local target="$1" line current="" branch="" found=false
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        if [ "$found" = true ]; then
+          printf '%s' "${branch:-DETACHED}"
+          return 0
+        fi
+        current="${line#worktree }"
+        branch=""
+        [ "$current" != "$target" ] || found=true
+        ;;
+      branch\ *)
+        [ "$found" != true ] || branch="${line#branch refs/heads/}"
+        ;;
+      '')
+        if [ "$found" = true ]; then
+          printf '%s' "${branch:-DETACHED}"
+          return 0
+        fi
+        current=""
+        branch=""
+        ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null)
+  if [ "$found" = true ]; then
+    printf '%s' "${branch:-DETACHED}"
+    return 0
+  fi
+  return 1
+}
+
+# cleanup_dispatch_git <path> <branch> <worktree-created> <branch-created> —
+# remove only resources this invocation created. Resume may attach an existing
+# branch or reuse a dirty worktree; those are evidence and are never rollback
+# targets, even when a later provider handoff fails.
+cleanup_dispatch_git() {
+  local path="$1" branch="$2" worktree_created="$3" branch_created="$4"
+  if [ "$worktree_created" = true ]; then
+    git worktree remove --force "$path" >/dev/null 2>&1 || true
+    git worktree prune >/dev/null 2>&1 || true
+  fi
+  if [ "$branch_created" = true ]; then
+    git branch -D "$branch" >/dev/null 2>&1 || true
+  fi
+}
+
 # missing_claim_state_vocabulary <claim-state> — confirm, never infer, that
 # this project's state vocabulary lacks the state cmd_dispatch just tried to
 # claim into. Echoes the observed comma-separated vocabulary and
@@ -1262,7 +1318,8 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local id="" auto="" full_auto="" want_next="" force="" requested_agent=""
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local id="" auto="" full_auto="" want_next="" force="" resume="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1273,8 +1330,11 @@ cmd_dispatch() {
         [ -z "$full_auto" ] || fail "--full-auto may be specified only once — usage: story.sh dispatch <story-id> --auto [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         full_auto=1; shift ;;
       --force)
-        [ -z "$force" ] || fail "--force may be specified only once — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
+        [ -z "$force" ] || fail "--force may be specified only once — usage: $usage"
         force=1; shift ;;
+      --resume)
+        [ -z "$resume" ] || fail "--resume may be specified only once — usage: $usage"
+        resume=1; shift ;;
       --agent=*)
         [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         requested_agent="${1#--agent=}"
@@ -1306,14 +1366,18 @@ cmd_dispatch() {
         [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         want_next=1; shift ;;
       *)
-        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
-        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: $usage"
+        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: $usage"
         id="$1"; shift ;;
     esac
   done
-  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
+  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: $usage"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
+  [ -z "$want_next" ] || [ -z "$resume" ] \
+    || fail "--resume requires a named story id and cannot be combined with --next — usage: $usage"
+  [ -z "$resume" ] || [ -z "$force" ] \
+    || fail "--resume and --force cannot be combined: --resume reconstructs surviving resources, while --force only reuses an active claim — usage: $usage"
   [ -z "$full_auto" ] || [ -n "$auto" ] \
     || fail "--full-auto requires --auto — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$full_auto" ] || [ -n "$id" ] \
@@ -1396,6 +1460,8 @@ cmd_dispatch() {
     # SH-499: epic identity is the explicit type, never the mere presence of
     # a parent-of edge. Ordinary stories with subtasks still reach ID MODE.
     if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      [ -z "$resume" ] \
+        || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
       # An epic dispatch never reaches LAUNCH_TPL -- SH-468's engine run
       # payload carries only agent/lanes, the same "engine lanes keep
       # today's behavior" boundary SH-517 already draws for --full-auto.
@@ -1431,6 +1497,86 @@ cmd_dispatch() {
   enter_checkout
   local dir="$PROJECT_ROOT"
 
+  # Resume inventory runs before the claim gate and before every write. The
+  # deterministic story identity gives all four expected resource names; any
+  # disagreement is a safety refusal, never an invitation to overwrite it.
+  local wname="" wt_container="" worktree_path="" worktree_branch=""
+  local registered_branch="" registered_worktree=false existing_pane=""
+  local worktree_reused=false branch_reused=false window_reused=false resumed=false
+  local worktree_created=false branch_created=false resources_exist=false artifacts_exist=false
+  local worktree_status="missing" branch_status="missing" window_status="missing" claim_status="missing"
+  local claim_state=""
+  local resources_json='{}'
+  if [ -n "$id" ]; then
+    wname=$(resolve_wname "$id")
+    wt_container="${WORKTREE_IGNORE_PATH%/}"
+    worktree_path="$dir/$wt_container/$wname"
+    worktree_branch="worktree-$wname"
+
+    if registered_branch=$(registered_worktree_branch "$worktree_path"); then
+      registered_worktree=true
+      resources_exist=true
+      artifacts_exist=true
+      worktree_status="present"
+      worktree_reused=true
+      branch_reused=true
+      [ -d "$worktree_path" ] || refuse "resume-unsafe" \
+        "story $id has a stale git worktree registration at \`$worktree_path\`, but that directory is missing. Run \`git worktree repair\` or remove the stale registration explicitly before retrying."
+      [ "$registered_branch" = "$worktree_branch" ] || refuse "resume-unsafe" \
+        "story $id's expected worktree path is registered on branch \`$registered_branch\`, not \`$worktree_branch\`; refusing to replace or repurpose it."
+    elif [ -e "$worktree_path" ]; then
+      refuse "resume-unsafe" \
+        "story $id's expected path \`$worktree_path\` exists but is not a registered git worktree; refusing to overwrite unclassified evidence."
+    fi
+
+    if local_branch_exists "$worktree_branch"; then
+      resources_exist=true
+      artifacts_exist=true
+      branch_status="present"
+      branch_reused=true
+      is_protected_branch "$worktree_branch" && refuse "resume-unsafe" \
+        "story $id's expected branch \`$worktree_branch\` is protected by repository policy; refusing to use it as a disposable story branch."
+    elif [ "$registered_worktree" = true ]; then
+      refuse "resume-unsafe" \
+        "story $id's registered worktree names branch \`$worktree_branch\`, but that local branch does not exist; refusing to infer ownership from an inconsistent registration."
+    fi
+
+    existing_pane=$(pane_for_window "$wname") || existing_pane=""
+    if [ -n "$existing_pane" ]; then
+      resources_exist=true
+      artifacts_exist=true
+      window_status="present"
+    fi
+
+    claim_state=$(story_active_state)
+    if [ "$state" = "$claim_state" ]; then
+      resources_exist=true
+      claim_status="present"
+    fi
+
+    resources_json=$(jq -n \
+      --arg worktree "$worktree_status" --arg branch "$branch_status" \
+      --arg window "$window_status" --arg claim "$claim_status" --arg path "$worktree_path" \
+      --arg branch_name "$worktree_branch" --arg pane "$existing_pane" \
+      '{claim:$claim, worktree:$worktree, branch:$branch, window:$window,
+        worktree_path:$path, branch_name:$branch_name}
+       + (if $pane == "" then {} else {pane:$pane} end)')
+
+    if [ -z "$resume" ] \
+       && { [ "$artifacts_exist" = true ] || { [ "$claim_status" = present ] && [ -z "$force" ]; }; }; then
+      refuse_with "resume-available" \
+        "story $id already has surviving dispatch resources, including its \`$claim_state\` claim when reported below. Re-run with \`--resume\` to preserve and reconstruct them, use \`--force\` only when the claim is the sole survivor and a fresh dispatch is intended, or inspect the inventory before changing anything." \
+        "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
+    fi
+    if [ -n "$resume" ] && [ -n "$existing_pane" ] \
+       && [ "$existing_pane" = "${TMUX_PANE:-}" ]; then
+      refuse_with "resume-unsafe" \
+        "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
+        "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
+    fi
+    [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
+  fi
+
   # Steps 4-6: story identified, verified ready, and claimed. Two mutually
   # exclusive paths — ID MODE (a caller-named story) and NEXT MODE (SH-344,
   # --next, id-less) — that converge on the same four facts ($id, $title,
@@ -1439,7 +1585,7 @@ cmd_dispatch() {
   # identically regardless of which one produced them. Since SH-482 both write
   # through `story claim`, so those four facts are read out of one response
   # shape on both paths as well.
-  local pre_claim_state claim_cmd_desc claim_state
+  local pre_claim_state claim_cmd_desc
   local claim_transitioned=false reused_claim=false
   if [ -n "$want_next" ]; then
     # NEXT MODE (SH-344): a single `story claim --next` call does steps 4-6 in
@@ -1509,16 +1655,17 @@ cmd_dispatch() {
     # asked, so a CLI that cannot answer at all must have failed loudly before
     # this line rather than being papered over by that fallback (cmd_list
     # documents the same ordering hazard from the other side).
-    claim_state=$(story_active_state)
+    [ -n "$claim_state" ] || claim_state=$(story_active_state)
 
     # Step 5 (deviation #1 — see header): ALREADY-CLAIMED GUARD. Checked
     # before the ready-gate for its more specific message — since SH-236 the
     # ready-gate below would also catch this, just less helpfully.
     if [ "$state" = "$claim_state" ]; then
-      if [ -z "$force" ]; then
-        fail "story $id is already \`$claim_state\` — not redispatching (a previous \`/story do\` may still be running against it, move it back to a ready state first if this is stale, or pass \`--force\` to reuse the existing claim)."
+      if [ -z "$force" ] && [ -z "$resume" ]; then
+        fail "story $id is already \`$claim_state\` — not redispatching (a previous \`/story do\` may still be running against it; pass \`--resume\` to reconstruct that work, pass \`--force\` to reuse only the claim when no resources survive, or move it back to a ready state first if it should restart cleanly)."
       fi
       reused_claim=true
+      [ -z "$resume" ] || resumed=true
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
@@ -1600,14 +1747,17 @@ cmd_dispatch() {
     fi
   fi
 
-  # Compute the name used for the tmux window, the worktree dir leaf, AND the
-  # worktree branch: the bare story id (e.g. "STO-7"), or the
-  # STORY_WINDOW_NAME override (SH-166).
-  local wname wt_container worktree_path worktree_branch
-  wname=$(resolve_wname "$id")
-  wt_container="${WORKTREE_IGNORE_PATH%/}"
-  worktree_path="$dir/$wt_container/$wname"
-  worktree_branch="worktree-$wname"
+  # NEXT mode learns its deterministic resource names only after the atomic
+  # claim chooses an id. Resume is intentionally unavailable in this mode.
+  if [ -n "$want_next" ]; then
+    wname=$(resolve_wname "$id")
+    wt_container="${WORKTREE_IGNORE_PATH%/}"
+    worktree_path="$dir/$wt_container/$wname"
+    worktree_branch="worktree-$wname"
+    resources_json=$(jq -n --arg path "$worktree_path" --arg branch "$worktree_branch" \
+      '{worktree:"missing", branch:"missing", window:"missing",
+        worktree_path:$path, branch_name:$branch}')
+  fi
 
   # SH-219: --auto gets one of TWO charters, decided here rather than left to
   # the child's own judgment about its skill roster -- council_vote_available
@@ -1655,6 +1805,7 @@ cmd_dispatch() {
   fi
   marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker "
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
+  [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
   # Surfaced in both the dry-run and real result. SH-511 removed autonomous
@@ -1692,8 +1843,13 @@ cmd_dispatch() {
   # effect.
   if [ -n "$DRY_RUN" ]; then
     local dry_claim_note="would claim it via \`$claim_cmd_desc\`"
-    [ "$reused_claim" = true ] \
-      && dry_claim_note="would reuse its existing \`$state\` claim (\`--force\`; no state transition)"
+    if [ "$reused_claim" = true ]; then
+      if [ -n "$resume" ]; then
+        dry_claim_note="would reuse its existing \`$state\` claim (\`--resume\`; no state transition)"
+      else
+        dry_claim_note="would reuse its existing \`$state\` claim (\`--force\`; no state transition)"
+      fi
+    fi
     jq -n \
       --arg id "$id" --arg title "$title" --arg dir "$dir" \
       --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
@@ -1714,6 +1870,10 @@ cmd_dispatch() {
       --argjson council "$council" \
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
+      --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
+      --argjson resumed "$resumed" --argjson resources "$resources_json" \
+      --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
+      --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" \
       --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
       {
@@ -1721,16 +1881,25 @@ cmd_dispatch() {
         id: $id, title: $title, dir: $dir,
         window_name: $wname, prompt: $prompt, state: $state, auto: $auto, council: $council,
         forced: $forced, reused_claim: $reused_claim, claim_transitioned: false,
+        resume_requested: $resume_requested, resumed: $resumed, resources: $resources,
+        worktree_reused: $worktree_reused, branch_reused: $branch_reused,
+        window_reused: $window_reused, worktree_created: false, branch_created: false,
         agent: $agent, agent_label: $agent_label, submit_key: $submit_key,
         worktree_branch: $wtbranch, worktree_path: $wtpath,
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
-        commands: ((if $claim_cmd == "" then [] else [$claim_cmd] end) + [
-          ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
-          ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
-             + " \\; set-window-option -t " + $wname + " remain-on-exit on"
-             + " \\; set-window-option -t " + $wname + " automatic-rename off"
-             + " \\; set-window-option -t " + $wname + " allow-rename off"
-             + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent),
+        commands: ((if $claim_cmd == "" then [] else [$claim_cmd] end)
+          + (if $worktree_reused then []
+             elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
+             else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
+          + [(if $window_reused then
+               ("tmux respawn-pane -k -c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+             else
+               ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
+                + " \\; set-window-option -t " + $wname + " remain-on-exit on"
+                + " \\; set-window-option -t " + $wname + " automatic-rename off"
+                + " \\; set-window-option -t " + $wname + " allow-rename off"
+                + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent)
+             end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
           (if $agent == "codex" and $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
@@ -1781,33 +1950,51 @@ cmd_dispatch() {
   # story in the claimed state.
   local default fetch_rc=0
   default=$(default_branch)
-  git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
-    >/dev/null 2>&1 || fetch_rc=$?
-
   local base_oid="" base_fresh=false base_note=""
-  if base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
-     && [ -n "$base_oid" ]; then
-    if [ "$fetch_rc" -eq 0 ]; then
-      base_fresh=true
-    else
-      base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
-    fi
-  elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
-    base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
-    if [ -n "$REQUIRE_FRESH_BASE" ]; then
-      fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
-    fi
+  if [ "$worktree_reused" = true ]; then
+    base_oid=$(git -C "$worktree_path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+      || fail "cannot resolve HEAD in the surviving worktree at $worktree_path.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    base_note="resumed the existing worktree at ${base_oid:0:8}; no base refresh or reset was attempted"
+  elif [ "$branch_reused" = true ]; then
+    base_oid=$(git rev-parse --verify "refs/heads/$worktree_branch^{commit}" 2>/dev/null) \
+      || fail "cannot resolve the surviving branch \`$worktree_branch\` to a commit.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    base_note="reattached surviving branch $worktree_branch at ${base_oid:0:8}; no base refresh or reset was attempted"
   else
-    fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
+      >/dev/null 2>&1 || fetch_rc=$?
+    if base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
+       && [ -n "$base_oid" ]; then
+      if [ "$fetch_rc" -eq 0 ]; then
+        base_fresh=true
+      else
+        base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
+      fi
+    elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
+      base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+      if [ -n "$REQUIRE_FRESH_BASE" ]; then
+        fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      fi
+    else
+      fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
   fi
 
-  # Step 9: create the worktree off the resolved base commit.
-  if git show-ref --verify --quiet "refs/heads/$worktree_branch" || [ -e "$worktree_path" ]; then
-    fail "a worktree or branch for \`$wname\` already exists — already dispatched?$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
-  fi
+  # Step 9: preserve a valid existing worktree, reattach a branch-only find,
+  # or create both resources for a genuinely fresh dispatch.
   local wt_err
-  if ! wt_err=$(git worktree add --no-track -b "$worktree_branch" "$worktree_path" "$base_oid" 2>&1); then
-    fail "failed to create worktree at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+  if [ "$worktree_reused" = true ]; then
+    :
+  elif [ "$branch_reused" = true ]; then
+    if ! wt_err=$(git worktree add "$worktree_path" "$worktree_branch" 2>&1); then
+      fail "failed to reattach surviving branch \`$worktree_branch\` at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+    worktree_created=true
+  else
+    if ! wt_err=$(git worktree add --no-track -b "$worktree_branch" "$worktree_path" "$base_oid" 2>&1); then
+      fail "failed to create worktree at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+    worktree_created=true
+    branch_created=true
   fi
 
   # Step 9b: ensure the target session exists (SH-50, opt-in via
@@ -1822,9 +2009,7 @@ cmd_dispatch() {
   if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
      && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
     if ! tmux new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
-      git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-      git worktree prune >/dev/null 2>&1 || true
-      git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
       fail "failed to create tmux session \`$TARGET_SESSION\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
     session_created=true
@@ -1883,24 +2068,40 @@ cmd_dispatch() {
   # itself is the only fact that can only be true if new-window succeeded, so
   # it alone decides failure; stderr is still discarded either way since none
   # of these calls has a message worth surfacing on the happy path.
-  local new_window_args pane window set_target
-  new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
-  new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" "${new_window_args[@]}")
-  [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
-  [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
+  local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
-  pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
-           set-window-option -t "$set_target" remain-on-exit on \; \
-           set-window-option -t "$set_target" automatic-rename off \; \
-           set-window-option -t "$set_target" allow-rename off \; \
-           set-window-option -t "$set_target" @storyhook-agent "$AGENT" \
-         2>/dev/null || true)
-  if [ -z "$pane" ]; then
-    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    git worktree prune >/dev/null 2>&1 || true
-    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
-    fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+  if [ -n "$existing_pane" ]; then
+    pane="$existing_pane"
+    # This file is a generated SessionStart witness, not project work. A
+    # replacement process must publish its own witness before handoff.
+    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    if ! tmux respawn-pane -k -c "$worktree_path" \
+         -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
+         -t "$pane" "$launch_cmd" 2>/dev/null; then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+      fail "failed to respawn surviving tmux pane \`$pane\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+    tmux set-window-option -t "$pane" remain-on-exit on >/dev/null 2>&1 || true
+    tmux set-window-option -t "$pane" automatic-rename off >/dev/null 2>&1 || true
+    tmux set-window-option -t "$pane" allow-rename off >/dev/null 2>&1 || true
+    tmux set-window-option -t "$pane" @storyhook-agent "$AGENT" >/dev/null 2>&1 || true
+    window_reused=true
+  else
+    new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" "${new_window_args[@]}")
+    [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
+    [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
+    pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
+             set-window-option -t "$set_target" remain-on-exit on \; \
+             set-window-option -t "$set_target" automatic-rename off \; \
+             set-window-option -t "$set_target" allow-rename off \; \
+             set-window-option -t "$set_target" @storyhook-agent "$AGENT" \
+           2>/dev/null || true)
+    if [ -z "$pane" ]; then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+      fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
   # The pane's pid, captured right after the window opened: SH-231 (R2, the
@@ -1931,11 +2132,9 @@ cmd_dispatch() {
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
-    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    git worktree prune >/dev/null 2>&1 || true
-    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
@@ -1954,11 +2153,9 @@ cmd_dispatch() {
   if ! ensure_provider_plan_mode "$pane"; then
     local mode_tail
     mode_tail=$(pane_tail "$pane")
-    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    git worktree prune >/dev/null 2>&1 || true
-    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
             --argjson claimed "$reused_claim" \
@@ -1975,11 +2172,9 @@ cmd_dispatch() {
      && ! schedule_codex_plan_approval "$pane" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
-    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    git worktree prune >/dev/null 2>&1 || true
-    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
     refuse_with plan-approval-unarmed \
-      "[story] $id → Codex Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → Codex Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
@@ -2003,11 +2198,9 @@ cmd_dispatch() {
       # Nothing reached the input box, so nothing was submitted (guaranteed by
       # send_prompt_confirmed: no Enter is sent before receipt is observed).
       # Safe to roll everything back, exactly as a failed window-open does.
-      git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-      git worktree prune >/dev/null 2>&1 || true
-      git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
               --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
@@ -2036,9 +2229,16 @@ cmd_dispatch() {
   # what a caller has always read it as; before SH-226 it meant only the former,
   # and the difference was carried in prose nothing downstream read.
   local warning="" display base claim_success_note="and claimed it (now \`$state\`)"
-  [ "$reused_claim" = true ] \
-    && claim_success_note="and reused its existing \`$state\` claim (\`--force\`; no state transition)"
-  base="[story] $id ($title) → opened tmux window \`$wname\` on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, $claim_success_note."
+  if [ "$reused_claim" = true ]; then
+    if [ -n "$resume" ]; then
+      claim_success_note="and reused its existing \`$state\` claim (\`--resume\`; no state transition)"
+    else
+      claim_success_note="and reused its existing \`$state\` claim (\`--force\`; no state transition)"
+    fi
+  fi
+  local session_action="opened tmux window \`$wname\`"
+  [ "$window_reused" != true ] || session_action="respawned existing tmux pane \`$pane\` in window \`$wname\`"
+  base="[story] $id ($title) → $session_action on worktree \`$worktree_path\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, $claim_success_note."
   if [ -n "$base_note" ]; then
     warning="${warning:+$warning }${base_note}."
   fi
@@ -2067,6 +2267,11 @@ cmd_dispatch() {
     --arg ignored_general_override "$ignored_general_override" \
     --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
     --argjson reused_claim "$reused_claim" --argjson claim_transitioned "$claim_transitioned" \
+    --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
+    --argjson resumed "$resumed" --argjson resources "$resources_json" \
+    --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
+    --argjson window_reused "$window_reused" --argjson worktree_created "$worktree_created" \
+    --argjson branch_created "$branch_created" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
@@ -2079,6 +2284,10 @@ cmd_dispatch() {
       window: $window, window_name: $wname, pane: $pane,
       state: $state, auto: $auto, council: $council,
       forced: $forced, reused_claim: $reused_claim, claim_transitioned: $claim_transitioned,
+      resume_requested: $resume_requested, resumed: $resumed, resources: $resources,
+      worktree_reused: $worktree_reused, branch_reused: $branch_reused,
+      window_reused: $window_reused, worktree_created: $worktree_created,
+      branch_created: $branch_created,
       agent: $agent, agent_label: $agent_label, submit_key: $submit_key,
       readiness_confirmed: $ready, plan_mode_confirmed: $plan,
       prompt_confirmed: $pconf, prompt_accepted: $paccept,
@@ -4051,5 +4260,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

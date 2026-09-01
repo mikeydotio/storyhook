@@ -39,7 +39,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// gets, rather than through an env var storyhook's own allowlist would
 /// (correctly) now strip.
 ///
-/// Declares `DISPATCH_PROTOCOL=1` (SH-196) so this stub keeps resolving
+/// Declares `DISPATCH_PROTOCOL=2` (SH-196/SH-523) so this stub keeps resolving
 /// under `resolve_dispatch_script_from`'s protocol check, which applies to
 /// `STORYHOOK_DISPATCH_SCRIPT` the same as any other resolution source —
 /// see `a_script_below_the_required_protocol_is_refused_before_any_handle_exists`
@@ -47,7 +47,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=1
+DISPATCH_PROTOCOL=2
 set -u
 case "{mode}" in
   ok)
@@ -423,6 +423,10 @@ fn the_project_and_story_reach_the_script_verbatim() {
     assert!(argv.contains("--project scad-caliper"));
     assert!(argv.contains("dispatch CAL-12 --agent=claude"));
     assert!(
+        argv.contains("--resume"),
+        "every dashboard dispatch grants automatic resume permission: {argv}"
+    );
+    assert!(
         !argv.contains("--auto"),
         "a plain dispatch's argv must not carry --auto"
     );
@@ -454,7 +458,7 @@ fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record()
     let argv = record["payload"]["argv"]
         .as_str()
         .expect("argv echoed back");
-    assert!(argv.contains("dispatch CAL-12 --agent=claude --auto"));
+    assert!(argv.contains("dispatch CAL-12 --agent=claude --resume --auto"));
 }
 
 #[test]
@@ -477,7 +481,7 @@ fn codex_agent_is_relayed_and_passed_to_the_shared_helper() {
         record["payload"]["argv"]
             .as_str()
             .unwrap()
-            .contains("dispatch SH-1 --agent=codex --auto")
+            .contains("dispatch SH-1 --agent=codex --resume --auto")
     );
 }
 
@@ -681,12 +685,35 @@ fn an_unselected_dispatch_carries_no_model_effort_or_speed_flag() {
         .expect("argv echoed back");
     assert_eq!(
         argv.trim(),
-        "--project proj dispatch SH-1 --agent=claude",
-        "an unselected dispatch's argv must not change shape"
+        "--project proj dispatch SH-1 --agent=claude --resume",
+        "an unselected dashboard dispatch carries only automatic resume permission"
     );
     assert!(!record.as_object().unwrap().contains_key("model"));
     assert!(!record.as_object().unwrap().contains_key("effort"));
     assert_eq!(record["fast"], false);
+}
+
+#[test]
+fn a_protocol_one_helper_is_refused_before_the_dashboard_requires_resume() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub =
+        write_script("#!/usr/bin/env bash\nDISPATCH_PROTOCOL=1\nprintf '{\"ok\":true}\\n'\n");
+    let info = start_with_stub(&env, stub.path());
+
+    let response = ureq::post(dispatch_url(&info, "proj", "SH-1"))
+        .header("X-Storyhook", "1")
+        .header("Host", "127.0.0.1")
+        .header("X-Storyhook-Token", &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send_empty()
+        .expect("the HTTP exchange itself succeeds");
+    assert_eq!(response.status(), 500);
+    let body = response.into_body().read_to_string().unwrap();
+    assert!(body.contains("protocol 1"), "{body}");
+    assert!(body.contains("needs at least 2"), "{body}");
 }
 
 /// `?model=`/`?effort=`/`?speed=fast` each append their own flag to the
@@ -721,7 +748,9 @@ fn model_effort_and_speed_append_their_own_flags_and_are_relayed_in_the_record()
         .as_str()
         .expect("argv echoed back");
     assert!(
-        argv.contains("dispatch SH-1 --agent=claude --model=haiku --effort=max --speed=fast"),
+        argv.contains(
+            "dispatch SH-1 --agent=claude --resume --model=haiku --effort=max --speed=fast"
+        ),
         "argv: {argv}"
     );
 }

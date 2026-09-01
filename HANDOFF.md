@@ -1,21 +1,22 @@
 # Handoff
 
-## Completed in SH-471
+## Completed in SH-523
 
-- The dashboard keeps every unacknowledged Full Auto stop as a persistent,
-  project-scoped banner outside the timed notice stack.
-- Each banner shows run/state/reason/streak diagnostics and the three newest
-  recoverable quarantine outcomes with story links.
-- Acknowledgement is guarded, ambiguity-safe, stale-read-safe, and reconciled
-  against the engine status endpoint.
-- Browser coverage pins reload durability, acknowledgement, stale status,
-  historical ordering, press safety, and notice-dock separation.
+- `story.sh dispatch <id> --resume` inventories and safely reconstructs the
+  active claim, deterministic branch/worktree, and named tmux pane.
+- Existing commits and dirty files survive; failure cleanup removes only
+  resources created by the current attempt.
+- Attended adapters ask once on `resume-available`; dashboard dispatches pass
+  `--resume` automatically. Full Auto lanes retain `resume:false`.
+- Dispatch protocol 2 prevents the daemon from invoking a stale helper that
+  cannot accept automatic resume.
+- Shell, daemon, and browser regressions cover preservation and UI reachability.
 
 ## Next
 
 - Continue the Full Auto epic from `story next`; reconciliation and close-out
   stories remain the source of truth for lane supervision and real-run proof.
-- Preserve the banner DTO contract: it derives entirely from the existing run
-  and lane fields, with no separate client persistence.
-- Keep engine alerts registered in `NOTICE_BAND_TOP`; otherwise the fixed
-  notice dock can cover their diagnostics and acknowledgement controls.
+- Keep engine-lane recovery separate until SH-466 defines its reconciliation
+  policy; do not change `DispatchOptions::default().resume` to true.
+- Treat `resume-unsafe` as evidence requiring operator repair, never as a reset
+  opportunity.
