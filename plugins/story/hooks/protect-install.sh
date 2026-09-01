@@ -19,8 +19,8 @@
 # of defence. A Claude Code `PreToolUse` hook FAILS OPEN at its timeout -- the
 # harness SIGTERMs it and lets the tool call proceed, silently (SH-306) -- so
 # this is the cheap layer that catches the common case at the moment of the
-# act. Reading the installation afterwards is the authoritative check, because
-# it sees the result regardless of which agent, or which provider, did it.
+# act. `story doctor install` is the authoritative check, because it reads the
+# installation afterwards regardless of which agent, or which provider, did it.
 #
 # SPEED IS THEREFORE CORRECTNESS. The inert path pays no interpreter start, the
 # discipline `full-auto.sh` already states: this reads stdin once and, if the
@@ -32,8 +32,8 @@
 # COVERAGE IS ASYMMETRIC AND SAID SO RATHER THAN GLOSSED. Claude Code runs this
 # on Write/Edit/NotebookEdit and Bash. Codex registers only `post_tool_use`,
 # `session_start` and `stop` from this same hooks.json -- it appears not to take
-# `pre_tool_use` at all -- so on Codex this hook does not run, and that gap is
-# named here rather than glossed.
+# `pre_tool_use` at all -- so on Codex this hook does not run, and `story doctor
+# install` is what covers that gap. Named here rather than glossed.
 
 set -uo pipefail
 
@@ -125,7 +125,8 @@ reason = (
     f"\n"
     f"  Make the change in the storyhook CHECKOUT instead (plugins/story/...),\n"
     f"  where it is reviewed, gated and shipped by the next release.\n"
-    f"  Nothing you have written is lost by this refusal.\n"
+    f"  `story doctor install` shows what is pending; nothing you have written\n"
+    f"  is lost by this refusal.\n"
     f"\n"
     f"  If you genuinely mean to edit the installed copy, create\n"
     f"  {override_dir}/ALLOW_INSTALLED_EDITS."

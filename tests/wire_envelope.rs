@@ -1581,6 +1581,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Daemon {
             action: DaemonAction::Stop { force: true },
         },
+        Invocation::DoctorInstall,
         Invocation::DoctorAbandoned {
             action: AbandonedAction::List,
         },
@@ -1743,6 +1744,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
+        Invocation::DoctorInstall => "DoctorInstall",
         Invocation::DoctorAbandoned { .. } => "DoctorAbandoned",
         Invocation::DoctorCrashes { .. } => "DoctorCrashes",
         Invocation::Show { .. } => "Show",
@@ -1807,7 +1809,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        66,
+        67,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -15,6 +15,7 @@ pub mod event_hooks;
 pub mod github;
 pub mod help_topics;
 pub mod hooks;
+pub mod install_status;
 pub mod invoke;
 pub mod legacy;
 pub mod mcp;
