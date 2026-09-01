@@ -147,6 +147,14 @@ pub struct HooksConfig {
     pub on_label_change: Option<HookDef>,
     #[serde(default)]
     pub on_relationship_change: Option<HookDef>,
+    #[serde(default)]
+    pub on_engine_run_started: Option<HookDef>,
+    #[serde(default)]
+    pub on_engine_run_halted: Option<HookDef>,
+    #[serde(default)]
+    pub on_engine_run_drained: Option<HookDef>,
+    #[serde(default)]
+    pub on_engine_lane_quarantined: Option<HookDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,7 +199,7 @@ fn ceiling_violation(label: &str, secs: u64) -> Option<String> {
         .then(|| format!("{label} = {secs}s exceeds the {HOOK_TIMEOUT_CEILING_SECS}s ceiling"))
 }
 
-/// The first `timeout_seconds` — the project default or any of the seven
+/// The first `timeout_seconds` — the project default or any of the eleven
 /// per-hook overrides — that exceeds [`HOOK_TIMEOUT_CEILING_SECS`], named so
 /// the caller can say which field to fix rather than only that something is
 /// wrong.
@@ -201,7 +209,7 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
     {
         return Some(reason);
     }
-    let slots: [(&str, Option<&HookDef>); 7] = [
+    let slots: [(&str, Option<&HookDef>); 11] = [
         ("on_create", config.on_create.as_ref()),
         ("on_state_change", config.on_state_change.as_ref()),
         ("on_close", config.on_close.as_ref()),
@@ -211,6 +219,19 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
         (
             "on_relationship_change",
             config.on_relationship_change.as_ref(),
+        ),
+        (
+            "on_engine_run_started",
+            config.on_engine_run_started.as_ref(),
+        ),
+        ("on_engine_run_halted", config.on_engine_run_halted.as_ref()),
+        (
+            "on_engine_run_drained",
+            config.on_engine_run_drained.as_ref(),
+        ),
+        (
+            "on_engine_lane_quarantined",
+            config.on_engine_lane_quarantined.as_ref(),
         ),
     ];
     slots.into_iter().find_map(|(name, hook)| {
@@ -235,7 +256,7 @@ pub struct HookDef {
     pub timeout_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEventType {
     Create,
     StateChange,
@@ -244,6 +265,15 @@ pub enum HookEventType {
     PriorityChange,
     LabelChange,
     RelationshipChange,
+    /// A Full Auto engine run started (SH-472).
+    EngineRunStarted,
+    /// A Full Auto engine run halted: the hard-stop breaker tripped (SH-472).
+    EngineRunHalted,
+    /// A Full Auto engine run drained its ready queue with nothing left to
+    /// claim (SH-472).
+    EngineRunDrained,
+    /// A Full Auto engine lane was quarantined by a hard stop (SH-472).
+    EngineLaneQuarantined,
 }
 
 impl HookEventType {
@@ -256,6 +286,10 @@ impl HookEventType {
             Self::PriorityChange => "priority_change",
             Self::LabelChange => "label_change",
             Self::RelationshipChange => "relationship_change",
+            Self::EngineRunStarted => "engine_run_started",
+            Self::EngineRunHalted => "engine_run_halted",
+            Self::EngineRunDrained => "engine_run_drained",
+            Self::EngineLaneQuarantined => "engine_lane_quarantined",
         }
     }
 
@@ -268,6 +302,12 @@ impl HookEventType {
             "priority_change" | "priority-change" => Some(Self::PriorityChange),
             "label_change" | "label-change" => Some(Self::LabelChange),
             "relationship_change" | "relationship-change" => Some(Self::RelationshipChange),
+            "engine_run_started" | "engine-run-started" => Some(Self::EngineRunStarted),
+            "engine_run_halted" | "engine-run-halted" => Some(Self::EngineRunHalted),
+            "engine_run_drained" | "engine-run-drained" => Some(Self::EngineRunDrained),
+            "engine_lane_quarantined" | "engine-lane-quarantined" => {
+                Some(Self::EngineLaneQuarantined)
+            }
             _ => None,
         }
     }
@@ -355,11 +395,18 @@ fn load_hooks_config_result(root: &Path) -> Result<Option<HooksConfig>, String> 
 /// that precisely would mean rebuilding the CLI-command-to-hook-event mapping
 /// a second time on the daemon's cold, request-only path, for a number that
 /// is already a generous upper bound either way.
+///
+/// The four engine hooks (SH-472) are slots here too, for the identical
+/// reason: `Invocation::Engine { .. }` maps to the generic command name
+/// `"engine"`, which is neither `pr-check` nor the `set-state`/`set-fields`
+/// pair, so it already takes this function's widening rather than
+/// [`transition_pair_timeout`]'s. Adding the slots is the whole fix — no new
+/// constant, no new branch in `served_deadline`.
 #[must_use]
 pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
     let config = load_hooks_config(root)?;
     let default = config.settings.timeout_seconds;
-    let slots: [Option<&HookDef>; 7] = [
+    let slots: [Option<&HookDef>; 11] = [
         config.on_create.as_ref(),
         config.on_state_change.as_ref(),
         config.on_close.as_ref(),
@@ -367,6 +414,10 @@ pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
         config.on_priority_change.as_ref(),
         config.on_label_change.as_ref(),
         config.on_relationship_change.as_ref(),
+        config.on_engine_run_started.as_ref(),
+        config.on_engine_run_halted.as_ref(),
+        config.on_engine_run_drained.as_ref(),
+        config.on_engine_lane_quarantined.as_ref(),
     ];
     slots
         .into_iter()
@@ -412,6 +463,10 @@ fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&Hook
         HookEventType::PriorityChange => config.on_priority_change.as_ref(),
         HookEventType::LabelChange => config.on_label_change.as_ref(),
         HookEventType::RelationshipChange => config.on_relationship_change.as_ref(),
+        HookEventType::EngineRunStarted => config.on_engine_run_started.as_ref(),
+        HookEventType::EngineRunHalted => config.on_engine_run_halted.as_ref(),
+        HookEventType::EngineRunDrained => config.on_engine_run_drained.as_ref(),
+        HookEventType::EngineLaneQuarantined => config.on_engine_lane_quarantined.as_ref(),
     }
 }
 
@@ -638,7 +693,7 @@ impl std::fmt::Display for Diagnostics {
 /// How a hook ended, when it did not end well.
 ///
 /// Private, and `fire_hook` still returns `()`. A public type here would be a
-/// new surface with seven call sites that legitimately discard it — and a `pub
+/// new surface with many call sites that legitimately discard it — and a `pub
 /// fn` returning a private type trips `private_interfaces`, which `-D warnings`
 /// makes a build failure, so the split is what lets this stay private at all.
 enum HookOutcome {
@@ -676,7 +731,7 @@ pub fn list_hooks(root: &Path) -> String {
         Ok(None) => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
         Ok(Some(config)) => {
             let mut lines = Vec::new();
-            let events: [(&str, &Option<HookDef>); 7] = [
+            let events: [(&str, &Option<HookDef>); 11] = [
                 ("on_create", &config.on_create),
                 ("on_state_change", &config.on_state_change),
                 ("on_close", &config.on_close),
@@ -684,6 +739,13 @@ pub fn list_hooks(root: &Path) -> String {
                 ("on_priority_change", &config.on_priority_change),
                 ("on_label_change", &config.on_label_change),
                 ("on_relationship_change", &config.on_relationship_change),
+                ("on_engine_run_started", &config.on_engine_run_started),
+                ("on_engine_run_halted", &config.on_engine_run_halted),
+                ("on_engine_run_drained", &config.on_engine_run_drained),
+                (
+                    "on_engine_lane_quarantined",
+                    &config.on_engine_lane_quarantined,
+                ),
             ];
             for (name, hook) in events {
                 if let Some(h) = hook {
@@ -712,7 +774,7 @@ pub fn list_hooks(root: &Path) -> String {
 pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::error::AppError> {
     let event_type = HookEventType::parse(event_type_str).ok_or_else(|| {
         crate::error::AppError::Validation(format!(
-            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change)"
+            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change, engine_run_started, engine_run_halted, engine_run_drained, engine_lane_quarantined)"
         ))
     })?;
 
@@ -1160,6 +1222,88 @@ mod tests {
         assert!(
             !message.contains("add a `[hooks]` table"),
             "that advice is for an absent config, not a refused one: {message}"
+        );
+    }
+
+    // --- engine event hooks (SH-472) ---------------------------------------
+
+    /// `HookEventType::parse` accepts both spellings for all four engine
+    /// variants, and round-trips through `as_str` — the "two existing facts
+    /// to respect" the story names explicitly.
+    #[test]
+    fn engine_hook_event_types_parse_snake_and_kebab_case() {
+        let cases = [
+            (
+                HookEventType::EngineRunStarted,
+                "engine_run_started",
+                "engine-run-started",
+            ),
+            (
+                HookEventType::EngineRunHalted,
+                "engine_run_halted",
+                "engine-run-halted",
+            ),
+            (
+                HookEventType::EngineRunDrained,
+                "engine_run_drained",
+                "engine-run-drained",
+            ),
+            (
+                HookEventType::EngineLaneQuarantined,
+                "engine_lane_quarantined",
+                "engine-lane-quarantined",
+            ),
+        ];
+        for (variant, snake, kebab) in cases {
+            assert_eq!(variant.as_str(), snake);
+            assert_eq!(
+                HookEventType::parse(snake),
+                Some(variant),
+                "snake_case must parse: {snake}"
+            );
+            assert_eq!(
+                HookEventType::parse(kebab),
+                Some(variant),
+                "kebab-case must parse: {kebab}"
+            );
+        }
+    }
+
+    /// [`max_configured_timeout`] must reach the four new slots — the whole
+    /// point of adding them to its array is that `story engine start`'s
+    /// served deadline widens by an engine hook's own timeout with no second
+    /// literal (SH-472).
+    #[test]
+    fn max_configured_timeout_reaches_an_engine_hook() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 5\n\n\
+             [on_engine_run_halted]\ncommand = \"true\"\ntimeout_seconds = 45\n",
+        );
+        assert_eq!(
+            max_configured_timeout(dir.path()),
+            Some(Duration::from_secs(45))
+        );
+    }
+
+    /// The ceiling applies identically to an engine hook's `timeout_seconds`
+    /// — it is not a second, unchecked notion of "hook" (SH-472).
+    #[test]
+    fn an_engine_hook_over_the_ceiling_refuses_the_whole_config() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            &format!(
+                "[settings]\ntimeout_seconds = 10\n\n\
+                 [on_engine_lane_quarantined]\ncommand = \"true\"\ntimeout_seconds = {}\n",
+                HOOK_TIMEOUT_CEILING_SECS + 1
+            ),
+        );
+        let reason = load_hooks_config_result(dir.path()).expect_err("must refuse");
+        assert!(
+            reason.contains("on_engine_lane_quarantined.timeout_seconds"),
+            "must name the offending field: {reason}"
         );
     }
 }

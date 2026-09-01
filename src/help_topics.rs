@@ -1007,6 +1007,15 @@ A hook's environment is the daemon's, not yours:
   current, and name every variable your hook actually depends on rather
   than relying on ambient state.
 
+Full Auto engine events:
+  A Full Auto run (`story engine start`) raises four more events through this
+  same mechanism: on_engine_run_started, on_engine_run_halted,
+  on_engine_run_drained, and on_engine_lane_quarantined. storyhook ships no
+  notification stack of its own — bind whichever of these you care about to a
+  command (ntfy, terminal-notifier, a curl to Slack) the same way you would
+  on_create or on_close. See `docs/spec/full-auto-engine.md`'s
+  "Notification" section for each event's exact payload.
+
 Related:
   story commit-sync  — Manual git sync (hooks automate this)
   [hooks] in .storyhook.toml — Event hook configuration
