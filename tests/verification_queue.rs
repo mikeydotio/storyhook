@@ -1,12 +1,15 @@
 //! Store-backed contracts for the SH-521 centralized verification queue.
 
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, TickResult, VerificationActuator, VerificationOutcome, tick_with,
+    ShellVerificationActuator, TickResult, VerificationActuator, VerificationOutcome, journal_path,
+    tick_with,
 };
+use storyhook::daemon::verification_progress::publish_once;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{Priority, SuperState};
 use storyhook::env::Environment;
 use storyhook::error::AppError;
+use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
@@ -553,4 +556,210 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         TickResult::Idle
     );
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+}
+
+// ---------------------------------------------------------------------------
+// SH-524: the verification progress publisher
+// ---------------------------------------------------------------------------
+
+fn last_comment(fixture: &ServiceFixture, id: &str) -> String {
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", id).unwrap()))
+        .unwrap()
+        .unwrap();
+    row.snapshot
+        .comments
+        .last()
+        .unwrap_or_else(|| panic!("{id} has no comments"))
+        .text
+        .clone()
+}
+
+fn progress_comment_count(fixture: &ServiceFixture, id: &str) -> usize {
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", id).unwrap()))
+        .unwrap()
+        .unwrap();
+    row.snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+        .count()
+}
+
+#[test]
+fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "running", Priority::High, PR_ONE);
+
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let journal = journal_path(fixture.env(), &candidate);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":2}\n\
+         {\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"t\"}\n\
+         {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n",
+    )
+    .unwrap();
+
+    let moved = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+    assert!(
+        moved,
+        "the first publish for a running candidate must write"
+    );
+
+    let comment = last_comment(&fixture, &id);
+    assert!(comment.starts_with(GATE_PROGRESS_PREFIX), "{comment}");
+    assert!(comment.contains("- [x] fmt (1/1, 2s)"), "{comment}");
+    assert!(comment.contains("rust-suite (1/~1, running)"), "{comment}");
+    assert_eq!(progress_comment_count(&fixture, &id), 1);
+}
+
+#[test]
+fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let high = submitted(&fixture, "running", Priority::High, PR_ONE);
+    let low = submitted(&fixture, "queued", Priority::Low, PR_TWO);
+
+    publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+
+    let running_comment = last_comment(&fixture, &high);
+    assert!(
+        running_comment.contains("Verification ("),
+        "{running_comment}"
+    );
+
+    let queued_comment = last_comment(&fixture, &low);
+    assert!(
+        queued_comment.contains("QUEUED (position 2)"),
+        "{queued_comment}"
+    );
+    assert!(
+        queued_comment.contains("1 candidate of higher priority, 0 of equal priority and older"),
+        "{queued_comment}"
+    );
+}
+
+#[test]
+fn republishing_rewrites_the_one_comment_rather_than_appending_a_new_one() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "running", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let journal = journal_path(fixture.env(), &candidate);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+    )
+    .unwrap();
+
+    let first = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap();
+    assert!(first);
+    assert_eq!(progress_comment_count(&fixture, &id), 1);
+
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":5}\n",
+    )
+    .unwrap();
+    let second = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+    assert!(second, "a changed journal must publish again");
+    assert_eq!(
+        progress_comment_count(&fixture, &id),
+        1,
+        "the comment is rewritten in place, never appended a second time"
+    );
+    assert!(last_comment(&fixture, &id).contains("fmt (1/1, 5s)"));
+}
+
+#[test]
+fn an_unchanged_journal_writes_nothing_on_the_next_publish() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "running", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let journal = journal_path(fixture.env(), &candidate);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+    )
+    .unwrap();
+
+    // Same `now` both times, so even the header's own timestamp is identical
+    // and the rendered body is byte-for-byte the same on the second call.
+    assert!(publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap());
+    let moved_again = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap();
+    assert!(
+        !moved_again,
+        "an identical body must not be rewritten a second time"
+    );
+    assert_eq!(progress_comment_count(&fixture, &id), 1);
+}
+
+#[test]
+fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "green", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let journal = journal_path(fixture.env(), &candidate);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+    )
+    .unwrap();
+    assert!(publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap());
+    assert_eq!(progress_comment_count(&fixture, &id), 1);
+
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Completed
+    );
+
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\"}\n",
+    )
+    .unwrap();
+    let moved = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:05:00Z").unwrap();
+    assert!(
+        !moved,
+        "a story no longer in `verifying` must not be touched by the publisher"
+    );
+    assert_eq!(
+        progress_comment_count(&fixture, &id),
+        1,
+        "the checklist stays frozen at its last state once the story leaves verifying"
+    );
 }
