@@ -10,18 +10,17 @@
 //! was hidden and the flag that would show it, with counts that respect
 //! every other filter the caller passed.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
 use predicates::str::contains;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 fn run(dir: &std::path::Path, args: &[&str]) {
@@ -71,7 +70,7 @@ fn seed_one_of_each(dir: &std::path::Path) {
 
 #[test]
 fn bare_list_shows_only_open_stories_drafts_included() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let ids = list_ids(dir.path(), &[]);
@@ -93,7 +92,7 @@ fn bare_list_shows_only_open_stories_drafts_included() {
 
 #[test]
 fn include_closed_shows_closed_but_not_archived_or_deleted() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let ids = list_ids(dir.path(), &["--include-closed"]);
@@ -102,7 +101,7 @@ fn include_closed_shows_closed_but_not_archived_or_deleted() {
 
 #[test]
 fn include_archived_implies_include_closed() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let ids = list_ids(dir.path(), &["--include-archived"]);
@@ -121,7 +120,7 @@ fn include_archived_implies_include_closed() {
 
 #[test]
 fn all_is_sugar_for_both_include_flags_and_never_includes_deleted() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let via_all = list_ids(dir.path(), &["--all"]);
@@ -136,20 +135,13 @@ fn all_is_sugar_for_both_include_flags_and_never_includes_deleted() {
 /// whole envelope (including `message`), not just the id list above.
 #[test]
 fn all_parses_identically_to_both_include_flags() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
-    let mut via_all = Command::cargo_bin("story").unwrap();
-    via_all
-        .current_dir(dir.path())
-        .args(["list", "--all", "--json"]);
-    let mut via_both = Command::cargo_bin("story").unwrap();
-    via_both.current_dir(dir.path()).args([
-        "list",
-        "--include-closed",
-        "--include-archived",
-        "--json",
-    ]);
+    let mut via_all = story(dir.path());
+    via_all.args(["list", "--all", "--json"]);
+    let mut via_both = story(dir.path());
+    via_both.args(["list", "--include-closed", "--include-archived", "--json"]);
 
     let all_stdout = via_all.assert().success().get_output().stdout.clone();
     let both_stdout = via_both.assert().success().get_output().stdout.clone();
@@ -161,7 +153,7 @@ fn all_parses_identically_to_both_include_flags() {
 /// check the deleted id never appears.
 #[test]
 fn deleted_never_appears_under_any_flag_combination() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let flag_sets: &[&[&str]] = &[
@@ -182,7 +174,7 @@ fn deleted_never_appears_under_any_flag_combination() {
 
 #[test]
 fn state_naming_a_closed_slug_lifts_the_exclusion_and_says_why() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     let ids = list_ids(dir.path(), &["--state", "done"]);
@@ -201,7 +193,7 @@ fn state_naming_a_closed_slug_lifts_the_exclusion_and_says_why() {
 
 #[test]
 fn state_lift_does_not_reveal_archived_stories() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     // SH-3 is archived AND in the `done` state; `--state done` alone must
@@ -218,7 +210,7 @@ fn state_lift_does_not_reveal_archived_stories() {
 
 #[test]
 fn state_naming_an_open_slug_is_unaffected() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     seed_one_of_each(dir.path());
 
     // SH-5 (the draft) starts life in `todo` too, same as SH-1 — an OPEN
@@ -236,7 +228,7 @@ fn state_naming_an_open_slug_is_unaffected() {
 /// hardcoded `"done"` — a custom CLOSED-superstate column lifts it too.
 #[test]
 fn a_custom_closed_state_lifts_the_exclusion_too() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     run(dir.path(), &["project", "new", "--prefix", "SH"]);
     run(
         dir.path(),
@@ -259,7 +251,7 @@ fn a_custom_closed_state_lifts_the_exclusion_too() {
 /// label, not every hidden story in the project.
 #[test]
 fn the_hidden_count_respects_other_filters() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     run(dir.path(), &["project", "new", "--prefix", "SH"]);
     run(dir.path(), &["new", "Open, infra"]);
     run(dir.path(), &["new", "Closed, infra"]);
@@ -284,7 +276,7 @@ fn the_hidden_count_respects_other_filters() {
 /// drop silently before this story's fix.
 #[test]
 fn the_hidden_count_survives_an_empty_visible_result() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     run(dir.path(), &["project", "new", "--prefix", "SH"]);
     run(dir.path(), &["new", "Only story"]);
     run(dir.path(), &["move", "SH-1", "done"]);
@@ -308,7 +300,7 @@ fn the_hidden_count_survives_an_empty_visible_result() {
 /// behind them and changes nothing they report.
 #[test]
 fn ready_blocked_and_stale_are_unaffected_by_the_new_default() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     run(dir.path(), &["project", "new", "--prefix", "SH"]);
     run(dir.path(), &["new", "Ready"]);
     run(dir.path(), &["new", "Blocked"]);
