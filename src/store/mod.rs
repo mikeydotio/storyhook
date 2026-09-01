@@ -106,14 +106,15 @@ pub use types::{
 pub trait Store: Send + Sync + 'static {
     /// How this store may be used (SH-530).
     ///
-    /// Defaulted to [`Access::ReadWrite`] so that an implementation with no
-    /// notion of a schema version — a test double, an in-memory fake — is
-    /// unaffected. [`crate::store::SqliteStore`] overrides it, and it is the
-    /// only implementation that can be degraded, because it is the only one
-    /// that has a schema to be newer than this build.
-    fn access(&self) -> Access {
-        Access::ReadWrite
-    }
+    /// Required rather than defaulted to [`Access::ReadWrite`], and the
+    /// difference is not stylistic. Everything that warns a user their store is
+    /// degraded reads this one answer, so an implementation that inherited a
+    /// cheerful default — a wrapper, a cache, a decorator that forgot to
+    /// delegate — would not fail, it would silently report a degraded store as
+    /// healthy and switch the whole warning off. Requiring it makes that a
+    /// compile error instead, which is the SH-365 shape: let the compiler hold
+    /// the invariant a reviewer would have to notice.
+    fn access(&self) -> Access;
     /// The read transaction this store hands out.
     type ReadTx<'a>: ReadOps
     where
