@@ -5,8 +5,8 @@ set -euo pipefail
 
 mode="${1:-}"
 case "$mode" in
-(core) only_flag="--only" ;;
-(contracts) only_flag="--only-no-doc" ;;
+(core) only_flag="--only"; export STORYHOOK_GATE_PROGRESS_PATH="release gate/rust-suite" ;;
+(contracts) only_flag="--only-no-doc"; export STORYHOOK_GATE_PROGRESS_PATH="release gate/rust-contracts" ;;
 (*)
     echo "run-rust-battery: expected core or contracts" >&2
     exit 1

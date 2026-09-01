@@ -7,6 +7,9 @@ set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="${1:-}"
 
+# shellcheck source=../../../scripts/gate-progress.sh
+. "$TESTS_DIR/../../../scripts/gate-progress.sh"
+
 # --- data-home isolation, verified before a single test runs ---------------
 #
 # One workdir for the whole run, so every test sees the same isolated data
@@ -67,26 +70,43 @@ FAIL=0
 FAILED=()
 LOG="$(mktemp /tmp/story-plugin-test-run.XXXXXX)"
 
+known_total=0
+for test in "$TESTS_DIR"/test-*.sh; do
+  name=$(basename "$test")
+  [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
+  known_total=$((known_total + 1))
+done
+gate_progress_emit_item "release gate/plugin" running "total=$known_total"
+
 for test in "$TESTS_DIR"/test-*.sh; do
   name=$(basename "$test")
   if [[ -n "$FILTER" && "$name" != *"$FILTER"* ]]; then
     continue
   fi
   printf '  %-40s ' "$name"
-  if bash "$test" >"$LOG" 2>&1; then
+  # `env -u` keeps this wrapper's own STORYHOOK_GATE_PROGRESS for its own
+  # item/case emission above and below, while stripping it from each
+  # test-*.sh child -- none shells into gate machinery today, but a harness
+  # that isolates the data home neutralizes this the same unconditional way
+  # it neutralizes STORYHOOK_STORE_PATH (SH-136 doctrine: defense in depth,
+  # not case-by-case reasoning about which child currently needs it).
+  if env -u STORYHOOK_GATE_PROGRESS bash "$test" >"$LOG" 2>&1; then
     printf 'PASS\n'
     PASS=$((PASS + 1))
+    gate_progress_emit_case "release gate/plugin" pass
   else
     printf 'FAIL\n'
     sed 's/^/      /' "$LOG"
     FAILED+=("$name")
     FAIL=$((FAIL + 1))
+    gate_progress_emit_case "release gate/plugin" fail
   fi
 done
 
 rm -f "$LOG"
 echo
 echo "passed: $PASS  failed: $FAIL"
+gate_progress_emit_item "release gate/plugin" "$([ "$FAIL" -eq 0 ] && echo passed || echo failed)"
 if [ "$FAIL" -gt 0 ]; then
   echo "failed tests:"
   for f in "${FAILED[@]}"; do echo "  - $f"; done

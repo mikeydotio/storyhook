@@ -346,6 +346,17 @@ where
                 crate::daemon::verification::poll_verification(store, &env, &bus, &stop)
             });
         }
+        {
+            // SH-524: the verification progress publisher. No shared state
+            // with the verifier thread above — it independently re-derives
+            // which candidate is active from the same store-backed queue
+            // (`verification_progress`'s own module doc explains why).
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            scope.spawn(move || {
+                crate::daemon::verification_progress::poll_verification_progress(store, &env, &stop)
+            });
+        }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
             let serving = &serving;

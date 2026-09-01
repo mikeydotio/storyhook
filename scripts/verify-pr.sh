@@ -17,6 +17,17 @@ die_json() {
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die_json "not inside a git worktree"
 cd "$root" || die_json "cannot enter repository root $root"
+# Progress emission degrades to a no-op rather than a source failure: this
+# script runs against WHATEVER checkout the daemon has registered
+# (`current_dir(&candidate.checkout)`), and a disposable test fixture is a
+# real git worktree with no `scripts/` tree of its own copied into it.
+if [ -f "$root/scripts/gate-progress.sh" ]; then
+    # shellcheck source=gate-progress.sh
+    . "$root/scripts/gate-progress.sh"
+else
+    gate_progress_emit_item() { :; }
+    gate_progress_emit_case() { :; }
+fi
 command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
@@ -86,6 +97,8 @@ fi
 submitted_pr="$1"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
+gate_progress_emit_item "pull request metadata" running
+_pr_meta_start=$(date +%s)
 metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
     || die_json "could not read submitted pull request $submitted_pr from GitHub"
 pr="$(printf '%s' "$metadata" | jq -er '.number')" || die_json "submitted pull request returned no number"
@@ -96,6 +109,7 @@ base="$(printf '%s' "$metadata" | jq -er '.baseRefName')" || die_json "PR #$pr r
 reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" || die_json "PR #$pr returned no head oid"
 [ "$draft" = false ] || die_json "PR #$pr is a draft"
 [ "$cross" = false ] || die_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) - _pr_meta_start ))"
 
 base_ref="refs/remotes/origin/$base"
 head_ref="refs/remotes/origin/pr/$pr"
@@ -123,16 +137,24 @@ if [ ! -e "$verifier_wt/.git" ]; then
         || die_json "could not create the persistent verifier worktree"
 fi
 
+gate_progress_emit_item "merge preflight" running
+_preflight_start=$(date +%s)
 preflight="$(bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
+_preflight_seconds=$(( $(date +%s) - _preflight_start ))
 case "$preflight_status" in
 (2)
+    gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
     jq -n --arg detail "$preflight" '{result:"conflict", detail:$detail}'
     exit 0
     ;;
-(0) : ;;
+(0)
+    gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
+    gate_progress_emit_item "release gate" reused
+    ;;
 (1)
+    gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$logs/pr-$pr-$tree.log"
@@ -144,9 +166,17 @@ case "$preflight_status" in
         exit 0
     fi
     ;;
-(*) die_json "merge preflight returned unexpected status $preflight_status: $preflight" ;;
+(*)
+    gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
+    die_json "merge preflight returned unexpected status $preflight_status: $preflight"
+    ;;
 esac
 
+gate_progress_emit_item "land pull request" running
+_land_start=$(date +%s)
 land_output="$(bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
 land_status=$?
+gate_progress_emit_item "land pull request" \
+    "$([ "$land_status" = 0 ] && echo passed || echo failed)" \
+    "seconds=$(( $(date +%s) - _land_start ))"
 classify_land "$land_status" "$land_output" "$pr" "$tree"

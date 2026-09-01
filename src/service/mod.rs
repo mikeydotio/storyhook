@@ -33,6 +33,7 @@ pub mod attachment;
 pub mod catalog;
 pub mod config;
 pub mod engine;
+pub mod gate_progress;
 pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-pr")]
@@ -386,12 +387,17 @@ pub(crate) enum Intent {
     /// story is closed — see [`resolve_open_story`].
     Edit,
     /// Records an observation about the story without changing what it is.
-    /// Permitted on a closed story. Granted to two writes so far: `story
+    /// Permitted on a closed story. Granted to three writes so far: `story
     /// comment` (SH-261 — a comment reaches only the comment list and
-    /// `updated_at`) and `commit-sync`'s commit link (SH-279 —
+    /// `updated_at`), `commit-sync`'s commit link (SH-279 —
     /// `StoryCommitLinked` reaches only `referenced_by_commits` and
-    /// `updated_at`). `tests/invoker_seam.rs::only_the_comment_path_appends_to_a_closed_story`
-    /// pins the exact set; a third write needs its own argument before it is
+    /// `updated_at`), and the SH-524 verification progress publisher's
+    /// `StoryService::upsert_marked_comment` (a retract-and-add pair still
+    /// reaches only the comment list and `updated_at`, and must be able to
+    /// run concurrently with the verifier moving the same story to `done`).
+    /// `tests/invoker_seam.rs::
+    /// only_comment_commit_link_and_progress_publish_append_to_a_closed_story`
+    /// pins the exact set; a fourth write needs its own argument before it is
     /// added there.
     Append,
 }
