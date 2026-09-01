@@ -1081,14 +1081,17 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"execCommand("copy")"#));
     assert!(body.contains("\"Copy Description\""));
 
-    // SH-197/SH-512: the context menu's Dispatch action. It is deliberately
-    // narrower than the drawer footer: only literal `todo` stories with a
-    // checkout receive the menu item.
+    // SH-197/SH-523: the context menu's Dispatch action. SH-523 aligned this
+    // with renderDrawerFooter's own gate: dashboard dispatch always carries
+    // --resume, so an open ordinary story can reconstruct surviving work
+    // rather than needing the helper's narrower --force escape hatch — only
+    // a closed story or an epic (which carries no executable steps of its
+    // own) hides the menu item, alongside the no-checkout gate both share.
     assert!(body.contains("\"Dispatch\""));
     assert!(!body.contains("\"Dispatch Auto\""));
-    assert!(
-        body.contains(r#"var dispatchHidden = st.state !== "todo" || !currentRepoHasCheckout();"#)
-    );
+    assert!(body.contains(
+        r#"var dispatchHidden = isClosed || st.story_type === "epic" || !currentRepoHasCheckout();"#
+    ));
 
     // SH-197: the context menu's Set Status submenu.
     assert!(body.contains("\"Set Status\""));
