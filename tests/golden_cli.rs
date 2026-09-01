@@ -218,9 +218,27 @@ fn build_corpus() -> Project<'static> {
     run(&["move", "SH-14", "done"]);
     run(&["close", "SH-13", "superseded by the global store"]);
 
-    // One live run for the engine status golden. Engine state is operational
-    // and does not alter any story read surface in this shared corpus.
-    run(&["engine", "start", "--lanes", "2"]);
+    // SH-15/SH-16: an epic with exactly one `no-auto` child, added last so
+    // neither disturbs an earlier id. Once the reconcile loop actually runs
+    // (SH-466 -- this corpus originally started a plain project-scoped run
+    // here, on the assumption, true only because nothing ever reconciled,
+    // that "engine state is operational and does not alter any story read
+    // surface in this shared corpus"), an engine run with nothing claimable
+    // and nothing needing a human finishes the instant it is created
+    // (`queue-drained`) rather than sitting idle. A project-scoped run
+    // would also claim and dispatch the first ordinary ready story it
+    // found anywhere in the shared corpus, corrupting every other golden
+    // here that reads story state. Scoping to this epic avoids both:
+    // nothing under it is claimable (the child is `no-auto`), and the
+    // child itself is exactly what keeps the run `running` rather than
+    // draining (finish_if_drained's own no-auto exemption, SH-466).
+    run(&["new", "Track engine adoption", "--type", "epic"]);
+    run(&["new", "Approve the rollout", "--labels", "no-auto"]);
+    run(&["relate", "SH-15", "parent-of", "SH-16"]);
+
+    // One live run for the engine status golden, scoped to the epic above
+    // so it can never claim anything from the shared corpus.
+    run(&["engine", "start", "--lanes", "2", "--epic", "SH-15"]);
 
     project
 }

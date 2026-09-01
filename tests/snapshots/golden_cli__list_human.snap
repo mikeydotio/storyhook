@@ -14,6 +14,8 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --state todo
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
@@ -24,6 +26,8 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --state review
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -84,6 +88,7 @@ SH-7 [todo] (low) [chore] Document the data layer
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --phase 1
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
@@ -108,6 +113,8 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --created-after 2999-01-01
 no stories found
@@ -125,6 +132,8 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --state todo --priority critical
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
@@ -149,6 +158,8 @@ SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [closed] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --include-archived
 SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
@@ -165,6 +176,8 @@ SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [closed] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story list --all
 SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
@@ -181,3 +194,5 @@ SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [closed] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]

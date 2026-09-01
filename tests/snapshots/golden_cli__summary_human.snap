@@ -2,27 +2,27 @@
 source: tests/golden_cli.rs
 ---
 $ story summary
-stories: 14 (11 open, 3 closed)
+stories: 16 (13 open, 3 closed)
 by state:
   closed: 1
   done: 2
   in-progress: 2
   review: 1
-  todo: 8
+  todo: 10
 by priority:
   critical: 2
   high: 3
-  low: 5
+  low: 7
   medium: 4
 by type:
   bug: 1
   chore: 3
-  epic: 1
-  normal: 7
+  epic: 2
+  normal: 8
   spike: 2
 blocked: 3
 flagged: 0
-ready: 7
+ready: 8
 ready stories:
   SH-5 [todo] (critical) Fix the id collision across worktrees
   SH-2 [todo] (high) Define the Store trait
@@ -31,27 +31,27 @@ ready stories:
   SH-10 [todo] (medium) Ship the CLI shim
 
 $ story report
-stories: 14 (11 open, 3 closed)
+stories: 16 (13 open, 3 closed)
 by state:
   closed: 1
   done: 2
   in-progress: 2
   review: 1
-  todo: 8
+  todo: 10
 by priority:
   critical: 2
   high: 3
-  low: 5
+  low: 7
   medium: 4
 by type:
   bug: 1
   chore: 3
-  epic: 1
-  normal: 7
+  epic: 2
+  normal: 8
   spike: 2
 blocked: 3
 flagged: 0
-ready: 7
+ready: 8
 ready stories:
   SH-5 [todo] (critical) Fix the id collision across worktrees
   SH-2 [todo] (high) Define the Store trait

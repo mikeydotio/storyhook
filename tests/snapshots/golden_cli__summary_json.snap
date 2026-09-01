@@ -19,7 +19,7 @@ source: tests/golden_cli.rs
           ],
           [
             "low",
-            5
+            7
           ],
           [
             "medium",
@@ -45,7 +45,7 @@ source: tests/golden_cli.rs
           ],
           [
             "todo",
-            8
+            10
           ]
         ],
         "by_type": [
@@ -59,11 +59,11 @@ source: tests/golden_cli.rs
           ],
           [
             "epic",
-            1
+            2
           ],
           [
             "normal",
-            7
+            8
           ],
           [
             "spike",
@@ -71,7 +71,7 @@ source: tests/golden_cli.rs
           ]
         ],
         "flagged_count": 0,
-        "ready_count": 7,
+        "ready_count": 8,
         "ready_stories": [
           {
             "head_global_seq": 62,
@@ -206,7 +206,7 @@ source: tests/golden_cli.rs
           }
         ],
         "total_closed": 3,
-        "total_open": 11
+        "total_open": 13
       }
     }
   },
@@ -227,7 +227,7 @@ source: tests/golden_cli.rs
           ],
           [
             "low",
-            5
+            7
           ],
           [
             "medium",
@@ -253,7 +253,7 @@ source: tests/golden_cli.rs
           ],
           [
             "todo",
-            8
+            10
           ]
         ],
         "by_type": [
@@ -267,11 +267,11 @@ source: tests/golden_cli.rs
           ],
           [
             "epic",
-            1
+            2
           ],
           [
             "normal",
-            7
+            8
           ],
           [
             "spike",
@@ -279,7 +279,7 @@ source: tests/golden_cli.rs
           ]
         ],
         "flagged_count": 0,
-        "ready_count": 7,
+        "ready_count": 8,
         "ready_stories": [
           {
             "head_global_seq": 62,
@@ -414,7 +414,7 @@ source: tests/golden_cli.rs
           }
         ],
         "total_closed": 3,
-        "total_open": 11
+        "total_open": 13
       }
     }
   }
