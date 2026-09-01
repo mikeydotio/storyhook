@@ -156,31 +156,25 @@ median() {
 # Spotlight-indexed (SH-53).
 CAPTURE_DATA_ROOT="$(mktemp -d /private/tmp/storyhook-baseline.XXXXXX)"
 trap 'rm -rf "$CAPTURE_DATA_ROOT"' EXIT
-export STORYHOOK_DATA_DIR="$CAPTURE_DATA_ROOT/data"
-export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
-# `STORYHOOK_STORE_PATH` outranks `STORYHOOK_DATA_DIR` (SH-113), so the line
-# above isolates nothing while a developer has one exported -- which is exactly
-# what somebody debugging a second store has. A capture would then run against
-# their real store and say nothing about it, because the guard that would
-# complain inspects the variable that lost.
-unset STORYHOOK_STORE_PATH
-
-# Nothing of the developer's own reaches a fixture: not a credential, not a
-# project selection somebody else made, and not an override that would disarm
-# a guard this run may be testing. There is no harmless value for any of
-# these, so they are removed rather than redirected. `story help
-# test-environment` names each one and what it protects.
-unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
-unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+# THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own header
+# carries the parameters and the reason for each. `--home` is not passed: the
+# flake census below runs `make test`, and cargo with a fake $HOME loses its
+# registry and its build cache.
+#
+# This script used to claim in its own header that it provided "the same
+# contract scripts/run-tests.sh provides" while carrying no path guard at all --
+# it was the harness the derived scan in tests/store_isolation.rs was written
+# after missing. Sourcing the one implementation is how that stops being a claim
+# and starts being true.
+# shellcheck source=test-env.sh
+. "$REPO_ROOT/scripts/test-env.sh"
+storyhook_isolate "$CAPTURE_DATA_ROOT"
 
 # The flake census below runs `make test` N times in a row (SH-524); an
 # ambient journal path from some other daemon-owned verification run must
 # not be inherited, or these unrelated repeated runs would all write into it.
 unset STORYHOOK_GATE_PROGRESS
 export INSTA_UPDATE=no
-export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
-export STORYHOOK_PARENT_PID="$$"
 
 # ---------------------------------------------------------------------------
 # Machine tag

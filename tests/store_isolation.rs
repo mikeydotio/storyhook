@@ -915,37 +915,27 @@ fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
 // The harnesses that isolate a test run
 // ---------------------------------------------------------------------------
 
-/// Whether `line` exports `name`.
-fn exports(line: &str, name: &str) -> bool {
-    line.trim_start()
-        .strip_prefix("export ")
-        .is_some_and(|rest| rest.trim_start().starts_with(&format!("{name}=")))
-}
-
-/// Whether `line` stops `$STORYHOOK_STORE_PATH` arriving from the caller.
+/// The tracked shell scripts that isolate a run, paired with their contents.
 ///
-/// Two spellings, because the two kinds of harness answer it differently:
-/// a shell wrapper `unset`s the developer's, and `TestEnv` gives the child one
-/// of its own so that what the child sees is asserted rather than assumed.
-fn neutralizes_the_store_path(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("unset STORYHOOK_STORE_PATH") || exports(trimmed, "STORYHOOK_STORE_PATH")
-}
-
-/// Whether `line` pins `$STORYHOOK_DAEMON_ADDR` to the daemon's ephemeral-port
-/// contract, rather than leaving it to default to the shared port 3456.
-fn pins_the_daemon_to_an_ephemeral_port(line: &str) -> bool {
-    exports(line, "STORYHOOK_DAEMON_ADDR") && line.contains("127.0.0.1:0")
-}
-
-/// The tracked shell scripts that export `$STORYHOOK_DATA_DIR`, paired with
-/// their contents.
+/// **Keyed on the delegation, not on a variable.** Until SH-531 this set was
+/// "every script that exports `$STORYHOOK_DATA_DIR`", because until SH-531
+/// every isolating harness exported it — six of them did, by hand, and they
+/// had already drifted: three carried a disposable-root guard and three did
+/// not, one used a sentinel pid, and only the Rust harness cleared the
+/// developer's real credential. The whole parameter set now lives in
+/// `src/env/test_environment.rs`, is rendered once into
+/// `scripts/test-env.sh`, and is proven equal to it behaviourally by
+/// `tests/test_environment.rs`. So a harness is one that CALLS the shared
+/// function, and the two properties SH-131 and SH-136 pinned per harness —
+/// neutralize `$STORYHOOK_STORE_PATH`, contain the daemon it spawns — are now
+/// properties of that one function, checked there against what a real child
+/// process actually receives rather than against what a line of shell looks
+/// like.
 ///
-/// Shared by every test in this module that needs "every harness that isolates
-/// the data directory" — the set this file's isolation invariants are pinned
-/// against — so that set is derived once rather than re-scanned, and possibly
-/// re-diverged, per test.
-fn data_dir_harnesses(root: &Path) -> Vec<(String, String)> {
+/// What stays here is the part that is still per harness: a script may not
+/// have its own private opinion about a parameter, and the journal below is
+/// not a parameter at all.
+fn isolating_harnesses(root: &Path) -> Vec<(String, String)> {
     let listed = std::process::Command::new("git")
         .current_dir(root)
         .args(["ls-files", "-z", "--", "*.sh"])
@@ -966,7 +956,11 @@ fn data_dir_harnesses(root: &Path) -> Vec<(String, String)> {
             let text = std::fs::read_to_string(root.join(&relative))
                 .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
             text.lines()
-                .any(|line| exports(line, "STORYHOOK_DATA_DIR"))
+                .any(|line| {
+                    let trimmed = line.trim_start();
+                    trimmed.starts_with("storyhook_isolate ")
+                        || trimmed.starts_with("storyhook_isolate_print ")
+                })
                 .then_some((relative, text))
         })
         .collect();
@@ -976,109 +970,12 @@ fn data_dir_harnesses(root: &Path) -> Vec<(String, String)> {
     // tree.
     assert!(
         harnesses.len() >= 3,
-        "this scan is supposed to find every shell harness that isolates the \
-         data directory, and it found {}: {harnesses:?}. The pattern is broken, \
-         not the harnesses.",
+        "this scan is supposed to find every shell harness that isolates a run, \
+         and it found {}: {harnesses:?}. The pattern is broken, not the \
+         harnesses.",
         harnesses.len()
     );
     harnesses
-}
-
-/// A harness that isolates `$STORYHOOK_DATA_DIR` and stops there has not
-/// isolated anything.
-///
-/// `$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`, so an exported one in
-/// a developer's shell — which is exactly what somebody debugging a second store
-/// has — sends the whole run into their own store. Nothing notices: the data-dir
-/// guard inspects the variable that lost, and the run passes. Measured while
-/// SH-131 was being written: one 9-test file left 9 projects and 7 stories in the
-/// leaked store and never created the isolated one.
-///
-/// Derived rather than enumerated, because the enumeration is what failed. The
-/// three `unset` lines went in together with store isolation itself and
-/// `scripts/capture-baseline.sh` was missed — a fourth harness, exporting the
-/// same variables, whose own comment claims it provides "the same contract
-/// `scripts/run-tests.sh` provides". A list in a document could not see that; a
-/// derived rule cannot miss it, and a fifth harness inherits the check by
-/// existing.
-#[test]
-fn every_harness_that_isolates_the_data_dir_neutralizes_the_store_path() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let harnesses = data_dir_harnesses(root);
-
-    let gaps: Vec<String> = harnesses
-        .iter()
-        .filter(|(_, text)| !text.lines().any(neutralizes_the_store_path))
-        .map(|(relative, _)| relative.clone())
-        .collect();
-    assert!(
-        gaps.is_empty(),
-        "{gaps:?} export STORYHOOK_DATA_DIR without neutralizing \
-         STORYHOOK_STORE_PATH, which outranks it. A developer with one exported \
-         runs whatever these scripts start against their own store, and nothing \
-         says so. Add `unset STORYHOOK_STORE_PATH` beside the data-directory \
-         export."
-    );
-}
-
-/// Every tracked shell script that isolates `$STORYHOOK_DATA_DIR` also contains
-/// the daemon it spawns: an ephemeral `$STORYHOOK_DAEMON_ADDR` and a
-/// `$STORYHOOK_PARENT_PID` to die with.
-///
-/// The same shape of defect `every_harness_that_isolates_the_data_dir_
-/// neutralizes_the_store_path` closes, one variable pair over (SH-136, filed
-/// while SH-131 was counting a different list and found this one stale too). A
-/// harness that skips `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` lets its daemon bind
-/// the shared port 3456 — a developer's own dashboard, on any machine where it
-/// happened to be free. One that skips `STORYHOOK_PARENT_PID` spawns a daemon
-/// that does not know to die with the run that started it, which is not
-/// hypothetical: a leaked daemon once cost 78 of 139 tests in a later run.
-/// CLAUDE.md hand-enumerated these harnesses in prose instead of deriving them,
-/// and the count silently drifted — four, then five, then six — every time a
-/// harness was added. A derived set cannot drift the same way.
-///
-/// Green on arrival, deliberately: every harness this scan finds today already
-/// pins both variables, so there is no regression to catch. What it buys is a
-/// fence, not a fix — a script added or edited later that isolates the data
-/// directory without also containing its daemon fails here instead of leaking
-/// one onto a developer's machine.
-#[test]
-fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let harnesses = data_dir_harnesses(root);
-
-    let unpinned: Vec<String> = harnesses
-        .iter()
-        .filter(|(_, text)| !text.lines().any(pins_the_daemon_to_an_ephemeral_port))
-        .map(|(relative, _)| relative.clone())
-        .collect();
-    assert!(
-        unpinned.is_empty(),
-        "{unpinned:?} export STORYHOOK_DATA_DIR without pinning \
-         STORYHOOK_DAEMON_ADDR to 127.0.0.1:0. A daemon this harness spawns binds \
-         the shared port 3456 instead of an ephemeral one — the same port a \
-         developer's own dashboard may be using. Add \
-         `export STORYHOOK_DAEMON_ADDR=\"${{STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}}\"` \
-         beside the data-directory export."
-    );
-
-    let orphanable: Vec<String> = harnesses
-        .iter()
-        .filter(|(_, text)| {
-            !text
-                .lines()
-                .any(|line| exports(line, "STORYHOOK_PARENT_PID"))
-        })
-        .map(|(relative, _)| relative.clone())
-        .collect();
-    assert!(
-        orphanable.is_empty(),
-        "{orphanable:?} export STORYHOOK_DATA_DIR without exporting \
-         STORYHOOK_PARENT_PID. A daemon this harness spawns does not know to die \
-         with the run that started it and can outlive it, poisoning every later \
-         run on the machine. Add `export STORYHOOK_PARENT_PID=\"$$\"` beside the \
-         data-directory export."
-    );
 }
 
 /// Whether `line` neutralizes `$STORYHOOK_GATE_PROGRESS` for whatever
@@ -1117,9 +1014,9 @@ fn neutralizes_the_gate_progress_journal(line: &str) -> bool {
 /// lines — the one harness in this set where the variable reaching its
 /// child is the feature, not the hazard.
 #[test]
-fn every_harness_that_isolates_the_data_dir_neutralizes_the_gate_progress_journal() {
+fn every_harness_that_isolates_a_run_neutralizes_the_gate_progress_journal() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let harnesses = data_dir_harnesses(root);
+    let harnesses = isolating_harnesses(root);
 
     let gaps: Vec<String> = harnesses
         .iter()
@@ -1129,7 +1026,7 @@ fn every_harness_that_isolates_the_data_dir_neutralizes_the_gate_progress_journa
         .collect();
     assert!(
         gaps.is_empty(),
-        "{gaps:?} export STORYHOOK_DATA_DIR without neutralizing \
+        "{gaps:?} isolate a run without neutralizing \
          STORYHOOK_GATE_PROGRESS anywhere in their own text. A nested test \
          fixture that shells back into make test/leg.sh (tests/gate_leg_reuse.rs \
          is a real one) would otherwise inherit an outer verification run's \

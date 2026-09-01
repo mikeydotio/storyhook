@@ -170,49 +170,27 @@ fi
 data_root="$(mktemp -d /private/tmp/storyhook-gate.XXXXXX)"
 trap 'rm -rf "$data_root"' EXIT
 
-export STORYHOOK_DATA_DIR="$data_root/data"
-export XDG_STATE_HOME="$data_root/state"
-
-# `STORYHOOK_STORE_PATH` outranks `STORYHOOK_DATA_DIR` (SH-113). A developer who
-# has one exported -- which is exactly what somebody debugging a second store
-# would have -- would otherwise run this whole suite against it, and the guard
-# below would not notice, because it inspects the variable that lost.
-unset STORYHOOK_STORE_PATH
-
-# Nothing of the developer's own reaches a fixture: not a credential, not a
-# project selection somebody else made, and not an override that would disarm
-# a guard this run may be testing. There is no harmless value for any of
-# these, so they are removed rather than redirected. `story help
-# test-environment` names each one and what it protects.
-unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
-unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+# THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
+# header carries the parameters and the reason for each. `--home` is
+# deliberately NOT passed: this script wraps `cargo`, and cargo with a fake
+# $HOME loses its registry and its build cache. `storyhook_test_support`'s
+# `TestEnv` redirects $HOME on each `story` child instead, which is the level a
+# wrapper around cargo cannot reach and a test binary can.
+#
+# The refusal that used to live here -- a `case` on $STORYHOOK_DATA_DIR -- is
+# now `storyhook_isolate`'s own, applied to the root before anything is
+# derived from it, so every harness gets it rather than the three that
+# happened to have copied it.
+#
+# There is still a second guard inside the binary, and the two cover different
+# holes: `storyhook::env::is_test_build` refuses to *resolve* a data home a
+# test build was not given, which is the case a bare `cargo test` produces and
+# no wrapper script can reach.
+# shellcheck source=test-env.sh
+. "$script_dir/test-env.sh"
+storyhook_isolate "$data_root"
 
 export INSTA_UPDATE=no
-
-# Never the production port.
-export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
-
-# A daemon this run starts must not outlive it, however this run ends.
-export STORYHOOK_PARENT_PID="$$" 
-
-# The guard, because the consequence of losing the override is silent and
-# expensive: a store path under the real home means a test run is about to eat
-# real data.
-#
-# There is a second guard inside the binary — `storyhook::env::is_test_build`
-# refuses to *resolve* a data home a test build was not given — and the two
-# cover different holes. This one catches an override that points somewhere
-# real; that one catches the absence of an override at all, which is the case a
-# bare `cargo test` produces and no wrapper script can reach.
-case "$STORYHOOK_DATA_DIR" in
-    /private/tmp/*) ;;
-    *)
-        echo "run-tests.sh: refusing to run with STORYHOOK_DATA_DIR=$STORYHOOK_DATA_DIR" >&2
-        echo "  the gate must never point at a real storyhook store" >&2
-        exit 1
-        ;;
-esac
 
 # Every leg's combined output is teed here (terminal AND this file), so
 # `scripts/test-delta.sh` can record the per-test red/green ledger at the end

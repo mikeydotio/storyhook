@@ -265,6 +265,14 @@ struct Fixture {
     root: TempDir,
 }
 
+/// The one tracked script this fixture replaces rather than links.
+///
+/// Named as a constant because the link loop above must skip exactly it: a
+/// symlink written through would put the stub into the developer's own
+/// checkout, and a copy left in place would reach `test-delta.sh` and write a
+/// ledger into the real `.git`.
+const STUBBED_SCRIPT: &str = "tracked-tree.sh";
+
 impl Fixture {
     fn new() -> Self {
         let root = scratch_dir();
@@ -273,19 +281,34 @@ impl Fixture {
             std::fs::create_dir_all(path.join(dir))
                 .unwrap_or_else(|e| panic!("fixture: creating {dir}/: {e}"));
         }
-        for script in ["run-tests.sh", "machine-lock.sh", "gate-progress.sh"] {
-            std::os::unix::fs::symlink(
-                checkout().join("scripts").join(script),
-                path.join("scripts").join(script),
-            )
-            .unwrap_or_else(|e| panic!("fixture: linking the tracked {script}: {e}"));
+        // Every tracked `scripts/*.sh` except the one this fixture replaces,
+        // derived rather than listed. The list used to name three — the ones
+        // `run-tests.sh` needed on the day this file was written — and a
+        // fourth dependency (`test-env.sh`, once the isolation moved into a
+        // sourced function) turned every test in this file red with a `No such
+        // file or directory` from inside the fixture, which reads as a broken
+        // lock rather than a stale list. The same hand-kept-list shape SH-136,
+        // SH-198, SH-258, SH-260/276 and SH-360 have already cost this project.
+        //
+        // Symlinks, never copies: the point is to run the TRACKED script.
+        for entry in std::fs::read_dir(checkout().join("scripts"))
+            .expect("fixture: reading the checkout's scripts/")
+        {
+            let entry = entry.expect("fixture: a scripts/ entry");
+            let name = entry.file_name();
+            let name = name.to_str().expect("a UTF-8 script name");
+            if !name.ends_with(".sh") || name == STUBBED_SCRIPT {
+                continue;
+            }
+            std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
+                .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
         let fixture = Self { root };
         // Refusing to answer is a path the tracked script already tolerates —
         // a tarball or a corrupt index produces it — and it is what keeps
         // `test-delta.sh` from writing a ledger into the real `.git`.
         fixture.executable(
-            "scripts/tracked-tree.sh",
+            &format!("scripts/{STUBBED_SCRIPT}"),
             "#!/bin/sh\n# tests/gate_lock.rs: no tree oid, so no ledger is written\nexit 1\n",
         );
         fixture
