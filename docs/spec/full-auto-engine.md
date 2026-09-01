@@ -693,7 +693,7 @@ directions.
 | File | Pins |
 |---|---|
 | `tests/engine_run_model.rs` | run/lane state transitions, breaker arithmetic, the schema CHECKs |
-| `tests/engine_reconcile.rs` | every row of the failure taxonomy, through `FakeDispatcher` |
+| `tests/engine_reconcile.rs` | every row of the failure taxonomy, through `FakeDispatcher`; the four engine event hooks (SH-472), including both `EngineLaneQuarantined` producers and the `no_hooks` suppression |
 | `tests/engine_restart.rs` | interrupted lanes quarantine on restart, worktrees preserved |
 | `tests/engine_labels.rs` | `human-only` never in `next` or `claim --next`; `no-auto` still in `next` and never dispatched |
 | `tests/epic_computed_state.rs` | every rule and edge case above, table-driven |
@@ -1334,3 +1334,73 @@ which is also what it reads with the reset gone, because the streak was already
 SH-364 shape, found by mutation where review had not. Rewritten to build a real
 streak of two before completing anything; it now fails that mutation with
 `left: 2, right: 0`.
+
+### SH-472 — engine event hooks
+
+Four new `HookEventType` variants, one `[hooks]` slot each — matching the
+existing model (`on_create`/`on_state_change`/`on_close`/etc.) rather than one
+combined "engine" variant, so an operator binds a different command per event
+exactly as they already can for every other one:
+
+| Variant | Config key | Fires from |
+|---|---|---|
+| `EngineRunStarted` | `on_engine_run_started` | `EngineService::start()`, after the run and its lanes commit |
+| `EngineRunHalted` | `on_engine_run_halted` | `apply_breaker()`, only on the pass that flips `Running` → `Halted` |
+| `EngineRunDrained` | `on_engine_run_drained` | `finish_if_drained()`, only when `stop_reason` is freshly set to [`QUEUE_DRAINED`] — never on an operator-initiated `stop()`, which already set its own reason |
+| `EngineLaneQuarantined` | `on_engine_lane_quarantined` | `quarantine_lane()` **and** `fill_idle_lanes()`'s `DispatchRefused` branch |
+
+`HookEventType::parse` accepts both spellings for all four, per the story's
+own "two existing facts to respect."
+
+**One shared helper for two producers.** `quarantine_lane()` handles the four
+taxonomy-driven hard stops; `fill_idle_lanes()` writes a `DispatchRefused`
+quarantine *inline*, without calling `quarantine_lane`, because the story is
+freshly claimed there and has never been through `observe_lanes`. Both commit
+their own store write and then call one new private
+`fire_lane_quarantined_hook`, so the payload shape cannot drift between the
+two call sites — and SH-466's still-open `Interrupted` producer inherits the
+hook for free if it reuses `quarantine_lane`, which its own design description
+already suggests it will. The `reason` field is the exact text written to the
+story's `awaiting`, relayed rather than recomposed — the same SH-120 rule this
+function already applies to the story's own `awaiting` field, now applied to
+the hook payload too.
+
+**No second deadline literal.** `Invocation::Engine { .. }` maps to the
+generic `invocation_name` `"engine"`, which is neither `pr-check` nor the
+`set-state`/`set-fields`/claim/unclaim pair, so `daemon::lifecycle::
+served_deadline` already takes its general branch —
+`event_hooks::max_configured_timeout(cwd)`. Adding the four new fields to
+that function's existing slot array (and to `timeout_ceiling_violation`'s) is
+the entire fix; `served_deadline`/`served_deadline_for` needed no change.
+
+**`engine_run_halted`'s last three quarantine reasons are read back from the
+store, not from the pass's own `ReconcileReport`.** The three hard stops the
+breaker just counted may have accumulated one at a time across several
+earlier passes — the report only carries what changed on *this* pass. The
+sort mirrors the dashboard's own `lastEngineQuarantines`
+(`src/web_dashboard.html`): most-recently-observed first, lane index as the
+tiebreak for a simultaneous observation. Each line's format
+(`quarantine_reason_line`) mirrors `buildEngineQuarantineItem`'s own
+`detail !== story` check, so the hook payload and the dashboard banner never
+disagree about when to show the extra detail.
+
+**Two gaps found during this story's own research, neither fixed here:**
+
+1. `api::engine::EngineController::context()` sets `.no_hooks(true)`
+   unconditionally, so a dashboard-triggered `engine start` does not fire
+   `engine_run_started` — pre-existing behavior (it already suppresses every
+   ordinary hook the same way), left unchanged by this story.
+2. **`EngineService::reconcile` has zero production callers.**
+   `RECONCILE_TICK_SECS` exists and is unit-tested, but nothing in
+   `daemon::serve` wakes it on a bus change, a tick, or a control command.
+   SH-465's, SH-466's and SH-467's own As-built notes each point at SH-468 as
+   the story that would wire the daemon side, but SH-468's actual approved
+   scope was the HTTP control surface only
+   (start/status/pause/resume/stop/ack) — nobody has yet built the automatic
+   trigger described in this spec's own "The reconcile loop" section. This
+   means `engine_run_halted`/`engine_run_drained`/`engine_lane_quarantined`
+   are correctly wired and covered end to end by `tests/engine_reconcile.rs`,
+   but will not fire in a running daemon until a future story wires
+   `reconcile()` into it — and that same gap means Full Auto cannot currently
+   run unattended at all. Filed separately as a follow-on story under
+   SH-452, blocking SH-473's own real-run acceptance criterion.

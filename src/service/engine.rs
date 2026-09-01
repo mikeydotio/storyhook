@@ -21,6 +21,7 @@ use crate::domain::{
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
+use crate::event_hooks::HookEventType;
 use crate::store::ids::GlobalSeq;
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineRunState, EngineScope,
@@ -604,7 +605,25 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         });
 
         match result {
-            Ok(run) => Ok(run),
+            Ok(run) => {
+                // After the commit, per every other hook-firing call site's
+                // rule: the hook may itself call back into `story`, and firing
+                // inside the write above would wait on a lock this call
+                // already holds.
+                self.ctx.fire_hook(
+                    HookEventType::EngineRunStarted,
+                    &serde_json::json!({
+                        "event_type": "engine_run_started",
+                        "run_id": &run.id,
+                        "scope": run.scope.kind(),
+                        "epic_id": run.scope.story_id(),
+                        "lanes": run.lanes,
+                        "agent": run.agent.as_str(),
+                        "timestamp": self.ctx.now(),
+                    }),
+                );
+                Ok(run)
+            }
             Err(StoreError::Invariant(detail)) if is_live_run_collision(&detail) => {
                 let slug = self.project_slug()?;
                 Err(AppError::Validation(format!(
@@ -966,6 +985,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         existing_reason: Option<&str>,
     ) -> Result<(), AppError> {
         let observed_at = self.ctx.now();
+        let mut fired_reason = None;
         if let Some(story) = lane.story_id.as_deref() {
             let provenance = format!(
                 "Full Auto: {} on lane {} of run {run_id}{}{}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
@@ -985,6 +1005,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 _ => provenance,
             };
             super::StoryService::new(self.ctx).set_awaiting(story, &reason)?;
+            fired_reason = Some(reason);
         }
         let mut quarantined = lane.clone();
         quarantined.state = EngineLaneState::Quarantined;
@@ -994,14 +1015,67 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         self.ctx
             .store()
             .write(|tx| tx.put_engine_lane(&quarantined))?;
+        self.fire_lane_quarantined_hook(
+            run_id,
+            lane.lane_index,
+            lane.story_id.as_deref(),
+            kind,
+            fired_reason.as_deref(),
+            lane.window_name.as_deref(),
+            lane.worktree_path.as_deref(),
+        );
         Ok(())
+    }
+
+    /// Fires the `engine_lane_quarantined` hook for a lane just quarantined
+    /// and committed to the store (SH-472).
+    ///
+    /// Shared by [`Self::quarantine_lane`] (the four taxonomy-driven hard
+    /// stops) and [`Self::fill_idle_lanes`]'s `DispatchRefused` branch, which
+    /// writes its own quarantine inline rather than calling
+    /// `quarantine_lane` — one payload-building call site means the two
+    /// existing producers cannot drift on shape, and means SH-466's future
+    /// `Interrupted` producer inherits this hook for free if it reuses
+    /// `quarantine_lane` the way its own design description suggests.
+    #[allow(clippy::too_many_arguments)]
+    fn fire_lane_quarantined_hook(
+        &self,
+        run_id: &RunId,
+        lane_index: u32,
+        story_id: Option<&str>,
+        kind: HardStopKind,
+        reason: Option<&str>,
+        window_name: Option<&str>,
+        worktree_path: Option<&str>,
+    ) {
+        self.ctx.fire_hook(
+            HookEventType::EngineLaneQuarantined,
+            &serde_json::json!({
+                "event_type": "engine_lane_quarantined",
+                "run_id": run_id,
+                "lane_index": lane_index,
+                "story_id": story_id,
+                "kind": kind.as_str(),
+                "reason": reason,
+                "window_name": window_name,
+                "worktree_path": worktree_path,
+                "timestamp": self.ctx.now(),
+            }),
+        );
     }
 
     /// Applies this pass's completions and hard stops to the breaker.
     fn apply_breaker(&self, run_id: &RunId, report: &ReconcileReport) -> Result<RunView, AppError> {
         let completions = report.completed.len();
         let hard_stops = report.quarantined.len();
-        self.transition(run_id, |run, _| {
+        // Set only on the pass that actually flips Running -> Halted, never
+        // on a later pass over an already-halted run (whose own lanes may
+        // still individually hard-stop afterward, incrementing the streak
+        // further with the state guard below refusing to re-transition) —
+        // the `run.state == Running` guard is the only place the flip can
+        // happen, so this cell is exactly "did this call just do that" (SH-472).
+        let just_halted = std::cell::Cell::new(false);
+        let view = self.transition(run_id, |run, _| {
             if completions > 0 {
                 run.consecutive_hard_stops = 0;
             }
@@ -1012,9 +1086,53 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 run.state = EngineRunState::Halted;
                 run.stop_reason = Some(BREAKER_TRIPPED.to_string());
                 run.acknowledged_at = None;
+                just_halted.set(true);
             }
             Ok(())
-        })
+        })?;
+        if just_halted.get() {
+            self.fire_run_halted_hook(run_id, &view);
+        }
+        Ok(view)
+    }
+
+    /// Fires the `engine_run_halted` hook once the breaker has actually
+    /// tripped and that halt has committed (SH-472).
+    ///
+    /// The "last three quarantine reasons" the story asks for are read back
+    /// from the freshly-committed lane rows rather than only this pass's own
+    /// `ReconcileReport`, because the three hard stops the breaker counted
+    /// may have accumulated one at a time across several earlier passes —
+    /// the report only carries what changed on *this* pass. The sort mirrors
+    /// the dashboard's own `lastEngineQuarantines`
+    /// (`src/web_dashboard.html`): most-recently-observed first, lane index
+    /// as the tiebreak for a simultaneous observation.
+    fn fire_run_halted_hook(&self, run_id: &RunId, view: &RunView) {
+        let mut quarantined: Vec<&EngineLaneRecord> = view
+            .lanes
+            .iter()
+            .filter(|lane| lane.state == EngineLaneState::Quarantined)
+            .collect();
+        quarantined.sort_by(|a, b| {
+            b.last_observed_at
+                .cmp(&a.last_observed_at)
+                .then(b.lane_index.cmp(&a.lane_index))
+        });
+        quarantined.truncate(3);
+        let reasons: Vec<String> = quarantined
+            .into_iter()
+            .map(quarantine_reason_line)
+            .collect();
+        self.ctx.fire_hook(
+            HookEventType::EngineRunHalted,
+            &serde_json::json!({
+                "event_type": "engine_run_halted",
+                "run_id": run_id,
+                "consecutive_hard_stops": view.run.consecutive_hard_stops,
+                "last_quarantine_reasons": reasons,
+                "timestamp": self.ctx.now(),
+            }),
+        );
     }
 
     /// Claims and dispatches into every idle lane the budget allows.
@@ -1105,6 +1223,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     stuck.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
                     stuck.outcome_detail = Some(helper_diagnosis(&outcome.payload));
                     self.ctx.store().write(|tx| tx.put_engine_lane(&stuck))?;
+                    // This branch quarantines inline rather than calling
+                    // `quarantine_lane` (the story is freshly claimed here,
+                    // not yet observed by `observe_lanes`), so the
+                    // `engine_lane_quarantined` hook needs its own fire call
+                    // through the shared helper (SH-472).
+                    self.fire_lane_quarantined_hook(
+                        run_id,
+                        lane.lane_index,
+                        Some(story.as_str()),
+                        HardStopKind::DispatchRefused,
+                        stuck.outcome_detail.as_deref(),
+                        None,
+                        None,
+                    );
                     report
                         .quarantined
                         .push((lane.lane_index, HardStopKind::DispatchRefused));
@@ -1116,8 +1248,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     /// Ends a run whose lanes are all idle.
+    ///
+    /// Fires `engine_run_drained` (SH-472) only when the queue organically
+    /// ran dry — `stop_reason` was `None` going in and `reason` is
+    /// [`QUEUE_DRAINED`] specifically. An operator-initiated stop
+    /// (`OPERATOR_STOPPED`/`OPERATOR_STOPPED_NOW`) already set its own
+    /// `stop_reason` before this ever runs, so the `is_none()` guard below
+    /// keeps this call from overwriting it — and from firing a notification
+    /// about something the operator just did themselves.
     fn finish_if_drained(&self, run_id: &RunId, reason: &str) -> Result<RunView, AppError> {
-        self.transition(run_id, |run, lanes| {
+        let just_drained = std::cell::Cell::new(false);
+        let view = self.transition(run_id, |run, lanes| {
             let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
             if all_idle
                 && matches!(
@@ -1129,10 +1270,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 if run.stop_reason.is_none() {
                     run.stop_reason = Some(reason.to_string());
                     run.acknowledged_at = None;
+                    just_drained.set(reason == QUEUE_DRAINED);
                 }
             }
             Ok(())
-        })
+        })?;
+        if just_drained.get() {
+            self.ctx.fire_hook(
+                HookEventType::EngineRunDrained,
+                &serde_json::json!({
+                    "event_type": "engine_run_drained",
+                    "run_id": run_id,
+                    "timestamp": self.ctx.now(),
+                }),
+            );
+        }
+        Ok(view)
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
@@ -1320,6 +1473,26 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         last_progress_at: None,
         outcome: None,
         outcome_detail: None,
+    }
+}
+
+/// One human-readable line for a quarantined lane, for the
+/// `engine_run_halted` hook's `last_quarantine_reasons` (SH-472).
+///
+/// Mirrors the dashboard's own `buildEngineQuarantineItem`
+/// (`src/web_dashboard.html`): the detail is appended only when it differs
+/// from the story id, which is the ordinary `quarantine_lane` shape (where
+/// `outcome_detail` *is* the story id) versus a `DispatchRefused` quarantine
+/// (where it is the helper's own diagnosis text instead) — so the two stay
+/// in visual agreement rather than drifting on their own formatting rules.
+fn quarantine_reason_line(lane: &EngineLaneRecord) -> String {
+    let story = lane.story_id.as_deref().unwrap_or("no story");
+    let kind = lane.outcome.as_deref().unwrap_or("unknown");
+    match lane.outcome_detail.as_deref() {
+        Some(detail) if detail != story => {
+            format!("lane {} ({story}): {kind} — {detail}", lane.lane_index)
+        }
+        _ => format!("lane {} ({story}): {kind}", lane.lane_index),
     }
 }
 
