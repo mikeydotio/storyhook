@@ -798,6 +798,12 @@ export STORYHOOK_DAEMON_ADDR=127.0.0.1:0   # a kernel-assigned port, not 3456
 export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
 ```
 
+Those three are the minimum. **`story help test-environment` lists the whole
+set** — fourteen variables, what each one protects, and a shell block that
+applies all of them to a throwaway root. It is the same set storyhook's own test
+suite runs under, and it ships in the binary rather than living here, so a suite
+in your repository can ask the tool it is driving rather than read this file.
+
 `STORYHOOK_DAEMON_ADDR` chooses a **port**, and `127.0.0.1` is the only IP it
 accepts — any other one is refused with an error rather than accepted and
 ignored, because the daemon binds loopback (plus your tailnet interface, when
@@ -859,13 +865,23 @@ design, including why this is not the first time storyhook has shipped one.
 
 ## Development
 
-Run the standard checks:
-
 ```bash
-cargo test
-cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
+make test          # fmt, clippy, the Rust suite, a release build, the plugin suite
+make test-full     # ...plus the dashboard's browser suite
+make scratch       # a shell with a throwaway store and this checkout's binary
 ```
+
+`make test` rather than a bare `cargo test`: the wrapper isolates the data
+directory, contains the daemons the suite starts, and takes a machine-wide lock
+so two suites do not contend. A bare `cargo test` is safe — a test build refuses
+to resolve a real store — but it is not the gate.
+
+`make scratch` is how to exercise a change by hand. `./target/debug/story`, run
+in a checkout, resolves your **real** store and the daemon on port 3456; the
+scratch environment gives it a disposable one instead, under the same isolation
+the test suite uses. `make scratch ARGS="--test-build"` runs a build carrying the
+store's crash points. `story help test-environment` documents the parameters
+both of them apply.
 
 ## Project status
 
