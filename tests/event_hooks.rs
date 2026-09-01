@@ -1,9 +1,14 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use std::fs;
-use tempfile::TempDir;
+use storyhook_test_support::{TestEnv, scratch_dir};
+
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
+fn story(dir: &std::path::Path) -> Command {
+    TestEnv::shared().story(dir)
+}
 
 /// Appends `body` — one or more `[hooks.*]` tables — to the checkout's
 /// committed pointer file.
@@ -37,9 +42,7 @@ fn write_legacy_hooks(dir: &std::path::Path, body: &str) {
 }
 
 fn init_project(dir: &std::path::Path) {
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
+    story(dir)
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
@@ -47,7 +50,7 @@ fn init_project(dir: &std::path::Path) {
 
 #[test]
 fn hook_fires_on_create() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     // Init git repo
     std::process::Command::new("git")
@@ -77,12 +80,7 @@ fn hook_fires_on_create() {
         ),
     );
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["new", "Test story"])
-        .assert()
-        .success();
+    story(dir).args(["new", "Test story"]).assert().success();
 
     assert!(output_file.exists(), "hook output file should exist");
     let content = fs::read_to_string(&output_file).unwrap();
@@ -93,7 +91,7 @@ fn hook_fires_on_create() {
 
 #[test]
 fn hook_failure_does_not_prevent_operation() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -116,17 +114,12 @@ fn hook_failure_does_not_prevent_operation() {
     write_hooks(dir, "[hooks.on_create]\ncommand = \"exit 1\"\n");
 
     // Operation should still succeed even though hook fails
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["new", "Test story"])
-        .assert()
-        .success();
+    story(dir).args(["new", "Test story"]).assert().success();
 }
 
 #[test]
 fn no_hooks_flag_suppresses_hooks() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -155,9 +148,7 @@ fn no_hooks_flag_suppresses_hooks() {
         ),
     );
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
+    story(dir)
         .args(["--no-hooks", "new", "Test story"])
         .assert()
         .success();
@@ -170,7 +161,7 @@ fn no_hooks_flag_suppresses_hooks() {
 
 #[test]
 fn hooks_list_shows_configured() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -186,12 +177,7 @@ fn hooks_list_shows_configured() {
          [hooks.on_close]\ncommand = \"echo closed\"\n",
     );
 
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["hooks", "list"])
-        .output()
-        .unwrap();
+    let output = story(dir).args(["hooks", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("on_create"));
@@ -205,7 +191,7 @@ fn hooks_list_shows_configured() {
 /// `EngineService` actually fires them.
 #[test]
 fn hooks_list_shows_a_configured_engine_hook() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -220,12 +206,7 @@ fn hooks_list_shows_a_configured_engine_hook() {
         "[hooks.on_engine_run_halted]\ncommand = \"echo halted\"\n",
     );
 
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["hooks", "list"])
-        .output()
-        .unwrap();
+    let output = story(dir).args(["hooks", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("on_engine_run_halted"));
@@ -234,7 +215,7 @@ fn hooks_list_shows_a_configured_engine_hook() {
 
 #[test]
 fn hooks_list_no_config() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -244,12 +225,7 @@ fn hooks_list_no_config() {
 
     init_project(dir);
 
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["hooks", "list"])
-        .output()
-        .unwrap();
+    let output = story(dir).args(["hooks", "list"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("no hooks configured"));
@@ -257,7 +233,7 @@ fn hooks_list_no_config() {
 
 #[test]
 fn no_hooks_toml_operations_work() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     std::process::Command::new("git")
         .args(["init"])
@@ -278,12 +254,7 @@ fn no_hooks_toml_operations_work() {
     init_project(dir);
 
     // No hooks.toml — operations should work fine
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(["new", "Test story"])
-        .assert()
-        .success();
+    story(dir).args(["new", "Test story"]).assert().success();
 }
 
 /// The `[hooks]` table in the committed pointer file is read in place of
@@ -295,7 +266,7 @@ fn no_hooks_toml_operations_work() {
 /// directory that is about to stop existing.
 #[test]
 fn hooks_can_be_configured_in_the_pointer_file() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     init_project(dir);
 
@@ -308,9 +279,7 @@ fn hooks_can_be_configured_in_the_pointer_file() {
         ),
     );
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
+    story(dir)
         .args(["new", "Configured in the pointer"])
         .assert()
         .success();
@@ -326,7 +295,7 @@ fn hooks_can_be_configured_in_the_pointer_file() {
 
 #[test]
 fn the_pointers_hooks_table_wins_over_the_legacy_file() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     init_project(dir);
 
@@ -344,9 +313,7 @@ fn the_pointers_hooks_table_wins_over_the_legacy_file() {
         ),
     );
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
+    story(dir)
         .args(["new", "Two homes, one answer"])
         .assert()
         .success();
@@ -360,7 +327,7 @@ fn the_pointers_hooks_table_wins_over_the_legacy_file() {
 
 #[test]
 fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
     init_project(dir);
 
@@ -372,9 +339,7 @@ fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
     // No `[hooks]` table: the pointer file `story project new` wrote carries
     // identity and nothing else, which is exactly the premise here.
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
+    story(dir)
         .args(["new", "Still on the old config"])
         .assert()
         .success();
@@ -417,7 +382,7 @@ fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
 #[test]
 fn a_failing_hooks_reason_reaches_the_daemon_log() {
     let env = storyhook_test_support::TestEnv::isolated();
-    let dir = TempDir::new().unwrap();
+    let dir = scratch_dir();
     let dir = dir.path();
 
     env.story(dir)
