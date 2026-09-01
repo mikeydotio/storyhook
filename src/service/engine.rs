@@ -1448,7 +1448,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 /// inverted interval as "no elapsed time is known", which cannot become a
 /// stall (SH-372). A stall must be positively demonstrated, never inferred
 /// from a timestamp nobody could read.
-fn elapsed_secs(earlier: &str, later: &str) -> Option<u64> {
+pub(crate) fn elapsed_secs(earlier: &str, later: &str) -> Option<u64> {
     let earlier = chrono::DateTime::parse_from_rfc3339(earlier).ok()?;
     let later = chrono::DateTime::parse_from_rfc3339(later).ok()?;
     u64::try_from((later - earlier).num_seconds()).ok()

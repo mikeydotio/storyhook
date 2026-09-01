@@ -1542,7 +1542,12 @@ fn render_engine_run(run: &EngineRunView) -> String {
     body
 }
 
-fn format_elapsed(seconds: u64) -> String {
+/// Renders a duration as `Nh Nm`, `Nm Ns`, or `Ns` -- the codebase's one
+/// spelling for elapsed time, reused rather than re-invented at every call
+/// site that needs one (the SH-524 verification progress checklist among
+/// them), so "how long has this been running" reads identically everywhere
+/// it appears.
+pub(crate) fn format_elapsed(seconds: u64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     let seconds = seconds % 60;

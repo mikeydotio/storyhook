@@ -1081,6 +1081,64 @@ fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
     );
 }
 
+/// Whether `line` neutralizes `$STORYHOOK_GATE_PROGRESS` for whatever
+/// subprocess it isolates — a global `unset`, or an `env -u` naming it for
+/// one targeted invocation (`scripts/run-tests.sh`'s own `cargo test`
+/// wrapper, `plugins/story/tests/run-tests.sh`'s own per-file wrapper).
+fn neutralizes_the_gate_progress_journal(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("unset STORYHOOK_GATE_PROGRESS")
+        || trimmed.contains("-u STORYHOOK_GATE_PROGRESS")
+}
+
+/// Every harness that isolates `$STORYHOOK_DATA_DIR` also neutralizes
+/// `$STORYHOOK_GATE_PROGRESS` for whatever it runs underneath itself — with
+/// one named exception (SH-524).
+///
+/// The SH-524 gate progress journal is an append-only NDJSON file a
+/// daemon-owned verification run points a sanitized `make test` subprocess
+/// at (`scripts/gate-progress.sh`'s own header names the exact contract).
+/// Every one of these harnesses spawns something that could, in principle,
+/// shell back into `make test`/`scripts/leg.sh`/`scripts/run-tests.sh` —
+/// `tests/gate_leg_reuse.rs` is a real, already-existing case, invoked
+/// through exactly this suite's own `cargo test` — and if two such runs (an
+/// outer verification and an inner test fixture) both wrote into the SAME
+/// ambient journal path, the inner one's cases would corrupt the outer
+/// one's live counts. That is the identical shape SH-263's fake-tmux
+/// isolation and SH-345's portfile-doctoring rule both name: two writers of
+/// one file corrupt each other, and a fixed or ambient path is exactly what
+/// lets that happen.
+///
+/// `scripts/run-e2e.sh` is the one deliberate exception, named here rather
+/// than silently exempted by a coarser scan: it does not isolate the
+/// variable because its own Playwright child is a NAMED PRODUCER
+/// (`e2e/gate-progress-reporter.ts`, listed in `scripts/gate-progress.sh`'s
+/// own CONTRACT comment) that is *meant* to read it and write its own "case"
+/// lines — the one harness in this set where the variable reaching its
+/// child is the feature, not the hazard.
+#[test]
+fn every_harness_that_isolates_the_data_dir_neutralizes_the_gate_progress_journal() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let harnesses = data_dir_harnesses(root);
+
+    let gaps: Vec<String> = harnesses
+        .iter()
+        .filter(|(relative, _)| relative != "scripts/run-e2e.sh")
+        .filter(|(_, text)| !text.lines().any(neutralizes_the_gate_progress_journal))
+        .map(|(relative, _)| relative.clone())
+        .collect();
+    assert!(
+        gaps.is_empty(),
+        "{gaps:?} export STORYHOOK_DATA_DIR without neutralizing \
+         STORYHOOK_GATE_PROGRESS anywhere in their own text. A nested test \
+         fixture that shells back into make test/leg.sh (tests/gate_leg_reuse.rs \
+         is a real one) would otherwise inherit an outer verification run's \
+         journal path and corrupt its live counts. Add `unset \
+         STORYHOOK_GATE_PROGRESS`, or `env -u STORYHOOK_GATE_PROGRESS` around \
+         the specific child that must not see it."
+    );
+}
+
 /// `text` with Rust comments removed, so a rule is read from code rather than
 /// from prose *about* code.
 ///

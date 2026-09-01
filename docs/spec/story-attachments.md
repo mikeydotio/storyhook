@@ -132,9 +132,9 @@ bytes cross the wire in either direction, so the 64 KiB UTF-8-only request body 
 (`src/api/http.rs::MAX_BODY_BYTES`) is never in play. `add`/`remove` refuse a closed
 story (`Intent::Edit`, joining `resolve_open_story`'s existing set — not
 `Intent::Append`, whose pinned set `tests/invoker_seam.rs::
-only_the_comment_path_appends_to_a_closed_story` names explicitly and which this does
-not join): an attachment is part of what a story *is*, not an observation recorded about
-it after the fact. `list`/`save` are read-only and work on a closed story exactly as
+only_comment_commit_link_and_progress_publish_append_to_a_closed_story` names explicitly
+and which this does not join): an attachment is part of what a story *is*, not an
+observation recorded about it after the fact. `list`/`save` are read-only and work on a closed story exactly as
 `story show` does.
 
 `story attachment list <id>` renders the whole story (`ctx.story_view`) rather than a

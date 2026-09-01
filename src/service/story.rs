@@ -337,6 +337,72 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(snapshot)
     }
 
+    /// Rewrites this story's one comment whose text starts with `marker`, in
+    /// place — a retract-and-add pair in the same write, or nothing at all
+    /// when `body` is byte-identical to what is already there (SH-524).
+    ///
+    /// Comments are append-only [`StoryCommentAdded`](StoryEvent::StoryCommentAdded)
+    /// with no id, no author, and no `updated_at` of their own; [`StoryCommentRetracted`
+    /// ](StoryEvent::StoryCommentRetracted) is the only inverse, keyed by the exact
+    /// `(comment_at, text)` pair. This is the codebase's second user of that event
+    /// (`story undo` is the first) and its third [`Intent::Append`] grant —
+    /// `tests/invoker_seam.rs` fences the set at exactly three, named.
+    ///
+    /// The bool in the returned pair is whether anything was actually
+    /// written — the SH-524 progress publisher's own backoff needs to tell a
+    /// real rewrite apart from a settled, unchanged republish.
+    ///
+    /// `marker` must be a prefix no ordinary user comment would ever start
+    /// with, and the caller's own `body` must not itself begin with a
+    /// *different* self-identifying prefix mistaken for `marker`'s.
+    pub(crate) fn upsert_marked_comment(
+        &self,
+        id: &str,
+        marker: &str,
+        body: &str,
+    ) -> Result<(StorySnapshot, bool), AppError> {
+        let now = self.ctx.now();
+        let wrote = std::cell::Cell::new(false);
+        let snapshot = self.edit_story(id, Intent::Append, |row, _states| {
+            let existing = row
+                .snapshot
+                .comments
+                .iter()
+                .rev()
+                .find(|comment| comment.text.starts_with(marker));
+            if existing.is_some_and(|comment| comment.text == body) {
+                return Ok(Vec::new());
+            }
+            wrote.set(true);
+            let mut events = Vec::new();
+            if let Some(existing) = existing {
+                events.push(StoryEvent::StoryCommentRetracted {
+                    at: now.clone(),
+                    comment_at: existing.at.clone(),
+                    text: existing.text.clone(),
+                });
+            }
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: body.to_string(),
+            });
+            Ok(events)
+        })?;
+        if wrote.get() {
+            self.ctx.fire_hook(
+                HookEventType::Comment,
+                &serde_json::json!({
+                    "event_type": "comment",
+                    "story_id": id,
+                    "timestamp": self.ctx.now(),
+                    "story_title": &snapshot.title,
+                    "comment_text": body,
+                }),
+            );
+        }
+        Ok((snapshot, wrote.get()))
+    }
+
     /// Assigns an open story to a project member, looked up by member id or by
     /// GitHub handle.
     ///

@@ -1,5 +1,6 @@
 //! The daemon-owned centralized verification worker (SH-521).
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -126,6 +127,28 @@ impl VerificationActuator for ShellVerificationActuator {
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
+        let journal = journal_path(&self.env, candidate);
+        // Best-effort and non-fatal (SH-524): the progress journal is an
+        // observability feature, not part of the release gate's own
+        // correctness, so a failure to prepare it is reported — never
+        // silently swallowed (CLAUDE.md's fail-loud rule) — but must not
+        // abort the actual verification over it. Truncated at run start so
+        // a rerun after an infrastructure retry does not replay stale
+        // progress from the attempt before it.
+        if let Some(parent) = journal.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "storyhook: could not create verification progress directory {}: {error}",
+                parent.display()
+            );
+        }
+        if let Err(error) = std::fs::write(&journal, "") {
+            eprintln!(
+                "storyhook: could not truncate verification progress journal {}: {error}",
+                journal.display()
+            );
+        }
         let mut command = Command::new("bash");
         apply_verification_allowlist(&mut command);
         let output = command
@@ -134,6 +157,7 @@ impl VerificationActuator for ShellVerificationActuator {
             .current_dir(&candidate.checkout)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
             .stdin(Stdio::null())
             .output();
         let output = match output {
@@ -165,6 +189,25 @@ impl VerificationActuator for ShellVerificationActuator {
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         self.helper(candidate, "reap", None)
     }
+}
+
+/// Where the SH-524 progress journal for `candidate` lives.
+///
+/// Derived rather than passed twice: both the actuator (which sets
+/// `$STORYHOOK_GATE_PROGRESS` on the gate's own subprocess) and the
+/// publisher (`crate::daemon::verification_progress`, which reads the same
+/// file back) call this one function, so the two can never disagree about
+/// the path. Scoped to the daemon's own store — `Environment::
+/// daemon_state_dir` is store-keyed (SH-113) — and named by project and
+/// story so two candidates never collide. Public for store-backed
+/// integration tests, the same reason `tick_with` is.
+pub fn journal_path(env: &Environment, candidate: &VerificationCandidate) -> PathBuf {
+    env.daemon_state_dir()
+        .join("verification-progress")
+        .join(format!(
+            "{}-{}.ndjson",
+            candidate.project_slug, candidate.story_id
+        ))
 }
 
 fn checkout_repository_problem(

@@ -271,6 +271,11 @@ run_one_binary() {
         export STORYHOOK_DATA_DIR="$data_root/data"
         export XDG_STATE_HOME="$data_root/state"
         unset STORYHOOK_STORE_PATH
+        # This binary is a compiled test target (tests/gate_leg_reuse.rs among
+        # them), which shells back into scripts/leg.sh/make test for its own
+        # fixtures (SH-524); an ambient journal from some other daemon-owned
+        # verification run must not be inherited and corrupted by it.
+        unset STORYHOOK_GATE_PROGRESS
         export STORYHOOK_DAEMON_ADDR="127.0.0.1:0"
         export STORYHOOK_PARENT_PID="$sentinel_pid"
         export INSTA_UPDATE=no
