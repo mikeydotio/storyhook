@@ -641,7 +641,13 @@ pub const fn is_test_build() -> bool {
 /// What a test build says when it is asked to pick a data directory itself.
 ///
 /// The whole message is here rather than built at the raise site so the test
-/// that pins it can compare against the constant.
+/// that pins it can compare against the constant — which, since SH-528,
+/// something finally does: `storyhook_test_support`'s fault-capability probe
+/// asks this binary whether it is a test build by running it and looking for
+/// exactly this string, because [`is_test_build`] *is* the `fault-injection`
+/// feature and there is no other way to ask an artifact on disk what it can
+/// do. Rendered verbatim (`#[error("{0}")]`), so a `contains` against the
+/// constant is an exact comparison rather than a fuzzy one.
 /// Both readings are answered on purpose. Someone running the suite by hand
 /// needs to be told about `make test`; someone who typed
 /// `./target/debug/story list` after a `cargo test` needs to be told that the
@@ -671,7 +677,7 @@ pub const fn is_test_build() -> bool {
 /// requires an explicit override that happens to spell out the literal real
 /// default path while also running with an unmodified real `HOME`, which is a
 /// much smaller target than the "nothing named it" case this guard exists for.
-const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this binary carries \
+pub const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this binary carries \
      the `fault-injection` feature, which `cargo test` enables and `cargo build` does not, so it \
      is a test build — and with nothing naming a store it would fall back to the real \
      ~/.local/share/storyhook. Run the suite with `make test`, which exports an isolated \
