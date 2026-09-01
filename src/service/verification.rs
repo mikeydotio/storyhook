@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::domain::{Priority, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoryQuery};
+use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery};
 
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
@@ -80,6 +80,14 @@ pub struct VerificationCandidate {
     pub priority: Priority,
     /// Creation timestamp used as the first tie-break.
     pub created_at: String,
+    /// When this story most recently entered [`VERIFYING_STATE`], read from
+    /// its own `StoryStateChanged` history rather than `updated_at` (SH-524):
+    /// the progress checklist rewrites `updated_at` on every publish, which
+    /// would make the story's own recency field lie about queue wait time.
+    /// `None` for a [`Self::pull_request`] read that predates this field
+    /// (`next_cleanup`'s completed-story pass, where wait time is moot) or
+    /// for the vanishingly unlikely case no such event survives.
+    pub verifying_since: Option<String>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
     /// The single submitted PR, or why the submission is ambiguous.
@@ -99,7 +107,20 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 
     /// Returns the highest-priority submitted story across every project.
+    ///
+    /// Its first element is what [`Self::ordered`] would also return first;
+    /// kept as its own call so a caller that only needs the head does not pay
+    /// for building the queued rest of the list under a busy daemon.
     pub fn next(&self) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.ordered()?.into_iter().next())
+    }
+
+    /// Returns every submitted story across every project, in the exact order
+    /// [`Self::next`] would drain them (SH-524): priority, then creation time,
+    /// then project/story identity. A queued candidate's position and wait are
+    /// computed from this list, never re-derived from a second query that
+    /// could race the one [`Self::next`] itself used.
+    pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = Vec::new();
             for project in tx.projects()? {
@@ -135,6 +156,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                             many.iter().map(|link| link.url.clone()).collect(),
                         )),
                     };
+                    let verifying_since = verifying_since(tx, project.id, row.story_no)?;
                     candidates.push(VerificationCandidate {
                         project: project.id,
                         project_slug: project.slug.clone(),
@@ -142,13 +164,14 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         title: row.title,
                         priority: row.priority,
                         created_at: row.created_at,
+                        verifying_since,
                         checkout: checkout.clone().unwrap_or_default(),
                         pull_request,
                     });
                 }
             }
             sort_candidates(&mut candidates);
-            Ok(candidates.into_iter().next())
+            Ok(candidates)
         })?)
     }
 
@@ -193,6 +216,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         title: row.title,
                         priority: row.priority,
                         created_at: row.created_at,
+                        // The cleanup pass runs over stories already `done` —
+                        // there is no queue wait left to report.
+                        verifying_since: None,
                         checkout: checkout.clone(),
                         pull_request,
                     });
@@ -283,6 +309,25 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?;
         Ok(())
     }
+}
+
+/// The timestamp `story` most recently entered [`VERIFYING_STATE`], read from
+/// the story's own `StoryStateChanged` history. `None` for the vanishingly
+/// unlikely case no such event survives (SH-372: absence states nothing —
+/// this is not asserted as an invariant, since a caller degrading to "wait
+/// unknown" is safer than a queue read that can fail for one odd story).
+fn verifying_since(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<String>, AppError> {
+    let events = tx.events_for(project, story)?;
+    Ok(events.iter().rev().find_map(|event| match event.known() {
+        Some(StoryEvent::StoryStateChanged { at, state }) if state == VERIFYING_STATE => {
+            Some(at.clone())
+        }
+        _ => None,
+    }))
 }
 
 fn sort_candidates(candidates: &mut [VerificationCandidate]) {
