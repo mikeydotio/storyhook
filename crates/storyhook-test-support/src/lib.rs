@@ -56,7 +56,7 @@ mod tailnet;
 
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use engine::{DispatcherCall, DispatcherStep, FakeDispatcher};
-pub use env::{TestEnv, daemon_containment, story_binary};
+pub use env::{TestEnv, assert_the_binary_can_fire_faults, daemon_containment, story_binary};
 pub use github::{FakeGithubApiFactory, RecordedCall};
 pub use hooks_manifest::{
     DeclaredHook, HOOKS_MANIFEST, all_declared_hooks, declared_timeout, hook_script,
