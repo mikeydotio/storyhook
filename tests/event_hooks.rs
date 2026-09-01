@@ -198,6 +198,40 @@ fn hooks_list_shows_configured() {
     assert!(stdout.contains("on_close"));
 }
 
+/// The four engine event hooks (SH-472) are ordinary `[hooks]` slots and
+/// reach `story hooks list` the same way every other event does — the
+/// "wiring reaches the CLI" half of this project's usual two-mechanism
+/// coverage; `tests/engine_reconcile.rs` proves the other half, that
+/// `EngineService` actually fires them.
+#[test]
+fn hooks_list_shows_a_configured_engine_hook() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+
+    init_project(dir);
+
+    write_hooks(
+        dir,
+        "[hooks.on_engine_run_halted]\ncommand = \"echo halted\"\n",
+    );
+
+    let output = Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["hooks", "list"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("on_engine_run_halted"));
+    assert!(stdout.contains("echo halted"));
+}
+
 #[test]
 fn hooks_list_no_config() {
     let dir = TempDir::new().unwrap();
