@@ -178,6 +178,16 @@ export XDG_STATE_HOME="$data_root/state"
 # would have -- would otherwise run this whole suite against it, and the guard
 # below would not notice, because it inspects the variable that lost.
 unset STORYHOOK_STORE_PATH
+
+# Nothing of the developer's own reaches a fixture: not a credential, not a
+# project selection somebody else made, and not an override that would disarm
+# a guard this run may be testing. There is no harmless value for any of
+# these, so they are removed rather than redirected. `story help
+# test-environment` names each one and what it protects.
+unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
 export INSTA_UPDATE=no
 
 # Never the production port.

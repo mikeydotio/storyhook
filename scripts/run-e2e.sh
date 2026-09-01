@@ -160,6 +160,15 @@ run_one_project() {
   # inherit it.
   unset STORYHOOK_STORE_PATH
 
+  # Nothing of the developer's own reaches a fixture: not a credential, not a
+  # project selection somebody else made, and not an override that would disarm
+  # a guard this run may be testing. There is no harmless value for any of
+  # these, so they are removed rather than redirected. `story help
+  # test-environment` names each one and what it protects.
+  unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+  unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
   # Never the production port (3456), and never any port a parallel `cargo
   # test` run (or this same script's own next-project iteration) might also
   # pick -- this is a single daemon, not a pool, so an ephemeral bind is

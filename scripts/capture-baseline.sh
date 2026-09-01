@@ -164,6 +164,16 @@ export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
 # their real store and say nothing about it, because the guard that would
 # complain inspects the variable that lost.
 unset STORYHOOK_STORE_PATH
+
+# Nothing of the developer's own reaches a fixture: not a credential, not a
+# project selection somebody else made, and not an override that would disarm
+# a guard this run may be testing. There is no harmless value for any of
+# these, so they are removed rather than redirected. `story help
+# test-environment` names each one and what it protects.
+unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
 # The flake census below runs `make test` N times in a row (SH-524); an
 # ambient journal path from some other daemon-owned verification run must
 # not be inherited, or these unrelated repeated runs would all write into it.

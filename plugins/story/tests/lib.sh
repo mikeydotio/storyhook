@@ -48,6 +48,16 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # Outranks STORYHOOK_DATA_DIR (SH-113): an exported one in the developer's
   # shell would point this whole suite at their own store.
   unset STORYHOOK_STORE_PATH
+
+  # Nothing of the developer's own reaches a fixture: not a credential, not a
+  # project selection somebody else made, and not an override that would disarm
+  # a guard this run may be testing. There is no harmless value for any of
+  # these, so they are removed rather than redirected. `story help
+  # test-environment` names each one and what it protects.
+  unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+  unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
   # owned run must not be inherited and mistaken for this test's.

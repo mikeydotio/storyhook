@@ -271,6 +271,16 @@ run_one_binary() {
         export STORYHOOK_DATA_DIR="$data_root/data"
         export XDG_STATE_HOME="$data_root/state"
         unset STORYHOOK_STORE_PATH
+
+        # Nothing of the developer's own reaches a fixture: not a credential, not a
+        # project selection somebody else made, and not an override that would disarm
+        # a guard this run may be testing. There is no harmless value for any of
+        # these, so they are removed rather than redirected. `story help
+        # test-environment` names each one and what it protects.
+        unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+        unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+        unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
         # This binary is a compiled test target (tests/gate_leg_reuse.rs among
         # them), which shells back into scripts/leg.sh/make test for its own
         # fixtures (SH-524); an ambient journal from some other daemon-owned

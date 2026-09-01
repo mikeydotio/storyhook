@@ -28,6 +28,15 @@ export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
 # would point this whole suite at their own store.
 unset STORYHOOK_STORE_PATH
 
+# Nothing of the developer's own reaches a fixture: not a credential, not a
+# project selection somebody else made, and not an override that would disarm
+# a guard this run may be testing. There is no harmless value for any of
+# these, so they are removed rather than redirected. `story help
+# test-environment` names each one and what it protects.
+unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
+unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+
 # Every `story` this suite runs starts a daemon, because since SH-114 every
 # `story` does. These two are what stop those daemons poisoning anything: one
 # was found alive after a gate run, from this worktree's binary, asking for the
