@@ -208,6 +208,12 @@ pub enum DispatchReason {
     /// confirmed. The claim and worktree are left in place: the agent may
     /// already be working.
     HandoffUnconfirmed,
+    /// Recoverable resources exist, but the caller did not authorize replacing
+    /// the abandoned provider process or inheriting its work.
+    ResumeAvailable,
+    /// Resource identity is inconsistent or would require replacing the
+    /// dispatcher's own pane, so resume changed nothing.
+    ResumeUnsafe,
     /// This daemon refused to dispatch at all, before ever running
     /// `story.sh`, because one of its own inherited `STORY_PROMPT` /
     /// `STORY_AUTO_PROMPT` / `STORY_PROMPT_EXTRA` values violates I4
@@ -229,6 +235,8 @@ impl DispatchReason {
             Self::PaneNotReady => "pane-not-ready",
             Self::HandoffUndelivered => "handoff-undelivered",
             Self::HandoffUnconfirmed => "handoff-unconfirmed",
+            Self::ResumeAvailable => "resume-available",
+            Self::ResumeUnsafe => "resume-unsafe",
             Self::UnsafePromptOverride => "unsafe-prompt-override",
             Self::Other(raw) => raw,
         }
@@ -245,6 +253,8 @@ impl DispatchReason {
             "pane-not-ready" => Self::PaneNotReady,
             "handoff-undelivered" => Self::HandoffUndelivered,
             "handoff-unconfirmed" => Self::HandoffUnconfirmed,
+            "resume-available" => Self::ResumeAvailable,
+            "resume-unsafe" => Self::ResumeUnsafe,
             "unsafe-prompt-override" => Self::UnsafePromptOverride,
             other => Self::Other(other.to_string()),
         }
@@ -1418,7 +1428,7 @@ type Classification = (
     Option<DispatchReason>,
 );
 
-/// Spawns `script --project <project> dispatch <story> --agent=<agent>
+/// Spawns `script --project <project> dispatch <story> --agent=<agent> --resume
 /// [--auto] [--model=<id>] [--effort=<id>] [--speed=fast]` on a
 /// detached thread and records its outcome when it finishes. Never touches
 /// the store: everything this needs travels in its arguments.
@@ -1469,6 +1479,7 @@ fn run_child(
         model: model.as_ref().map(|m| m.as_str().to_string()),
         effort: effort.as_ref().map(|e| e.as_str().to_string()),
         fast,
+        resume: true,
     };
     classify_outcome(run_shell_dispatch(
         script,
@@ -1510,7 +1521,7 @@ fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
-pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 2;
 
 /// Locates `plugins/story/bin/story.sh`, in order:
 ///
@@ -2671,6 +2682,8 @@ mod tests {
             ("pane-not-ready", DispatchReason::PaneNotReady),
             ("handoff-undelivered", DispatchReason::HandoffUndelivered),
             ("handoff-unconfirmed", DispatchReason::HandoffUnconfirmed),
+            ("resume-available", DispatchReason::ResumeAvailable),
+            ("resume-unsafe", DispatchReason::ResumeUnsafe),
         ];
         for (raw, expected) in cases {
             let (_state, _payload, _error, reason) = classify(
@@ -2727,6 +2740,8 @@ mod tests {
             DispatchReason::PaneNotReady,
             DispatchReason::HandoffUndelivered,
             DispatchReason::HandoffUnconfirmed,
+            DispatchReason::ResumeAvailable,
+            DispatchReason::ResumeUnsafe,
             DispatchReason::UnsafePromptOverride,
             DispatchReason::Other("something-new".to_string()),
         ] {
@@ -3029,7 +3044,7 @@ mod tests {
     /// `check_dispatch_protocol` now requires, so these tests keep
     /// exercising resolution order rather than tripping the protocol check
     /// that has its own tests, below.
-    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=1\n";
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=2\n";
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {

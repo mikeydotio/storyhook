@@ -23,6 +23,8 @@ pub fn agents_md(prefix: &str, done_state: &str) -> String {
     format!(
         r#"# AGENTS.md — Project Task Management
 
+> Project standards, environment, and git policy live in [CLAUDE.md](./CLAUDE.md) — read it alongside this file.
+
 This project uses **storyhook** (the `story` CLI) for work tracking. All agents must
 follow the workflow below.
 
@@ -203,8 +205,10 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: centralize exact-merge-tree testing, PR landing, story completion,
-  and lane cleanup behind the required `verifying` state.
+- Completed: reconstruct abandoned ordinary dispatches from surviving claims,
+  branches, dirty worktrees, and tmux panes without discarding work.
+- Current: surface Full Auto halt and drain outcomes as durable dashboard
+  alerts that remain until the operator acknowledges each run.
 - Next: reconcile Full Auto lane accounting so `verifying` is an intentional
   handoff, not a stall or dead-window failure.
 - Later: expose queue health and verification diagnostics in engine/dashboard

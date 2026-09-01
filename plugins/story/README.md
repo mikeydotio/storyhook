@@ -74,13 +74,13 @@ indirection is a sandbox boundary: command rules match exact prefixes, while Cod
 cache paths include the version. The launcher dynamically resolves the enabled cache entry
 and then runs the same packaged helper, preserving the one-JSON-object contract.
 
-`bin/story.sh` accepts seventeen subcommands:
+`bin/story.sh` subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing claim without another state transition |
+| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; `--resume` preserves and reconstructs an abandoned dispatch, while `--force` only reuses an existing claim for a fresh dispatch |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
@@ -199,7 +199,19 @@ Worth knowing before changing anything here:
   move for that one state, reports `reused_claim:true`/`claim_transitioned:false`,
   and leaves the pre-existing state untouched if a later dispatch step fails.
   Worktree, branch, tmux, provider-readiness and prompt-delivery checks remain
-  unchanged; an existing worktree or branch still refuses.
+  unchanged; an existing worktree or branch returns `resume-available` rather
+  than being treated as disposable.
+- **Resume reconstructs; it never resets.** `dispatch <id> --resume` inventories
+  the active claim, expected `worktree-<id>` branch, registered worktree, and
+  named pane before any write. It reuses a valid dirty worktree, reattaches a
+  branch-only survivor, creates only missing resources, and respawns an existing
+  pane with `tmux respawn-pane -k`. The replacement charter names the previous
+  agent and requires inspection before changes. Wrong branches, unregistered
+  paths, protected identities, and the current pane refuse without deletion.
+  Rollback removes only resources created by that attempt. Without permission,
+  these same finds return typed `resume-available` plus a resource inventory;
+  the interactive adapters ask once, while the dashboard always passes
+  `--resume`. Engine lanes retain `resume:false`.
 - **`complete` never forces anything by default**, and never touches tmux at
   all unless it is about to remove a worktree. `git worktree remove` runs
   without `--force` by default, and a branch is deleted only if merged into

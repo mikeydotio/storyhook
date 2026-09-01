@@ -26,6 +26,11 @@ forced=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --force 2
 assert_eq "$(jqf "$forced" .ok)" "false" "forced epic: ok:false"
 assert_contains "$(jqf "$forced" .display)" "Full Auto engine" "forced bare epic: still gives the engine remedy"
 
+resumed=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --resume 2>&1)
+assert_eq "$(jqf "$resumed" .ok)" "false" "resumed epic: ok:false"
+assert_contains "$(jqf "$resumed" .display)" "ordinary named story" \
+  "resumed epic: resume boundary is explicit"
+
 state=$(cd "$repo" && story show "$epic" --json | jq -r '.story.story.state')
 assert_eq "$state" "todo" "epic: refused dispatch leaves effective state untouched"
 

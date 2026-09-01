@@ -23,6 +23,7 @@ assert_contains "$(jqf "$out" .display)" "--auto" "dispatch with a trailing toke
 assert_contains "$(jqf "$out" .display)" "--full-auto" "dispatch with a trailing token: usage names --full-auto"
 assert_contains "$(jqf "$out" .display)" "--agent=claude|codex" "dispatch with a trailing token: usage names --agent"
 assert_contains "$(jqf "$out" .display)" "--force" "dispatch with a trailing token: usage names --force"
+assert_contains "$(jqf "$out" .display)" "--resume" "dispatch with a trailing token: usage names --resume"
 
 out=$(bash "$SCRIPT" dispatch SH-1 --agent=claude-code 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch with legacy agent token: ok:false"
@@ -36,10 +37,24 @@ out=$(bash "$SCRIPT" dispatch SH-1 --auto --auto 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch with duplicate auto: ok:false"
 assert_contains "$(jqf "$out" .display)" "only once" "dispatch with duplicate auto: names duplication"
 
+out=$(bash "$SCRIPT" dispatch SH-1 --resume --resume 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "dispatch with duplicate resume: ok:false"
+assert_contains "$(jqf "$out" .display)" "only once" "dispatch with duplicate resume: names duplication"
+
+out=$(bash "$SCRIPT" dispatch SH-1 --resume --force 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "dispatch --resume --force: ok:false"
+assert_contains "$(jqf "$out" .display)" "cannot be combined" \
+  "dispatch --resume --force: explains the two recovery modes differ"
+
 out=$(bash "$SCRIPT" dispatch --next --force 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch --next --force: ok:false"
 assert_contains "$(jqf "$out" .display)" "requires a named story id" \
   "dispatch --next --force: explains that force is id-directed"
+
+out=$(bash "$SCRIPT" dispatch --next --resume 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "dispatch --next --resume: ok:false"
+assert_contains "$(jqf "$out" .display)" "requires a named story id" \
+  "dispatch --next --resume: explains recovery needs a stable identity"
 
 out=$(bash "$SCRIPT" reap 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "reap with no id: ok:false"

@@ -18,6 +18,9 @@
 #                        dispatch sentinel — see THE PANE'S OCCUPANT, THE
 #                        PANE'S PID AND DISPATCH SENTINEL, and `\;`-CHAINED
 #                        SUB-COMMANDS below.
+#   respawn-pane      -> record its argv, then reset the same process/input/
+#                        sentinel model as new-window without creating or
+#                        logging a second window.
 #   display-message   -> print a window id (@1), exit 0
 #   set-window-option -> no-op, exit 0 as its own top-level call (nothing calls
 #                        it standalone any more); chained onto new-window it is
@@ -350,7 +353,9 @@ case "${1:-}" in
       fi
       _i=$((_i + 1))
     done
-    printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
+    if [ "${FAKE_TMUX_INTERNAL_RESPAWN:-}" != 1 ]; then
+      printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
+    fi
     # A pane process from a PRIOR new-window call in this same STATE dir (the
     # shared default dir outlives one test) is no longer this pane's occupant
     # — kill it best-effort before a new one replaces it, so the fake never
@@ -446,6 +451,29 @@ case "${1:-}" in
       done < "$STATE/window_options.log"
     fi
     printf '%%1\n'
+    ;;
+  respawn-pane)
+    shift || true
+    printf '%s\n' "$*" >> "$STATE/respawn_pane_args.log" 2>/dev/null || true
+    rp_cwd=""
+    rp_pane=""
+    rp_launch=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -k) ;;
+        -c) shift || true; rp_cwd="${1-}" ;;
+        -e) shift || true ;; # environment is observable in the argv log
+        -t) shift || true; rp_pane="${1-}" ;;
+        *) rp_launch="$1" ;;
+      esac
+      shift || true
+    done
+    [ -n "$rp_pane" ] || exit 1
+    [ -n "$rp_launch" ] || exit 1
+    FAKE_TMUX_INTERNAL_RESPAWN=1 "$0" new-window \
+      -c "$rp_cwd" -n __respawn__ -P -F '#{pane_id}' "$rp_launch" \; \
+      set-window-option -t "$rp_pane" remain-on-exit on \
+      >/dev/null
     ;;
   has-session)
     # `-t <name>` — SH-50: exit 0 iff <name> is in the virtual session set.

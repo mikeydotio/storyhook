@@ -137,17 +137,33 @@ assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | le
   "force: no redundant claim transition is planned"
 assert_contains "$(jqf "$out" .display)" "doing" "force: the reuse note names the active-role state"
 
+# --- --resume also recognizes a customized active-role claim ----------------
+# No git/tmux resources survive in this dry-run fixture. Resume permission
+# still reuses the claim and adds recovery context without inventing a state
+# transition or assuming the active slug is literally `in-progress`.
+out=$(cd "$guard_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$guard_id" --resume 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "resume: ok:true reusing an active-role claim"
+assert_eq "$(jqf "$out" .resume_requested)" "true" "resume: permission reported"
+assert_eq "$(jqf "$out" .resumed)" "true" "resume: active claim counts as recovered context"
+assert_eq "$(jqf "$out" .reused_claim)" "true" "resume: reused_claim:true"
+assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | length')" "0" \
+  "resume: no redundant claim transition is planned"
+assert_contains "$(jqf "$out" .prompt)" "resuming work already started" \
+  "resume: replacement agent receives recovery context"
+
 # --- the claim rollback releases from the active-role state -----------------
 # A dispatch that fails AFTER the claim rolls the story back with an --if-state
 # guard. Guarded against the wrong state, the rollback silently does nothing
-# and the story is stranded claimed with no worktree. Provoked with an
-# already-occupied worktree name, which fails after the claim landed.
+# and the story is stranded claimed with no worktree. Provoked with target
+# session creation failure, which fails after the claim and fresh worktree
+# without introducing a recoverable pre-existing resource.
 rb_repo=$(mk_active_role_repo RBK)
 require_repo "$rb_repo" "the rollback project"
 rb_id=$(new_story "$rb_repo" "Rollback from the active-role state")
-mk_dispatched "$rb_repo" "$rb_id" >/dev/null
+export STORY_TARGET_SESSION=missing-room STORY_CREATE_SESSION=1 FAKE_TMUX_FAIL_NEW_SESSION=1
 out=$(dispatch_real "$rb_repo" "$rb_id")
-assert_eq "$(jqf "$out" .ok)" "false" "rollback: ok:false when the worktree already exists"
+unset STORY_TARGET_SESSION STORY_CREATE_SESSION FAKE_TMUX_FAIL_NEW_SESSION
+assert_eq "$(jqf "$out" .ok)" "false" "rollback: ok:false when target-session creation fails"
 assert_contains "$(jqf "$out" .display)" "Rolled the claim back" "rollback: reports a successful rollback"
 rb_state=$(cd "$rb_repo" && story show "$rb_id" --json | jq -r '.story.story.state')
 assert_eq "$rb_state" "todo" "rollback: the story is released, not stranded at doing"

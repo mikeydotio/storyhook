@@ -178,14 +178,18 @@ skills unchanged.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id> [--auto] [--force] [--agent=claude\|codex] [--model=<id>] [--effort=<id>] [--speed=standard\|fast]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree; `--force` reuses an existing `in-progress` claim without weakening worktree/tmux safety |
+| `/story do <id> [--auto] [--force] [--resume] [--agent=claude\|codex] [--model=<id>] [--effort=<id>] [--speed=standard\|fast]` | Dispatches a ready story, or uses `--resume` to preserve and reconstruct an abandoned claim/branch/worktree/window; `--force` remains the claim-only fresh-start escape hatch |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
 | `/story doctor` | Checks project data integrity and the selected provider's readiness, Plan-mode, and paste behavior |
 
-`do`, `capture`, and `doctor` need tmux. `do` refuses a story that isn't ready —
-closed, blocked, awaiting, obviated, or already in progress — and names the
-reason rather than dispatching it.
+`do`, `capture`, and `doctor` need tmux. `do` refuses a story that is closed,
+blocked, awaiting, or obviated. When a named open story already has dispatch
+resources, the attended skill offers one `--resume` confirmation; dashboard
+dispatches opt in automatically. Resume preserves commits and dirty files,
+reattaches a surviving branch or worktree, and respawns the named pane (or
+creates the missing window). Identity conflicts refuse without deleting work.
+Full Auto engine lanes do not opt in; their interrupted-lane policy is separate.
 
 The dispatch adapter selects `STORY_AGENT=claude|codex`. An explicit `--agent` overrides
 the adapter's host default, so `story.sh dispatch SH-123 --agent=codex` can launch Codex
