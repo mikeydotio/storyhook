@@ -1336,13 +1336,13 @@ test("the next board column peeks on the narrowest supported phone", async ({
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  // Alpha's own fixture carries five states (todo/in-progress/blocked/
-  // done/review, column-visibility.spec.ts's own comment) -- a second
-  // column to peek at is never in question here.
-  await expect(page.locator(".column")).toHaveCount(5);
+  // The configured state catalog can grow independently of this layout
+  // contract. Wait for its second rendered column instead of coupling the
+  // peek assertion to the fixture's exact number of states.
+  const columns = page.locator(".column");
+  await expect(columns.nth(1)).toBeVisible();
 
-  const width = await page
-    .locator(".column")
+  const width = await columns
     .first()
     .evaluate((el) => el.getBoundingClientRect().width);
   expect(
@@ -1351,8 +1351,7 @@ test("the next board column peeks on the narrowest supported phone", async ({
       "min(18rem, 85vw) = 272px, not the unshrunk 288px ceiling",
   ).toBeCloseTo(272, 0);
 
-  const firstRight = await page
-    .locator(".column")
+  const firstRight = await columns
     .first()
     .evaluate((el) => el.getBoundingClientRect().right);
   expect(
@@ -1360,7 +1359,7 @@ test("the next board column peeks on the narrowest supported phone", async ({
     "the first column's own right edge should leave room for the next " +
       "column to start peeking in before the 320px viewport ends",
   ).toBeLessThan(320);
-  await expect(page.locator(".column").nth(1)).toBeInViewport({ ratio: 0 });
+  await expect(columns.nth(1)).toBeInViewport({ ratio: 0 });
 });
 
 /** Confirms the fix above is additive, not a universal shrink -- a wider
