@@ -574,8 +574,10 @@ Notes:
 
 - Directional relationships automatically create their inverse on the related story.
 - Mutual relationships create matching links on both stories.
-- A story with children is a structural epic. Its state is computed recursively from its
-  children, it carries no actionable steps of its own, and it does not appear in `story next`.
+- Only a story whose type is epic is an epic. An epic is a folder: its state is computed
+  recursively from its children, it carries no actionable steps of its own, and it does not
+  appear in `story next`. An ordinary story may have children and remains directly actionable
+  with its own state.
 - An epic's priority remains stored independently. Among equal-priority ready stories,
   `story next` uses the most urgent direct parent epic as its first tie-breaker; a story may
   belong to several epics.
