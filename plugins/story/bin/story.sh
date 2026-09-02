@@ -1564,8 +1564,16 @@ cmd_dispatch() {
 
     if [ -z "$resume" ] \
        && { [ "$artifacts_exist" = true ] || { [ "$claim_status" = present ] && [ -z "$force" ]; }; }; then
+      local recovery_display
+      if [ "$artifacts_exist" = true ] && [ "$claim_status" = present ]; then
+        recovery_display="story $id already has surviving dispatch resources: its \`$claim_state\` claim and the dispatch artifacts reported below. Re-run with \`--resume\` to preserve and reconstruct them, or inspect the inventory before changing anything."
+      elif [ "$artifacts_exist" = true ]; then
+        recovery_display="story $id already has surviving dispatch artifacts reported below. Re-run with \`--resume\` to preserve and reconstruct them, or inspect the inventory before changing anything."
+      else
+        recovery_display="story $id already has a surviving \`$claim_state\` claim. Re-run with \`--resume\` to preserve it, use \`--force\` to reuse only this claim for a fresh dispatch, or inspect the inventory before changing anything."
+      fi
       refuse_with "resume-available" \
-        "story $id already has surviving dispatch resources, including its \`$claim_state\` claim when reported below. Re-run with \`--resume\` to preserve and reconstruct them, use \`--force\` only when the claim is the sole survivor and a fresh dispatch is intended, or inspect the inventory before changing anything." \
+        "$recovery_display" \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
     if [ -n "$resume" ] && [ -n "$existing_pane" ] \
