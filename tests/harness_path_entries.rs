@@ -485,3 +485,32 @@ fn every_path_prepend_entry_names_a_directory() {
          entry)."
     );
 }
+
+/// The ready-gate fixture must never inspect a developer's real tmux server.
+///
+/// Resume inventory intentionally runs before readiness and searches every
+/// session for the story's window name. Without this funnel, an unrelated
+/// ambient `TST-2` window masks the closed-story reason and makes the fixture
+/// depend on machine state even though dispatch itself is only a dry run.
+#[test]
+fn the_ready_gate_fixture_routes_every_dispatch_through_fake_tmux() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let relative = "plugins/story/tests/test-dispatch-ready-gate.sh";
+    let text = std::fs::read_to_string(root.join(relative))
+        .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+
+    let direct_dispatch = r#"STORY_DRY_RUN=1 bash "$SCRIPT" dispatch"#;
+    assert_eq!(
+        text.matches(direct_dispatch).count(),
+        1,
+        "ready-gate dispatches must share one isolation funnel"
+    );
+    assert!(
+        text.contains(r#"PATH="$FAKE_TMUX_DIR:$PATH" \"#),
+        "the ready-gate dispatch funnel must put fake tmux ahead of ambient PATH"
+    );
+    assert!(
+        text.matches("out=$(dry ").count() >= 5,
+        "every ready-gate case must use the isolated dispatch funnel"
+    );
+}
