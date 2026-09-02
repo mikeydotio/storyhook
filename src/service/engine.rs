@@ -1728,7 +1728,13 @@ pub(crate) fn run_shell_dispatch(
     }
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
-        command.arg("--full-auto");
+        debug_assert!(
+            !options.resume,
+            "Full Auto reuses its fresh engine-owned claim and never resumes artifacts"
+        );
+        // Full Auto dispatch follows the engine's atomic claim immediately. `--force`
+        // reuses that sole claim while the helper still rejects worktree, branch, or pane artifacts.
+        command.arg("--full-auto").arg("--force");
     }
     if let Some(model) = &options.model {
         command.arg(format!("--model={model}"));
