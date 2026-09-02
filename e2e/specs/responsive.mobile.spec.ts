@@ -540,6 +540,7 @@ for (const width of SWEEP_WIDTHS) {
     await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 
     const project = page.locator("#drafts-list .drafts-row-project");
+    await expect(project).toBeVisible();
     const box = await project.evaluate((el) => ({
       scrollWidth: el.scrollWidth,
       clientWidth: el.clientWidth,
