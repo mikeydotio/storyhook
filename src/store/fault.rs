@@ -18,7 +18,29 @@
 //! `kill -9` matrix) the `STORYHOOK_FAULT` environment variable arms a child at
 //! start-up instead.
 
+use std::time::Duration;
+
 use crate::store::error::StoreError;
+
+/// How long an armed process waits to die after posting its own `SIGKILL`.
+///
+/// **Not a guess at how long signal delivery takes** — it is several orders of
+/// magnitude longer than one, and exists only so that a platform which somehow
+/// ignored `SIGKILL` fails loudly (by the `abort()` after it) instead of
+/// hanging for ever. See [`process_env_fault`], where it is spent.
+///
+/// # Why this is `pub`, and what a harness may derive from it
+///
+/// It is the **self-bound that makes an armed process's death certain**: once
+/// the fault fires, that process is gone within this, by `SIGKILL` immediately
+/// or by `abort()` at the far end. So a harness still waiting on an armed
+/// corpse after this has not observed a slow death — it has *disproved the
+/// fault having fired at all*, which is a different failure with a different
+/// cause, and one worth naming rather than waiting out
+/// (`storyhook_test_support::crash`, SH-528).
+///
+/// [`process_env_fault`]: self
+pub const DELIVERY_BACKSTOP: Duration = Duration::from_secs(10);
 
 /// A place in the store where a test can inject a failure.
 ///
@@ -203,8 +225,10 @@ mod armed {
                 // The sleep is not a guess at how long delivery takes; it is
                 // several orders of magnitude longer, and exists only so that a
                 // platform which somehow ignored `SIGKILL` fails loudly instead
-                // of hanging for ever.
-                std::thread::sleep(std::time::Duration::from_secs(10));
+                // of hanging for ever. Named rather than written inline,
+                // because a harness waiting on an armed corpse derives its own
+                // bound from it — see [`super::DELIVERY_BACKSTOP`].
+                std::thread::sleep(super::DELIVERY_BACKSTOP);
                 std::process::abort()
             }
             _ => Ok(()),

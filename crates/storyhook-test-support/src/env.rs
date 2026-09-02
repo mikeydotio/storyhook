@@ -360,6 +360,118 @@ pub fn story_binary() -> &'static Path {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Can the binary under test actually fire a fault? (SH-528)
+// ---------------------------------------------------------------------------
+
+/// Fails unless [`story_binary`] is a build whose store fault points are live.
+///
+/// # The defect this exists for
+///
+/// `store::fault::fire` compiles to an inlined `Ok(())` without the
+/// `fault-injection` feature, so a daemon armed with `STORYHOOK_FAULT` from a
+/// featureless binary serves its command normally and then serves forever. A
+/// crash fixture waiting on that daemon waits for ever too, and one did:
+/// `make test` wedged for ten hours and twenty-one minutes holding this
+/// machine's `gate` lock. `crash.rs::diagnose` had named this exact cause since
+/// long before — and could never say so, because with the feature off there is
+/// no corpse to diagnose.
+///
+/// Confirmed by toggle rather than reasoned about: `cargo build --bin story`
+/// over a green tree reproduces the hang every time, and rebuilding with the
+/// feature clears it. The feature reaches `story` only through this crate's
+/// dependency on `storyhook`, so `cargo test` builds one that can fire and
+/// `cargo build` builds one that cannot — **to the same path**, which no
+/// harness can tell apart by looking at it.
+///
+/// # Why it asks the binary rather than inspecting it
+///
+/// [`storyhook::env::is_test_build`] *is* `cfg!(feature = "fault-injection")`,
+/// documented there as an exact sentinel rather than an approximation — and a
+/// build carrying it refuses to guess where the store lives, with
+/// [`TEST_BUILD_REFUSAL`] as the words. So the capability is already
+/// observable from outside the process, by an existing mechanism
+/// `tests/test_build_guard.rs` already pins, with no second thing to keep true
+/// (SH-136).
+///
+/// Two alternatives were rejected on mechanism. Scanning the binary for the
+/// `STORYHOOK_FAULT` literal infers identity from an artifact's spelling
+/// (SH-226, SH-239) and is defeated by any diagnostic that merely *mentions*
+/// the variable — a featureless binary would then carry the marker and be
+/// certified capable, a fixture lying to a correct gate (SH-263, SH-364).
+/// `story --version` cannot answer either: since SH-406 it reports the tracked
+/// tree's object id, which is byte-identical for the able and the unable build
+/// of one tree.
+///
+/// # Cost
+///
+/// One process spawn per test binary, memoized. The refusal happens before any
+/// store is opened or any daemon is started, so it is argv parsing and an early
+/// return.
+pub fn assert_the_binary_can_fire_faults() {
+    static VERDICT: OnceLock<Result<(), String>> = OnceLock::new();
+    if let Err(why) = VERDICT.get_or_init(probe_fault_capability) {
+        panic!("{why}");
+    }
+}
+
+/// How long the probe above gives a `story` that is meant to refuse at once.
+///
+/// The wait is over **a process coming up and printing a refusal**, so it is
+/// derived from the deadline this project already stakes on a process coming
+/// up — `SPAWN_DEADLINE`, itself documented as chosen because the OS bounds it
+/// — doubled, because that constant covers a daemon reaching the point of
+/// answering and this covers a client reaching the point of giving up, and the
+/// two are not the same work (SH-394, SH-140).
+const FAULT_PROBE_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(2 * storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs());
+
+/// Runs the binary under test with nothing naming a store, and reads whether
+/// it refuses.
+///
+/// `env_clear` for the reason `tests/test_build_guard.rs` gives for the same
+/// call: the answer must not be able to arrive from the ambient shell, from
+/// `make test`, or from a variable a future harness adds. `HOME` and `PATH` go
+/// back because a process with no home has a different complaint, and
+/// [`daemon_containment`] goes back so that a daemon this probe somehow starts
+/// cannot reach port 3456 or outlive the run.
+fn probe_fault_capability() -> Result<(), String> {
+    let home = scratch_dir_named("fault-probe-home");
+    let cwd = scratch_dir_named("fault-probe-cwd");
+    let mut cmd = std::process::Command::new(story_binary());
+    cmd.current_dir(cwd.path())
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .arg("list");
+    for (name, value) in daemon_containment() {
+        cmd.env(name, value);
+    }
+    let out = crate::server::run_bounded(cmd, "the fault-capability probe", FAULT_PROBE_DEADLINE);
+    let said = String::from_utf8_lossy(&out.stderr);
+    if said.contains(storyhook::env::TEST_BUILD_REFUSAL) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} cannot fire the store's fault points, so arming it would hang rather than crash \
+         it (SH-528).\n\n\
+         Asked to resolve a store with nothing naming one, a build carrying the \
+         `fault-injection` feature refuses — `storyhook::env::is_test_build` IS that feature. \
+         This binary did not refuse, so the feature is off, so `store::fault::fire` is an \
+         inlined `Ok(())` and STORYHOOK_FAULT lands nowhere.\n\n\
+         The cause is almost always that something ran `cargo build` over this tree after \
+         `cargo test` built it: both write this same path, and only the `cargo test` one can \
+         fire faults. Rebuild with `cargo test --no-run` (or just re-run the suite through \
+         `make test`).\n\n\
+         binary:      {}\n\
+         exit:        {:?}\n\
+         it said:     {said}",
+        story_binary().display(),
+        story_binary().display(),
+        out.status,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

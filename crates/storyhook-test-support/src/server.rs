@@ -223,6 +223,16 @@ impl Drop for DaemonGuard {
     }
 }
 
+/// How often [`ChildGuard::wait_within`] asks whether the child has exited.
+///
+/// **Chosen, not derived or calibrated**, in the sense [`ACCEPT_DEADLINE`]
+/// documents that phrase for — and the same 25ms [`port_of`] already polls the
+/// portfile on, for the same reason: short enough that a child which exits
+/// promptly (which is every child on the happy path) is noticed at once, long
+/// enough that waiting out a multi-second deadline costs a few hundred
+/// `waitpid(WNOHANG)` calls rather than a spin.
+const REAP_POLL: Duration = Duration::from_millis(25);
+
 /// Kills a child process on drop, so a server a test started can never
 /// outlive it.
 pub struct ChildGuard(std::process::Child);
@@ -241,15 +251,67 @@ impl ChildGuard {
         self.0.id()
     }
 
-    /// Waits for the child to exit and reports how it died.
+    /// Waits for the child to exit and reports how it died, giving up at
+    /// `deadline` rather than waiting for ever.
     ///
     /// Safe to call once and then let the guard drop: a reaped child's status is
     /// cached, and the `kill` in [`Drop`] fails harmlessly on a process that is
     /// already gone.
-    pub fn wait(&mut self) -> std::process::ExitStatus {
-        self.0
-            .wait()
-            .expect("waiting for a child this test started")
+    ///
+    /// # There is deliberately no unbounded version (SH-528)
+    ///
+    /// This used to be a bare `Child::wait()`. A crash fixture waiting on a
+    /// daemon that never died then wedged `make test` for **ten hours and
+    /// twenty-one minutes**, holding this machine's `gate` lock, with every
+    /// subsequent verification queued behind it and nothing above the test
+    /// bounding it — `run-rust-battery.sh`, `leg.sh`, `run-tests.sh` and
+    /// `verify-pr.sh` carry no `timeout` between them. So the unbounded door is
+    /// gone rather than deprecated: the compiler is the fence, and a caller has
+    /// to say what it is waiting for and how long that may honestly take.
+    ///
+    /// # Why a poll loop rather than `wait-timeout`
+    ///
+    /// That crate is already a `storyhook` dependency, and it is the right tool
+    /// in production, where the wait is latency-sensitive and inside one
+    /// process's own control flow. It is the wrong tool *here*: it installs a
+    /// process-global `SIGCHLD` handler through a `Once`, in a harness linked
+    /// into test binaries that assert on signals and zombies themselves
+    /// (`tests/orphan_check.rs`, `tests/machine_lock.rs`,
+    /// `tests/crash_reports.rs`). A `try_wait` poll is what this crate already
+    /// does three times over — [`Pty::wait`](crate::Pty), [`port_of`],
+    /// [`wait_for_addr`] — and it costs one `waitpid(WNOHANG)` per
+    /// [`REAP_POLL`] against deadlines measured in seconds.
+    ///
+    /// # Panics
+    ///
+    /// If the child has not exited by `deadline` — **having killed and reaped
+    /// it first**, so the failure cannot leave behind the very process the
+    /// story is about (SH-493). `what` is called only on that path, so a
+    /// caller may gather expensive evidence (a log tail, a liveness probe)
+    /// that is only meaningful at the moment the bound fires, and pays nothing
+    /// for it on the happy path.
+    pub fn wait_within(
+        &mut self,
+        deadline: Duration,
+        what: impl FnOnce() -> String,
+    ) -> std::process::ExitStatus {
+        let give_up_at = Instant::now() + deadline;
+        loop {
+            if let Some(status) = self.try_wait() {
+                return status;
+            }
+            if Instant::now() >= give_up_at {
+                let pid = self.pid();
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+                panic!(
+                    "{}\n\nThe child (pid {pid}) was still running after {deadline:?}, and has \
+                     been killed so this failure does not also leak it.",
+                    what()
+                );
+            }
+            std::thread::sleep(REAP_POLL);
+        }
     }
 
     /// How the child died, or `None` while it is still running.
@@ -265,6 +327,17 @@ impl ChildGuard {
 }
 
 impl Drop for ChildGuard {
+    /// **The one wait in this type that is deliberately unbounded**, and the
+    /// reason is the line above it rather than an oversight (SH-528).
+    ///
+    /// `kill` sends `SIGKILL`, which cannot be caught, blocked or handled by
+    /// anyone, so what this waits for is not the child's cooperation but the
+    /// kernel's — and a reap after an uncatchable signal is bounded by the OS,
+    /// not by anything the child gets a say in. It also runs during unwind,
+    /// where a panic of its own would replace whatever failure was already
+    /// being reported (SH-142). Do not copy this shape to a wait that is *not*
+    /// preceded by a kill: use [`ChildGuard::wait_within`], which exists
+    /// because that copy is exactly what wedged the gate for ten hours.
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -373,7 +446,7 @@ pub fn port_of(env: &crate::env::TestEnv, pid: u32) -> u16 {
 /// 3.36s against a `tailscale` shim that sleeps for two minutes. The rest is
 /// margin for process start, and what is being told apart is "published
 /// somewhere else" from "never published at all".
-const PORTFILE_DEADLINE: Duration = Duration::from_secs(10);
+pub(crate) const PORTFILE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Sends `GET /` and returns the response's status line, or `None` while the
 /// server is not answering. A read timeout is essential: the failure this

@@ -814,6 +814,198 @@ the other, which is SH-365's two-mechanism shape; `tests/gate_lock.rs`'s own
 header records that before the guard existed this exact mutation was not red at
 all.
 
+## A fixture may not wait on a corpse for ever (SH-528)
+
+`tests/fault_injection.rs::an_armed_daemon_dies_by_sigkill_rather_than_by_its_own_abort`
+wedged a `bash scripts/run-rust-battery.sh core` run for **ten hours and
+twenty-one minutes** (2026-08-31 22:35 → 2026-09-01 08:56): the test binary at
+0% CPU with its own `story daemon --serve --port 0` child alive and never
+reaped. It held the machine-wide `gate` lock the whole time, and every
+subsequent verification on the machine queued behind it.
+
+Nothing above the test could have ended it. `run-tests.sh`,
+`run-rust-battery.sh`, `leg.sh` and `verify-pr.sh` carry no `timeout` between
+them, and `machine-lock.sh` deliberately bounds *waiters* by the holder's
+liveness rather than by a clock — correctly, since a gate legitimately runs for
+a quarter of an hour, and a literal there would be the bare-ceiling shape SH-394
+forbids. So a wedged holder is a wedged machine.
+
+### The cause, confirmed by toggle rather than argued
+
+The story was filed with two hypotheses. The second — a missed-`SIGKILL` race
+under load — is **refuted by construction**: `process_env_fault`
+(`src/store/fault.rs`) posts `kill(getpid(), SIGKILL)` and then sleeps for
+`DELIVERY_BACKSTOP` and calls `abort()`, so a fault that fires kills its process
+within that bound by one signal or the other. An *indefinite* hang therefore
+proves the fault **never fired**.
+
+Which it had not, for a reason no test could see: the `story` binary had been
+built without the `fault-injection` feature, which makes `store::fault::fire` an
+inlined `Ok(())`. The armed daemon served its command normally and then served
+for ever. Reproduced on demand, same test binary throughout:
+
+| step | `strings target/debug/story \| grep -c STORYHOOK_FAULT` | result |
+|---|---|---|
+| `cargo test --no-run --test fault_injection` | 1 | 2 passed in 1.77s |
+| `cargo build --bin story` | 0 | **hung**; killed by `timeout 90` |
+| `cargo build --bin story --features fault-injection` | 1 | green again |
+
+The feature reaches `story` only through `storyhook-test-support`'s dependency
+on `storyhook`, so `cargo test` builds a binary that can fire faults and
+`cargo build` builds one that cannot — **to the same path**. `cargo build`
+writes `target/debug/story` from `Makefile:204` (`test`'s build leg),
+`Makefile:237` (`test-changed`'s), `Makefile:340`, `Makefile:356`,
+`scripts/run-e2e.sh:113` and `scripts/capture-baseline.sh:228,232`. None of
+those is under the `gate` lock — `run-tests.sh`'s own comment says the lock
+covers only that script, so "two concurrent `make test` runs … are not
+whole-run exclusive and their fmt/clippy/build/plugin legs still overlap" — and
+`run-e2e.sh` takes no lock at all by design.
+
+The bitter part: `crash.rs::diagnose` had named this exact cause, in these
+words, since long before the incident — "the usual cause is a binary built
+without the `fault-injection` feature". It could never say so, because with the
+feature off there is no corpse to diagnose. **A message on the failure path is
+worth nothing if the defect it names has no failure path.**
+
+### What ships
+
+Three layers, and the order matters: the first stops the hang happening, the
+second stops any hang lasting, the third makes whatever does happen legible.
+
+**1. Refuse to arm a binary that cannot fire** —
+`storyhook_test_support::assert_the_binary_can_fire_faults`, called from
+`spawn_daemon`'s one door whenever a fault point is named, memoized so a whole
+battery pays one process spawn.
+
+It asks the binary rather than inspecting it. `storyhook::env::is_test_build`
+**is** `cfg!(feature = "fault-injection")` — its own doc calls the feature "the
+sentinel, and it is an exact one rather than an approximation" — and a build
+carrying it refuses to guess where the store lives, with
+`env::TEST_BUILD_REFUSAL` as the words. So the capability was already
+observable from outside the process, through a mechanism
+`tests/test_build_guard.rs` already pins, with no second thing to keep true
+(SH-136). That constant is now `pub`, which its own doc comment had claimed
+since it was written ("so the test that pins it can compare against the
+constant") without anything actually doing it.
+
+Two alternatives were rejected **on mechanism, not on taste**:
+
+- *Scan the binary for the `STORYHOOK_FAULT` literal.* This infers identity
+  from an artifact's spelling (SH-226, SH-239) and is self-defeating in a way
+  only the council caught: a package that also ships a production refusal
+  naming that variable puts the literal into the featureless binary, and the
+  scan then certifies an incapable binary as **capable** — a fixture lying to a
+  correct gate, SH-263 and SH-364's shape exactly.
+- *Ask `story --version`.* Since SH-406 that reports the tracked tree's object
+  id, which is byte-identical for the able and the unable build of one tree.
+  SH-406's own two-builds-one-version defect, reopened on the feature axis.
+
+**2. No `ChildGuard` wait is unbounded** — `ChildGuard::wait()` is **deleted**
+and replaced by `wait_within(deadline, || message)`, which kills and reaps
+before panicking so a failure cannot leak the very process it is about (SH-493).
+The compiler is the fence: a caller must state what it is waiting for and how
+long that may honestly take. It found all seven call sites on the first build.
+
+The scope is stated at its true width and no wider: **"no `ChildGuard` wait is
+unbounded"**, never "no unbounded wait on a child". Roughly thirty direct
+`std::process::Child::wait()`/`wait_with_output()` sites in `tests/**` never
+touch `ChildGuard` and are outside this fence; migrating them onto `ChildGuard`
+is filed, and is what would make a derived scan honest later — the residual
+fact only becomes *lexical* once the type is universal, and until then a text
+scan cannot separate `barrier.wait()`, the already-bounded `Pty::wait()` and the
+eight `kill(); wait()` reaps from the genuine hazard without a hand-kept
+allowlist, which is the shape SH-136/SH-198/SH-258/SH-260/SH-360 record failing
+this project five times.
+
+Two waits stay unbounded on purpose and say so in their own docs:
+`ChildGuard::Drop`'s and `wait_within`'s own timeout path, both of which follow
+an uncatchable `SIGKILL` — what they wait for is the kernel, not the child's
+cooperation — and the first of which runs during unwind, where a panic would
+replace the failure already being reported (SH-142).
+
+A `try_wait` poll loop rather than the `wait-timeout` crate, which is already a
+`storyhook` dependency and is the right tool in production: it installs a
+process-global `SIGCHLD` handler through a `Once`, and this harness is linked
+into test binaries that assert on signals and zombies themselves
+(`tests/orphan_check.rs`, `tests/machine_lock.rs`, `tests/crash_reports.rs`).
+The poll is what this crate already does three times over (`Pty::wait`,
+`port_of`, `wait_for_addr`).
+
+**3. Every deadline derives from the bound it disproves** (SH-394), and each is
+deliberately *larger* than that bound, so the mechanism underneath reports
+itself first and names its own cause — a harness that wins that race reports an
+anonymous timeout in place of a real diagnosis, which is the opposite of the
+point. `tests/concurrency_soak.rs` already wrote that rule down; these follow
+it.
+
+| constant | the wait is over | derivation |
+|---|---|---|
+| `CLIENT_DEADLINE` | a `story` command whose daemon may be killed part-way through | `SERVED_DEADLINE + SPAWN_LOCK_DEADLINE + MARGIN` — the two bounds the client enforces on itself |
+| `ARMED_DEATH_DEADLINE` | a process that has already been told to die | `DELIVERY_BACKSTOP + MARGIN` — exceeding it *proves* the fault never fired |
+| `STARTING_DEATH_DEADLINE` | a process coming up, plus a death | `3 × PORTFILE_DEADLINE + DELIVERY_BACKSTOP + MARGIN` |
+
+The `3 ×` is not padding. `port_of` stakes one `PORTFILE_DEADLINE` on the same
+start-up phase, but every caller of `crash_a_starting_daemon` plants an **old**
+store, so that daemon additionally takes and verifies a pre-migration backup
+before it reaches the point — work `port_of` never waits on. Bounding the two
+identically would assert a relationship that does not exist (SH-140 in the other
+direction), and on a machine measured at 873s for a suite that runs in 36s idle
+it is how a rare ten-hour hang becomes a frequent false red: SH-306's pressure
+with the sign flipped.
+
+`DELIVERY_BACKSTOP` is the 10s in `process_env_fault`, promoted from a bare
+inline literal to a documented `pub const` for exactly this — it is the one
+number from which "the armed process is provably dead by now" derives.
+
+**And the evidence the hang used to destroy.** `spawn_daemon` sent the armed
+daemon's stderr to `Stdio::null()`, so a crash fixture that failed had nothing
+at all from the process it was *about*; it now goes to a file beside the store
+(a file, never a pipe — a daemon outlives the command that started it, and a
+pipe's reader waits for the last writer, SH-94). On expiry the message leads
+with the *finding* — "this proves the fault never fired" — because the first
+hypothesis a reader forms about a crash test that did not crash is the wrong
+one, and then carries the client's exit status, stdout and stderr, whether
+anything still holds the store, which pid the portfile names now, and that
+stderr tail.
+
+### Pinned
+
+`crash.rs`'s own test module reproduces the class deterministically: it arms
+`FaultPoint::MidMigration` against a store already at the current schema — which
+it asserts rather than assumes — so the point is genuinely unreachable, the
+daemon genuinely never dies, and the fixture must *report* that inside its
+bound. `tests/fault_injection.rs::the_binary_under_test_can_actually_fire_a_fault`
+is the probe's positive control.
+
+The probe's negative half cannot be a test — it needs a `story` built without
+the feature, and every binary `cargo test` can reach has it, that being the
+thing the probe measures. It was measured by hand instead, and the toggle table
+above is the record (SH-295: say which half is pinned).
+
+### Filed, not fixed
+
+- **The producer conflict.** `target/debug/story` is one path with two
+  legitimate tenants, and the prevention candidates — a per-leg
+  `CARGO_TARGET_DIR`, widening the `gate` lock, a consumer-side snapshot — are
+  each a cost decision needing numbers — SH-532. The council withdrew its own
+  leading candidate on the evidence: a per-leg target dir closes two of at
+  least six producer doors while reading as a class fix, which is the
+  hand-kept-list shape.
+- **`scripts/leg.sh`'s cross-worktree `--reuse` receipts.** Receipts are keyed
+  under `git rev-parse --git-common-dir`, shared by every worktree of a clone,
+  and the reuse check greps the fingerprint alone — the `worktree` line written
+  at `:118` is never read. Correct for `fmt`, `clippy` and the test batteries,
+  whose results are a function of the tree; wrong for `build`, whose output is
+  a worktree-local artifact — SH-533.
+- **Nothing bounds a *holder* of the `gate` lock.** Whatever wedges, the machine
+  wedges. SH-524's per-case progress journal is the fact-based signal a
+  no-progress watchdog would need, so it can stay inside SH-394 — SH-536.
+- **~30 non-`ChildGuard` child waits in `tests/**`** — SH-535.
+- **A production refusal of `STORYHOOK_FAULT` on a build that cannot honour it** — SH-534,
+  the SH-357 shape. Withdrawn from this story by its own author once the probe settled: it
+  buys the harness nothing the probe does not already give it, and its wiring is unobservable
+  in every `cargo test` build.
+
 ## The orphan bracket: refuse before the run, reap after it (SH-412)
 
 `scripts/check-no-orphan-servers.sh` brackets `make test` the way
