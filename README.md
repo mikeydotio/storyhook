@@ -583,6 +583,68 @@ Notes:
   belong to several epics.
 - New parent/child links that would create a cycle are rejected.
 
+## Operating Full Auto
+
+Full Auto claims ready stories, gives each one its own autonomous worktree and
+tmux window, and watches the story store for completion or a hard stop. Start a
+project-wide run from that project's checkout, or scope it to a typed epic:
+
+```bash
+story engine start --lanes 2 --agent codex
+story engine start --epic SH-452 --lanes 2 --agent claude
+```
+
+Only one run may be live for a project. A project run considers the whole ready
+queue; an epic run considers only descendants of that epic. Full Auto never
+claims `no-auto` or `human-only` stories. The former appear under "needs a
+human" in status; the latter remain available only to a person.
+
+| State | Meaning | Operator action |
+|---|---|---|
+| `running` | Reconcile active lanes and fill idle lanes. | Observe, pause, or stop. |
+| `paused` | Let occupied lanes finish, but claim nothing new. | Resume or stop. |
+| `draining` | A stop is in progress; no new claims. This is irreversible. | Wait for lanes to clear, or use `stop --now`. |
+| `halted` | Three consecutive hard stops tripped the breaker. Preserved work needs inspection. | Diagnose each quarantine before cleanup or redispatch. |
+| `finished` | The queue drained or an immediate stop completed. | Review the stop reason, then acknowledge it. |
+
+`story engine status` shows the selected run, its state, stop reason, hard-stop
+streak, and each lane's story and elapsed time. With no `--run`, it selects the
+one live run; name a halted or finished run explicitly:
+
+```bash
+story engine status
+story engine status --run <run-id>
+story engine status --run <run-id> --json
+```
+
+The JSON form is the diagnostic record. Inspect `run.lanes[].outcome` and
+`outcome_detail` for `agent-blocked`, `dispatch-refused`, `interrupted`,
+`stalled`, or `window-gone`; inspect `run.needs_human` for skipped `no-auto`
+work. A quarantine also blocks the story with a reason that names its run,
+lane, tmux window, and worktree when known:
+
+```bash
+story show <story-id>
+git -C <worktree-from-the-reason> status
+```
+
+Quarantine is preservation, not cleanup. Storyhook leaves every surviving
+worktree, branch, pull request, and window intact. After inspection, choose
+deliberately:
+
+- Continue from surviving work with `/story do <story-id> --resume`.
+- Release the claim and close its window while keeping the worktree and branch
+  with `/story unclaim <story-id>`.
+- Discard the preserved workspace only when it has no value with
+  `/story reset <story-id>`; this deletes the worktree and branch.
+
+`story engine stop` is graceful: occupied lanes finish and no new story is
+claimed. `story engine stop --now` closes lane windows and returns their claims
+to the state they came from, but still preserves worktrees and branches.
+Acknowledgement is separate from recovery: `story engine ack --run <run-id>`
+removes the durable dashboard alert only after you have reviewed it; it does not
+resume, clean, or delete anything.
+
 ## Storage model
 
 Stories live in one store outside your repositories:
