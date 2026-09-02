@@ -265,14 +265,36 @@ for _f in "$faketmux_env"/FAKE_TMUX_*; do
   export "\$_name=\$(cat "\$_f")"
 done
 
-# One writer per state directory, CHECKED rather than assumed. The daemon
-# permits several dispatch children at once (MAX_RUNNING), and two of them in
+# Identify the helper verb without mistaking a separated --project value for
+# it. This wrapper receives both --project <slug> dispatch and --project
+# <slug> unclaim; the latter is stop-now's deliberate inverse while the
+# dispatch helper may still be returning.
+_helper_verb=""
+_expect_project=false
+for _arg in "\$@"; do
+  if [ "\$_expect_project" = true ]; then
+    _expect_project=false
+    continue
+  fi
+  case "\$_arg" in
+    --project) _expect_project=true ;;
+    --project=*) ;;
+    -*) ;;
+    *) _helper_verb="\$_arg"; break ;;
+  esac
+done
+
+# One dispatch writer per state directory, CHECKED rather than assumed. The
+# daemon permits several dispatch children at once (MAX_RUNNING), and two in
 # one directory is exactly SH-263: each one's new-window clears the other's
 # launched flag and pane pid, and the readiness gate then refuses a pane that
 # genuinely reads as holding a shell. Liveness is queried, never inferred from
 # the file, so a child killed by the daemon's own process-group timeout leaves
 # no lock behind. This process becomes story.sh via exec below, so its pid stays
-# the right one to publish for exactly as long as the dispatch runs.
+# the right one to publish for exactly as long as the dispatch runs. An
+# overlapping unclaim bypasses this guard because production stop-now
+# deliberately supports a lane whose dispatch helper is still returning.
+if [ "\$_helper_verb" = dispatch ]; then
 _holders="\$FAKE_TMUX_STATE/holders"
 if [ -f "\$_holders" ]; then
   while IFS= read -r _pid; do
@@ -285,6 +307,7 @@ if [ -f "\$_holders" ]; then
   done <"\$_holders"
 fi
 printf '%s\n' "\$\$" >"\$_holders"
+fi
 
 exec bash "$_real_dispatch_script" "\$@"
 WRAPPER

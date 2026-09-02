@@ -30,6 +30,9 @@
 //! 6. Every Playwright project invocation creates its daemon, seed and
 //!    fake-tmux state inside the per-project subshell --
 //!    `each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state`.
+//! 7. The fake-tmux one-writer guard rejects concurrent dispatches without
+//!    rejecting stop-now's deliberately overlapping `unclaim` --
+//!    `the_fake_tmux_writer_guard_applies_only_to_dispatch`.
 
 use std::path::{Path, PathBuf};
 
@@ -687,4 +690,51 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
             && runner.contains("run_one_project \"$explicit_project\""),
         "both matrix and explicit-project paths must enter the same isolated runner"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 7. Stop-now's unclaim is not a second dispatch writer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_fake_tmux_writer_guard_applies_only_to_dispatch() {
+    let runner = read("scripts/run-e2e.sh");
+    let wrapper = runner
+        .split_once("cat >\"$STORYHOOK_DISPATCH_SCRIPT\" <<WRAPPER")
+        .expect("scripts/run-e2e.sh must generate its dispatch wrapper")
+        .1
+        .split_once("\nWRAPPER")
+        .expect("the generated dispatch wrapper must terminate its heredoc")
+        .0;
+
+    assert!(
+        wrapper.contains("_helper_verb=\"\"")
+            && wrapper.contains("--project) _expect_project=true ;;")
+            && wrapper.contains(r#"*) _helper_verb="\$_arg"; break ;;"#),
+        "the generated wrapper must parse the helper verb without mistaking --project's value \n\
+         for the command"
+    );
+    assert!(
+        !wrapper.contains('`'),
+        "the generated wrapper's unquoted heredoc must contain no backticks; they execute as \n\
+         command substitutions while the wrapper is being written"
+    );
+
+    let gated = wrapper
+        .split_once(r#"if [ "\$_helper_verb" = dispatch ]; then"#)
+        .expect("the fake-tmux writer guard must be explicitly dispatch-only")
+        .1
+        .split_once("\nfi\n\nexec bash")
+        .expect("the dispatch-only guard must close immediately before exec")
+        .0;
+    for required in [
+        r#"_holders="\$FAKE_TMUX_STATE/holders""#,
+        r#"kill -0 "\$_pid""#,
+        r#"printf '%s\n' "\$\$" >"\$_holders""#,
+    ] {
+        assert!(
+            gated.contains(required),
+            "the dispatch-only guard must retain `{required}`"
+        );
+    }
 }
