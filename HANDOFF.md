@@ -27,8 +27,10 @@
 - Do not version, release, deploy, force-push, or run `/story complete` here.
 - The approved preservation order is commit, push, open/link the PR, then run
   `make test` and `make e2e ARGS='engine.spec.ts'`.
-- A red test, merge conflict, or failed landing is a hard stop: comment full
-  diagnostics on SH-473, block it, and leave the PR and worktree intact.
+- A red test is diagnostic evidence: investigate its root cause, repair it
+  without weakening coverage, push, and rerun the complete relevant gate.
+- Preserve the PR and worktree while resolving a merge conflict or failed
+  landing; record the diagnosis and resolution on SH-473 before resuming.
 - A green candidate lands through `bash scripts/land-pr.sh PR-NUMBER`.
 
 ## Remaining program acceptance
