@@ -46,13 +46,41 @@ fn all_specs(root: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Whether one POST statement targets the story collection itself.
+///
+/// The statement boundary is load-bearing: a file may POST an unrelated
+/// controller and separately mention a story item route. Treating those two
+/// strings as one creation path makes the cleanup fence report false positives.
+fn posts_story_collection(text: &str) -> bool {
+    text.match_indices(".post(").any(|(start, _)| {
+        let rest = &text[start..];
+        let statement = &rest[..rest.find(';').unwrap_or(rest.len())];
+        ["/story`", "/story\"", "/story'"]
+            .iter()
+            .any(|ending| statement.contains(ending))
+    })
+}
+
 /// Whether a spec creates stories: every creation path in the suite goes
 /// through the New Story modal's submit button, and the one spec that also
-/// wants the create response's own body
-/// still clicks it. A future spec that POSTs the story collection directly
-/// is caught by the second arm rather than slipping past.
+/// wants the create response's own body still clicks it. A future spec that
+/// POSTs the story collection directly is caught by the second arm rather than
+/// slipping past.
 fn creates_stories(text: &str) -> bool {
-    text.contains("#create-submit") || (text.contains(".post(") && text.contains("/story"))
+    text.contains("#create-submit") || posts_story_collection(text)
+}
+
+#[test]
+fn direct_creation_scan_does_not_join_two_unrelated_calls() {
+    assert!(creates_stories(
+        r#"await request.post(`/api/repos/${slug}/story`, { data: { title } });"#
+    ));
+    assert!(!creates_stories(
+        r#"
+        await request.post(`/api/repos/${slug}/engine/stop`, { data: { now: true } });
+        await page.route(/\/story\/[^/]+$/, async (route) => route.continue());
+        "#
+    ));
 }
 
 /// The browser specs that create stories, paired with their contents.
