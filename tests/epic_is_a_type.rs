@@ -19,15 +19,15 @@
 //! side that was wrong. The epic's own behaviour is asserted alongside each one,
 //! so a fix that simply deleted epic semantics fails here rather than passing.
 
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 fn show(dir: &std::path::Path, id: &str) -> serde_json::Value {
@@ -43,7 +43,7 @@ fn show(dir: &std::path::Path, id: &str) -> serde_json::Value {
 /// the contrast in the same breath, and a change that flattens the two into one
 /// behaviour fails whichever way it flattened them.
 fn both_kinds_of_parent() -> tempfile::TempDir {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let p = dir.path();
     story(p)
         .args(["project", "new", "--prefix", "SH"])
@@ -182,7 +182,7 @@ fn an_epic_with_no_children_at_all_is_still_an_epic() {
     // A folder is a folder when it is empty. Guards against a fix that decides
     // epic-ness needs BOTH the type and some children, which would be the same
     // conflation wearing a different hat.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let p = dir.path();
     story(p)
         .args(["project", "new", "--prefix", "SH"])

@@ -1,16 +1,15 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
 use storyhook::cli::{EngineAction, Invocation, parse_invocation};
 use storyhook::store::EngineAgent;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 fn init_and_create(dir: &std::path::Path) {
@@ -23,7 +22,7 @@ fn init_and_create(dir: &std::path::Path) {
 
 #[test]
 fn show_displays_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -35,7 +34,7 @@ fn show_displays_story() {
 
 #[test]
 fn comment_adds_comment() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -52,7 +51,7 @@ fn comment_adds_comment() {
 
 #[test]
 fn assign_sets_assignee() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -68,7 +67,7 @@ fn assign_sets_assignee() {
 
 #[test]
 fn move_changes_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -85,7 +84,7 @@ fn move_changes_state() {
 
 #[test]
 fn move_to_done_archives() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -112,7 +111,7 @@ fn move_to_done_archives() {
 
 #[test]
 fn block_sets_awaiting() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -129,7 +128,7 @@ fn block_sets_awaiting() {
 
 #[test]
 fn unblock_clears_awaiting() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -151,7 +150,7 @@ fn unblock_clears_awaiting() {
 
 #[test]
 fn prioritize_sets_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -168,7 +167,7 @@ fn prioritize_sets_priority() {
 
 #[test]
 fn label_adds_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -186,7 +185,7 @@ fn label_adds_labels() {
 
 #[test]
 fn unlabel_removes_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -202,7 +201,7 @@ fn unlabel_removes_labels() {
 
 #[test]
 fn reopen_reopens() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -224,7 +223,7 @@ fn reopen_reopens() {
 
 #[test]
 fn delete_permanently_removes_the_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -242,7 +241,7 @@ fn delete_permanently_removes_the_story() {
 
 #[test]
 fn relate_adds_relationship() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
     story(dir.path())
         .args(["new", "Second story"])
@@ -264,7 +263,7 @@ fn relate_adds_relationship() {
 
 #[test]
 fn unrelate_removes_relationship() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
     story(dir.path())
         .args(["new", "Second story"])
@@ -284,7 +283,7 @@ fn unrelate_removes_relationship() {
 
 #[test]
 fn link_is_alias_for_relate() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
     story(dir.path())
         .args(["new", "Second story"])
@@ -299,7 +298,7 @@ fn link_is_alias_for_relate() {
 
 #[test]
 fn unlink_is_alias_for_unrelate() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
     story(dir.path())
         .args(["new", "Second story"])
@@ -319,7 +318,7 @@ fn unlink_is_alias_for_unrelate() {
 
 #[test]
 fn set_batch_updates() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -341,7 +340,7 @@ fn set_json_patch_applies_fields() {
     // split_global_flags detects that --json is followed by a value arg
     // and keeps it for the subcommand parser instead of consuming it as
     // the global JSON-output flag.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -365,7 +364,7 @@ fn set_json_patch_applies_fields() {
 
 #[test]
 fn set_json_patch_unknown_assignee_is_rejected_and_does_not_set() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -383,7 +382,7 @@ fn set_json_patch_unknown_assignee_is_rejected_and_does_not_set() {
 
 #[test]
 fn set_json_patch_assignee_by_github_handle_normalizes_to_member_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     // `id` is a lowercased slug of the handle, so this member's id
@@ -408,7 +407,7 @@ fn set_json_patch_assignee_by_github_handle_normalizes_to_member_id() {
 
 #[test]
 fn set_blocked_via_set() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -425,7 +424,7 @@ fn set_blocked_via_set() {
 
 #[test]
 fn set_unblocked_via_set() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     story(dir.path())
@@ -447,7 +446,7 @@ fn set_unblocked_via_set() {
 
 #[test]
 fn old_syntax_errors() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_and_create(dir.path());
 
     // "story SH-1 is done" should fail — SH-1 is not a valid command
@@ -471,7 +470,7 @@ fn old_syntax_errors() {
 
 #[test]
 fn new_with_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -495,7 +494,7 @@ fn new_with_state() {
 
 #[test]
 fn phase_list_empty() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -511,7 +510,7 @@ fn phase_list_empty() {
 
 #[test]
 fn phase_add_and_list() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -544,7 +543,7 @@ fn phase_add_and_list() {
 
 #[test]
 fn phase_show() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -572,7 +571,7 @@ fn phase_show() {
 
 #[test]
 fn phase_create() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -588,7 +587,7 @@ fn phase_create() {
 
 #[test]
 fn phase_remove() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -616,7 +615,7 @@ fn phase_remove() {
 
 #[test]
 fn list_with_phase_filter() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -640,7 +639,7 @@ fn list_with_phase_filter() {
 
 #[test]
 fn next_with_phase_filter() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -663,7 +662,7 @@ fn next_with_phase_filter() {
 
 #[test]
 fn decompose_sets_phase_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -701,7 +700,7 @@ fn decompose_sets_phase_labels() {
 
 #[test]
 fn load_context_shows_phases() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -729,7 +728,7 @@ fn load_context_shows_phases() {
 
 #[test]
 fn old_context_alias_works() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -746,7 +745,7 @@ fn old_context_alias_works() {
 
 #[test]
 fn load_context_basic() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -853,7 +852,7 @@ fn engine_parser_refuses_bad_values_scoped_flags_and_trailing_words() {
 
 #[test]
 fn engine_cli_runs_the_lifecycle_and_reports_no_auto_work() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path();
     story(path)
         .args(["project", "new", "--prefix", "SH"])
@@ -938,7 +937,7 @@ fn engine_cli_runs_the_lifecycle_and_reports_no_auto_work() {
 
 #[test]
 fn engine_start_canonicalizes_a_bare_epic_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path();
     story(path)
         .args(["project", "new", "--prefix", "SH"])

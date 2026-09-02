@@ -1489,8 +1489,6 @@ impl Default for DataStore {
     }
 }
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1545,8 +1543,8 @@ mod tests {
     impl TuiFixture {
         fn new() -> Self {
             use crate::store::Store as _;
-            let data = tempfile::tempdir().unwrap();
-            let repo = tempfile::tempdir().unwrap();
+            let data = storyhook_test_support::scratch_dir();
+            let repo = storyhook_test_support::scratch_dir();
             let env = crate::env::Environment::at(data.path());
             let store = crate::store::SqliteStore::open(env.store_path()).unwrap();
             store.migrate().unwrap();

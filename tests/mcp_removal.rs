@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 /// Tests verifying that MCP functionality has been completely removed.
 ///
 /// These tests assert the negative — that MCP-related commands, flags,
@@ -8,12 +5,14 @@
 /// to catch regressions if someone accidentally re-introduces MCP paths.
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 // ============================================================
@@ -24,13 +23,11 @@ fn story(dir: &std::path::Path) -> Command {
 fn mcp_flag_no_longer_accepted() {
     // `story --mcp` should either fail with an error, be unrecognized,
     // or at minimum not start an MCP JSON-RPC server that processes requests.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
 
     // Send an MCP initialize request to test whether the server handles it
     let mcp_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let output = story(dir.path())
         .arg("--mcp")
         .write_stdin(mcp_request)
         .timeout(std::time::Duration::from_secs(5))
@@ -56,7 +53,7 @@ fn mcp_flag_no_longer_accepted() {
 
 #[test]
 fn mcp_config_command_returns_unknown_command_error() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["mcp-config"])
         .assert()
@@ -66,7 +63,7 @@ fn mcp_config_command_returns_unknown_command_error() {
 
 #[test]
 fn mcp_config_with_install_flag_returns_unknown_command() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["mcp-config", "--install", "claude"])
         .assert()
@@ -76,7 +73,7 @@ fn mcp_config_with_install_flag_returns_unknown_command() {
 
 #[test]
 fn mcp_config_with_scope_flag_returns_unknown_command() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["mcp-config", "--scope", "project"])
         .assert()
@@ -90,7 +87,7 @@ fn mcp_config_with_scope_flag_returns_unknown_command() {
 
 #[test]
 fn help_topic_mcp_config_not_found() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["help", "mcp-config"])
         .assert()
@@ -100,7 +97,7 @@ fn help_topic_mcp_config_not_found() {
 
 #[test]
 fn help_topic_list_does_not_include_mcp_config() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "mcp-config"])
         .output()
@@ -128,7 +125,7 @@ fn help_topic_list_does_not_include_mcp_config() {
 
 #[test]
 fn help_output_does_not_mention_mcp_config() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path()).arg("--help").assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
@@ -143,7 +140,7 @@ fn help_output_does_not_mention_mcp_config() {
 
 #[test]
 fn json_format_help_topic_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "json-format"])
         .assert()
@@ -165,7 +162,7 @@ fn json_format_help_topic_does_not_mention_mcp() {
 
 #[test]
 fn scaffold_agents_md_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "agents-md"])
         .assert()
@@ -183,7 +180,7 @@ fn scaffold_agents_md_does_not_mention_mcp() {
 
 #[test]
 fn scaffold_cursor_rules_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "cursor-rules"])
         .assert()
@@ -201,7 +198,7 @@ fn scaffold_cursor_rules_does_not_mention_mcp() {
 
 #[test]
 fn scaffold_claude_md_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "claude-md"])
         .assert()
@@ -223,7 +220,7 @@ fn scaffold_claude_md_does_not_mention_mcp() {
 
 #[test]
 fn init_generated_agents_md_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "TST"])
         .assert()
@@ -245,7 +242,7 @@ fn init_generated_agents_md_does_not_mention_mcp() {
 
 #[test]
 fn session_start_system_message_does_not_mention_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

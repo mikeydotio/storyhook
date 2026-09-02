@@ -67,7 +67,7 @@
 # would undo the split SH-394 measured — and it is deliberately absent from
 # the `test-full` branch, where the suite is about to actually run.
 
-.PHONY: test test-full test-changed _test-body _test-full-body _test-changed-body build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status coverage-map coverage-watch coverage-status
+.PHONY: test test-full test-changed _test-body _test-full-body _test-changed-body build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status coverage-map coverage-watch coverage-status scratch scratch-clean
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -111,15 +111,16 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # Under `no`, a mismatch fails the run and writes nothing -- updating a snapshot
 # becomes a deliberate `INSTA_UPDATE=always cargo test` plus a reviewed diff.
 #
-# The isolated data directory is NOT optional, and it is the single most
-# dangerous line in this file to delete. Story data lives in one global store
-# now, and ~45 test files still build their fixtures with `tempfile::tempdir()`
-# and run `story` with this process's environment. Without the override, every
-# one of them writes into the developer's real
-# ~/.local/share/storyhook/store.db. `storyhook_test_support::TestEnv` isolates
-# the tests that use it and overrides this again with its own directory; this
-# covers the ones that do not. /private/tmp rather than $TMPDIR because the
-# latter is Spotlight-indexed (SH-53).
+# The isolated data directory is NOT optional. Story data lives in one global
+# store, so a run that names none writes into the developer's real
+# ~/.local/share/storyhook/store.db. It used to be the only thing standing
+# between this suite and that store, because ~45 test files built fixtures with
+# `tempfile::tempdir()` and ran `story` with this process's environment; they
+# are all on `storyhook_test_support::TestEnv` now (SH-531), and
+# tests/fixture_isolation.rs refuses the next one. What remains here is defence
+# in depth over the daemon, the state home, and anything a fixture does before
+# it reaches the harness. /private/tmp rather than $TMPDIR because the latter is
+# Spotlight-indexed (SH-53).
 #
 # Since W8 the binary refuses to run at all if a test build resolves no
 # `STORYHOOK_DATA_DIR` (`storyhook::env::is_test_build`), so deleting the
@@ -354,6 +355,35 @@ check:
 # Optimized release build.
 release-build:
 	cargo build --release
+
+# A disposable storyhook: this checkout's binary, a throwaway store, a daemon
+# that dies with the shell it drops you into.
+#
+# The counterpart to `install` below, and the reason to reach for it first.
+# `./target/debug/story list`, typed here, resolves the REAL store and the real
+# daemon on 3456 -- `is_test_build` does not stop a `cargo build` binary, and
+# this repository's committed `.storyhook.toml` names the project storyhook
+# tracks itself with. Before this target the only way to exercise a change by
+# hand was `make install`, which replaces the binary everything else on the
+# machine runs.
+#
+# The isolation is the test suite's own (`scripts/test-env.sh`, documented by
+# `story help test-environment`), so exercising a change by hand runs under the
+# same contract as the gate rather than a weaker one.
+#
+#   make scratch                          a shell in the "default" environment
+#   make scratch ARGS="--test-build"      ...running a build with crash points
+#   make scratch ARGS="--name x --fresh"  a second, empty environment
+#   make scratch-clean                    delete all of them
+scratch:
+	@bash scripts/scratch-env.sh $(ARGS)
+
+# Every scratch environment at once. Nothing outside /private/tmp is ever
+# named: `scratch-env.sh` refuses a root anywhere else, so there is nowhere
+# else for one to be.
+scratch-clean:
+	@rm -rf /private/tmp/storyhook-scratch
+	@echo "removed /private/tmp/storyhook-scratch"
 
 # Build release and install it to INSTALL_DIR (see SH-55).
 #

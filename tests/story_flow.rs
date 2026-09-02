@@ -1,40 +1,37 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
+
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
+fn story(dir: &std::path::Path) -> Command {
+    TestEnv::shared().story(dir)
+}
 
 #[test]
 fn story_new_assigns_monotonic_ids_and_show_works() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "First"])
         .assert()
         .success()
         .stdout(contains("SH-1"));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Second"])
         .assert()
         .success()
         .stdout(contains("SH-2"));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
@@ -43,45 +40,33 @@ fn story_new_assigns_monotonic_ids_and_show_works() {
 
 #[test]
 fn comment_and_assign_append_events() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["member", "add", "mikey <mw@mikey.io>"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Routing"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["assign", "SH-1", "mikey"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["comment", "SH-1", "First pass done"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
@@ -93,31 +78,23 @@ fn comment_and_assign_append_events() {
 /// arrives after a story closes lands on the story it verifies.
 #[test]
 fn a_closed_story_takes_a_comment_from_the_command_line() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Ship it"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args([
             "comment",
             "SH-1",
@@ -126,9 +103,7 @@ fn a_closed_story_takes_a_comment_from_the_command_line() {
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
@@ -142,31 +117,23 @@ fn a_closed_story_takes_a_comment_from_the_command_line() {
 /// no longer resolves.
 #[test]
 fn a_deleted_story_is_not_found_when_commented_on() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Never mind"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["delete", "SH-1", "--force"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["comment", "SH-1", "one more thing"])
         .assert()
         .failure()
@@ -178,24 +145,17 @@ fn a_deleted_story_is_not_found_when_commented_on() {
 /// never as a comment on it.
 #[test]
 fn a_comment_naming_another_story_shows_up_under_its_referenced_by() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     for args in [
         vec!["project", "new", "--prefix", "SH"],
         vec!["new", "Mentioned"],
         vec!["new", "Mentioner"],
         vec!["comment", "SH-2", "superseded by SH-1"],
     ] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(&args)
-            .assert()
-            .success();
+        story(dir.path()).args(&args).assert().success();
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
@@ -203,9 +163,7 @@ fn a_comment_naming_another_story_shows_up_under_its_referenced_by() {
         .stdout(contains("[comment] SH-2: superseded by SH-1"))
         .stdout(contains("comments:").not());
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-2"])
         .assert()
         .success()
@@ -215,47 +173,35 @@ fn a_comment_naming_another_story_shows_up_under_its_referenced_by() {
 
 #[test]
 fn awaiting_can_be_set_and_cleared() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Blocked work"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["block", "SH-1", "blocked on API"])
         .assert()
         .success()
         .stdout(contains("awaiting: blocked on API"));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("\"awaiting\": \"blocked on API\""));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["unblock", "SH-1"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()

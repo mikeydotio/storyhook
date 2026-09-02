@@ -186,25 +186,72 @@ fn literal_assignments(text: &str) -> HashMap<String, String> {
     map
 }
 
-/// Variable names `text` assigns via a command substitution (`VAR=$(...)`) —
-/// the shape every runtime-minted fixture directory in this suite uses
-/// (`mktemp -d`, `mk_versioned_claude`, …). An entry whose leading variable
+/// Variable names `text` assigns from a command substitution — the shape every
+/// runtime-minted fixture directory in this suite uses (`mktemp -d`, `$(cd …
+/// && pwd)`, `mk_versioned_claude`, …). An entry whose leading variable
 /// resolves here is EXPLAINED rather than merely unresolved: it names a path
 /// this scan cannot know statically, on purpose, not a gap in the scan.
+///
+/// **Quoted and defaulted forms count, and they did not until SH-531.** This
+/// used to require the exact bytes `=$(`, which recognises `VAR=$(cmd)` and
+/// misses both `VAR="$(cmd)"` — the *safer* spelling, since an unquoted
+/// substitution word-splits on a path with a space in it — and
+/// `VAR="${OTHER:-$(cmd)}"`. Two harnesses written in those shapes were
+/// reported as gaps in the scan's vocabulary, which is what this function is
+/// supposed to distinguish them from. The rule is now the property rather than
+/// one spelling of it: a value that contains a command substitution anywhere
+/// is a value this scan cannot evaluate.
+///
+/// It stays disjoint from [`literal_assignments`], which excludes any value
+/// containing `$(` for the same reason from the other side.
 fn dynamic_assignments(text: &str) -> HashSet<String> {
     let mut set = HashSet::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
         let rest = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-        let Some(eq) = rest.find("=$(") else {
+        let Some(eq) = rest.find('=') else {
             continue;
         };
         let name = &rest[..eq];
-        if is_valid_ident(name) {
+        if !is_valid_ident(name) {
+            continue;
+        }
+        if rest[eq + 1..].contains("$(") {
             set.insert(name.to_string());
         }
     }
     set
+}
+
+/// The widened rule really does recognise the three spellings, and still
+/// refuses a name it has no assignment for.
+///
+/// A positive control on the parser itself: a `dynamic_assignments` that
+/// silently stopped matching would turn every runtime-minted entry into an
+/// `Unexplained` offender, and one that matched everything would turn every
+/// real SH-264 defect into a shrug.
+#[test]
+fn a_command_substitution_is_recognised_in_every_spelling_a_harness_uses() {
+    let found = dynamic_assignments(
+        "BARE=$(mktemp -d)\n\
+         QUOTED=\"$(cd \"$(dirname \"$x\")\" && pwd)\"\n\
+         DEFAULTED=\"${OTHER:-$(cd .. && pwd)/target}\"\n\
+         export EXPORTED=\"$(pwd)\"\n\
+         PLAIN=\"$TESTS_DIR/fakes\"\n\
+         NOT_AN_ASSIGNMENT $(cmd)\n",
+    );
+    for name in ["BARE", "QUOTED", "DEFAULTED", "EXPORTED"] {
+        assert!(
+            found.contains(name),
+            "{name} must be seen as runtime-minted"
+        );
+    }
+    assert!(
+        !found.contains("PLAIN"),
+        "a plain alias is `literal_assignments`' business, and the two must \
+         stay disjoint"
+    );
+    assert!(!found.contains("NOT_AN_ASSIGNMENT"));
 }
 
 /// The leading `$IDENT` or `${IDENT}` a value starts with, and whatever

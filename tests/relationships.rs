@@ -1,19 +1,18 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
+
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
+fn story(dir: &std::path::Path) -> Command {
+    TestEnv::shared().story(dir)
+}
 
 fn story_json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir)
-        .args(args)
-        .arg("--json")
-        .output()
-        .unwrap();
+    let output = story(dir).args(args).arg("--json").output().unwrap();
     assert!(
         output.status.success(),
         "story {} failed: {}",
@@ -25,39 +24,23 @@ fn story_json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
 
 #[test]
 fn adding_directional_relationship_creates_inverse_edge() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "A"])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", "A"]).assert().success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "B"])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", "B"]).assert().success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "blocks", "SH-2"])
         .assert()
         .success()
         .stdout(contains("blocks SH-2"));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-2"])
         .assert()
         .success()
@@ -66,31 +49,20 @@ fn adding_directional_relationship_creates_inverse_edge() {
 
 #[test]
 fn closing_a_blocker_removes_both_cli_relationships_permanently() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(path)
+    story(path)
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     for title in ["Blocker", "Dependent"] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(path)
-            .args(["new", title])
-            .assert()
-            .success();
+        story(path).args(["new", title]).assert().success();
     }
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(path)
+    story(path)
         .args(["relate", "SH-1", "blocks", "SH-2"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(path)
+    story(path)
         .args(["move", "SH-1", "done"])
         .assert()
         .success();
@@ -104,12 +76,7 @@ fn closing_a_blocker_removes_both_cli_relationships_permanently() {
         );
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(path)
-        .args(["reopen", "SH-1"])
-        .assert()
-        .success();
+    story(path).args(["reopen", "SH-1"]).assert().success();
     let ready = story_json(path, &["next", "--count", "2"]);
     let ready_ids = ready["stories"]
         .as_array()
@@ -122,48 +89,33 @@ fn closing_a_blocker_removes_both_cli_relationships_permanently() {
 
 #[test]
 fn show_renders_derived_ancestor_and_descendent_relationships() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
     for title in ["A", "B", "C"] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["new", title])
-            .assert()
-            .success();
+        story(dir.path()).args(["new", title]).assert().success();
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "parent-of", "SH-2"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-2", "parent-of", "SH-3"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("relationships:\n- parent-of SH-2"))
         .stdout(contains("derived_relationships:\n- ancestor-of SH-3"));
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["--json", "show", "SH-3"])
         .assert()
         .success()
@@ -173,45 +125,30 @@ fn show_renders_derived_ancestor_and_descendent_relationships() {
 
 #[test]
 fn archived_ancestors_still_participate_in_derived_relationships() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
     for title in ["A", "B", "C"] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["new", title])
-            .assert()
-            .success();
+        story(dir.path()).args(["new", title]).assert().success();
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "parent-of", "SH-2"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-2", "parent-of", "SH-3"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["move", "SH-3", "done"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["show", "SH-3"])
         .assert()
         .success()
@@ -220,39 +157,26 @@ fn archived_ancestors_still_participate_in_derived_relationships() {
 
 #[test]
 fn parent_cycle_is_rejected() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
     for title in ["A", "B", "C"] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["new", title])
-            .assert()
-            .success();
+        story(dir.path()).args(["new", title]).assert().success();
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "parent-of", "SH-2"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-2", "parent-of", "SH-3"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-3", "parent-of", "SH-1"])
         .assert()
         .code(2)
@@ -261,40 +185,27 @@ fn parent_cycle_is_rejected() {
 
 #[test]
 fn parent_story_shows_progress_rollup_in_json() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
     for title in ["Parent", "Child A", "Child B"] {
-        Command::cargo_bin("story")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["new", title])
-            .assert()
-            .success();
+        story(dir.path()).args(["new", title]).assert().success();
     }
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "parent-of", "SH-2"])
         .assert()
         .success();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["relate", "SH-1", "parent-of", "SH-3"])
         .assert()
         .success();
 
     // Before closing any child
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let output = story(dir.path())
         .args(["--json", "list"])
         .assert()
         .success();
@@ -303,16 +214,12 @@ fn parent_story_shows_progress_rollup_in_json() {
     assert!(stdout.contains("\"children_done\": 0"));
 
     // Close one child
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["move", "SH-2", "done"])
         .assert()
         .success();
 
-    let output = Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let output = story(dir.path())
         .args(["--json", "list"])
         .assert()
         .success();
@@ -323,24 +230,18 @@ fn parent_story_shows_progress_rollup_in_json() {
 
 #[test]
 fn leaf_story_has_no_progress_in_json() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    let dir = scratch_dir();
+    story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["new", "Leaf story"])
         .assert()
         .success();
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
+    story(dir.path())
         .args(["--json", "show", "SH-1"])
         .assert()
         .success()

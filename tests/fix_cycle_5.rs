@@ -4,16 +4,15 @@
 //! *before state* (detecting each bug) and will pass once the fix is applied.
 //! Each test exercises real CLI output or real file content — no mocks.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 // ============================================================
@@ -24,8 +23,7 @@ fn story(dir: &std::path::Path) -> Command {
 
 #[test]
 fn sh34_help_text_shows_compact_flag_in_usage() {
-    let output = Command::cargo_bin("story")
-        .unwrap()
+    let output = story(TestEnv::shared().home())
         .arg("--help")
         .output()
         .unwrap();
@@ -45,8 +43,7 @@ fn sh34_help_text_shows_compact_flag_in_usage() {
 
 #[test]
 fn sh34_help_text_shows_all_flag_in_usage() {
-    let output = Command::cargo_bin("story")
-        .unwrap()
+    let output = story(TestEnv::shared().home())
         .arg("--help")
         .output()
         .unwrap();
@@ -65,8 +62,7 @@ fn sh34_help_text_shows_all_flag_in_usage() {
 
 #[test]
 fn sh34_help_text_shows_command_as_optional() {
-    let output = Command::cargo_bin("story")
-        .unwrap()
+    let output = story(TestEnv::shared().home())
         .arg("--help")
         .output()
         .unwrap();
@@ -92,7 +88,7 @@ fn sh34_help_text_shows_command_as_optional() {
 
 #[test]
 fn sh35_init_agents_md_does_not_reference_graph_tree() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "TST"])
         .assert()
@@ -108,7 +104,7 @@ fn sh35_init_agents_md_does_not_reference_graph_tree() {
 
 #[test]
 fn sh35_scaffold_claude_md_does_not_reference_graph_tree() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "claude-md"])
         .output()
@@ -123,7 +119,7 @@ fn sh35_scaffold_claude_md_does_not_reference_graph_tree() {
 
 #[test]
 fn sh35_init_agents_md_graph_section_only_has_valid_flags() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "TST"])
         .assert()

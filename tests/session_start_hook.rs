@@ -10,17 +10,17 @@
 /// using the actual `story` binary and the actual shell script.
 use assert_cmd::Command;
 use std::process;
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// Get the absolute path to the hook script from the project root.
 fn hook_script() -> std::path::PathBuf {
     storyhook_test_support::hook_script("session-start.sh")
 }
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// Extract the SessionStart `additionalContext` string from a parsed hook
@@ -46,22 +46,23 @@ fn run_hook(cwd: &std::path::Path) -> (String, i32) {
 /// Run the hook with an arbitrary raw stdin payload — for asserting on
 /// fields (like `session_id`) that `run_hook`'s bare `{"cwd":...}` omits.
 fn run_hook_with_stdin(stdin_json: &str) -> (String, i32) {
-    let output = process::Command::new("bash")
+    let mut command = process::Command::new("bash");
+    command
         .arg(hook_script())
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                std::path::Path::new(env!("CARGO_BIN_EXE_story"))
-                    .parent()
-                    .unwrap()
-                    .display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
+        .stderr(process::Stdio::piped());
+    // THE HOOK RESOLVES `story` ITSELF, from `$PATH`, and then runs it against
+    // whatever store its environment names. So the environment has to reach the
+    // hook, not merely this file's own fixtures: applying it to `story()` alone
+    // would leave the fixtures in the harness's store while the hook read the
+    // ambient one, and every context assertion below would degrade to `{}` for
+    // a reason that reads as a defect in the hook.
+    //
+    // `apply` also puts the binary under test at the front of `$PATH`, which is
+    // what the hand-built `CARGO_BIN_EXE_story` prepend this replaces was for.
+    TestEnv::shared().apply(&mut command);
+    let output = command
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;

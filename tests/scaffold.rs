@@ -1,19 +1,18 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 #[test]
 fn scaffold_agents_md_contains_workflow_commands() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "agents-md"])
         .assert()
@@ -24,7 +23,7 @@ fn scaffold_agents_md_contains_workflow_commands() {
 
 #[test]
 fn scaffold_agents_md_uses_project_prefix() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "API"])
         .assert()
@@ -38,7 +37,7 @@ fn scaffold_agents_md_uses_project_prefix() {
 
 #[test]
 fn scaffold_agents_md_references_help_compact() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "agents-md"])
         .assert()
@@ -48,7 +47,7 @@ fn scaffold_agents_md_references_help_compact() {
 
 #[test]
 fn scaffold_agents_md_no_mcp_references() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "agents-md"])
         .output()
@@ -66,7 +65,7 @@ fn scaffold_agents_md_no_mcp_references() {
 
 #[test]
 fn scaffold_cursor_rules_contains_storyhook() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "cursor-rules"])
         .assert()
@@ -76,7 +75,7 @@ fn scaffold_cursor_rules_contains_storyhook() {
 
 #[test]
 fn scaffold_cursor_rules_references_help_command() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "cursor-rules"])
         .assert()
@@ -86,7 +85,7 @@ fn scaffold_cursor_rules_references_help_command() {
 
 #[test]
 fn scaffold_cursor_rules_no_mcp_references() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "cursor-rules"])
         .output()
@@ -104,7 +103,7 @@ fn scaffold_cursor_rules_no_mcp_references() {
 
 #[test]
 fn scaffold_claude_md_is_short_pointer() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "claude-md"])
         .assert()
@@ -115,7 +114,7 @@ fn scaffold_claude_md_is_short_pointer() {
 
 #[test]
 fn scaffold_claude_md_no_mcp_references() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["scaffold", "claude-md"])
         .output()
@@ -137,7 +136,7 @@ fn init_generates_agents_md_carrying_this_projects_prefix() {
     // `.storyhook/CLAUDE.md` beside the story data. They are in `AGENTS.md`
     // now — one scaffold artifact at the repository root, which is where a
     // fresh agent looks and which survives the directory being retired.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "WEB"])
         .assert()
@@ -150,7 +149,7 @@ fn init_generates_agents_md_carrying_this_projects_prefix() {
 
 #[test]
 fn scaffold_invalid_kind_returns_error() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["scaffold", "invalid-kind"])
         .assert()

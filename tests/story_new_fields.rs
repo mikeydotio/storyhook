@@ -1,14 +1,13 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 // ============================================================
@@ -17,7 +16,7 @@ fn story(dir: &std::path::Path) -> Command {
 
 #[test]
 fn new_with_description_sets_description() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -37,7 +36,7 @@ fn new_with_description_sets_description() {
 
 #[test]
 fn new_without_description_omits_description_line() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -57,7 +56,7 @@ fn new_without_description_omits_description_line() {
 
 #[test]
 fn new_with_priority_sets_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -77,7 +76,7 @@ fn new_with_priority_sets_priority() {
 
 #[test]
 fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -96,7 +95,7 @@ fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
 
 #[test]
 fn new_with_repeated_label_flags_accumulates() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -116,7 +115,7 @@ fn new_with_repeated_label_flags_accumulates() {
 
 #[test]
 fn new_with_labels_csv_splits_and_trims() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -141,7 +140,7 @@ fn new_with_labels_csv_splits_and_trims() {
 /// labels a `--labels "web,sse"` or two repeated `--label` flags would.
 #[test]
 fn new_with_a_comma_inside_a_single_label_flag_still_splits() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -186,7 +185,7 @@ fn new_with_a_comma_inside_a_single_label_flag_still_splits() {
 
 #[test]
 fn new_with_assignee_sets_assignee() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -210,7 +209,7 @@ fn new_with_assignee_sets_assignee() {
 
 #[test]
 fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -227,7 +226,7 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
 
 #[test]
 fn new_with_all_fields_writes_single_enriched_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -274,7 +273,7 @@ fn new_with_all_fields_writes_single_enriched_story() {
 
 #[test]
 fn set_description_updates_existing_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -300,7 +299,7 @@ fn set_description_updates_existing_story() {
 
 #[test]
 fn set_description_last_write_wins() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -329,7 +328,7 @@ fn set_description_last_write_wins() {
 
 #[test]
 fn import_maps_description_to_description_field_not_comment() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -359,7 +358,7 @@ fn import_maps_description_to_description_field_not_comment() {
 
 #[test]
 fn new_without_draft_is_live() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -379,7 +378,7 @@ fn new_without_draft_is_live() {
 
 #[test]
 fn new_with_draft_flag_creates_a_draft() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -399,7 +398,7 @@ fn new_with_draft_flag_creates_a_draft() {
 
 #[test]
 fn a_draft_claims_a_story_id_like_any_other_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -424,7 +423,7 @@ fn a_draft_claims_a_story_id_like_any_other_story() {
 
 #[test]
 fn new_without_metadata_uses_low_and_the_first_configured_type() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -446,7 +445,7 @@ fn new_without_metadata_uses_low_and_the_first_configured_type() {
 
 #[test]
 fn new_rejects_explicit_none_without_allocating_a_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -470,7 +469,7 @@ fn new_rejects_explicit_none_without_allocating_a_story() {
 
 #[test]
 fn new_accepts_each_assignable_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -486,7 +485,7 @@ fn new_accepts_each_assignable_priority() {
 
 #[test]
 fn quiet_prints_nothing_and_still_creates_with_required_defaults() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

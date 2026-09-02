@@ -1,19 +1,18 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 #[test]
 fn decompose_single_heading() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -33,7 +32,7 @@ fn decompose_single_heading() {
 
 #[test]
 fn decompose_nested_headings() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -66,7 +65,7 @@ fn decompose_nested_headings() {
 
 #[test]
 fn decompose_three_levels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -104,7 +103,7 @@ fn decompose_three_levels() {
 
 #[test]
 fn decompose_checkboxes() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -134,7 +133,7 @@ fn decompose_checkboxes() {
 
 #[test]
 fn decompose_checked_items_skipped() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -159,7 +158,7 @@ fn decompose_checked_items_skipped() {
 
 #[test]
 fn decompose_empty_file() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -177,7 +176,7 @@ fn decompose_empty_file() {
 
 #[test]
 fn decompose_no_headings() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -196,7 +195,7 @@ fn decompose_no_headings() {
 
 #[test]
 fn decompose_dry_run() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -229,7 +228,7 @@ fn decompose_dry_run() {
 
 #[test]
 fn decompose_roundtrip() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -272,7 +271,7 @@ fn decompose_roundtrip() {
 
 #[test]
 fn decompose_stdin() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -301,7 +300,7 @@ fn decompose_stdin() {
 
 #[test]
 fn decompose_dry_run_works_without_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // No story init — directory has no .storyhook/
 
     let md = "# Epic\n## Feature\n";
@@ -317,7 +316,7 @@ fn decompose_dry_run_works_without_project() {
 
 #[test]
 fn decompose_yaml_file() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -364,7 +363,7 @@ fn decompose_yaml_file() {
 
 #[test]
 fn decompose_yaml_dry_run() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -399,7 +398,7 @@ fn decompose_yaml_dry_run() {
 
 #[test]
 fn decompose_markdown_with_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -424,7 +423,7 @@ fn decompose_markdown_with_priority() {
 
 #[test]
 fn decompose_markdown_with_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -454,7 +453,7 @@ fn decompose_markdown_with_labels() {
 
 #[test]
 fn decompose_with_no_priority_markers_defaults_every_story_to_low() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -482,7 +481,7 @@ fn decompose_with_no_priority_markers_defaults_every_story_to_low() {
 
 #[test]
 fn decompose_with_every_story_marked_stays_silent() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -501,7 +500,7 @@ fn decompose_with_every_story_marked_stays_silent() {
 
 #[test]
 fn decompose_dry_run_never_warns_since_nothing_was_written() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -520,7 +519,7 @@ fn decompose_dry_run_never_warns_since_nothing_was_written() {
 
 #[test]
 fn decompose_rejects_the_retired_none_marker_atomically() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -546,7 +545,7 @@ fn decompose_rejects_the_retired_none_marker_atomically() {
 
 #[test]
 fn decompose_json_returns_defaulted_and_explicit_metadata_without_warnings() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

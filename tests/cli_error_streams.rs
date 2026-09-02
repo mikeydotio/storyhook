@@ -15,21 +15,21 @@
 //! which reads a conflict envelope off stdout, and
 //! plugins/story/bin/story.sh, whose CAS claim depends on it.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// A project with one story, closed, so `move` on it fails the way the
 /// post-merge hook hits in practice.
 fn project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

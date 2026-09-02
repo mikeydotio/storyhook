@@ -13,21 +13,21 @@
 //! at the repository root now — one scaffold artifact, where a fresh agent
 //! looks, and not inside a directory that is about to stop existing.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
-use tempfile::{TempDir, tempdir};
+use storyhook_test_support::{TestEnv, scratch_dir};
+use tempfile::TempDir;
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// An initialized project, and the directory holding it.
 fn initialized() -> TempDir {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

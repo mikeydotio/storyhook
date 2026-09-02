@@ -1,14 +1,13 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 fn init_git(dir: &std::path::Path) {
@@ -31,7 +30,7 @@ fn init_git(dir: &std::path::Path) {
 
 #[test]
 fn hooks_install_creates_hook_files() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     story(dir.path())
@@ -49,7 +48,7 @@ fn hooks_install_creates_hook_files() {
 
 #[test]
 fn hooks_install_skips_existing_user_hooks() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     // Create a custom user hook without the storyhook marker
@@ -73,7 +72,7 @@ fn hooks_install_skips_existing_user_hooks() {
 
 #[test]
 fn hooks_install_overwrites_storyhook_hooks() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     // Create a hook with the storyhook marker (old version)
@@ -96,7 +95,7 @@ fn hooks_install_overwrites_storyhook_hooks() {
 
 #[test]
 fn hooks_uninstall_removes_storyhook_hooks() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     // Install first
@@ -123,7 +122,7 @@ fn hooks_uninstall_removes_storyhook_hooks() {
 
 #[test]
 fn hooks_uninstall_preserves_user_hooks() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     // Install storyhook hooks
@@ -153,7 +152,7 @@ fn hooks_uninstall_preserves_user_hooks() {
 
 #[test]
 fn hooks_install_fails_outside_git_repo() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // Do NOT init git
 
     story(dir.path())
@@ -165,7 +164,7 @@ fn hooks_install_fails_outside_git_repo() {
 
 #[test]
 fn hooks_uninstall_idempotent() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     // Uninstall when no hooks exist should succeed
@@ -381,7 +380,7 @@ fn the_merge_arrival_fragment_is_shared_not_duplicated() {
 /// a fourth managed hook is covered by construction.
 #[test]
 fn no_managed_hook_lets_its_own_last_statement_decide_gits_verdict() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
 
     story(dir.path())

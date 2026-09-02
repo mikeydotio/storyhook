@@ -7,16 +7,15 @@
 //! That is a stronger claim than "a line was appended to a file" — it is the
 //! reason the roster exists — and it is true on both storage models.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// Runs `story <args> --json` and parses stdout.
@@ -37,7 +36,7 @@ fn json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
 
 #[test]
 fn a_member_added_by_name_and_email_can_be_assigned_work() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -63,7 +62,7 @@ fn a_member_added_by_name_and_email_can_be_assigned_work() {
 
 #[test]
 fn a_member_added_by_github_handle_gets_the_handle_as_its_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -89,7 +88,7 @@ fn a_member_added_by_github_handle_gets_the_handle_as_its_id() {
 fn assigning_to_a_member_that_was_never_added_fails() {
     // The negative half: without it the two tests above would pass against an
     // `assign` that accepted any string at all.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
