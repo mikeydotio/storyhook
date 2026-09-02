@@ -573,6 +573,9 @@ for (const width of SWEEP_WIDTHS) {
     // viewport-relative ceiling; see the topbar-scoped test below for the
     // one that pins the mechanism directly.
     await expectNoHorizontalOverflow(page, `the Drafts popover @ ${width}px`);
+    // Cleanup emits another catalog refresh. Drain the response-rewriting
+    // handler before fixture teardown can dispose its fetched response.
+    await page.unrouteAll({ behavior: "wait" });
   });
 }
 
