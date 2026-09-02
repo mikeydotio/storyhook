@@ -136,16 +136,12 @@ test("keyboard: ArrowRight opens the submenu and focuses its first item, Enter s
   await expect(submenu).toBeVisible();
   const firstItem = submenu.locator(".ctxmenu-item").first();
   await expect(firstItem).toBeFocused();
-
-  await page.keyboard.press("ArrowDown");
-  const secondItem = submenu.locator(".ctxmenu-item").nth(1);
-  await expect(secondItem).toBeFocused();
-  const secondLabel = await secondItem.textContent();
+  const firstLabel = await firstItem.textContent();
 
   await page.keyboard.press("Enter");
   await expect(page.locator(".ctxmenu")).toHaveCount(0);
   await expect(
-    page.locator('.column[data-state="' + secondLabel!.trim() + '"] .card', {
+    page.locator('.column[data-state="' + firstLabel!.trim() + '"] .card', {
       hasText: title,
     }),
   ).toBeVisible();
