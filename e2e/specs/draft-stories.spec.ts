@@ -2,7 +2,7 @@ import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
   deleteStory,
-  holdFetch,
+  latch,
   openProject,
   seedToken,
 } from "./support";
@@ -127,30 +127,35 @@ test("a saved draft leaves the catalog pending until its fresh row arrives", asy
   page,
 }) => {
   const title = "A draft held at the catalog boundary";
-  const catalog = await holdFetch<
-    Array<{ drafts?: Array<{ story: { title: string } }> }>
-  >(
-    page,
+  const catalogGate = latch();
+  const catalogStarted = latch();
+  let holdCatalog = false;
+  await page.route(
     (url) => url.pathname === "/api/repos",
-    (projects) =>
-      projects.some((project) =>
-        (project.drafts || []).some((draft) => draft.story.title === title),
-      ),
-    { sealOnHold: true },
+    async (route) => {
+      if (route.request().method() !== "GET" || !holdCatalog) {
+        await route.continue();
+        return;
+      }
+      catalogStarted.release();
+      await catalogGate.held;
+      await route.continue();
+    },
   );
 
   await page.locator("#new-story-btn").click();
   await page.locator("#create-title").fill(title);
+  holdCatalog = true;
   await page.locator("#create-save-draft").click();
-  await catalog.taken;
-  await catalog.seal();
+  await catalogStarted.held;
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 
   await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
 
-  await catalog.deliver();
+  holdCatalog = false;
+  catalogGate.release();
   await expect(
     page.locator("#drafts-list .drafts-row", { hasText: title }),
   ).toBeVisible();
