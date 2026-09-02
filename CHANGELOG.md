@@ -3,6 +3,28 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.2.1-beta.2] - 2026-09-02
+
+### Fixed
+- reuse the claim Full Auto acquires before helper dispatch (SH-473) (57df4f2)
+- retain subshell-created test fixtures in the cleanup manifest (SH-473) (f070832)
+- describe only resources that actually survive a refused dispatch (SH-473) (934e622)
+- invalidate stale global-draft catalog reads (SH-473) (483dda9)
+- floor coarse-pointer control widths (SH-473) (ce50f3e)
+- bind gate leases to capability markers (SH-473) (0042887)
+
+### Changed
+- Merge pull request #609 from mikeydotio/release/v2.2.1-beta.1 (e675651)
+- Merge pull request #610 from mikeydotio/fix/SH-473-full-auto-dispatch-claim (bb7330d)
+
+### Testing
+- reproduce and pin the Full Auto engine-owned claim handoff (SH-473) (24b09fa)
+- isolate ready-gate dispatches from ambient tmux state (SH-473) (31487c4)
+- reproduce command-substitution fixture leakage (SH-473) (f6316ef)
+- reject invented recovery claims in artifact-only diagnostics (SH-473) (fd5dd00)
+- harden release browser fixtures, geometry, routing, and cleanup (SH-473) (ae87b8f, 7ee573d, c4788b1, bf9fef5, 6cae358, 5dae4b5, 8515434, 9c3f64e, 730086c, 4777daa, d5609b4)
+- make macOS-only release-gate probes portable and platform-scoped (SH-473) (df3b65d, 8ee01cf, d17e868, 4267994)
+
 ## [v2.2.1-beta.1] - 2026-09-02
 
 ### Breaking
