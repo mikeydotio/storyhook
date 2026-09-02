@@ -1,45 +1,46 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, git, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
+/// A bare git repository with an identity, and NO initial commit.
+///
+/// Deliberately not `ProjectBuilder::git()`, which writes one: this file
+/// asserts a commit COUNT (`sync_git_basic`'s "scanned 3 commits"), and a
+/// fixture commit would make it four while being too recent for `--since` to
+/// filter out. Kept local, converted to the shared `git` helper so the repo
+/// reads the isolated `HOME` rather than the developer's `~/.gitconfig`.
 fn init_git(dir: &std::path::Path) {
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
+    let env = TestEnv::shared();
+    git(env, dir, &["init"]);
+    git(env, dir, &["config", "user.email", "test@test.com"]);
+    git(env, dir, &["config", "user.name", "Test"]);
 }
 
+/// An empty commit, through the same isolated `git`.
+///
+/// The raw version this replaces discarded git's exit status, so on a machine
+/// with `commit.gpgsign = true` in the developer's global config it made no
+/// commit at all and said nothing — and the isolated `HOME` is what stops that
+/// setting being visible here in the first place.
 fn git_commit(dir: &std::path::Path, message: &str) {
-    std::process::Command::new("git")
-        .args(["commit", "--allow-empty", "-m", message])
-        .current_dir(dir)
-        .output()
-        .unwrap();
+    git(
+        TestEnv::shared(),
+        dir,
+        &["commit", "--allow-empty", "-m", message],
+    );
 }
 
 #[test]
 fn sync_git_basic() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -69,7 +70,7 @@ fn sync_git_basic() {
 
 #[test]
 fn sync_git_multiple_ids() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -95,7 +96,7 @@ fn sync_git_multiple_ids() {
 
 #[test]
 fn sync_git_no_matches() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -117,7 +118,7 @@ fn sync_git_no_matches() {
 
 #[test]
 fn sync_git_idempotent() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -147,7 +148,7 @@ fn sync_git_idempotent() {
 
 #[test]
 fn sync_git_not_a_git_repo() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // No git init -- just story init
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -168,7 +169,7 @@ fn sync_git_not_a_git_repo() {
 /// still refused, exactly as before.
 #[test]
 fn sync_git_closed_story_linked_but_not_moved() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -202,7 +203,7 @@ fn sync_git_closed_story_linked_but_not_moved() {
 
 #[test]
 fn sync_git_custom_prefix() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "API"])
@@ -231,7 +232,7 @@ fn sync_git_custom_prefix() {
 
 #[test]
 fn sync_git_since_flag() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -255,7 +256,7 @@ fn sync_git_since_flag() {
 
 #[test]
 fn sync_git_summary_message() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -285,7 +286,7 @@ fn sync_git_summary_message() {
 
 #[test]
 fn sync_git_auto_transition_with_role() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -335,7 +336,7 @@ fn sync_git_auto_transition_with_role() {
 
 #[test]
 fn sync_git_no_transition_without_active_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -383,7 +384,7 @@ fn sync_git_no_transition_without_active_state() {
 
 #[test]
 fn sync_git_no_re_transition() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init_git(dir.path());
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])

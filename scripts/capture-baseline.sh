@@ -141,11 +141,12 @@ median() {
 # ---------------------------------------------------------------------------
 
 # This script runs test binaries **directly**, outside the Makefile, so it does
-# not inherit the wrapper's isolated data directory — and dozens of test files
-# build a fixture with `tempfile::tempdir()` and run `story` with whatever
-# environment they were handed. Without this block a baseline capture writes
-# projects into the developer's real store, which is exactly how the junk
-# project W7 found got there.
+# not inherit the wrapper's isolated data directory. Without this block a
+# baseline capture writes projects into the developer's real store, which is
+# exactly how the junk project W7 found got there. Every test file builds its
+# fixtures through the shared harness now (SH-531), which is a second layer and
+# not a replacement: this script also runs the golden corpus and `story` itself
+# outside any test binary.
 #
 # Not hypothetical here either: the binary's own test-build guard
 # (`storyhook::env::is_test_build`) failed five tests in `cli_error_streams`
@@ -156,21 +157,25 @@ median() {
 # Spotlight-indexed (SH-53).
 CAPTURE_DATA_ROOT="$(mktemp -d /private/tmp/storyhook-baseline.XXXXXX)"
 trap 'rm -rf "$CAPTURE_DATA_ROOT"' EXIT
-export STORYHOOK_DATA_DIR="$CAPTURE_DATA_ROOT/data"
-export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
-# `STORYHOOK_STORE_PATH` outranks `STORYHOOK_DATA_DIR` (SH-113), so the line
-# above isolates nothing while a developer has one exported -- which is exactly
-# what somebody debugging a second store has. A capture would then run against
-# their real store and say nothing about it, because the guard that would
-# complain inspects the variable that lost.
-unset STORYHOOK_STORE_PATH
+# THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own header
+# carries the parameters and the reason for each. `--home` is not passed: the
+# flake census below runs `make test`, and cargo with a fake $HOME loses its
+# registry and its build cache.
+#
+# This script used to claim in its own header that it provided "the same
+# contract scripts/run-tests.sh provides" while carrying no path guard at all --
+# it was the harness the derived scan in tests/store_isolation.rs was written
+# after missing. Sourcing the one implementation is how that stops being a claim
+# and starts being true.
+# shellcheck source=test-env.sh
+. "$REPO_ROOT/scripts/test-env.sh"
+storyhook_isolate "$CAPTURE_DATA_ROOT"
+
 # The flake census below runs `make test` N times in a row (SH-524); an
 # ambient journal path from some other daemon-owned verification run must
 # not be inherited, or these unrelated repeated runs would all write into it.
 unset STORYHOOK_GATE_PROGRESS
 export INSTA_UPDATE=no
-export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
-export STORYHOOK_PARENT_PID="$$"
 
 # ---------------------------------------------------------------------------
 # Machine tag

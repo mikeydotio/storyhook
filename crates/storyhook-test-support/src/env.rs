@@ -9,45 +9,23 @@ use tempfile::TempDir;
 use crate::project::ProjectBuilder;
 use crate::scratch::scratch_dir_named;
 
-/// The environment variables a storyhook process is allowed to see.
+/// The environment variables a storyhook process is allowed to see, and what
+/// each of them is set to, come from one place:
+/// [`storyhook::env::test_environment::TEST_ENVIRONMENT`].
 ///
-/// `HOME` is the one storyhook reads today (`~/.storyhook/registry.toml`, the
-/// dashboard pid file). The rest are set **unconditionally and from the start**,
-/// before anything reads them: the data-layer rearchitecture moves storyhook's
-/// state to an XDG-shaped global store, and a harness that only isolates what
-/// today's code happens to consult would let the very first commit of that
-/// store write into the developer's real `~/.local/share/storyhook`. Isolating
-/// a variable nobody reads costs nothing; discovering afterwards that a test
-/// run ate real data costs everything.
+/// This harness used to carry its own two lists -- `ISOLATED_VARS` and
+/// `CLEARED_VARS` -- which is how it came to be the only one of seven isolating
+/// harnesses that cleared the developer's real `STORYHOOK_GITHUB_TOKEN`
+/// (SH-153, fixed here and nowhere else) and one of only two that redirected
+/// `HOME`. Both lists are read from the shared table now, so this harness and
+/// the shell one cannot answer the same question differently.
 ///
-/// `STORYHOOK_STORE_PATH` is the newest and the most dangerous to leave out: it
-/// *outranks* `STORYHOOK_DATA_DIR`, so a developer who has one exported in their
-/// shell would have every fixture command in the suite quietly pointed at that
-/// store no matter what else this harness set. It is given a value rather than
-/// removed, so that what the child sees is asserted the same way as everything
-/// else here.
-/// Variables every fixture command has **removed** rather than redirected.
-///
-/// `ISOLATED_VARS` below points a path somewhere harmless; there is no harmless
-/// value for a credential, so this list is cleared instead.
-///
-/// **This is not tidiness.** On a developer machine with a real
-/// `STORYHOOK_GITHUB_TOKEN` exported, every fixture child and every test daemon
-/// inherited that PAT — so the suite's behaviour depended on whose shell it ran
-/// in, and a `github-sync` fixture could reach the network with a real
-/// credential. `tests/error_contract.rs` used to carry a local `env_remove` for
-/// exactly this, which was one test compensating for a harness-wide gap
-/// (SH-153).
-const CLEARED_VARS: [&str; 1] = ["STORYHOOK_GITHUB_TOKEN"];
-
-const ISOLATED_VARS: [&str; 6] = [
-    "HOME",
-    "XDG_DATA_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_STATE_HOME",
-    "STORYHOOK_DATA_DIR",
-    "STORYHOOK_STORE_PATH",
-];
+/// [`Scope::StoryhookProcessOnly`] is what this harness passes, and it is the
+/// whole reason `HOME` can be isolated here at all: isolation is applied to
+/// each child [`std::process::Command`] rather than exported around a whole
+/// run, so nothing but `story` ever sees the fake home. A shell wrapper around
+/// `cargo` cannot do the same without costing cargo its registry.
+use storyhook::env::test_environment::{self, Disposition, Scope, Setting};
 
 /// A fully isolated storyhook environment: a private `HOME`, private XDG
 /// directories, and a private storyhook data directory, all under a fixture
@@ -61,12 +39,10 @@ const ISOLATED_VARS: [&str; 6] = [
 pub struct TestEnv {
     /// Held for its `Drop`: the whole environment lives inside it.
     _root: TempDir,
-    home: PathBuf,
-    data_home: PathBuf,
-    config_home: PathBuf,
-    state_home: PathBuf,
-    data_dir: PathBuf,
-    store_path: PathBuf,
+    /// Every parameter of [`test_environment::TEST_ENVIRONMENT`], resolved
+    /// against this environment's root. The single source for the accessors
+    /// below, so no field can come to disagree with what a child is handed.
+    settings: Vec<Setting>,
 }
 
 impl TestEnv {
@@ -91,53 +67,65 @@ impl TestEnv {
 
     fn build(label: &str) -> TestEnv {
         let root = scratch_dir_named(label);
-        let home = root.path().join("home");
-        let env = TestEnv {
-            home: home.clone(),
-            data_home: home.join(".local/share"),
-            config_home: home.join(".config"),
-            state_home: home.join(".local/state"),
-            data_dir: home.join(".local/share/storyhook"),
-            store_path: home.join(".local/share/storyhook/store.db"),
-            _root: root,
-        };
-        for dir in [
-            &env.home,
-            &env.data_home,
-            &env.config_home,
-            &env.state_home,
-            &env.data_dir,
-        ] {
-            std::fs::create_dir_all(dir)
+        // Resolved once, from the shared table, in the scope that permits
+        // `HOME`: every path this environment answers with is one of these, so
+        // there is no second place for the layout to be written down.
+        let settings =
+            test_environment::resolve(root.path(), std::process::id(), Scope::StoryhookProcessOnly);
+        for dir in test_environment::directories(root.path()) {
+            std::fs::create_dir_all(&dir)
                 .unwrap_or_else(|e| panic!("creating {}: {e}", dir.display()));
         }
-        env
+        TestEnv {
+            _root: root,
+            settings,
+        }
+    }
+
+    /// One parameter's path, by name.
+    ///
+    /// Panics rather than returning an `Option`: every caller below names a
+    /// parameter that is in the table, so an absent one means the table lost a
+    /// parameter this harness still promises, and a `None` silently threaded
+    /// onward would turn that into a fixture pointed somewhere unrelated.
+    fn path_of(&self, name: &str) -> &Path {
+        let setting = self
+            .settings
+            .iter()
+            .find(|setting| setting.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name} is no longer a test-environment parameter, but this \
+                     harness still hands it out"
+                )
+            });
+        Path::new(
+            setting
+                .value
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} is a removed parameter and has no path")),
+        )
     }
 
     /// This environment's private `HOME`.
     pub fn home(&self) -> &Path {
-        &self.home
+        self.path_of("HOME")
     }
 
     /// This environment's private `XDG_DATA_HOME`.
     pub fn data_home(&self) -> &Path {
-        &self.data_home
-    }
-
-    /// This environment's private `XDG_CONFIG_HOME`.
-    pub fn config_home(&self) -> &Path {
-        &self.config_home
+        self.path_of("XDG_DATA_HOME")
     }
 
     /// This environment's private `XDG_STATE_HOME`.
     pub fn state_home(&self) -> &Path {
-        &self.state_home
+        self.path_of("XDG_STATE_HOME")
     }
 
-    /// This environment's private `STORYHOOK_DATA_DIR` — where the global
-    /// store will live once the data layer moves there.
+    /// This environment's private `STORYHOOK_DATA_DIR` — the directory the
+    /// global store sits in.
     pub fn data_dir(&self) -> &Path {
-        &self.data_dir
+        self.path_of("STORYHOOK_DATA_DIR")
     }
 
     /// The database file every `story` process this environment builds will
@@ -145,19 +133,41 @@ impl TestEnv {
     /// `--store-path` and `$STORYHOOK_STORE_PATH` do.
     #[must_use]
     pub fn store_path(&self) -> &Path {
-        &self.store_path
+        self.path_of("STORYHOOK_STORE_PATH")
     }
 
-    /// The `(name, value)` pairs every command this environment builds carries.
-    pub fn vars(&self) -> [(&'static str, &Path); 6] {
-        [
-            (ISOLATED_VARS[0], self.home.as_path()),
-            (ISOLATED_VARS[1], self.data_home.as_path()),
-            (ISOLATED_VARS[2], self.config_home.as_path()),
-            (ISOLATED_VARS[3], self.state_home.as_path()),
-            (ISOLATED_VARS[4], self.data_dir.as_path()),
-            (ISOLATED_VARS[5], self.store_path.as_path()),
-        ]
+    /// Every parameter this environment carries, resolved.
+    ///
+    /// A removed parameter has `value: None`; [`Self::apply`] turns that into an
+    /// `env_remove` rather than an empty string, because a credential set to
+    /// `""` is still a credential the child was handed.
+    #[must_use]
+    pub fn settings(&self) -> &[Setting] {
+        &self.settings
+    }
+
+    /// The `(name, path)` pairs of the parameters that name a location.
+    ///
+    /// The removals are deliberately absent: a caller reconstructing an
+    /// environment out of paths has nothing to do with a variable whose whole
+    /// disposition is "not present".
+    #[must_use]
+    pub fn vars(&self) -> Vec<(&'static str, &Path)> {
+        self.settings
+            .iter()
+            .filter_map(|setting| {
+                setting
+                    .value
+                    .as_ref()
+                    .filter(|_| {
+                        test_environment::TEST_ENVIRONMENT.iter().any(|parameter| {
+                            parameter.name == setting.name
+                                && matches!(parameter.disposition, Disposition::Root(_))
+                        })
+                    })
+                    .map(|value| (setting.name, Path::new(value)))
+            })
+            .collect()
     }
 
     /// The daemon-shaped settings every command this environment builds carries.
@@ -165,7 +175,8 @@ impl TestEnv {
     /// Neither is optional, and the reason each exists is on
     /// [`daemon_containment`] — one copy of it, because a reason stated twice is
     /// a reason that can come to disagree with itself.
-    pub fn daemon_vars(&self) -> [(&'static str, String); 2] {
+    #[must_use]
+    pub fn daemon_vars(&self) -> Vec<(&'static str, String)> {
         daemon_containment()
     }
 
@@ -197,16 +208,17 @@ impl TestEnv {
     /// through here, including the `git` invocations behind
     /// [`ProjectBuilder`] — a fixture repo that reads the developer's real
     /// `~/.gitconfig` is not isolated either.
+    ///
+    /// A removed parameter is `env_remove`d rather than set to `""`: an empty
+    /// credential is still a credential the child was handed, and the two are
+    /// only the same thing for the parameters that happen to be paths.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         cmd.env("PATH", self.path_with_binary());
-        for name in CLEARED_VARS {
-            cmd.env_remove(name);
-        }
-        for (name, value) in self.vars() {
-            cmd.env(name, value);
-        }
-        for (name, value) in self.daemon_vars() {
-            cmd.env(name, value);
+        for setting in &self.settings {
+            match &setting.value {
+                Some(value) => cmd.env(setting.name, value),
+                None => cmd.env_remove(setting.name),
+            };
         }
     }
 
@@ -214,21 +226,15 @@ impl TestEnv {
     /// this environment applied. Replaces the per-file `fn story(dir)` helper
     /// that every integration test used to declare for itself.
     pub fn story(&self, cwd: impl AsRef<Path>) -> assert_cmd::Command {
-        let mut cmd = assert_cmd::Command::new(story_binary());
-        cmd.current_dir(cwd.as_ref());
-        cmd.env("PATH", self.path_with_binary());
-        // Removed before the rest is set, so a test that deliberately supplies
-        // one (tests/github_sync_token.rs) still wins by setting it afterwards.
-        for name in CLEARED_VARS {
-            cmd.env_remove(name);
-        }
-        for (name, value) in self.vars() {
-            cmd.env(name, value);
-        }
-        for (name, value) in self.daemon_vars() {
-            cmd.env(name, value);
-        }
-        cmd
+        // Built as a `std::process::Command` and handed to `apply`, so the
+        // isolation goes on through exactly one door. This used to carry its
+        // own copy of the loop, which is a second list that can disagree with
+        // the first. The removals still happen before the sets, so a test that
+        // deliberately supplies a credential afterwards still wins.
+        let mut inner = std::process::Command::new(story_binary());
+        inner.current_dir(cwd.as_ref());
+        self.apply(&mut inner);
+        assert_cmd::Command::from_std(inner)
     }
 
     /// A plain [`std::process::Command`] on the `story` binary, for the tests
@@ -257,7 +263,7 @@ impl TestEnv {
     /// pins.
     #[must_use]
     pub fn environment(&self) -> storyhook::env::Environment {
-        storyhook::env::Environment::at(&self.home)
+        storyhook::env::Environment::at(self.home())
     }
 
     /// The daemon this environment's `story` commands share, if one is running.
@@ -296,34 +302,59 @@ impl TestEnv {
     }
 }
 
-/// The two settings that stop a test-spawned daemon reaching anything real.
+/// The parameters that stop a test-spawned daemon reaching anything real, for a
+/// caller that has no environment root to hand out.
 ///
 /// A free function rather than a method, because the sites that most need it are
-/// the ones with no [`TestEnv`] to ask: three test files call `env_clear()` on
+/// the ones with no [`TestEnv`] to ask: several test files call `env_clear()` on
 /// purpose, so that the variable *they* are about cannot arrive from the ambient
-/// shell. They used to name the in-process transport and never start a daemon at
-/// all; since SH-114 they start one like everything else, and a daemon with a
-/// cleared environment would prefer port 3456 — the developer's own dashboard —
-/// and outlive the run that made it.
+/// shell. A daemon with a cleared environment would prefer port 3456 — the
+/// developer's own dashboard — and would outlive the run that made it.
+///
+/// **Derived, not listed.** These are exactly the parameters of
+/// [`test_environment::TEST_ENVIRONMENT`] whose value does not come from a root
+/// directory, which is the property a caller in this position actually has: it
+/// has cleared its environment, so the removals are already satisfied, and it
+/// has no root, so the paths are not its to set. A parameter added to the table
+/// in either of those two shapes arrives here with no edit; one added as a path
+/// correctly does not, because such a caller could not honour it.
 ///
 /// One definition rather than a copy per site is deliberate. SH-136 is about a
-/// hand-maintained list of places that export this pair; adding three more by
-/// hand would have made that story worse.
+/// hand-maintained list of places that export this pair, and adding more by hand
+/// would have made that story worse.
 #[must_use]
-pub fn daemon_containment() -> [(&'static str, String); 2] {
-    [
-        // The daemon's preferred port is 3456, which is where a developer's own
-        // dashboard lives; a suite that could bind it would, on any machine
-        // where it happened to be free, and then a test would be talking to
-        // something a human was using.
-        ("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0".to_string()),
-        // Every `story` a test runs inherits this, so a daemon one of them
-        // spawns inherits it too and exits when this process does — including
-        // when this process is killed rather than ended. A leaked daemon poisons
-        // every later run on the machine, which is not a hypothetical: it cost
-        // 78 of 139 tests once.
-        ("STORYHOOK_PARENT_PID", std::process::id().to_string()),
-    ]
+pub fn daemon_containment() -> Vec<(&'static str, String)> {
+    // Resolved against a root that is never used: every parameter selected below
+    // ignores it by construction, and the assertion is what keeps that true
+    // rather than assumed.
+    let unused_root = Path::new("/dev/null/no-root-is-needed-here");
+    test_environment::resolve(unused_root, std::process::id(), Scope::Anywhere)
+        .into_iter()
+        .filter(|setting| {
+            test_environment::TEST_ENVIRONMENT.iter().any(|parameter| {
+                parameter.name == setting.name
+                    && matches!(
+                        parameter.disposition,
+                        Disposition::Literal(_) | Disposition::OwnPid
+                    )
+            })
+        })
+        .map(|setting| {
+            let value = setting
+                .value
+                .expect("a literal or a pid always has a value");
+            let value = value
+                .into_string()
+                .expect("a literal and a pid are both valid UTF-8");
+            assert!(
+                !value.contains("no-root-is-needed-here"),
+                "{} was selected as root-independent but resolved through the \
+                 root anyway",
+                setting.name
+            );
+            (setting.name, value)
+        })
+        .collect()
 }
 
 /// The `story` binary under test — always this build's, never a globally
@@ -496,15 +527,26 @@ mod tests {
         }
     }
 
+    /// This harness carries the WHOLE parameter set, in the table's own order.
+    ///
+    /// Pinned by name rather than by count, because a count is green while two
+    /// parameters swap: the shell rendering and this one are compared to each
+    /// other by sequence, and a harness that quietly reordered them would fail
+    /// there with a message about the shell rather than about itself.
     #[test]
-    fn isolation_covers_every_variable_the_rearchitecture_will_read() {
-        // Pinned by name, not by count: the flip to a global XDG-shaped store
-        // is the moment an unisolated variable starts writing to the
-        // developer's real data, and by then the harness must already have
-        // been isolating it.
+    fn isolation_covers_every_parameter_in_the_table() {
         let env = TestEnv::isolated();
-        let names: Vec<_> = env.vars().iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ISOLATED_VARS);
+        let names: Vec<&str> = env.settings().iter().map(|s| s.name).collect();
+        let expected: Vec<&str> = storyhook::env::test_environment::TEST_ENVIRONMENT
+            .iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(
+            names, expected,
+            "TestEnv applies the full table, HOME included: it isolates each \
+             `story` child rather than exporting around a whole run, which is \
+             the level at which HOME may be redirected"
+        );
     }
 
     /// **A real credential must not reach a fixture.**
@@ -528,7 +570,14 @@ mod tests {
             !seen.contains("ghp_the_developers_real_token"),
             "a fixture child must not inherit a credential; it saw:\n{seen}"
         );
-        for name in CLEARED_VARS {
+        // Derived: every parameter the table says to remove, not the one this
+        // test happened to plant. A `Clear` parameter added to the table is
+        // checked here with no edit.
+        for parameter in storyhook::env::test_environment::TEST_ENVIRONMENT {
+            if parameter.disposition != Disposition::Clear {
+                continue;
+            }
+            let name = parameter.name;
             assert!(
                 !seen
                     .lines()

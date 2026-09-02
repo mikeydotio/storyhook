@@ -40,28 +40,65 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
   _TMP_REPOS+=("$STORYHOOK_TEST_HOME")
-  export HOME="$STORYHOOK_TEST_HOME/home"
-  export XDG_DATA_HOME="$HOME/.local/share"
-  export XDG_CONFIG_HOME="$HOME/.config"
-  export XDG_STATE_HOME="$HOME/.local/state"
-  export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
-  # Outranks STORYHOOK_DATA_DIR (SH-113): an exported one in the developer's
-  # shell would point this whole suite at their own store.
-  unset STORYHOOK_STORE_PATH
+
+  # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
+  # header carries the parameters and the reason for each. `--home` IS passed:
+  # this suite runs nothing but `story` and `git`.
+  #
+  # Sourcing one implementation is what finally ends the duplication
+  # `run-tests.sh` used to document as deliberate. It was deliberate for a real
+  # reason -- this branch is SKIPPED when run-tests.sh has already set
+  # $STORYHOOK_TEST_HOME, so a block written only here left the whole-suite run
+  # with no isolation at all, which is how the leaked daemons were found -- and
+  # that reason is answered by both call sites calling the same function rather
+  # than by both carrying the same twenty lines.
+  # shellcheck source=../../../scripts/test-env.sh
+  . "$TESTS_DIR/../../../scripts/test-env.sh"
+  storyhook_isolate --home "$STORYHOOK_TEST_HOME"
+
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
-  # owned run must not be inherited and mistaken for this test's.
+  # owned run must not be inherited and mistaken for this test's. Not a
+  # test-environment parameter -- a harness legitimately SETS this one -- so it
+  # stays here rather than joining the shared table.
   unset STORYHOOK_GATE_PROGRESS
-  mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
-
-  # Every `story` this suite runs starts a daemon, because since SH-114 every
-  # `story` does. These two are what stop those daemons poisoning anything: one
-  # was found alive after a gate run, from this worktree's binary, having tried
-  # for the port a developer's own dashboard uses. A daemon started here can
-  # never take port 3456, and cannot outlive this run.
-  export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
-  export STORYHOOK_PARENT_PID="$$"
 fi
+
+# --- the binary under test -------------------------------------------------
+#
+# THIS SUITE RUNS `story` BY NAME, so without this block it runs whichever one
+# `$PATH` happens to reach -- and off `make test`, that is the developer's
+# INSTALLED build. The store is isolated either way, so nothing is damaged and
+# nothing is reported: the wrong binary is simply exercised, and its failures
+# read as product bugs.
+#
+# Not hypothetical. Found while SH-531 was being written: `bash
+# plugins/story/tests/run-tests.sh`, typed by hand, failed test-reap.sh and
+# test-dispatch-epic.sh against an installed v2.2.0 whose `default_states()`
+# predates the `verifying` state. The error was `state \`verifying\` not found`,
+# which names a state, a project and a store -- and not the one thing that was
+# actually wrong.
+#
+# `make test` has always supplied this (`Makefile`'s plugin leg prepends
+# `target/debug`), which is exactly why it went unnoticed: the gate was right
+# and the standalone path was silently testing something else. This is the
+# SH-226 shape one layer over -- what a process IS, rather than what a `$PATH`
+# happens to resolve.
+#
+# Prepended rather than replacing `$PATH`: the suite needs `git`, `jq` and the
+# fake tmux, and a test file's own `PATH="$TESTS_DIR/fakes:$PATH"` still wins
+# over this for the names it provides.
+_STORY_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd "$TESTS_DIR/../../.." && pwd)/target}"
+if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
+  echo "refusing to run: $_STORY_TARGET_DIR/debug/story does not exist." >&2
+  echo "  This suite tests the \`story\` THIS checkout builds, never the one" >&2
+  echo "  installed on the machine -- an installed binary is a different" >&2
+  echo "  version whose failures read as product bugs. Run \`cargo build\`" >&2
+  echo "  first, or \`make test\`, which does." >&2
+  exit 1
+fi
+export PATH="$_STORY_TARGET_DIR/debug:$PATH"
+unset _STORY_TARGET_DIR
 
 # --- fake-tmux state isolation ---------------------------------------------
 #

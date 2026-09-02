@@ -36,6 +36,16 @@ pub mod secrets;
 pub mod spawn_env;
 mod store_location;
 
+/// What a storyhook **test environment** is: the environment variables that
+/// stop a run reaching the developer's own store, daemon and credentials,
+/// stated once so that no consumer has to hand-copy them.
+///
+/// Sibling of [`secrets`] and [`spawn_env`] in kind — all three are about what
+/// a storyhook process may see of the machine around it — and the outermost of
+/// the three: those two decide what storyhook's *children* inherit, this one
+/// decides what storyhook itself does.
+pub mod test_environment;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

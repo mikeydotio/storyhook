@@ -268,16 +268,23 @@ run_one_binary() {
     sentinel_pid=$!
 
     (
-        export STORYHOOK_DATA_DIR="$data_root/data"
-        export XDG_STATE_HOME="$data_root/state"
-        unset STORYHOOK_STORE_PATH
+        # THE ISOLATION, in one shared place -- `scripts/test-env.sh`. The
+        # sentinel rather than `$$` is what makes this harness different: the
+        # daemons a test binary starts must end when that BINARY does, not when
+        # this whole run does, so ownership is handed to a process this script
+        # kills between binaries.
+        # shellcheck source=test-env.sh
+        . "$root/scripts/test-env.sh"
+        storyhook_isolate --parent-pid "$sentinel_pid" "$data_root"
+
         # This binary is a compiled test target (tests/gate_leg_reuse.rs among
         # them), which shells back into scripts/leg.sh/make test for its own
         # fixtures (SH-524); an ambient journal from some other daemon-owned
-        # verification run must not be inherited and corrupted by it.
+        # verification run must not be inherited and corrupted by it. Not a
+        # test-environment parameter -- a harness legitimately SETS this one --
+        # so it stays here rather than joining the shared table.
         unset STORYHOOK_GATE_PROGRESS
-        export STORYHOOK_DAEMON_ADDR="127.0.0.1:0"
-        export STORYHOOK_PARENT_PID="$sentinel_pid"
+
         export INSTA_UPDATE=no
         export LLVM_PROFILE_FILE="$profraw_dir/%p-%m.profraw"
         "$exe" >"$work/last-run.out" 2>&1

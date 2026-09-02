@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 //! Integration tests for TUI undo/redo.
 //!
 //! Undo snapshots a story's raw event log before a mutation and puts it back
@@ -55,8 +52,8 @@ impl Fixture {
 
 /// Helper: initialize a storyhook project and return the fixture holding it.
 fn init_project(prefix: &str) -> (Fixture, std::path::PathBuf) {
-    let data = tempfile::tempdir().unwrap();
-    let repo = tempfile::tempdir().unwrap();
+    let data = storyhook_test_support::scratch_dir();
+    let repo = storyhook_test_support::scratch_dir();
     let env = storyhook::env::Environment::at(data.path());
     let store = SqliteStore::open(env.store_path()).unwrap();
     store.migrate().unwrap();

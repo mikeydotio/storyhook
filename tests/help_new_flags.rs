@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 /// Tests for the new `story help --compact` and `story help --all` flags.
 ///
 /// These flags add LLM-optimized output modes to the help system:
@@ -8,12 +5,14 @@
 /// - `--all`: all topics concatenated as a single document
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 // ============================================================
@@ -22,7 +21,7 @@ fn story(dir: &std::path::Path) -> Command {
 
 #[test]
 fn help_compact_produces_output_with_key_commands() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -58,7 +57,7 @@ fn help_compact_produces_output_with_key_commands() {
 
 #[test]
 fn help_compact_is_concise() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -78,7 +77,7 @@ fn help_compact_is_concise() {
 
 #[test]
 fn help_compact_does_not_include_full_topic_explanations() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -98,7 +97,7 @@ fn help_compact_does_not_include_full_topic_explanations() {
 
 #[test]
 fn help_all_produces_all_topics() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path()).args(["help", "--all"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
@@ -129,7 +128,7 @@ fn help_all_produces_all_topics() {
 
 #[test]
 fn help_all_is_much_longer_than_compact() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let compact_output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -150,7 +149,7 @@ fn help_all_is_much_longer_than_compact() {
 
 #[test]
 fn help_all_does_not_mention_mcp_after_removal() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path()).args(["help", "--all"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
@@ -166,7 +165,7 @@ fn help_all_does_not_mention_mcp_after_removal() {
 
 #[test]
 fn help_with_topic_still_works() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["help", "project"])
         .assert()
@@ -176,7 +175,7 @@ fn help_with_topic_still_works() {
 
 #[test]
 fn help_with_unknown_topic_still_fails() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["help", "nonexistent-command"])
         .assert()
@@ -186,7 +185,7 @@ fn help_with_unknown_topic_still_fails() {
 
 #[test]
 fn help_no_args_lists_topics() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // `story help` with no args should show the main help text
     story(dir.path())
         .args(["help"])
@@ -201,7 +200,7 @@ fn help_no_args_lists_topics() {
 
 #[test]
 fn help_compact_with_json_flag_produces_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["--json", "help", "--compact"])
         .assert()
@@ -229,7 +228,7 @@ fn help_compact_with_json_flag_produces_json() {
 
 #[test]
 fn help_all_with_json_flag_produces_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["--json", "help", "--all"])
         .assert()
@@ -261,7 +260,7 @@ fn help_all_with_json_flag_produces_json() {
 
 #[test]
 fn help_compact_output_under_3000_chars() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -277,7 +276,7 @@ fn help_compact_output_under_3000_chars() {
 
 #[test]
 fn help_compact_does_not_reference_mcp() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["help", "--compact"])
         .assert()
@@ -302,7 +301,7 @@ fn help_compact_does_not_reference_mcp() {
 fn help_compact_and_all_are_mutually_exclusive_or_last_wins() {
     // If both --compact and --all are given, the implementation should
     // either reject it or pick one deterministically (no crash).
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let result = story(dir.path())
         .args(["help", "--compact", "--all"])
         .output()
@@ -318,7 +317,7 @@ fn help_compact_and_all_are_mutually_exclusive_or_last_wins() {
 fn help_compact_with_topic_arg_prefers_topic_or_errors() {
     // `story help --compact project` — should the topic or --compact win?
     // Either behavior is fine; this test just ensures no crash/panic.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let result = story(dir.path())
         .args(["help", "--compact", "project"])
         .output()

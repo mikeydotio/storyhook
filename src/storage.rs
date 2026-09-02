@@ -970,16 +970,14 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
     Ok(connection)
 }
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::Priority;
-    use tempfile::tempdir;
+    use storyhook_test_support::scratch_dir;
 
     fn setup_project() -> tempfile::TempDir {
-        let dir = tempdir().unwrap();
+        let dir = scratch_dir();
         init_project(dir.path(), None).unwrap();
         dir
     }
@@ -1094,7 +1092,7 @@ mod tests {
 
     #[test]
     fn init_project_creates_types_file() {
-        let dir = tempdir().unwrap();
+        let dir = scratch_dir();
         init_project(dir.path(), None).unwrap();
         let paths = ProjectPaths::new(dir.path());
         assert!(paths.types_file().exists());
@@ -1289,7 +1287,7 @@ mod tests {
             stories: Vec::new(),
         };
 
-        let dir = tempdir().unwrap();
+        let dir = scratch_dir();
         import_project(dir.path(), &document).unwrap();
 
         assert!(!dir.path().join(".storyhook/github-sync.toml").exists());

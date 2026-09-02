@@ -1,19 +1,18 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 #[test]
 fn import_creates_stories_from_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -45,7 +44,7 @@ fn import_creates_stories_from_json() {
 
 #[test]
 fn import_with_priority_and_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -71,7 +70,7 @@ fn import_with_priority_and_labels() {
 
 #[test]
 fn import_with_cross_references() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -113,7 +112,7 @@ fn import_with_cross_references() {
 
 #[test]
 fn import_from_file() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -132,7 +131,7 @@ fn import_from_file() {
 
 #[test]
 fn import_empty_array() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -148,7 +147,7 @@ fn import_empty_array() {
 
 #[test]
 fn import_json_output() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -167,7 +166,7 @@ fn import_json_output() {
 
 #[test]
 fn import_with_story_type() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -208,7 +207,7 @@ fn import_with_story_type() {
 
 #[test]
 fn import_rejects_invalid_story_type() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -231,7 +230,7 @@ fn import_rejects_invalid_story_type() {
 
 #[test]
 fn import_atomicity_on_type_error() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -259,7 +258,7 @@ fn import_atomicity_on_type_error() {
 
 #[test]
 fn import_accepts_valid_story_type() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -309,7 +308,7 @@ fn import_accepts_valid_story_type() {
 
 #[test]
 fn import_with_omitted_metadata_defaults_every_entry() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -336,7 +335,7 @@ fn import_with_omitted_metadata_defaults_every_entry() {
 
 #[test]
 fn import_with_explicit_priority_none_rejects_the_whole_batch() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -363,7 +362,7 @@ fn import_with_explicit_priority_none_rejects_the_whole_batch() {
 
 #[test]
 fn import_with_an_unparseable_priority_rejects_without_a_partial_write() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -390,7 +389,7 @@ fn import_with_an_unparseable_priority_rejects_without_a_partial_write() {
 
 #[test]
 fn import_json_returns_defaulted_stories_without_warnings() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

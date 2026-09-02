@@ -51,6 +51,7 @@ mod real_store;
 mod scratch;
 mod server;
 mod service;
+mod source_scan;
 mod store;
 mod tailnet;
 
@@ -72,5 +73,6 @@ pub use server::{
     serve, try_serve_on, wait_for_addr, wait_for_server,
 };
 pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
+pub use source_scan::without_rust_comments;
 pub use store::project_id_at;
 pub use tailnet::path_without_tailscale;

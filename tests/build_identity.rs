@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
 /// The checkout under test — the tracked scripts and `build.rs` live here.
@@ -637,8 +637,15 @@ fn build_rs_emits_no_rerun_if_directive() {
 // ---------------------------------------------------------------------------
 
 fn version_output() -> String {
-    let out = assert_cmd::Command::cargo_bin("story")
-        .unwrap()
+    // Through the harness, so this reads the binary THIS build produced under
+    // an isolated environment. Nothing else in this file is migrated with it:
+    // `TreeRepo` and `ManifestFixture` test `scripts/tracked-tree.sh` and
+    // `build.rs`, not storyhook, and two of them override $TMPDIR on purpose.
+    // A shared environment there would change what `git init` reads for no
+    // benefit and would put the positive control (`fails_outside_a_git_
+    // repository`) at risk.
+    let out = TestEnv::shared()
+        .story(TestEnv::shared().home())
         .arg("--version")
         .output()
         .expect("running story --version");
