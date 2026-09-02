@@ -76,6 +76,45 @@ recover_merged() {
     exit 0
 }
 
+validate_metadata() {
+    metadata="$1"
+    pr="$(printf '%s' "$metadata" | jq -er '.number')" \
+        || die_json "submitted pull request returned no number"
+    state="$(printf '%s' "$metadata" | jq -er '.state')" \
+        || die_json "PR #$pr returned no state"
+
+    # `jq -e` assigns failure to the JSON value `false`, so it cannot extract
+    # boolean fields whose healthy value is false. Select the type as data,
+    # then keep the business-policy checks below separate from wire validity.
+    draft="$(printf '%s' "$metadata" | jq -r \
+        'if ((.isDraft | type) == "boolean") then .isDraft else empty end')" \
+        || die_json "PR #$pr returned no draft status"
+    [ -n "$draft" ] || die_json "PR #$pr returned no draft status"
+    cross="$(printf '%s' "$metadata" | jq -r \
+        'if ((.isCrossRepository | type) == "boolean") then .isCrossRepository else empty end')" \
+        || die_json "PR #$pr returned no repository relationship"
+    [ -n "$cross" ] || die_json "PR #$pr returned no repository relationship"
+
+    base="$(printf '%s' "$metadata" | jq -er '.baseRefName')" \
+        || die_json "PR #$pr returned no base branch"
+    reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" \
+        || die_json "PR #$pr returned no head oid"
+    [ "$draft" = false ] || die_json "PR #$pr is a draft"
+    [ "$cross" = false ] \
+        || die_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+}
+
+# Metadata-validation seam. The production path supplies GitHub's JSON; tests
+# feed that same wire shape directly so boolean parsing is proven without a
+# fake GitHub service or any repository mutation.
+if [ "${1:-}" = --validate-metadata ]; then
+    [ "$#" -eq 2 ] \
+        || die_json "private usage: verify-pr.sh --validate-metadata <json>"
+    validate_metadata "$2"
+    jq -n --argjson number "$pr" '{result:"metadata-valid", number:$number}'
+    exit 0
+fi
+
 # Protocol-classification seam. The live path supplies land-pr.sh's real
 # status and diagnostics; tests can pin the existing status contract without
 # imitating GitHub.
@@ -101,14 +140,7 @@ gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
 metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
     || die_json "could not read submitted pull request $submitted_pr from GitHub"
-pr="$(printf '%s' "$metadata" | jq -er '.number')" || die_json "submitted pull request returned no number"
-state="$(printf '%s' "$metadata" | jq -er '.state')" || die_json "PR #$pr returned no state"
-draft="$(printf '%s' "$metadata" | jq -er '.isDraft')" || die_json "PR #$pr returned no draft status"
-cross="$(printf '%s' "$metadata" | jq -er '.isCrossRepository')" || die_json "PR #$pr returned no repository relationship"
-base="$(printf '%s' "$metadata" | jq -er '.baseRefName')" || die_json "PR #$pr returned no base branch"
-reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" || die_json "PR #$pr returned no head oid"
-[ "$draft" = false ] || die_json "PR #$pr is a draft"
-[ "$cross" = false ] || die_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+validate_metadata "$metadata"
 gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) - _pr_meta_start ))"
 
 base_ref="refs/remotes/origin/$base"
