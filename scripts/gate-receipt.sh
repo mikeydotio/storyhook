@@ -108,6 +108,7 @@ lease_prefix="$git_dir/storyhook-gate-objects."
 
 lease=""
 lease_identity_value=""
+lease_marker_value=""
 cleanup_lease=0
 cleanup_state=0
 state_tmp=""
@@ -138,18 +139,33 @@ lease_is_directory() {
     lease_path_is_scoped "$1" && [ ! -L "$1" ] && [ -d "$1" ]
 }
 
+lease_marker_is_valid() {
+    case "$1" in
+    .storyhook-owner.*) ;;
+    *) return 1 ;;
+    esac
+    marker_suffix="${1#.storyhook-owner.}"
+    [ -n "$marker_suffix" ] || return 1
+    case "$marker_suffix" in
+    */*) return 1 ;;
+    esac
+}
+
 lease_is_owned() {
     lease_is_directory "$1" || return 1
     actual_identity="$(lease_identity "$1")" || return 1
-    [ "$actual_identity" = "$2" ]
+    [ "$actual_identity" = "$2" ] || return 1
+    lease_marker_is_valid "$3" || return 1
+    [ ! -L "$1/$3" ] && [ -f "$1/$3" ]
 }
 
 remove_lease() {
-    # Recursive deletion is allowed only while both the path and the physical
-    # directory identity still name the lease this caller created. A
-    # substituted entry is left in place; removing an unproven object is less
-    # safe than leaking one bounded worktree-private artifact.
-    lease_is_owned "$1" "$2" || return 1
+    # Recursive deletion is allowed only while the scoped path, physical
+    # directory identity, and in-directory capability marker still name the
+    # lease this caller created. A substituted entry is left in place;
+    # removing an unproven object is less safe than leaking one bounded
+    # worktree-private artifact.
+    lease_is_owned "$1" "$2" "$3" || return 1
     rm -rf "$1"
 }
 
@@ -167,9 +183,10 @@ cleanup() {
         cleanup_state=0
     fi
     if [ "$cleanup_lease" -eq 1 ] && [ -n "$lease" ]; then
-        remove_lease "$lease" "$lease_identity_value" 2>/dev/null || true
+        remove_lease "$lease" "$lease_identity_value" "$lease_marker_value" 2>/dev/null || true
         lease=""
         lease_identity_value=""
+        lease_marker_value=""
         cleanup_lease=0
     fi
 }
@@ -192,23 +209,25 @@ load_preflight_state() {
     state_tree="$(sed -n 's/^tree //p' "$preflight_state" 2>/dev/null)"
     state_lease="$(sed -n 's/^objects //p' "$preflight_state" 2>/dev/null)"
     state_identity="$(sed -n 's/^identity //p' "$preflight_state" 2>/dev/null)"
+    state_marker="$(sed -n 's/^marker //p' "$preflight_state" 2>/dev/null)"
     expected_state="tree $state_tree
 objects $state_lease
-identity $state_identity"
+identity $state_identity
+marker $state_marker"
     [ "$state_body" = "$expected_state" ] || return 1
     printf '%s\n' "$state_tree" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' \
         || return 1
     printf '%s\n' "$state_identity" | grep -Eq '^[0-9]+:[0-9]+$' \
         || return 1
-    lease_is_owned "$state_lease" "$state_identity"
+    lease_is_owned "$state_lease" "$state_identity" "$state_marker"
 }
 
 git_with_lease() {
-    lease_is_owned "$lease" "$lease_identity_value" || return 1
+    lease_is_owned "$lease" "$lease_identity_value" "$lease_marker_value" || return 1
     GIT_OBJECT_DIRECTORY="$lease" \
         GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_alternates" \
         git "$@" || return $?
-    lease_is_owned "$lease" "$lease_identity_value"
+    lease_is_owned "$lease" "$lease_identity_value" "$lease_marker_value"
 }
 
 # The tree object id of every TRACKED file as it currently stands in this
@@ -226,11 +245,11 @@ git_with_lease() {
 # proves this script, rather than an in-process sourcing relationship a test
 # could only pin by static inspection.
 tracked_tree() {
-    if [ "$#" -eq 2 ]; then
-        lease_is_owned "$1" "$2" || return 1
+    if [ "$#" -eq 3 ]; then
+        lease_is_owned "$1" "$2" "$3" || return 1
         tracked_tree_result="$("$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh" "$1")" \
             || return $?
-        lease_is_owned "$1" "$2" || return 1
+        lease_is_owned "$1" "$2" "$3" || return 1
         printf '%s\n' "$tracked_tree_result"
     else
         "$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh"
@@ -246,7 +265,7 @@ preflight)
     if [ -e "$preflight_state" ]; then
         if load_preflight_state; then
             note "discarding an abandoned preflight for tree $state_tree"
-            remove_lease "$state_lease" "$state_identity" \
+            remove_lease "$state_lease" "$state_identity" "$state_marker" \
                 || die "could not remove abandoned object storage"
             rm -f "$preflight_state" \
                 || die "could not remove abandoned preflight state"
@@ -309,14 +328,20 @@ onto main:"
         || die "could not identify private object storage"
     printf '%s\n' "$lease_identity_value" | grep -Eq '^[0-9]+:[0-9]+$' \
         || die "private object storage has an invalid physical identity"
+    lease_marker_path="$(mktemp "$lease/.storyhook-owner.XXXXXX")" \
+        || die "could not create private object storage ownership marker"
+    lease_marker_value="${lease_marker_path##*/}"
+    lease_is_owned "$lease" "$lease_identity_value" "$lease_marker_value" \
+        || die "could not validate private object storage ownership"
 
-    tree="$(tracked_tree "$lease" "$lease_identity_value")" \
+    tree="$(tracked_tree "$lease" "$lease_identity_value" "$lease_marker_value")" \
         || die "could not resolve this worktree's tracked content"
     state_tmp="$preflight_state.tmp.$$"
     {
         printf 'tree %s\n' "$tree"
         printf 'objects %s\n' "$lease"
         printf 'identity %s\n' "$lease_identity_value"
+        printf 'marker %s\n' "$lease_marker_value"
         true
     } > "$state_tmp" || die "could not stage the preflight state"
     mv -f "$state_tmp" "$preflight_state" \
@@ -339,6 +364,7 @@ certified against anything"
     before="$state_tree"
     lease="$state_lease"
     lease_identity_value="$state_identity"
+    lease_marker_value="$state_marker"
     cleanup_lease=1
     cleanup_state=1
 
@@ -361,7 +387,7 @@ changed receipt must name a tree that was itself fully certified, not another se
         die "only 'changed' takes a base tree; got tier '$tier' with base '$base_tree'"
     fi
 
-    after="$(tracked_tree "$lease" "$lease_identity_value")" \
+    after="$(tracked_tree "$lease" "$lease_identity_value" "$lease_marker_value")" \
         || die "could not resolve this worktree's tracked content"
 
     # Mid-run drift. Nine minutes is long enough for an agent to edit tracked
@@ -400,7 +426,7 @@ run does not downgrade it"
         fi
     fi
 
-    lease_is_owned "$lease" "$lease_identity_value" \
+    lease_is_owned "$lease" "$lease_identity_value" "$lease_marker_value" \
         || die "private object storage changed before receipt publication"
 
     # Atomic: the filename IS the claim, so a half-written one would read as

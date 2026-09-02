@@ -671,11 +671,11 @@ test("one board's failure never re-scopes the global Drafts surface", async ({
  * was added for.
  *
  * Both mocks below are data and transport, never behaviour. `/api/repos`
- * answers with the daemon's own reply, one field rewritten; `/api/events` is
- * a stream that opens and closes, so the page's real `EventSource` reconnects
- * on its own `retry:` hint and runs the page's real `es.onopen`. Every
- * repaint asserted here is the production path: `fetchReposOnce()` →
- * `state.repos` → `currentProjectLabel()` → `renderDraftsList()`.
+ * answers with the daemon's own reply, one field rewritten; `/api/events`
+ * holds one `repos-changed` event until the test releases it. Every repaint
+ * asserted here is the production path: the real EventSource listener →
+ * `fetchReposOnce()` → `state.repos` → `currentProjectLabel()` →
+ * `renderDraftsList()`.
  *
  * The dashboard has no rename endpoint of its own (`POST /api/repos`
  * registers, `DELETE` removes), so rewriting the catalog reply is what a
@@ -708,17 +708,18 @@ test("a project renamed elsewhere renames its global draft rows, not just the to
     });
     await route.fulfill({ response, json: repos });
   });
-  // A stream that ends immediately. `EventSource` treats EOF as a
-  // disconnection and reconnects after the `retry:` it was given, so the page
-  // re-runs its own `es.onopen` — `fetchReposOnce()` — every ~150ms, which is
-  // how this test gets a catalog refresh without a real catalog change.
-  await page.route("**/api/events", (route) =>
-    route.fulfill({
+  // Hold one transport event instead of manufacturing a reconnect loop. The
+  // initial catalog and draft must settle before the event is released, and
+  // its production listener is what asks for the catalog refresh under test.
+  const catalogChanged = latch();
+  await page.route("**/api/events", async (route) => {
+    await catalogChanged.held;
+    await route.fulfill({
       status: 200,
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
-      body: "retry: 150\n\n",
-    }),
-  );
+      body: "event: repos-changed\ndata: {}\n\n",
+    });
+  });
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
@@ -730,15 +731,15 @@ test("a project renamed elsewhere renames its global draft rows, not just the to
 
   // From here the board's own data can repaint nothing: `renderAll()` runs
   // only on a parsed 200, and `markDataSettled()` already fired for this
-  // project on the load above, so it early-returns. Without this the reconnect
-  // loop's own `fetchData()` would repaint the popover for reasons that have
-  // nothing to do with the catalog, and this test would pass against the
-  // defect.
+  // project on the load above, so it early-returns. Without this a concurrent
+  // board read could repaint the popover for reasons that have nothing to do
+  // with the catalog, and this test would pass against the defect.
   await page.route(
     (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
     (route) => route.abort(),
   );
   name = "Alpha Project Renamed Elsewhere";
+  catalogChanged.release();
 
   // The selector proves the refetch happened at all, so a failure on the line
   // below is the popover not repainting rather than nothing having arrived.

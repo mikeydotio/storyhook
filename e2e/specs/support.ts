@@ -484,11 +484,14 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
-  await card.click();
+  const id = (await card.getAttribute("data-id"))!;
+  // A card can contain live story-reference links. Click its exact title so
+  // a narrow layout cannot put the card's geometric centre on one of them.
+  await card.getByText(title, { exact: true }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expect(page.locator("#drawer-id")).toHaveText(id);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  const id = (await card.getAttribute("data-id"))!;
   await expect(page.locator("#delete-modal-summary")).toContainText(id);
   await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
@@ -516,11 +519,13 @@ export async function deleteBlockedStory(
   const card = page.locator('.column[data-state="blocked"] .card', {
     hasText: title,
   });
-  await card.click();
+  const id = (await card.getAttribute("data-id"))!;
+  // See deleteStory(): target the card body, never a nested story reference.
+  await card.getByText(title, { exact: true }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expect(page.locator("#drawer-id")).toHaveText(id);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  const id = (await card.getAttribute("data-id"))!;
   await expect(page.locator("#delete-modal-summary")).toContainText(id);
   await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
