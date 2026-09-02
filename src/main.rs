@@ -23,10 +23,31 @@ use storyhook::output::{self, Response};
 /// off stdout.
 fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
     let rendered = output::render_error(error, json);
+    let notices = storyhook::store_notice::take();
     if json {
+        // Deliberately NOT attached here, and the boundary is worth stating.
+        // With `--json` stderr must stay empty (SH-59), and the error
+        // envelope's key set is itself a contract — `tests/error_contract.rs`
+        // pins it exactly, on the grounds that a new key is a compatible
+        // addition only once every consumer tolerates it. A notice is not worth
+        // spending that on, because an error under `--json` already carries its
+        // own explanation in `error`: the read-only refusal this exists for
+        // says READ-ONLY in the message itself. What a machine reader must not
+        // lose is the notice on a SUCCESSFUL read from a degraded store, and
+        // that is attached below, where the envelope is open (SH-530).
+        let _ = &notices;
         print!("{rendered}");
     } else {
         eprint!("{rendered}");
+        // AFTER the error, never before it: plain-text stderr is contracted to
+        // begin `error: `, and a notice printed first silently breaks that for
+        // every reader keyed on the first line. Context belongs under the
+        // failure it explains anyway.
+        //
+        // Unconditional, unlike the success path: `--quiet` suppresses the
+        // *result*, and an error is already exempt from it — a warning saying
+        // why this command failed is part of the failure, not the result.
+        print_notices(&notices);
     }
     process::exit(error.exit_code());
 }
@@ -464,12 +485,71 @@ fn main() {
     match result {
         Ok(response) => {
             let rendered = output::render_response(&response, json, flags.quiet);
+            let notices = storyhook::store_notice::take();
+            let rendered = if json {
+                attach_notices(rendered, &notices)
+            } else {
+                if !flags.quiet {
+                    print_notices(&notices);
+                }
+                rendered
+            };
             if !rendered.is_empty() {
                 print!("{rendered}");
             }
         }
         Err(error) => fail(&error, json),
     }
+}
+
+/// Prints whatever the daemon reported about the store it answered from.
+///
+/// Not gated on `stderr().is_terminal()`, unlike the transient
+/// "waiting for the daemon" notice: a degraded store is a durable condition
+/// that a script or a log needs to record just as much as a person does, and a
+/// warning suppressed everywhere except an interactive terminal is the SH-306
+/// shape — a signal that is absent exactly where nobody is watching.
+///
+/// `--quiet` still silences it, because `--quiet` is an explicit request from
+/// the caller rather than an inference about who is reading.
+fn print_notices(notices: &[String]) {
+    for notice in notices {
+        eprintln!("storyhook: {notice}");
+    }
+}
+
+/// Adds `notices` to a rendered `--json` document.
+///
+/// A string rewrite rather than a field on every `Response` variant: the
+/// notices are about the *store the command was answered from*, not about any
+/// one command's result, and threading them through several dozen response
+/// shapes would put them in the wrong place in the type system to say so.
+///
+/// Only ever adds a key, and only when there is something to say, so ordinary
+/// output is byte-identical — which is the property `--json` callers depend on
+/// and `tests/golden_cli.rs` pins. A document that is not a JSON object (or
+/// does not parse) is returned untouched rather than replaced: losing the
+/// caller's actual result to deliver a warning would be a poor trade.
+fn attach_notices(rendered: String, notices: &[String]) -> String {
+    if notices.is_empty() {
+        return rendered;
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&rendered) else {
+        return rendered;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return rendered;
+    };
+    object.insert(
+        "notices".to_string(),
+        serde_json::Value::Array(
+            notices
+                .iter()
+                .map(|n| serde_json::Value::String(n.clone()))
+                .collect(),
+        ),
+    );
+    serde_json::to_string_pretty(&value).map_or(rendered, |s| format!("{s}\n"))
 }
 
 /// Publishes `--store-path` into `$STORYHOOK_STORE_PATH`, canonicalized.

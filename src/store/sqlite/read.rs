@@ -37,7 +37,13 @@ const PROJECT_COLUMNS: &str =
 // the eighteen positional `row.get(n)` calls in `raw_story_from_row` keep
 // their indices — inserting it earlier would renumber every one of them for
 // no reason beyond cosmetics.
-const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
+/// The `stories` columns [`raw_story_from_row`] reads, by position.
+///
+/// `pub(super)` since SH-530: [`super::SqliteStore::resolve_access`] prepares a
+/// `SELECT` over exactly this list as its capability probe, so that "can this
+/// build still read a newer store?" is answered by production's own column
+/// list rather than by a second copy of it that could drift.
+pub(super) const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
      assignee, awaiting, archived, created_at, updated_at, closed_at, description, \
      hidden_at, draft, snapshot, head_global_seq";
 

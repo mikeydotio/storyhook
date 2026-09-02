@@ -257,6 +257,22 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     // `create_store` below needs no such check — it refuses the default path
     // and refuses an existing file, so it only ever opens a store at version
     // 0, which `migration_guard::decide` always permits.
+    // SH-530: a store written by a newer storyhook opens read-only rather than
+    // not at all. There is nothing to migrate — this build does not have the
+    // migrations it would need — and nothing for the SH-404 write-side guard to
+    // decide, since no write is going to happen. What there IS is an obligation
+    // to say so: a degraded store that reads normally and never mentions it is
+    // strictly worse than the refusal it replaced, because the reader acts on
+    // answers from a schema this build does not fully understand.
+    if let crate::store::Access::ReadOnly { found, supported } = store.access() {
+        crate::store_notice::push(format!(
+            "this store is at schema version {found} and this storyhook understands up to \
+             {supported}, so it is open READ-ONLY: reads are being served, every write will be \
+             refused. Install a build that understands version {found} — `story update` for the \
+             newest release."
+        ));
+        return Ok(store);
+    }
     let from_version = store.schema_version()?;
     let to_version = crate::store::current_schema_version();
     let inputs = crate::migration_guard::gather(
@@ -929,6 +945,7 @@ pub fn dispatch<S: Store>(
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
         | Invocation::Token { .. }
+        | Invocation::DoctorInstall
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Store { .. }
@@ -2248,6 +2265,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
             | Invocation::Token { .. }
+            | Invocation::DoctorInstall
             | Invocation::DoctorAbandoned { .. }
             | Invocation::DoctorCrashes { .. }
             | Invocation::Store {
@@ -2312,6 +2330,10 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         Invocation::Token { action } => dispatch_token(action),
         // Reads and writes one file under the daemon's own state directory
         // — no project, no store, exactly like the daemon commands above.
+        // SH-530: the installed set, and how far the checkout has run ahead of
+        // it. Store-free, because "the store will not open" is the single most
+        // important thing it can report.
+        Invocation::DoctorInstall => Ok(Response::Message(crate::install_status::report()?)),
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // The same shape as `DoctorAbandoned` immediately above, and for the
         // same reason (SH-287).
@@ -2656,6 +2678,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
+        | Invocation::DoctorInstall
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
@@ -2902,6 +2925,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Web { .. } => "web",
         Invocation::Daemon { .. } => "daemon",
         Invocation::Token { .. } => "token",
+        Invocation::DoctorInstall => "doctor-install",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::DoctorCrashes { .. } => "doctor-crashes",
         Invocation::Store { .. } => "store",
@@ -3156,6 +3180,12 @@ impl HttpInvoker {
             .into_body()
             .read_json()
             .map_err(|e| Transport::Sent(format!("the daemon's answer was unreadable: {e}")))?;
+        // Recorded on THIS side of the hop, so `main` can print them to the
+        // terminal the command was typed into. The daemon collected them; only
+        // the client can show them (SH-530).
+        for notice in &envelope.notices {
+            crate::store_notice::push(notice.clone());
+        }
         Ok(envelope.into_result())
     }
 }
@@ -3786,6 +3816,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
+        | Invocation::DoctorInstall
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }

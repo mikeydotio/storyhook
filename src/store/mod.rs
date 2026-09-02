@@ -87,7 +87,7 @@ pub use rebuild::{
     Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff, diff_read_model,
     rebuild_read_model, repair_read_model,
 };
-pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
+pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
     EngineRunRecord, EngineRunState, EngineScope, FeedEvent, LinkSource, MigrationReport,
@@ -104,6 +104,17 @@ pub use types::{
 /// call — and so that commit and rollback are decided by this trait rather than
 /// by whether every path through a caller remembered.
 pub trait Store: Send + Sync + 'static {
+    /// How this store may be used (SH-530).
+    ///
+    /// Required rather than defaulted to [`Access::ReadWrite`], and the
+    /// difference is not stylistic. Everything that warns a user their store is
+    /// degraded reads this one answer, so an implementation that inherited a
+    /// cheerful default — a wrapper, a cache, a decorator that forgot to
+    /// delegate — would not fail, it would silently report a degraded store as
+    /// healthy and switch the whole warning off. Requiring it makes that a
+    /// compile error instead, which is the SH-365 shape: let the compiler hold
+    /// the invariant a reviewer would have to notice.
+    fn access(&self) -> Access;
     /// The read transaction this store hands out.
     type ReadTx<'a>: ReadOps
     where

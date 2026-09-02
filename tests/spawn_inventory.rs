@@ -114,6 +114,19 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    // `install_status::installed_binary` — the `story` on this machine's own
+    // `$PATH`, asked for its version so the report can say whether the build
+    // answering you is the build this machine runs (SH-530). `Reads`, because
+    // `.output()` takes both streams to EOF.
+    //
+    // The descendant-holds-the-pipe hazard this column exists for has nothing
+    // to attach to: `--version` is `Invocation::Version`, which
+    // `invoke::needs_no_store` answers locally, so it starts no daemon, opens
+    // no store and spawns nothing of its own. That is a property of the verb
+    // rather than of this call site, which is why it is written down here
+    // rather than assumed — a future `--version` that consulted the daemon
+    // would move this row to `Detached`'s problem, not leave it unchanged.
+    ("src/install_status.rs", "&spelling", Kind::Reads),
     // `plugin::run_provider` — the selected provider CLI (`claude` or `codex`).
     // Classified as `Reads` because install/uninstall captures both streams to
     // report the provider's exact failure. The availability probe sharing this

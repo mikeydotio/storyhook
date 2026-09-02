@@ -48,6 +48,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
+        | Invocation::DoctorInstall
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }

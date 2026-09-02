@@ -1,6 +1,6 @@
 {
   "name": "story",
-  "version": "0.6.0+codex.20260823221659",
+  "version": "2.2.0",
   "description": "Dependency-aware project management and lifecycle workflows for coding agents through the Storyhook CLI.",
   "author": {
     "name": "mikeydotio",
