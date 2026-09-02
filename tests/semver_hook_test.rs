@@ -104,3 +104,102 @@ fn pre_bump_hook_syncs_and_stages_cargo_toml_and_lock() {
         "Cargo.lock must be staged; staged files:\n{staged}"
     );
 }
+
+/// The plugin-manifest half of the same discipline (SH-530).
+///
+/// Every plugin manifest must carry the version the release is cutting, and
+/// must be **staged**, because the semver plugin commits with no pathspec — an
+/// unstaged edit is left dirty in the working tree one release behind instead
+/// of riding the release commit.
+///
+/// The fixture builds manifests at three depths and in both provider
+/// directories, plus a document with no version key at all
+/// (`.agents/plugins/marketplace.json` is exactly that today), so "rewrote
+/// everything it found" and "did not invent a key where there was none" are
+/// both observed rather than assumed.
+#[test]
+fn pre_bump_hook_syncs_and_stages_every_plugin_manifest() {
+    let dir = scratch_dir();
+    let p = dir.path();
+
+    run(Command::new("git").args(["init", "-q"]).current_dir(p));
+    run(Command::new("git")
+        .args(["config", "user.email", "t@example.com"])
+        .current_dir(p));
+    run(Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(p));
+
+    let write = |rel: &str, body: &str| {
+        let path = p.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    };
+    write(
+        ".claude-plugin/marketplace.json",
+        "{\n  \"name\": \"storyhook\",\n  \"plugins\": [\n    { \"name\": \"story\", \"version\": \"0.6.0+codex.1\" }\n  ]\n}\n",
+    );
+    write(
+        "plugins/story/.claude-plugin/plugin.json",
+        "{\n  \"name\": \"story\",\n  \"version\": \"0.6.0+codex.1\"\n}\n",
+    );
+    write(
+        "plugins/story/.codex-plugin/plugin.json",
+        "{\n  \"name\": \"story\",\n  \"version\": \"0.6.0+codex.1\"\n}\n",
+    );
+    // Carries no version key. The hook must leave it alone rather than add one.
+    write(
+        ".agents/plugins/marketplace.json",
+        "{\n  \"name\": \"storyhook\",\n  \"plugins\": [\n    { \"name\": \"story\" }\n  ]\n}\n",
+    );
+
+    run(Command::new("git").args(["add", "-A"]).current_dir(p));
+    run(Command::new("git")
+        .args(["-c", "core.hooksPath=/dev/null", "commit", "-qm", "init"])
+        .current_dir(p));
+
+    let hook = format!(
+        "{}/.semver/hooks/pre-bump/sync-plugin-version.sh",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    run(Command::new("bash")
+        .arg(&hook)
+        .current_dir(p)
+        .env("NEW_VERSION", "v2.3.0"));
+
+    for rel in [
+        ".claude-plugin/marketplace.json",
+        "plugins/story/.claude-plugin/plugin.json",
+        "plugins/story/.codex-plugin/plugin.json",
+    ] {
+        let body = fs::read_to_string(p.join(rel)).unwrap();
+        assert!(
+            body.contains("\"version\": \"2.3.0\""),
+            "{rel} was not synced:\n{body}"
+        );
+        assert!(
+            !body.contains("0.6.0"),
+            "{rel} still carries the old version:\n{body}"
+        );
+    }
+
+    let agents = fs::read_to_string(p.join(".agents/plugins/marketplace.json")).unwrap();
+    assert!(
+        !agents.contains("version"),
+        "a manifest with no version key must not acquire one:\n{agents}"
+    );
+
+    let staged = run(Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(p));
+    for rel in [
+        ".claude-plugin/marketplace.json",
+        "plugins/story/.claude-plugin/plugin.json",
+        "plugins/story/.codex-plugin/plugin.json",
+    ] {
+        assert!(
+            staged.lines().any(|l| l == rel),
+            "{rel} must be staged so the pathspec-less release commit picks it up; staged:\n{staged}"
+        );
+    }
+}

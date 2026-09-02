@@ -166,20 +166,28 @@ fn write_ahead_logging_survives_a_reopen() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_database_from_a_newer_storyhook_is_refused_with_one_clear_message() {
+fn a_database_this_build_cannot_read_is_refused_with_one_clear_message() {
     let dir = scratch_dir();
     let path = dir.path().join("store.db");
     SqliteStore::open(&path).unwrap().migrate().unwrap();
-    Connection::open(&path)
-        .unwrap()
-        .execute_batch("PRAGMA user_version = 99")
+    let future = migrate::current_schema_version() + 1;
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version = {future}"))
+        .unwrap();
+    // SH-530 narrowed this gate: a future store whose read model is intact now
+    // opens READ-ONLY instead of being refused (`tests/readonly_store.rs` owns
+    // that half). What still earns the outright refusal is a store this build
+    // genuinely cannot read — one whose columns a newer storyhook restructured
+    // rather than merely added to. So the fixture renames a column the read
+    // model depends on, which is what the refusal is now *for*.
+    conn.execute_batch("ALTER TABLE stories RENAME COLUMN title TO headline")
         .unwrap();
 
     let error = SqliteStore::open(&path).unwrap_err();
 
     match error {
         StoreError::SchemaTooNew { found, supported } => {
-            assert_eq!(found, 99);
+            assert_eq!(found, future);
             assert_eq!(supported, migrate::current_schema_version());
         }
         other => panic!("expected SchemaTooNew, got: {other}"),

@@ -942,10 +942,14 @@ fn error_corpus() -> Vec<AppError> {
         AppError::GithubAuth("token expired".to_string()),
         AppError::GithubApi("422 Unprocessable Entity".to_string()),
         AppError::StateConflict("todo".to_string(), "in-progress".to_string()),
+        AppError::ReadOnlyStore(
+            "this store is at schema version 27 and this storyhook understands up to 26"
+                .to_string(),
+        ),
     ]
 }
 
-/// An exhaustive `match`, so an eleventh `AppError` variant stops this file
+/// An exhaustive `match`, so a further `AppError` variant stops this file
 /// compiling until it has a wire form and a corpus row. The same guard
 /// `tests/error_contract.rs` uses for the exit-code table.
 fn variant_name(error: &AppError) -> &'static str {
@@ -959,6 +963,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::GithubAuth(_) => "GithubAuth",
         AppError::GithubApi(_) => "GithubApi",
         AppError::StateConflict(..) => "StateConflict",
+        AppError::ReadOnlyStore(_) => "ReadOnlyStore",
     }
 }
 
@@ -971,7 +976,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        9,
+        10,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -1068,6 +1073,7 @@ fn error_variants_travel_under_a_kind_tag() {
             "github_auth",
             "github_api",
             "state_conflict",
+            "read_only_store",
         ]
     );
 }
@@ -1575,6 +1581,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Daemon {
             action: DaemonAction::Stop { force: true },
         },
+        Invocation::DoctorInstall,
         Invocation::DoctorAbandoned {
             action: AbandonedAction::List,
         },
@@ -1737,6 +1744,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
+        Invocation::DoctorInstall => "DoctorInstall",
         Invocation::DoctorAbandoned { .. } => "DoctorAbandoned",
         Invocation::DoctorCrashes { .. } => "DoctorCrashes",
         Invocation::Show { .. } => "Show",
@@ -1801,7 +1809,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        66,
+        67,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

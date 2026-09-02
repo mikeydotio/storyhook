@@ -227,6 +227,7 @@ Usage:
   story phase create <N> ["<title>"]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
+  story doctor install                             (what is installed here, and what is pending)
   story doctor abandoned [clear (--all | <request-id>)]
   story doctor crashes [clear (--all | <crash-id>)]
   story update [--check] [--force]                 (self-update the story binary)
@@ -549,6 +550,13 @@ pub enum Invocation {
     /// successor abandoned mid-flight. Separate from `Doctor` because it
     /// needs neither a project nor a store: it reads and writes one file
     /// under the daemon's own state directory.
+    /// `story doctor install` — what is installed on this machine, and how far
+    /// the checkout has run ahead of it (SH-530).
+    ///
+    /// Store-free on purpose. The single most important thing this can report
+    /// is that the store will not open, or opens read-only, so a verb that
+    /// needed the store first could never deliver its own headline.
+    DoctorInstall,
     DoctorAbandoned {
         action: AbandonedAction,
     },
@@ -3794,6 +3802,10 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() >= 2 && args[1] == "crashes" {
         return parse_doctor_crashes(args);
     }
+    if args.len() >= 2 && args[1] == "install" {
+        expect_no_more(&args[2..], "usage: story doctor install")?;
+        return Ok(Invocation::DoctorInstall);
+    }
 
     if args.len() == 1 {
         return Ok(Invocation::Doctor { fix: false });
@@ -3804,8 +3816,8 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     }
 
     Err(AppError::Usage(
-        "usage: story doctor [--fix] | abandoned [clear (--all | <request-id>)] | crashes \
-         [clear (--all | <crash-id>)]"
+        "usage: story doctor [--fix] | install | abandoned [clear (--all | <request-id>)] \
+         | crashes [clear (--all | <crash-id>)]"
             .to_string(),
     ))
 }

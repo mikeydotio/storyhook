@@ -637,6 +637,85 @@ fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> 
     Ok(message)
 }
 
+/// Where storyhook's own installed copies live: every directory a provider
+/// plugin install writes into or registers (SH-530).
+///
+/// The single definition of "managed", consumed by the installer that creates
+/// these paths and by `hooks/protect-install.sh`, which refuses edits to them.
+/// One definition rather than two, because a shell-side list would drift from
+/// this one the first time a provider changed a directory — the hand-kept-list
+/// shape SH-136, SH-198, SH-258, SH-260/276, SH-360 and SH-364 each cost this
+/// project once already.
+///
+/// **The `story` binary is deliberately NOT here.** Its overwrite paths are
+/// `make install` and `story update`, and `make install` in particular is the
+/// recovery `StoreError::SchemaTooNew`'s own message prescribes. Refusing it
+/// would make the store's advice a dead end — the trap SH-404 documented and
+/// SH-405 was filed for. This list is about release artifacts a *plugin
+/// install* overwrites, which is a narrower and better-defined thing.
+pub fn managed_paths() -> Result<Vec<PathBuf>, AppError> {
+    let home = home_dir()?;
+    let claude = claude_plugins_dir()?;
+    Ok(vec![
+        claude.join("cache").join(MARKETPLACE_NAME),
+        claude.join("marketplaces").join(MARKETPLACE_NAME),
+        claude.join(LEGACY_PLUGIN_DIR_NAME),
+        home.join(".codex/plugins/cache").join(MARKETPLACE_NAME),
+        home.join(CODEX_LAUNCHER_RELATIVE)
+            .parent()
+            .expect("the launcher has a parent directory")
+            .to_path_buf(),
+        home.join(CODEX_RULE_RELATIVE),
+    ])
+}
+
+/// The file `hooks/protect-install.sh` reads to learn what it must protect.
+///
+/// Resolved the way `crate::env` resolves the data home — `$STORYHOOK_DATA_DIR`,
+/// else `$XDG_DATA_HOME/storyhook`, else `~/.local/share/storyhook` — because
+/// the hook has to find it in three lines of shell, with no `story` invocation:
+/// a `PreToolUse` hook fails OPEN at its timeout (SH-306), and it may be asked
+/// to run while the binary it would have called is mid-replacement.
+pub fn managed_paths_file() -> Result<PathBuf, AppError> {
+    if let Ok(dir) = std::env::var("STORYHOOK_DATA_DIR")
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir).join("managed-paths"));
+    }
+    if let Ok(dir) = std::env::var("XDG_DATA_HOME")
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir).join("storyhook").join("managed-paths"));
+    }
+    Ok(home_dir()?
+        .join(".local/share/storyhook")
+        .join("managed-paths"))
+}
+
+/// Records [`managed_paths`] where the hook can read them.
+///
+/// Best effort on purpose: failing an otherwise successful install because a
+/// convenience file could not be written would be the wrong trade, and the
+/// hook's own absence-of-manifest behaviour is to stay inert rather than to
+/// guess.
+fn record_managed_paths() {
+    let (Ok(file), Ok(paths)) = (managed_paths_file(), managed_paths()) else {
+        return;
+    };
+    let Some(parent) = file.parent() else { return };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let mut body = String::from(
+        "# Written by `story plugin install`. One path prefix per line.\n         # `plugins/story/hooks/protect-install.sh` refuses edits beneath these.\n",
+    );
+    for path in paths {
+        body.push_str(&path.display().to_string());
+        body.push('\n');
+    }
+    let _ = fs::write(&file, body);
+}
+
 pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
@@ -645,6 +724,7 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
         PluginTarget::ClaudeCode => install_claude(project_root, &source),
         PluginTarget::Codex => install_codex(project_root, &source),
     }?;
+    record_managed_paths();
     Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
@@ -829,6 +909,62 @@ fn remove_complete_sentinel_section(content: &str, begin: &str, end: &str) -> Op
 
 #[cfg(test)]
 mod tests {
+    /// Every managed-path constant this module writes through must appear in
+    /// [`managed_paths`], because that list is what
+    /// `hooks/protect-install.sh` reads and therefore the whole of what the
+    /// hook can protect.
+    ///
+    /// Derived from the constants rather than from a second list of paths: a
+    /// hand-kept copy is the shape SH-136, SH-198, SH-258, SH-260/276, SH-360
+    /// and SH-364 each cost this project once, and a guard whose coverage
+    /// silently narrows is worse than no guard, because it still reads as
+    /// protection.
+    #[test]
+    fn every_managed_location_this_module_writes_is_declared() {
+        // SAFETY: single-threaded test setup, and the value is read back
+        // immediately by `managed_paths` in this same thread.
+        unsafe { std::env::set_var("HOME", "/tmp/storyhook-managed-paths-fixture") };
+        let declared = super::managed_paths().expect("resolving managed paths");
+        let rendered: Vec<String> = declared.iter().map(|p| p.display().to_string()).collect();
+        let joined = rendered.join("\n");
+
+        for needle in [
+            MARKETPLACE_NAME,
+            LEGACY_PLUGIN_DIR_NAME,
+            // The parent directory of the launcher, not the file itself.
+            CODEX_LAUNCHER_RELATIVE
+                .rsplit_once('/')
+                .expect("the launcher path has a directory")
+                .0,
+            CODEX_RULE_RELATIVE,
+        ] {
+            assert!(
+                joined.contains(needle),
+                "`{needle}` is written by this module but is not covered by \
+                 `managed_paths`, so `hooks/protect-install.sh` cannot protect \
+                 it:\n{joined}"
+            );
+        }
+
+        // Positive control: a list that resolved to nothing would satisfy no
+        // assertion above by accident, but an empty one would make every
+        // `contains` fail for the wrong reason. Say which it is.
+        assert!(
+            rendered.len() >= 4,
+            "expected the claude cache, the claude marketplace, the codex cache \
+             and the codex managed files; got {rendered:?}"
+        );
+
+        // The `story` binary must NOT be here: `make install` is the recovery
+        // `StoreError::SchemaTooNew` prescribes, and refusing it would make the
+        // store's own advice a dead end (SH-404, SH-405).
+        assert!(
+            !joined.contains("/bin/story\n") && !joined.ends_with("/bin/story"),
+            "the installed binary must stay editable — `make install` is a \
+             sanctioned recovery:\n{joined}"
+        );
+    }
+
     use super::*;
 
     #[test]

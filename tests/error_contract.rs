@@ -187,6 +187,39 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            variant: "ReadOnlyStore",
+            exit_code: 11,
+            // SH-530. A store written by a NEWER storyhook opens read-only
+            // rather than not at all, so reads keep working and every write
+            // earns this. Provoked the way it happens in the field: the
+            // recorded schema version moves under a build that does not have
+            // the migrations for it.
+            message: "READ-ONLY",
+            // Runs in a TestEnv of its own, ignoring the shared one, because
+            // this row's whole fixture is a permanently damaged store: the
+            // pragma it moves is never moved back, so provoking it in the
+            // shared environment fails every LATER case with a refusal that has
+            // nothing to do with them. Found exactly that way.
+            provoke: |_shared, json| {
+                let env = TestEnv::isolated();
+                let project = env.project().build();
+                // The daemon this fixture started has already opened the store,
+                // and would go on serving it whatever the pragma says.
+                env.stop_daemon();
+                let future = storyhook::store::current_schema_version() + 1;
+                rusqlite::Connection::open(env.store_path())
+                    .expect("opening the store")
+                    .execute_batch(&format!("PRAGMA user_version = {future}"))
+                    .expect("claiming a future schema");
+                run(
+                    project.path(),
+                    &env,
+                    &["new", "a write the store must refuse"],
+                    json,
+                )
+            },
+        },
+        Case {
             variant: "Storage",
             exit_code: 5,
             // Serde's own wording, arriving through `From<serde_json::Error>`.
@@ -480,6 +513,7 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
         (AppError::GithubAuth(String::new()), 6),
         (AppError::GithubApi(String::new()), 7),
         (AppError::StateConflict(String::new(), String::new()), 9),
+        (AppError::ReadOnlyStore(String::new()), 11),
     ];
     for (error, code) in &expected {
         assert_eq!(
@@ -513,6 +547,7 @@ fn the_table_covers_every_variant() {
         AppError::GithubAuth(String::new()),
         AppError::GithubApi(String::new()),
         AppError::StateConflict(String::new(), String::new()),
+        AppError::ReadOnlyStore(String::new()),
     ];
     let covered: Vec<&str> = cases().iter().map(|case| case.variant).collect();
 
@@ -543,6 +578,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::GithubAuth(_) => "GithubAuth",
         AppError::GithubApi(_) => "GithubApi",
         AppError::StateConflict(..) => "StateConflict",
+        AppError::ReadOnlyStore(_) => "ReadOnlyStore",
     }
 }
 

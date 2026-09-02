@@ -236,6 +236,12 @@ pub fn status_for(error: &AppError) -> u16 {
         AppError::Integrity(_) | AppError::Storage(_) => 500,
         AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
         AppError::StateConflict(..) => 409,
+        // 409, like the other "the server is in a state that refuses this
+        // write" answers: the request was well-formed and the store is
+        // healthy — this build simply may not write to it. Not 500, which
+        // would say something is broken, and not 403, which would say the
+        // caller lacks permission.
+        AppError::ReadOnlyStore(_) => 409,
     }
 }
 
