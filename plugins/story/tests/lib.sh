@@ -18,7 +18,35 @@ SCRIPT="$PLUGIN_ROOT/bin/story.sh"
 export GIT_TERMINAL_PROMPT=0
 
 _TMP_REPOS=()
-_cleanup() { local d; for d in "${_TMP_REPOS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
+_TMP_REPOS_MANIFEST="$(mktemp /tmp/story-test-cleanup.XXXXXX)"
+
+# A helper called through `path=$(helper)` runs in a subshell, so appending to
+# the caller's Bash array cannot register anything for its EXIT trap. This
+# manifest is the cross-process ownership record for those returned paths.
+_register_tmp() {
+  local d
+  for d in "$@"; do
+    [ -n "$d" ] && printf '%s\n' "$d" >>"$_TMP_REPOS_MANIFEST"
+  done
+}
+
+_cleanup() {
+  local d
+  for d in "${_TMP_REPOS[@]:-}"; do
+    [ -n "$d" ] && rm -rf -- "$d"
+  done
+  while IFS= read -r d; do
+    case "$d" in
+      /tmp/story-test.* | /tmp/story-test-origin.* | /tmp/story-test-claude.*)
+        rm -rf -- "$d"
+        ;;
+      *)
+        printf 'refusing to clean unowned test path: %s\n' "$d" >&2
+        ;;
+    esac
+  done <"$_TMP_REPOS_MANIFEST"
+  rm -f -- "$_TMP_REPOS_MANIFEST"
+}
 trap _cleanup EXIT
 
 # --- data-home isolation ---------------------------------------------------
@@ -136,11 +164,12 @@ fi
 mk_story_repo() {
   local origdir origin repo prefix="${1:-TST}"
   origdir="$(mktemp -d /tmp/story-test-origin.XXXXXX)"
+  _register_tmp "$origdir"
   mkdir -p "$origdir/fake"
   origin="$origdir/fake/repo.git"
   git init -q --bare -b main "$origin"
   repo="$(mktemp -d /tmp/story-test.XXXXXX)"
-  _TMP_REPOS+=("$repo" "$origdir")
+  _register_tmp "$repo"
   (
     cd "$repo" || exit 1
     git init -q -b main
@@ -203,7 +232,7 @@ new_story() {
 mk_versioned_claude() {
   local root version
   root="$(mktemp -d /tmp/story-test-claude.XXXXXX)"
-  _TMP_REPOS+=("$root")
+  _register_tmp "$root"
   mkdir -p "$root/bin" "$root/versions"
   for version in "$@"; do
     printf '#!/bin/sh\nexit 0\n' >"$root/versions/$version"
