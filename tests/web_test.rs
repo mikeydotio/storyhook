@@ -4239,6 +4239,10 @@ fn response_json(response: ureq::http::Response<ureq::Body>) -> serde_json::Valu
 #[test]
 fn engine_http_serves_every_control_and_stable_run_views() {
     let fixture = served();
+    // The production reconcile loop wakes after every engine mutation. Keep
+    // the run live with work it must leave for a human so these controls never
+    // race the legitimate empty-queue transition to `finished`.
+    fixture.seed(&["new", "Human review", "--labels", "no-auto"]);
     let base = format!(
         "http://127.0.0.1:{}/api/repos/{}/engine",
         fixture.port, fixture.repo_id

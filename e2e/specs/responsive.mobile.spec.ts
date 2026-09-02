@@ -147,10 +147,6 @@ test("a pressured blocked badge keeps every story id on one line", async ({
     "keeping ids atomic must not make the blocked badge overflow its card",
   ).toBeLessThanOrEqual(overflow.clientWidth);
 
-  await deleteStory(page, workerTitle);
-  for (const title of blockerTitles) {
-    await deleteStory(page, title);
-  }
 });
 
 /**
@@ -544,25 +540,34 @@ for (const width of SWEEP_WIDTHS) {
     await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 
     const project = page.locator("#drafts-list .drafts-row-project");
-    const box = await project.evaluate((el) => ({
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      textOverflow: getComputedStyle(el).textOverflow,
-      whiteSpace: getComputedStyle(el).whiteSpace,
-    }));
-    expect(
-      box.scrollWidth,
-      `.drafts-row-project (${box.clientWidth}px wide, white-space: ` +
-        `${box.whiteSpace}) is not truncating a ${LONG_PROJECT_NAME.length}-` +
-        `character project name at ${width}px -- it wrapped to more lines ` +
-        "instead, which turns a subject line into a title",
-    ).toBeGreaterThan(box.clientWidth);
-    expect(
-      box.textOverflow,
+    await expect(project).toBeVisible();
+    await expect(
+      project,
       ".drafts-row-project must truncate with an ellipsis, the treatment " +
         "`.projsel-label` and `.drafts-row-title` already use -- clipping a " +
         "name mid-glyph says nothing about where it was cut",
-    ).toBe("ellipsis");
+    ).toHaveCSS("text-overflow", "ellipsis");
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const element = document.querySelector<HTMLElement>(
+              "#drafts-list .drafts-row-project",
+            );
+            return (
+              element?.isConnected === true &&
+              element.scrollWidth > element.clientWidth
+            );
+          }),
+        {
+          message:
+            `.drafts-row-project is not truncating a ` +
+            `${LONG_PROJECT_NAME.length}-character project name at ` +
+            `${width}px -- it wrapped to more lines instead, which turns ` +
+            "a subject line into a title",
+        },
+      )
+      .toBe(true);
 
     await expectNoClippedElements(
       page.locator("#drafts-modal"),
@@ -576,6 +581,9 @@ for (const width of SWEEP_WIDTHS) {
     // viewport-relative ceiling; see the topbar-scoped test below for the
     // one that pins the mechanism directly.
     await expectNoHorizontalOverflow(page, `the Drafts popover @ ${width}px`);
+    // Cleanup emits another catalog refresh. Drain the response-rewriting
+    // handler before fixture teardown can dispose its fetched response.
+    await page.unrouteAll({ behavior: "wait" });
   });
 }
 
@@ -1336,13 +1344,13 @@ test("the next board column peeks on the narrowest supported phone", async ({
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  // Alpha's own fixture carries five states (todo/in-progress/blocked/
-  // done/review, column-visibility.spec.ts's own comment) -- a second
-  // column to peek at is never in question here.
-  await expect(page.locator(".column")).toHaveCount(5);
+  // The configured state catalog can grow independently of this layout
+  // contract. Wait for its second rendered column instead of coupling the
+  // peek assertion to the fixture's exact number of states.
+  const columns = page.locator(".column");
+  await expect(columns.nth(1)).toBeVisible();
 
-  const width = await page
-    .locator(".column")
+  const width = await columns
     .first()
     .evaluate((el) => el.getBoundingClientRect().width);
   expect(
@@ -1351,8 +1359,7 @@ test("the next board column peeks on the narrowest supported phone", async ({
       "min(18rem, 85vw) = 272px, not the unshrunk 288px ceiling",
   ).toBeCloseTo(272, 0);
 
-  const firstRight = await page
-    .locator(".column")
+  const firstRight = await columns
     .first()
     .evaluate((el) => el.getBoundingClientRect().right);
   expect(
@@ -1360,7 +1367,7 @@ test("the next board column peeks on the narrowest supported phone", async ({
     "the first column's own right edge should leave room for the next " +
       "column to start peeking in before the 320px viewport ends",
   ).toBeLessThan(320);
-  await expect(page.locator(".column").nth(1)).toBeInViewport({ ratio: 0 });
+  await expect(columns.nth(1)).toBeInViewport({ ratio: 0 });
 });
 
 /** Confirms the fix above is additive, not a universal shrink -- a wider

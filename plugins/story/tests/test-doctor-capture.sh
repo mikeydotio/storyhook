@@ -9,7 +9,12 @@
 # never as a failure of the probe itself.
 source "$(dirname "$0")/lib.sh"
 
-export PATH="$TESTS_DIR/fakes:$PATH"
+doctor_launch_root=$(mktemp -d /tmp/story-test-doctor-launch.XXXXXX)
+_TMP_REPOS+=("$doctor_launch_root")
+mkdir -p "$doctor_launch_root/bin"
+printf '#!/bin/sh\nexit 0\n' >"$doctor_launch_root/bin/claude"
+chmod +x "$doctor_launch_root/bin/claude"
+export PATH="$doctor_launch_root/bin:$TESTS_DIR/fakes:$PATH"
 export FAKE_TMUX_STATE
 FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-tmux.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
@@ -45,9 +50,9 @@ assert_contains "$(jqf "$out" .display)" "hello from the session" "capture: disp
 out=$(cd "$repo" && env -u TMUX -u TMUX_PANE bash "$SCRIPT" capture "$id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "capture: refuses outside tmux"
 assert_contains "$(jqf "$out" .display)" "tmux" "capture: says why"
-out=$(cd "$repo" && bash "$SCRIPT" capture 2>&1)
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "capture: missing id is ok:false"
-out=$(cd "$repo" && bash "$SCRIPT" capture "bad id!" 2>&1)
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture "bad id!" 2>&1)
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "capture: invalid id rejected"
 
 # --- doctor: dry run previews BOTH halves ---

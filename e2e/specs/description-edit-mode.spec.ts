@@ -284,9 +284,31 @@ test("clicking the Comments toggle straight from edit mode both saves and toggle
   await openStory(page, card);
 
   const patches: unknown[] = [];
+  let releasePatch!: () => void;
+  let markPatchTaken!: () => void;
+  let markPatchDelivered!: () => void;
+  const patchHold = new Promise<void>((resolve) => { releasePatch = resolve; });
+  const patchTaken = new Promise<void>((resolve) => { markPatchTaken = resolve; });
+  const patchDelivered = new Promise<void>((resolve) => { markPatchDelivered = resolve; });
   await page.route(/\/story\/[^/]+$/, async (route) => {
-    if (route.request().method() === "PATCH") patches.push(route.request().postDataJSON());
-    await route.continue();
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    patches.push(route.request().postDataJSON());
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    markPatchTaken();
+    await patchHold;
+    try {
+      await route.fulfill({ response });
+    } finally {
+      markPatchDelivered();
+    }
   });
 
   await page.locator(".description-view").click();

@@ -127,12 +127,6 @@ test("a long, multi-sentence blocked reason wraps as one paragraph, not narrow f
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-
-  // SH-407: the Block button's awaiting reason display-promoted the worker
-  // into "blocked", out of "todo".
-  await deleteBlockedStory(page, workerTitle);
-  await deleteStory(page, blockerATitle);
-  await deleteStory(page, blockerBTitle);
 });
 
 test("the blocked reason renders GFM-lite markdown, the same as descriptions and comments", async ({

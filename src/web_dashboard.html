@@ -523,7 +523,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .filter-toggle, .pref-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
 .pref-toggle { font-size: 0.8125rem; color: var(--fg); cursor: pointer; }
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
-.filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; min-height: var(--tap-min); }
+.filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-width: var(--tap-min); min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
 .filter-clear-short { display: none; }
 
@@ -618,7 +618,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .column-archive-btn {
   border: none; background: none; color: var(--fg-faint); font-size: 0.6875rem; font-weight: 600;
   text-transform: none; letter-spacing: normal; padding: 0.0625rem 0.25rem; cursor: pointer;
-  display: inline-flex; align-items: center; min-height: var(--tap-min);
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
   /* SH-305: a second auto margin, splitting the header's free space with
      `.column-count`'s own -- this is what centers Archive between the
      title and the count/sort-button group rather than leaving it packed
@@ -2218,9 +2219,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     repos: [],
     reposFetchOk: false,
     reposFetchAt: 0,
-    // "unasked" | "loaded" | "failed" — whether a `/api/repos` round trip has
-    // *completed*, as opposed to `repos.length === 0`, which is also true
-    // before the first fetch and stays true forever if it never succeeds
+    // "unasked" | "loading" | "loaded" | "failed" — whether a `/api/repos`
+    // round trip has *completed*, as opposed to `repos.length === 0`, which
+    // is also true before the first fetch and stays true forever if it never succeeds
     // (SH-301). Distinct from `reposFetchOk` above, which drives the
     // connection indicator (`activePollState()`) and is not a candidate here
     // for the same reason `state.fetchOk` was ruled out for the per-repo
@@ -3278,7 +3279,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // leave the dashboard on no screen at all.
       if (xhr.status === 200 && ticket <= reposFetchFloor) {
         updateConnection();
-        markReposSettled(ticket, true);
         if (onDone) onDone();
         return;
       }
@@ -3379,7 +3379,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * (`reposFetchFloor`): a *failure* below the floor is an older request
    * whose reply is now known-stale — a newer request has already answered,
    * successfully or not — and recording it would un-mark a catalog that has,
-   * in fact, settled. `state.reposFetchOk` itself does not have this guard
+   * in fact, settled. A stale success returns before reaching this function;
+   * otherwise it could falsely finish a loading state established at a
+   * mutation boundary. `state.reposFetchOk` itself does not have this guard
    * and can still be lowered by a stale timeout; left as is here, since
    * repairing it is an independent change from naming the failure this story
    * is about.
@@ -12489,8 +12491,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Refreshes every surface a draft mutation can change (SH-442). The
    * catalog owns the global count/list on every screen; the board needs its
-   * separate project data only when it is showing the affected owner. */
+   * separate project data only when it is showing the affected owner.
+   *
+   * The mutation is a freshness boundary for the global catalog. Invalidate
+   * every request issued before it and expose the pending reconciliation so
+   * an immediate Drafts open cannot claim a stale count while the confirmed
+   * write is absent. The retained rows remain usable; renderDraftsList()
+   * appends its existing loading note until the new request settles. */
   function refreshAfterDraftMutation(targetProject) {
+    reposFetchFloor = reposFetchTicket;
+    state.reposReadiness = "loading";
+    updateDraftsButton();
     fetchReposOnce();
     if (state.screen === "repo" && targetProject === state.repoId) fetchData();
   }

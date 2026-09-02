@@ -75,12 +75,13 @@ mod tests {
     fn everything_else_on_path_still_resolves() {
         let env = TestEnv::isolated();
         let (_guard, path) = path_without_tailscale(&env);
-        for tool in ["sh", "git"] {
+        let probes: [(&str, &[&str]); 2] = [("sh", &["-c", ":"]), ("git", &["--version"])];
+        for (tool, args) in probes {
             let status = std::process::Command::new(tool)
-                .arg("--version")
+                .args(args)
                 .env("PATH", &path)
                 .status()
-                .unwrap_or_else(|e| panic!("running {tool} --version: {e}"));
+                .unwrap_or_else(|e| panic!("running {tool} {args:?}: {e}"));
             assert!(status.success(), "{tool} must still resolve on {path:?}");
         }
     }
