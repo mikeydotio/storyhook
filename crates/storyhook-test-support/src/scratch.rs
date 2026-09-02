@@ -131,6 +131,7 @@ pub fn scratch_dir_named(label: &str) -> TempDir {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn scratch_dirs_live_outside_the_spotlight_indexed_tmpdir() {
         let dir = scratch_dir();
