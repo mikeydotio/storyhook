@@ -1,6 +1,16 @@
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
-import { openProject, seedToken } from "./support";
+import { openProject, projectSlug, requiredEnv, seedToken } from "./support";
+
+const ENGINE_PROJECT = "Engine Project";
+const ENGINE_STORY_ID = requiredEnv("DASHBOARD_ENGINE_STORY_ID");
+const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
+const REAL_ENGINE_TIMEOUT = 45_000;
+const MUTATION_HEADERS = {
+  "Content-Type": "application/json",
+  "X-Storyhook": "1",
+  "X-Storyhook-Token": DASHBOARD_TOKEN,
+};
 
 type EngineLane = {
   index: number;
@@ -152,6 +162,72 @@ async function installTestEventSource(page: Page): Promise<void> {
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
+});
+
+test("Full Auto claims through the real daemon and leaves a durable acknowledged outcome", async ({
+  page,
+  request,
+}) => {
+  // This test waits on two real story.sh subprocesses: the engine dispatch and
+  // stop-now's unclaim. Everything outside tmux is production code; the
+  // runner's isolated fake tmux is the sole process-boundary double.
+  test.setTimeout(2 * REAL_ENGINE_TIMEOUT + 30_000);
+
+  await page.goto("/");
+  await openProject(page, ENGINE_PROJECT);
+
+  const lanes = page.locator("#engine-lanes");
+  await expect(lanes).toBeEnabled();
+  await expect(lanes).toHaveValue("1");
+  await lanes.fill("2");
+  await page.locator(".engine-run-btn").click();
+
+  await expect(page.locator(".engine-state")).toHaveText("running", {
+    timeout: REAL_ENGINE_TIMEOUT,
+  });
+  const claimedLane = page.locator(".engine-lane-story", { hasText: ENGINE_STORY_ID });
+  await expect(claimedLane).toHaveCount(1, { timeout: REAL_ENGINE_TIMEOUT });
+  await expect(page.locator(".engine-lane-count")).toHaveText("2 lanes");
+
+  const slug = await projectSlug(request, ENGINE_PROJECT);
+  const statusResponse = await request.get(`/api/repos/${slug}/engine`, {
+    headers: { "X-Storyhook-Token": DASHBOARD_TOKEN },
+  });
+  expect(statusResponse.status()).toBe(200);
+  const statusBody = (await statusResponse.json()) as {
+    result: string;
+    runs: EngineRun[];
+  };
+  expect(statusBody.result).toBe("ok");
+  const liveRun = statusBody.runs.find(
+    (candidate) =>
+      candidate.state === "running" &&
+      candidate.lanes.some((lane) => lane.story === ENGINE_STORY_ID),
+  );
+  expect(
+    liveRun,
+    `expected one running engine lane for ${ENGINE_STORY_ID}: ${JSON.stringify(statusBody)}`,
+  ).toBeDefined();
+
+  const stopResponse = await request.post(`/api/repos/${slug}/engine/stop`, {
+    headers: MUTATION_HEADERS,
+    data: { run: liveRun!.id, now: true },
+  });
+  expect(stopResponse.status()).toBe(200);
+  const stopBody = (await stopResponse.json()) as { result: string; run: EngineRun };
+  expect(stopBody.result).toBe("ok");
+  expect(stopBody.run.state).toBe("finished");
+  expect(stopBody.run.stop_reason).toBe("operator-stopped-now");
+  expect(stopBody.run.lanes.every((lane) => lane.state === "idle" && lane.story === null)).toBe(
+    true,
+  );
+
+  const banner = page.locator(".engine-banner", { hasText: liveRun!.id });
+  await expect(banner).toHaveCount(1, { timeout: REAL_ENGINE_TIMEOUT });
+  await expect(banner).toContainText("operator-stopped-now");
+  await expect(banner).toContainText("finished");
+  await banner.locator(".engine-banner-ack").click();
+  await expect(banner).toHaveCount(0);
 });
 
 test("unacknowledged runs render newest-first with the last three linked quarantines", async ({
