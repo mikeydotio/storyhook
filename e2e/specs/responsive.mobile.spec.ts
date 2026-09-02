@@ -147,10 +147,6 @@ test("a pressured blocked badge keeps every story id on one line", async ({
     "keeping ids atomic must not make the blocked badge overflow its card",
   ).toBeLessThanOrEqual(overflow.clientWidth);
 
-  await deleteStory(page, workerTitle);
-  for (const title of blockerTitles) {
-    await deleteStory(page, title);
-  }
 });
 
 /**
