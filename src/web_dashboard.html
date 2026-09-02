@@ -4737,9 +4737,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function setEngineRunButtonText(button, full, short) {
-    button.setAttribute("aria-label", full);
-    button.querySelector(".engine-run-label").textContent = full;
-    button.querySelector(".engine-run-short").textContent = short;
+    if (button.getAttribute("aria-label") !== full) button.setAttribute("aria-label", full);
+    var fullLabel = button.querySelector(".engine-run-label");
+    var shortLabel = button.querySelector(".engine-run-short");
+    if (fullLabel.textContent !== full) fullLabel.textContent = full;
+    if (shortLabel.textContent !== short) shortLabel.textContent = short;
   }
 
   /** Updates the stable idle control without replacing its focused number
@@ -4749,15 +4751,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var input = control.querySelector(".engine-lanes-input");
     var button = control.querySelector(".engine-run-btn");
     if (!input || !button) return;
-    if (document.activeElement !== input) input.value = String(state.engineLanes);
+    var expectedValue = String(state.engineLanes);
+    if (document.activeElement !== input && input.value !== expectedValue) input.value = expectedValue;
     var entered = Number(input.value);
     var valid = Number.isInteger(entered) && entered >= 1 && entered <= 255;
     var blocked = engineStartBlocked();
-    input.disabled = blocked;
-    button.disabled = blocked || !valid;
+    // A valid number input fires `change` when the next pointer press blurs
+    // it. WebKit suppresses that press's queued click when this handler
+    // needlessly mutates the destination button or its descendants. Preserve
+    // the same native invariant without writing any launch-control property
+    // whose semantic value did not actually change.
+    if (input.disabled !== blocked) input.disabled = blocked;
+    var buttonBlocked = blocked || !valid;
+    if (button.disabled !== buttonBlocked) button.disabled = buttonBlocked;
     var title = engineReadinessTitle();
-    input.title = title;
-    button.title = title;
+    if (input.title !== title) input.title = title;
+    if (button.title !== title) button.title = title;
     if (currentEngineStartPending()) {
       setEngineRunButtonText(button, "Starting Full Auto…", "Starting…");
     } else if (state.engineReadiness === "failed") {

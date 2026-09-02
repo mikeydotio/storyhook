@@ -2245,9 +2245,10 @@ When to use:
   To define dependencies, hierarchy, or other links between stories.
   Use blocks/blocked-by to control execution order. 'story next'
   respects blocking relationships.
-  A story with children is a structural epic: its state is computed
-  recursively from those children, it is not directly actionable, and
-  it may share a child with other epics. Parent cycles are refused.
+  Only a story whose type is epic is an epic. An epic is a folder: its
+  state is computed recursively from its children and it is not directly
+  actionable. An ordinary story may have children and remains actionable
+  with its own state. Parent cycles are refused.
 
 Examples:
   story relate SH-1 blocks SH-2

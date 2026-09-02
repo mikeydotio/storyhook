@@ -1715,3 +1715,141 @@ regression test called `stop` directly and would have passed unchanged with
 the guard deleted entirely, catching nothing; rewritten to occupy a lane,
 stop gracefully into `draining`, then let reconcile observe the freed lane,
 which is the only path that actually reaches this function in that state.
+
+### SH-446 / SH-499 — typed epic identity
+
+**Epic identity is type-based, not structural.** SH-446 originally made every
+story with children behave as an epic. SH-499 deliberately superseded that
+rule: only `story_type = 'epic'` creates a folder whose state is computed from
+its descendants and which cannot be claimed directly. An ordinary story may
+have children while retaining its own state and executable work. Epic
+priority remains stored independently and participates in descendant queue
+ordering; the dashboard hides typed epics by default behind Show Epics.
+
+This correction also governs public guidance. Generated agent instructions
+say that typed epics contain no executable steps, while relationship help no
+longer teaches that adding a child silently changes a story's type.
+
+### SH-455 — one filtered ready queue
+
+`story next` and atomic `story claim --next` share the same queue filters.
+`--epic` resolves a typed epic and includes its complete descendant subtree;
+`--exclude-label` uses the same exact, case-sensitive CSV parsing as label
+inclusion. Filtering happens before dependency traversal, so an open blocker
+outside the selected subtree still blocks its selected descendant. Legacy
+phase-only Rust service methods remain delegating wrappers rather than a
+source-breaking API change.
+
+### SH-459 — the Codex unattendedness experiment
+
+Codex `PreToolUse` can deny `request_user_input` and return feedback the model
+reads. The measured timeout behavior is fail-open, matching the risk already
+recorded for Claude Code. That evidence removed the proposed Codex refusal:
+both providers use the shared Full Auto hook policy, with the timeout caveat
+made explicit rather than inferred from another host.
+
+### SH-462 — operational state outside the event fold
+
+Migration 24 added `engine_runs` and `engine_lanes` as typed operational
+tables. They are intentionally excluded from story event replay and
+`doctor`'s rebuilt-store comparison: frequent lane observations are runtime
+coordination, while every durable change to a story remains event-sourced on
+that story. CHECK constraints prevent half-scoped runs and idle lanes holding
+stories; a partial unique index lets SQLite arbitrate the one-live-run race.
+
+### SH-463 — the dispatcher boundary
+
+The engine reconciler depends on `Dispatcher`, with `ShellDispatcher` for
+production and `FakeDispatcher` for unit tests. The shell implementation
+relays the helper's structured success or refusal instead of inventing a
+second error vocabulary. Tmux liveness uses pane process identity rather than
+window names or `pane_current_command`, and bounded kill is the only window
+destruction primitive exposed through the seam. Real browser and shell tests
+stay on `ShellDispatcher`; fake behavior does not stand in for an end-to-end
+flow.
+
+### SH-464 — lifecycle controls preserve recovery evidence
+
+`EngineService` owns start, status, pause, resume, stop, and acknowledge.
+Pause is resumable; graceful stop is irreversible draining; stop-now kills
+live windows and uses StoryHook's unclaim primitive to restore claimed
+stories, but preserves their branches and worktrees. A partially failed
+stop-now can be retried. Quarantined lanes are already evidence and are
+cleared without unclaiming or deleting that evidence.
+
+### SH-467 — a singular operational CLI
+
+The six `story engine` verbs expose the service without a parallel state
+machine. Omitting `--run` selects the calling project's one live run; an
+explicit id can inspect historical runs. Human output is a status table and
+JSON is the typed run view, including lane outcomes and `needs_human` work.
+Every grammar arm retains the repository's unknown-flag and trailing-argument
+guards.
+
+### SH-468 — HTTP control off the store pool
+
+The engine routes are intercepted before ordinary REST jobs because dispatch
+can call the same daemon through `/api/v1/invoke`; running that cycle on a
+store worker would deadlock the pool. A persistent `EngineController` uses an
+independent store handle and dispatcher work off-pool. Existing dashboard
+token, Host/origin, and mutation-ticket checks apply unchanged, including to
+stop and acknowledgement. Engine mutations publish project change notices so
+the dashboard and daemon reconciler observe one state transition.
+
+### SH-469 — epic Auto is an engine start
+
+`story.sh dispatch <epic> --auto`, and therefore `/story do <epic> --auto`,
+starts an epic-scoped engine run through the existing helper protocol. A bare
+typed epic dispatch refuses because the folder has no executable steps.
+Provider model, effort, and speed overrides refuse on this path rather than
+being silently ignored; lane sessions keep their provider's configured
+defaults.
+
+### SH-470 — one dashboard control surface
+
+The project header starts and reports Full Auto with a lane stepper; an epic
+drawer replaces ordinary Dispatch with an epic-scoped Full Auto action. A
+live view names each lane's current story and elapsed time. Mutations use the
+same in-flight and ambiguous-outcome rules as other dashboard controls, and
+the press gate prevents a data refresh from destroying a pointer target
+between down and up.
+
+### SH-471 — durable operator outcomes
+
+Runs with a recorded stop reason remain visible as persistent banners until
+each run is acknowledged. Banners are ordered newest first, carry run id, stop
+reason, hard-stop streak, and the last three quarantine records, and survive
+reloads.
+Acknowledgement uses the normal mutation ticket and removes only the selected
+run's notice; it is not coupled to the timed notice stack.
+
+### SH-521 — verification is an intentional lane handoff
+
+`verifying` is an OPEN state excluded from allocation but not treated as a
+blocked story. An engine lane remains occupied while the daemon-owned,
+machine-wide verifier orders submitted work, predicts the exact merge tree,
+runs the release gate, validates its content-addressed receipt, and lands the
+PR. Success moves the story to the configured completion state and reaps its
+submitted workspace; the engine then observes that completion and frees the
+lane. Conflicts and red gates preserve the PR and worktree and return precise
+diagnostics to the recorded provider pane. Restart markers make the queue and
+cleanup idempotent.
+
+### SH-473 — close-out coverage and operator contract
+
+The browser harness gives every Playwright project invocation its own seed,
+daemon, and fake-tmux state. A dedicated engine fixture drives the production
+dashboard, HTTP controller, daemon reconciler, `ShellDispatcher`, and real
+StoryHook helper in chromium, WebKit, and both mobile projects: start with two
+lanes, observe the claimed story, stop now, observe the durable banner, and
+acknowledge it. Mocked engine cases remain for deterministic races and error
+surfaces; they do not substitute for this flow.
+
+The README is the operator entry point for project and epic starts, states,
+status and JSON diagnostics, stop modes, acknowledgement, and recovery of
+preserved worktrees. Generated `AGENTS.md` is authoritative for reserved
+labels and typed-epic ownership; generated `CLAUDE.md` stays a pointer rather
+than a second policy copy. The program is not accepted by browser coverage
+alone: SH-473 remains open until a deployed main-branch engine is recorded
+claiming, dispatching, merging, and closing a real story without operator
+keystrokes.

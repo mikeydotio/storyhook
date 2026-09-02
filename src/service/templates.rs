@@ -105,6 +105,13 @@ story relate {prefix}-5 relates-to {prefix}-2
 story relate {prefix}-6 obviates {prefix}-7
 ```
 
+### Typed epics are folders
+
+A story is an epic only when its type is `epic`; adding children to an ordinary
+story does not change its role. Typed epics organize child stories and carry no
+executable steps of their own. Put every implementation step in a child story,
+then work and claim those children. The epic's state is computed from them.
+
 ### Reserved labels
 
 Two label names mean something to the tooling. Both are ordinary labels
@@ -205,14 +212,12 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Completed: reconstruct abandoned ordinary dispatches from surviving claims,
-  branches, dirty worktrees, and tmux panes without discarding work.
-- Current: surface Full Auto halt and drain outcomes as durable dashboard
-  alerts that remain until the operator acknowledges each run.
-- Next: reconcile Full Auto lane accounting so `verifying` is an intentional
-  handoff, not a stall or dead-window failure.
+- Completed: Full Auto owns reconciliation, restart quarantine, engine event
+  hooks, and the centralized `verifying` handoff.
+- Current: close Full Auto with four-browser real-daemon coverage, operator
+  guidance, and its reconciled As-built record.
 - Later: expose queue health and verification diagnostics in engine/dashboard
-  surfaces after the core protocol is proven.
+  surfaces.
 "#,
         done_state = done_state,
         prefix = prefix,

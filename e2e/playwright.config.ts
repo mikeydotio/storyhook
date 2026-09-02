@@ -40,16 +40,16 @@ if (loadGraceEnabled()) {
 /**
  * A spec whose subject is the phone — a coarse pointer, a narrow viewport,
  * `hasTouch` — rather than the dashboard's behavior in general. One
- * pattern, referenced by every project below, so the two engine pairs each
- * stay exhaustive and disjoint by construction: every spec file matches it
- * or it doesn't, and no file can end up running in more than one project
- * per pair (where the other would fail a `(pointer: coarse)` assertion by
- * design) or in none (where it would silently run nowhere). Two
- * independently hand-maintained globs would drift the way
- * `--test-threads`-adjacent counts have before (SH-136); a single regex
- * used four times cannot.
+ * pattern, referenced by both pairs below, so ordinary specs stay exhaustive
+ * and disjoint by construction: every spec file matches it or it doesn't.
+ * The Full Auto close-out is the one intentional cross-class spec: its
+ * behavior spans desktop and phone layouts, so the mobile pair adds the exact
+ * engine filename to this same base set instead of weakening the partition
+ * with an independently maintained glob (SH-473).
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
+const ENGINE_SPECS = /engine\.spec\.ts$/;
+const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];
 
 export default defineConfig({
   testDir: "./specs",
@@ -70,7 +70,7 @@ export default defineConfig({
   //
   // 111/111 green in all three, so the worst case observed leaves a third of
   // the budget unspent at a load average of 100 — above the 32-88 SH-222
-  // recorded. The three specs that drive a real dispatch are not on this
+  // recorded. Specs that drive a real dispatch are not on this
   // budget: they call `test.setTimeout()` with a multiple of their own
   // measured `DISPATCH_COMPLETION_TIMEOUT` (SH-245), because they wait on a
   // subprocess and nothing else here does.
@@ -134,7 +134,7 @@ export default defineConfig({
       // only a real iPhone proves the browser stays unzoomed.
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
-      testMatch: MOBILE_SPECS,
+      testMatch: MOBILE_OR_ENGINE_SPECS,
     },
     {
       // WebKit under mobile emulation (SH-348) -- the engine whose own rule
@@ -161,13 +161,14 @@ export default defineConfig({
       // test reports that field for diagnostics while asserting only
       // `pointerCoarse`.
       //
-      // Keyed off the same `MOBILE_SPECS` constant as `mobile-chromium`,
+      // Keyed off the same `MOBILE_OR_ENGINE_SPECS` constant as
+      // `mobile-chromium`,
       // for the same reason the desktop pair share theirs: a pair whose two
       // members select differently is a pair one of whose engines can be
       // narrowed without either project's own file saying so.
       name: "mobile-webkit",
       use: { ...devices["iPhone 15"] },
-      testMatch: MOBILE_SPECS,
+      testMatch: MOBILE_OR_ENGINE_SPECS,
     },
   ],
 });

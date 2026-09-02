@@ -46,6 +46,44 @@ fn scaffold_agents_md_references_help_compact() {
 }
 
 #[test]
+fn scaffold_agents_owns_epic_and_reserved_label_guidance_while_claude_points_to_it() {
+    let dir = scratch_dir();
+    let agents = story(dir.path())
+        .args(["scaffold", "agents-md"])
+        .output()
+        .expect("scaffolding AGENTS.md");
+    assert!(agents.status.success());
+    let agents = String::from_utf8(agents.stdout).expect("AGENTS.md scaffold is UTF-8");
+    let agents_words = agents.split_whitespace().collect::<Vec<_>>().join(" ");
+    for required in [
+        "Typed epics are folders",
+        "carry no executable steps of their own",
+        "`no-auto`",
+        "`human-only`",
+    ] {
+        assert!(
+            agents_words.contains(required),
+            "the authoritative AGENTS.md scaffold must contain {required:?}"
+        );
+    }
+
+    let claude = story(dir.path())
+        .args(["scaffold", "claude-md"])
+        .output()
+        .expect("scaffolding CLAUDE.md");
+    assert!(claude.status.success());
+    let claude = String::from_utf8(claude.stdout).expect("CLAUDE.md scaffold is UTF-8");
+    assert!(claude.contains("AGENTS.md"));
+    for duplicated_policy in ["Typed epics are folders", "`no-auto`", "`human-only`"] {
+        assert!(
+            !claude.contains(duplicated_policy),
+            "CLAUDE.md must inherit {duplicated_policy:?} through its AGENTS.md pointer, not \
+             maintain a second copy"
+        );
+    }
+}
+
+#[test]
 fn scaffold_agents_md_no_mcp_references() {
     let dir = scratch_dir();
     let output = story(dir.path())
