@@ -59,6 +59,9 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   "post the plan verbatim rather than summarizing it" \
   "dispatch: attended Codex persists the exact approved plan"
+assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
+  "every linked pull request title contains the exact story ID $id" \
+  "dispatch: attended Codex requires the story ID in the PR title"
 [ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
   || fail_test "dispatch: attended Codex armed the autonomous plan watcher"
 
@@ -155,6 +158,9 @@ assert_contains "$(jqf "$out" .prompt)" \
 assert_contains "$(jqf "$out" .prompt)" \
   "before changing files or running tests" \
   "dry auto: persistence precedes implementation"
+assert_contains "$(jqf "$out" .prompt)" \
+  "every linked pull request title contains the exact story ID $id_auto" \
+  "dry auto: Codex requires the story ID in the PR title"
 
 # A real fake-tmux Auto dispatch arms the pane watcher after Plan mode is
 # confirmed and before prompt submission. An arming failure is a pre-handoff
