@@ -5,16 +5,24 @@
 # against the REAL story CLI (this repo builds it) — a fake would risk
 # drifting from is_ready()'s actual open/awaiting/obviated-by/blocked-by
 # semantics, the exact thing this gate exists to track faithfully.
-# STORY_DRY_RUN=1 is enough here: every case under test refuses BEFORE the
-# dry-run/real-run branch point, so no tmux is needed.
+# STORY_DRY_RUN=1 is enough here: the ready case reaches the preview branch and
+# every refusal lands before a worktree or window can be created. Resume
+# inventory still reads tmux before that gate, so use the isolated fake rather
+# than letting an ambient window with the same test-story id mask the reason.
 source "$(dirname "$0")/lib.sh"
 
+FAKE_TMUX_DIR="$TESTS_DIR/fakes"
 repo=$(mk_story_repo)
+
+dry() {
+  (cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" \
+    STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$1" 2>&1)
+}
 
 # --- awaiting ---
 awaiting_id=$(new_story "$repo" "Awaiting story")
 (cd "$repo" && story block "$awaiting_id" "waiting on design" >/dev/null)
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$awaiting_id" 2>&1)
+out=$(dry "$awaiting_id")
 assert_eq "$(jqf "$out" .ok)" "false" "awaiting: ok:false"
 assert_contains "$(jqf "$out" .display)" "awaiting" "awaiting: reason names awaiting"
 assert_contains "$(jqf "$out" .display)" "waiting on design" "awaiting: reason includes the awaiting text"
@@ -22,7 +30,7 @@ assert_contains "$(jqf "$out" .display)" "waiting on design" "awaiting: reason i
 # --- closed (done) ---
 done_id=$(new_story "$repo" "Done story")
 (cd "$repo" && story move "$done_id" "done" >/dev/null)
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$done_id" 2>&1)
+out=$(dry "$done_id")
 assert_eq "$(jqf "$out" .ok)" "false" "closed: ok:false"
 assert_contains "$(jqf "$out" .display)" "closed" "closed: reason names closed"
 
@@ -30,7 +38,7 @@ assert_contains "$(jqf "$out" .display)" "closed" "closed: reason names closed"
 dep_id=$(new_story "$repo" "Dependency")
 dependent_id=$(new_story "$repo" "Dependent")
 (cd "$repo" && story relate "$dependent_id" blocked-by "$dep_id" >/dev/null)
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dependent_id" 2>&1)
+out=$(dry "$dependent_id")
 assert_eq "$(jqf "$out" .ok)" "false" "blocked-by: ok:false"
 assert_contains "$(jqf "$out" .display)" "blocked-by" "blocked-by: reason names the relationship"
 assert_contains "$(jqf "$out" .display)" "$dep_id" "blocked-by: reason names the blocker id"
@@ -41,12 +49,12 @@ assert_contains "$(jqf "$out" .display)" "$dep_id" "blocked-by: reason names the
 # story.state directly now, so this is not the awaiting/blocked-by path above.
 blocked_state_id=$(new_story "$repo" "Manually blocked story")
 (cd "$repo" && story move "$blocked_state_id" "blocked" >/dev/null)
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$blocked_state_id" 2>&1)
+out=$(dry "$blocked_state_id")
 assert_eq "$(jqf "$out" .ok)" "false" "blocked state: ok:false"
 
 # --- sanity: a genuinely ready story is NOT refused by the gate ---
 ready_id=$(new_story "$repo" "Ready story")
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$ready_id" 2>&1)
+out=$(dry "$ready_id")
 assert_eq "$(jqf "$out" .ok)" "true" "ready: ok:true, gate does not over-refuse"
 
 # No side effects from any of the refused attempts above: no worktree

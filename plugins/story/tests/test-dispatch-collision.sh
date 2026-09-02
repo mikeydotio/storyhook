@@ -38,6 +38,13 @@ assert_eq "$(jqf "$second" .resources.worktree)" "present" \
   "second dispatch: existing worktree is inventoried"
 assert_eq "$(jqf "$second" .resources.branch)" "present" \
   "second dispatch: existing branch is inventoried"
+collision_display=$(jqf "$second" .display)
+assert_contains "$collision_display" "surviving dispatch artifacts" \
+  "second dispatch: artifact-only recovery names only observed resources"
+case "$collision_display" in
+  *"claim"*)
+    fail_test "second dispatch: artifact-only recovery invents a surviving claim — [$collision_display]" ;;
+esac
 
 # Confirm discovery preceded the claim: state never left "todo".
 rolled_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
