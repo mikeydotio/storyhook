@@ -1027,31 +1027,37 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
     let draft = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":true"));
     assert_eq!(draft["result"], "infrastructure-failure");
     assert!(draft["detail"].as_str().unwrap().contains("is a draft"));
-    assert!(!draft["detail"]
-        .as_str()
-        .unwrap()
-        .contains("no draft status"));
+    assert!(
+        !draft["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no draft status")
+    );
 
-    let fork = validate(&ready.replace(
-        "\"isCrossRepository\":false",
-        "\"isCrossRepository\":true",
-    ));
+    let fork =
+        validate(&ready.replace("\"isCrossRepository\":false", "\"isCrossRepository\":true"));
     assert_eq!(fork["result"], "infrastructure-failure");
-    assert!(fork["detail"]
-        .as_str()
-        .unwrap()
-        .contains("comes from a fork"));
-    assert!(!fork["detail"]
-        .as_str()
-        .unwrap()
-        .contains("no repository relationship"));
+    assert!(
+        fork["detail"]
+            .as_str()
+            .unwrap()
+            .contains("comes from a fork")
+    );
+    assert!(
+        !fork["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no repository relationship")
+    );
 
     let invalid = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":\"false\""));
     assert_eq!(invalid["result"], "infrastructure-failure");
-    assert!(invalid["detail"]
-        .as_str()
-        .unwrap()
-        .contains("no draft status"));
+    assert!(
+        invalid["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no draft status")
+    );
 }
 
 #[test]
