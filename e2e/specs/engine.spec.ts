@@ -129,6 +129,10 @@ async function fulfillRuns(route: Route, runs: EngineRun[]): Promise<void> {
   });
 }
 
+function engineStoryLane(page: Page, story: string) {
+  return page.locator(".engine-lane-story").filter({ hasText: story });
+}
+
 async function installTestEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class TestEventSource {
@@ -185,7 +189,7 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await expect(page.locator(".engine-state")).toHaveText("running", {
     timeout: REAL_ENGINE_TIMEOUT,
   });
-  const claimedLane = page.locator(".engine-lane-story", { hasText: ENGINE_STORY_ID });
+  const claimedLane = engineStoryLane(page, ENGINE_STORY_ID);
   await expect(claimedLane).toHaveCount(1, { timeout: REAL_ENGINE_TIMEOUT });
   await expect(page.locator(".engine-lane-count")).toHaveText("2 lanes");
 
@@ -674,6 +678,8 @@ test("an epic replaces ordinary Dispatch with an epic-scoped Full Auto start", a
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
+  await page.locator("#filter-toggle-btn").click();
+  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute("aria-expanded", "true");
   await page.locator("#toggle-epics").check();
   expect(transformedEpicId).not.toBe("");
   const epicCard = page.locator(`.card[data-id="${transformedEpicId}"]`);
@@ -712,7 +718,7 @@ test("an unconfirmed start stays honest and reconciles the run with GET", async 
   await expect(notice).toContainText(
     "storyhook could not confirm whether this reached the daemon",
   );
-  await expect(page.locator(".engine-lane-story")).toContainText("AA-ambiguous");
+  await expect(engineStoryLane(page, "AA-ambiguous")).toHaveText("AA-ambiguous");
 });
 
 test("a late project reply cannot overwrite the selected project's run", async ({
@@ -749,12 +755,12 @@ test("a late project reply cannot overwrite the selected project's run", async (
   await seen;
   await page.locator("#projsel-btn").click();
   await page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }).click();
-  await expect(page.locator(".engine-lane-story")).toContainText("BETA-CURRENT");
+  await expect(engineStoryLane(page, "BETA-CURRENT")).toHaveText("BETA-CURRENT");
 
   releaseFirst();
   await finished;
-  await expect(page.locator(".engine-lane-story")).toContainText("BETA-CURRENT");
-  await expect(page.locator(".engine-lane-story")).not.toContainText("ALPHA-LATE");
+  await expect(engineStoryLane(page, "BETA-CURRENT")).toHaveText("BETA-CURRENT");
+  await expect(engineStoryLane(page, "ALPHA-LATE")).toHaveCount(0);
 
   await page.locator("#projsel-btn").click();
   await page.locator("#projsel-menu .projsel-item", { hasText: "Gamma Archive" }).click();
@@ -782,7 +788,7 @@ test("the safety poll reconciles engine state without an SSE event", async ({
   // event is emitted in this test; advancing that interval is the witness.
   await page.clock.runFor(25_000);
   await expect.poll(() => gets).toBeGreaterThan(initialGets);
-  await expect(page.locator(".engine-lane-story")).toContainText("AA-SAFETY");
+  await expect(engineStoryLane(page, "AA-SAFETY")).toHaveText("AA-SAFETY");
 });
 
 test("an alert repaint waits until a held acknowledgement can dispatch its click", async ({
@@ -900,5 +906,5 @@ test("an engine repaint waits until a held press can dispatch its click", async 
       ),
     )
     .toBe(1);
-  await expect(page.locator(".engine-lane-story")).toContainText("AA-PUSH");
+  await expect(engineStoryLane(page, "AA-PUSH")).toHaveText("AA-PUSH");
 });
