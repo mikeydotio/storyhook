@@ -492,18 +492,18 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     }
 
     assert_eq!(
-        pair_selectors[0].1.1.as_str(), "MOBILE_SPECS",
+        pair_selectors[0].1.1.as_str(),
+        "MOBILE_SPECS",
         "the desktop pair must exclude only phone-subject specs"
     );
     assert_eq!(
-        pair_selectors[1].1.1.as_str(), "MOBILE_OR_ENGINE_SPECS",
+        pair_selectors[1].1.1.as_str(),
+        "MOBILE_OR_ENGINE_SPECS",
         "the mobile pair must add only the named cross-device engine spec to the phone set"
     );
     assert!(
         config_text.contains("const ENGINE_SPECS = /engine\\.spec\\.ts$/;")
-            && config_text.contains(
-                "const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];"
-            ),
+            && config_text.contains("const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];"),
         "engine.spec.ts must be the one explicit shared exception, composed from the same \
          MOBILE_SPECS constant rather than by widening either engine pair independently"
     );
@@ -589,11 +589,9 @@ fn real_dispatch_selected_pattern(runner: &str) -> &str {
             panic!("real_dispatch_selected does not contain `{marker}`: {assignment}")
         })
         .1;
-    let end = after
-        .find('"')
-        .unwrap_or_else(|| {
-            panic!("real_dispatch_selected's grep pattern never closes: {assignment}")
-        });
+    let end = after.find('"').unwrap_or_else(|| {
+        panic!("real_dispatch_selected's grep pattern never closes: {assignment}")
+    });
     &after[..end]
 }
 
