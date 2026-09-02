@@ -16,6 +16,8 @@
   reconciled Full Auto As-built record.
 - Adopts the stale structural-epic wording found during this pass. Commit
   `eb8fb06` fixes README/help guidance separately and adds its regression test.
+- Adopts the E2E hygiene scanner's cross-statement false positive. Commit
+  `eb1be2c` scopes direct-creation detection to one POST and adds its regression.
 
 ## Durable workflow record
 
@@ -24,7 +26,8 @@
   diagnostics or receipts, merge evidence, and acceptance assessment.
 - This is autonomous work. Do not ask another question after the recorded plan
   approval.
-- Do not version, release, deploy, force-push, or run `/story complete` here.
+- Do not version, release, deploy, force-push, or run `/story complete` from
+  this linked feature worktree.
 - The approved preservation order is commit, push, open/link the PR, then run
   `make test` and `make e2e ARGS='engine.spec.ts'`.
 - A red test is diagnostic evidence: investigate its root cause, repair it
@@ -32,6 +35,9 @@
 - Preserve the PR and worktree while resolving a merge conflict or failed
   landing; record the diagnosis and resolution on SH-473 before resuming.
 - A green candidate lands through `bash scripts/land-pr.sh PR-NUMBER`.
+- After PR 608 lands, the user explicitly requested `v2.2.1-beta.1`: cut it
+  from the landed main tree in a standalone checkout, publish it as a GitHub
+  prerelease, and install it locally.
 
 ## Remaining program acceptance
 
