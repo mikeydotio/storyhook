@@ -270,6 +270,21 @@ fn wait_for(path: &Path) {
 /// several suites at once, and the thing under test is never the latency.
 const WAIT_POLLS_ALLOWED: u64 = 30;
 
+/// The same quantity [`wait_for`] spends, for a fixture waiting on a *process*
+/// to exit rather than on a path to appear (SH-528).
+///
+/// One derivation rather than two: both are "N observation cycles of the
+/// lock", and stating that once is what stops the two drifting apart (SH-136).
+///
+/// **The inequality below it is load-bearing** at the one site whose subject is
+/// how a wrapper dies: that fixture wraps `sleep 60`, so a ceiling *under* 60s
+/// is what makes a deleted signal trap fail as a named timeout instead of
+/// running the sleep to completion and failing on the exit code a whole minute
+/// later. Raising `WAIT_POLLS_ALLOWED` past 60 would quietly cost that.
+fn poll_ceiling() -> std::time::Duration {
+    std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED)
+}
+
 // ---------------------------------------------------------------------------
 // The script's own derived constants, read back out of it
 // ---------------------------------------------------------------------------
@@ -394,7 +409,11 @@ fn two_holders_of_one_name_serialize() {
         0,
         "the waiter must eventually run: {second:?}"
     );
-    first.wait();
+    first.wait_within(poll_ceiling(), || {
+        "the first `gate` holder (slow.sh) never exited, so the lock it holds was never \
+         released"
+            .to_string()
+    });
 
     let seen = std::fs::read_to_string(&trace).expect("reading the trace");
     assert_eq!(
@@ -432,7 +451,9 @@ fn two_different_names_do_not_serialize() {
         seen, "A-in\nB-in\nB-out\n",
         "`merge` must run while `gate` is held -- it ran either before A entered or after A left, so the names are not independent"
     );
-    first.wait();
+    first.wait_within(poll_ceiling(), || {
+        "the `gate` holder (slow.sh) never exited".to_string()
+    });
 }
 
 /// SH-306: a gate that goes quiet reads as an all-clear. A waiter must say
@@ -449,7 +470,10 @@ fn a_waiter_names_the_holder_and_how_long_it_waited() {
     let holder = holder.trim().to_string();
 
     let second = fixture.run(&["gate", "--", "true"]);
-    first.wait();
+    first.wait_within(poll_ceiling(), || {
+        "the first `gate` holder never exited, though the waiter below it already got the lock"
+            .to_string()
+    });
 
     let err = stderr(&second);
     assert!(
@@ -509,7 +533,7 @@ fn a_lock_left_by_a_dead_pid_is_reclaimed() {
 #[test]
 fn a_lock_whose_pid_was_reused_is_reclaimed() {
     let fixture = Fixture::new();
-    let mut victim = ChildGuard::new(
+    let victim = ChildGuard::new(
         Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
@@ -546,7 +570,13 @@ fn a_lock_whose_pid_was_reused_is_reclaimed() {
         pid_running(victim.pid()),
         "reclaiming a lock must never touch the process that happens to hold the reused pid"
     );
-    let _ = victim.wait();
+    // Dropped rather than waited on (SH-528). `victim` is `sleep 30` and the
+    // assertion above has just proved it is deliberately still running, so
+    // waiting here would spend the whole remaining sleep for nothing — and
+    // *bounding* that wait would be racing a 30-second sleep with a
+    // 30-second ceiling, which is a coin toss by construction.
+    // `ChildGuard::Drop` already kills and reaps.
+    drop(victim);
 }
 
 /// The positive control for both reclamation cases. A holder that is alive
@@ -556,7 +586,7 @@ fn a_lock_whose_pid_was_reused_is_reclaimed() {
 #[test]
 fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
     let fixture = Fixture::new();
-    let mut victim = ChildGuard::new(
+    let victim = ChildGuard::new(
         Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
@@ -581,7 +611,8 @@ fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
         fixture.lock("gate").join("pid").exists(),
         "the live holder's lock must still be there afterwards"
     );
-    let _ = victim.wait();
+    // Dropped rather than waited on — see the sibling case above (SH-528).
+    drop(victim);
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +649,11 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
         fixture.lock("gate").exists(),
         "giving up must leave the holder's lock alone"
     );
-    first.wait();
+    first.wait_within(poll_ceiling(), || {
+        "the `gate` holder (sleep 5) never exited, so the waiter above gave up against a lock \
+         nothing was ever going to release"
+            .to_string()
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -661,7 +696,19 @@ fn a_signal_releases_the_lock_and_takes_the_command_with_it() {
         .args(["-TERM", &wrapper.pid().to_string()])
         .status()
         .expect("signalling the wrapper");
-    let status = wrapper.wait();
+    // Bounded, and the ceiling is what makes this case a mutation detector
+    // rather than a formality (SH-528). The wrapper wraps `sleep 60`; with the
+    // signal traps deleted, bash defers the EXIT trap until that foreground
+    // command returns, so an unbounded wait here sat out the whole minute and
+    // only then failed on the exit code. `poll_ceiling()` is 30s, comfortably
+    // under 60, so the same mutation now fails at half the time, naming the
+    // wrapper rather than its status.
+    let status = wrapper.wait_within(poll_ceiling(), || {
+        "the wrapper did not die of the SIGTERM just sent to it. A trap that is deferred until \
+         the wrapped `sleep 60` returns looks identical to a correct one until exactly this \
+         wait, which is why it is bounded below that sleep."
+            .to_string()
+    });
 
     assert_eq!(
         status.code(),

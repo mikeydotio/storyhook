@@ -75,3 +75,35 @@ fn an_unarmed_daemon_is_not_killed_by_anything() {
         stopped.pid
     );
 }
+
+/// The positive control for the capability probe every armed spawn now passes
+/// through (SH-528).
+///
+/// # Why this is worth a test of its own
+///
+/// The probe is the reason the two cases above can trust that a daemon which
+/// did not die is a *finding* rather than a mis-built binary. It is called from
+/// one door — `spawn_daemon`, whenever a fault point is named — so it is
+/// already exercised by every crash case in the suite; what none of them do is
+/// say so, and a guard whose firing nobody can attribute is the SH-306 shape
+/// this project has paid for before. This is the assertion that names it.
+///
+/// # The negative half, and why it lives in a comment rather than in code
+///
+/// It cannot be written as a test: the probe's `false` branch requires a
+/// `story` built **without** the `fault-injection` feature, and every binary
+/// `cargo test` can reach has it — that being exactly what the probe measures.
+/// So it was measured by hand, by toggle, and the result is recorded here
+/// (SH-295: a pin that cannot fail is not a pin, so say which half is pinned):
+///
+/// * `cargo build --bin story` over a green tree — marker count 0 —
+///   `an_armed_daemon_dies_by_sigkill_rather_than_by_its_own_abort` **FAILED
+///   in seconds**, naming the missing feature, the binary's path, and the
+///   rebuild that fixes it.
+/// * Before the probe existed, the same toggle **hung**, and was killed by
+///   `timeout 90`. That is the SH-528 incident, reproduced on demand.
+/// * `cargo test --no-run` — marker count 1 — green again in 1.88s.
+#[test]
+fn the_binary_under_test_can_actually_fire_a_fault() {
+    storyhook_test_support::assert_the_binary_can_fire_faults();
+}
