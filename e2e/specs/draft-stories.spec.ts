@@ -2,6 +2,7 @@ import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  holdFetch,
   openProject,
   seedToken,
 } from "./support";
@@ -120,6 +121,39 @@ test("Save Draft creates a draft: it is not a board card, and the Drafts button 
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   await expect(draftsBtnText).toHaveText(`${beforeCount || "No"} Drafts`);
+});
+
+test("a saved draft leaves the catalog pending until its fresh row arrives", async ({
+  page,
+}) => {
+  const title = "A draft held at the catalog boundary";
+  const catalog = await holdFetch<
+    Array<{ drafts?: Array<{ story: { title: string } }> }>
+  >(
+    page,
+    (url) => url.pathname === "/api/repos",
+    (projects) =>
+      projects.some((project) =>
+        (project.drafts || []).some((draft) => draft.story.title === title),
+      ),
+    { sealOnHold: true },
+  );
+
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-save-draft").click();
+  await catalog.taken;
+  await catalog.seal();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
+
+  await catalog.deliver();
+  await expect(
+    page.locator("#drafts-list .drafts-row", { hasText: title }),
+  ).toBeVisible();
 });
 
 test("the Drafts popover dismisses on an outside click, unlike the New Story modal", async ({
