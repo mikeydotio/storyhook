@@ -214,3 +214,35 @@ fn a_normal_parent_still_reports_progress() {
         "a normal parent still counts its children: {normal:#}"
     );
 }
+
+#[test]
+fn public_relationship_guidance_says_epic_identity_is_typed_not_structural() {
+    const INVARIANT: &str = "Only a story whose type is epic is an epic.";
+    const OBSOLETE: &str = "A story with children is a structural epic";
+
+    let readme =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+            .expect("README.md is readable");
+    let relate = storyhook::help_topics::get_help_topic("relate")
+        .expect("the shipped relate help topic exists");
+
+    for (surface, text) in [
+        ("README.md", readme.as_str()),
+        ("story help relate", relate),
+    ] {
+        assert!(
+            text.contains(INVARIANT),
+            "{surface} must teach the type-based epic invariant: {INVARIANT}"
+        );
+        assert!(
+            !text.contains(OBSOLETE),
+            "{surface} still teaches the pre-SH-499 structural-epic rule"
+        );
+        assert!(
+            text.contains("ordinary story")
+                && text.contains("children")
+                && text.contains("actionable"),
+            "{surface} must make clear that an ordinary parent retains its own work"
+        );
+    }
+}
