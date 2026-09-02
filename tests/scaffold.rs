@@ -54,6 +54,7 @@ fn scaffold_agents_owns_epic_and_reserved_label_guidance_while_claude_points_to_
         .expect("scaffolding AGENTS.md");
     assert!(agents.status.success());
     let agents = String::from_utf8(agents.stdout).expect("AGENTS.md scaffold is UTF-8");
+    let agents_words = agents.split_whitespace().collect::<Vec<_>>().join(" ");
     for required in [
         "Typed epics are folders",
         "carry no executable steps of their own",
@@ -61,7 +62,7 @@ fn scaffold_agents_owns_epic_and_reserved_label_guidance_while_claude_points_to_
         "`human-only`",
     ] {
         assert!(
-            agents.contains(required),
+            agents_words.contains(required),
             "the authoritative AGENTS.md scaffold must contain {required:?}"
         );
     }
