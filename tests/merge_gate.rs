@@ -1004,6 +1004,57 @@ fn a_changed_tier_receipt_does_not_certify_a_merge_even_for_the_exact_tree() {
 }
 
 #[test]
+fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence() {
+    let repo = MergeRepo::new();
+    let script = checkout().join("scripts/verify-pr.sh");
+    let script = script.to_string_lossy().to_string();
+    let ready = r#"{"number":42,"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","headRefOid":"deadbeef","mergeCommit":null}"#;
+    let validate = |metadata: &str| {
+        let out = run(
+            repo.path(),
+            "bash",
+            &[&script, "--validate-metadata", metadata],
+        );
+        assert_ok(&out, "validating verifier pull-request metadata");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .expect("the verifier metadata seam must return JSON")
+    };
+
+    let accepted = validate(ready);
+    assert_eq!(accepted["result"], "metadata-valid");
+    assert_eq!(accepted["number"], 42);
+
+    let draft = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":true"));
+    assert_eq!(draft["result"], "infrastructure-failure");
+    assert!(draft["detail"].as_str().unwrap().contains("is a draft"));
+    assert!(!draft["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no draft status"));
+
+    let fork = validate(&ready.replace(
+        "\"isCrossRepository\":false",
+        "\"isCrossRepository\":true",
+    ));
+    assert_eq!(fork["result"], "infrastructure-failure");
+    assert!(fork["detail"]
+        .as_str()
+        .unwrap()
+        .contains("comes from a fork"));
+    assert!(!fork["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no repository relationship"));
+
+    let invalid = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":\"false\""));
+    assert_eq!(invalid["result"], "infrastructure-failure");
+    assert!(invalid["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no draft status"));
+}
+
+#[test]
 fn verifier_restart_recovers_only_a_certified_merge_on_the_current_base() {
     let repo = MergeRepo::new();
     let original_base = repo.rev_parse("main");
