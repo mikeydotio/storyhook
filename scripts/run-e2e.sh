@@ -14,10 +14,11 @@
 # `/private/tmp` rather than `$TMPDIR`: the latter is Spotlight-indexed on
 # macOS (SH-53).
 #
-# ONE PROJECT PER SEED (SH-335). `e2e/specs/dispatch.spec.ts` claims a seeded
-# story for real (a CAS-guarded `story move ... in-progress`) and creates a
-# real `git worktree` -- story.sh refuses outright to redispatch a story
-# already in-progress. Running every desktop spec under two engines against
+# ONE PROJECT PER SEED (SH-335). `e2e/specs/dispatch.spec.ts` and
+# `e2e/specs/engine.spec.ts` claim seeded stories for real (a CAS-guarded
+# transition into the active state) and create real git worktrees -- story.sh
+# refuses outright to redispatch a story already in-progress. Running every
+# desktop spec under two engines against
 # ONE shared daemon and ONE seed, as an earlier draft of this change did,
 # meant the second engine's pass hit fixtures the first engine's pass had
 # already consumed, and failed for reasons that had nothing to do with the
@@ -290,21 +291,26 @@ WRAPPER
   chmod 600 "$STORYHOOK_DISPATCH_SCRIPT"
   unset _real_dispatch_script _dispatch_protocol
 
-  # --- Seed four projects: Alpha/Beta with a checkout (switching between
+  # --- Seed five projects: Alpha/Beta with a checkout (switching between
   # them is the whole point of project-selector.spec.ts and
   # filter-persistence.spec.ts), Gamma deliberately unattached so the
   # selector's read-only path -- SH-42's defect, see the commit that fixes it
   # -- has something to exercise, and Delta (SH-208) a fourth checked-out
-  # project reserved for Dispatch Auto's own dispatch target. Delta exists
+  # project reserved for Dispatch Auto's own dispatch target, and Engine a
+  # fifth checked-out project reserved for Full Auto's real lane. Delta and
+  # Engine are separate because each real-dispatch spec owns the story it
+  # consumes; coupling them would make either spec's success order-dependent.
+  # Delta exists
   # because Alpha's exact two-story, four-empty-column shape is itself a
   # fixture other specs assert on byte-for-byte (filter-persistence.spec.ts's
   # `0 / 2`, column-visibility.spec.ts's `2 / 2` and its four-empty-columns
   # claim) -- a third Alpha story would silently break both. Seeded fresh
   # for THIS project's own daemon, never shared with another project's --
-  # `dispatch.spec.ts` claims these stories for real and a second project
-  # reusing them would find them already claimed (SH-335).
+  # `dispatch.spec.ts` and `engine.spec.ts` claim these stories for real and a
+  # second Playwright project reusing them would find them already claimed
+  # (SH-335, SH-473).
   seed_dir="$data_root/seed"
-  mkdir -p "$seed_dir/alpha" "$seed_dir/beta" "$seed_dir/delta"
+  mkdir -p "$seed_dir/alpha" "$seed_dir/beta" "$seed_dir/delta" "$seed_dir/engine"
 
   echo "run-e2e.sh: seeding projects…" >&2
 
@@ -367,6 +373,16 @@ WRAPPER
     "$story_bin" new "Roll out the new onboarding flow" --json | jq -r '.story.story.id' >"$data_root/delta-story-id"
   )
   delta_story_id="$(cat "$data_root/delta-story-id")"
+  (
+    cd "$seed_dir/engine"
+    init_git_repo
+    "$story_bin" project new --prefix EE --name "Engine Project" --no-agents-md >/dev/null
+    # SH-473's one real Full Auto lane. A dedicated project prevents the
+    # engine's claim/unclaim cycle from changing Alpha's exact board shape or
+    # consuming Delta's ordinary Auto target.
+    "$story_bin" new "Exercise Full Auto end to end" --json | jq -r '.story.story.id' >"$data_root/engine-story-id"
+  )
+  engine_story_id="$(cat "$data_root/engine-story-id")"
 
   # --- Start the daemon and discover the port it actually bound. `daemon
   # start` blocks until the daemon reports ready (or times out), but its
@@ -441,6 +457,7 @@ WRAPPER
   export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
   export DASHBOARD_DELTA_STORY_ID="$delta_story_id"
   export DASHBOARD_DELTA_CHECKOUT="$seed_dir/delta"
+  export DASHBOARD_ENGINE_STORY_ID="$engine_story_id"
 
   # --- Run the suite, this project only.
   #
@@ -460,10 +477,10 @@ WRAPPER
   # to a run that still had others) but would now abort the whole loop over
   # a project the caller likely never meant to filter into. Skip it instead,
   # loudly. This has to run AFTER seeding and the daemon are up, not before:
-  # `dispatch.spec.ts` reads its `DASHBOARD_*` fixture ids at MODULE load
-  # time (`const ALPHA_STORY_ID = requiredEnv(...)`), so even `--list` -
-  # which loads every matching file to enumerate its tests - throws before
-  # those are exported.
+  # `dispatch.spec.ts` and `engine.spec.ts` read their `DASHBOARD_*` fixture
+  # ids at MODULE load time (`requiredEnv(...)`), so even `--list` -- which
+  # loads every matching file to enumerate its tests -- throws before those
+  # are exported.
   list_output="$(npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}" --list --reporter=list 2>/dev/null || true)"
   if printf '%s\n' "$list_output" | grep -q '^Total: 0 tests'; then
     echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
@@ -487,17 +504,13 @@ WRAPPER
     gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running
   fi
   e2e_start=$(date +%s)
-  # The one spec in the suite that dispatches for real (`test.setTimeout` at
-  # dispatch.spec.ts:125,210,278 and nowhere else that drives a real
-  # dispatch; everything else stubs the route) -- consulted after the real
-  # run below. This replaces the old `"$#" -eq 0` heuristic ("no CLI filter
-  # was passed"), which a per-project `--project=X` invocation would always
-  # defeat even on an otherwise-unfiltered run (SH-335) -- asking Playwright
-  # directly is correct under any combination of project and extra filters.
-  # Include the exact path and Playwright's following `:`. A suffix-only
-  # match also selects story-context-menu-dispatch.spec.ts, whose requests
-  # are all stubbed, then falsely fails the fake-tmux post-check below.
-  dispatch_selected="$(printf '%s\n' "$list_output" | grep -c "specs/dispatch\.spec\.ts:" || true)"
+  # The two specs that dispatch for real -- ordinary dispatch and Full Auto --
+  # consulted after the real run below. Asking Playwright's own list is
+  # correct under any combination of project and extra filters. Include the
+  # exact path and Playwright's following `:`: a suffix-only dispatch match
+  # also selects story-context-menu-dispatch.spec.ts, whose requests are all
+  # stubbed, then falsely fails the fake-tmux post-check below.
+  real_dispatch_selected="$(printf '%s\n' "$list_output" | grep -c "specs/\(dispatch\|engine\)\.spec\.ts:" || true)"
 
   # `|| status=$?` rather than `if ! npx ...; then status=$?`: under `!`,
   # bash inverts the command's exit status, so `$?` inside that then-branch
@@ -528,8 +541,8 @@ WRAPPER
   # hand, that it was the one used. Skipped when this project+filter
   # combination selected no dispatch-driving spec at all, since then there
   # is nothing to have recorded.
-  if [ "$dispatch_selected" -gt 0 ] && [ ! -s "$FAKE_TMUX_STATE/new_window_args.log" ]; then
-    echo "run-e2e.sh: project=$project selected dispatch.spec.ts, but no dispatch reached this run's fake tmux state" >&2
+  if [ "$real_dispatch_selected" -gt 0 ] && [ ! -s "$FAKE_TMUX_STATE/new_window_args.log" ]; then
+    echo "run-e2e.sh: project=$project selected a real-dispatch spec, but no dispatch reached this run's fake tmux state" >&2
     echo "  directory ($FAKE_TMUX_STATE/new_window_args.log is missing or empty)." >&2
     echo "  Either the spec didn't actually dispatch, or the dispatch children used a" >&2
     echo "  different fake-tmux state than the one this script configured (SH-263)." >&2

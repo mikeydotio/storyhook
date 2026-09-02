@@ -18,14 +18,18 @@
 //!    with no story naming why -- `every_webkit_quarantine_names_a_story`.
 //! 3. Either engine pair's two projects stop selecting their spec files
 //!    identically, quietly narrowing WebKit coverage relative to Chromium's,
-//!    or the two pairs stop sharing `MOBILE_SPECS` under opposite selector
-//!    kinds -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
+//!    or `engine.spec.ts` stops being the one explicit exception shared by all
+//!    four -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
 //! 4. A failed project stops the matrix or a later project's Playwright
 //!    invocation erases its failure artifacts --
 //!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
-//! 5. The real-dispatch post-check selects exactly `specs/dispatch.spec.ts`,
-//!    not another stubbed spec whose filename happens to end in the same
-//!    substring -- `the_real_dispatch_postcheck_matches_only_the_exact_spec`.
+//! 5. The real-dispatch post-check selects exactly `specs/dispatch.spec.ts`
+//!    and `specs/engine.spec.ts`, not another stubbed spec whose filename
+//!    happens to contain dispatch --
+//!    `the_real_dispatch_postcheck_matches_only_the_two_exact_specs`.
+//! 6. Every Playwright project invocation creates its daemon, seed and
+//!    fake-tmux state inside the per-project subshell --
+//!    `each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state`.
 
 use std::path::{Path, PathBuf};
 
@@ -433,10 +437,9 @@ fn selector(block: &str) -> Option<(&'static str, String)> {
 /// select identically, or one engine's coverage can be narrowed without
 /// either project's own file saying so (SH-335 established this for the
 /// desktop pair; SH-348 extends it to the mobile pair). Across the pairs,
-/// the two selector KINDS must be opposite -- `MOBILE_SPECS`'s own doc
-/// comment claims the pattern makes all four projects exhaustive and
-/// disjoint, which is only true if the desktop pair excludes it and the
-/// mobile pair matches it.
+/// the selector KINDS remain opposite. The mobile pair's expression adds the
+/// one intentional cross-class file (`engine.spec.ts`) to `MOBILE_SPECS`;
+/// every other spec remains exhaustive and disjoint across the two pairs.
 const ENGINE_PAIRS: [(&str, &str, &str, &str); 2] = [
     ("desktop", "chromium", "webkit", "testIgnore"),
     ("mobile", "mobile-chromium", "mobile-webkit", "testMatch"),
@@ -488,16 +491,21 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
         pair_selectors.push((label, first_selector));
     }
 
-    let (desktop_label, desktop_selector) = &pair_selectors[0];
-    let (mobile_label, mobile_selector) = &pair_selectors[1];
     assert_eq!(
-        desktop_selector.1, mobile_selector.1,
-        "the {desktop_label} pair selects on {:?} and the {mobile_label} pair on {:?} -- both \
-         are supposed to name the SAME constant (MOBILE_SPECS) under opposite selector kinds. \
-         That is the only reason all four projects are exhaustive and disjoint by construction; \
-         two independently maintained expressions would drift the way SH-136's counts did, one \
-         constant used four times cannot.",
-        desktop_selector.1, mobile_selector.1
+        pair_selectors[0].1.1.as_str(), "MOBILE_SPECS",
+        "the desktop pair must exclude only phone-subject specs"
+    );
+    assert_eq!(
+        pair_selectors[1].1.1.as_str(), "MOBILE_OR_ENGINE_SPECS",
+        "the mobile pair must add only the named cross-device engine spec to the phone set"
+    );
+    assert!(
+        config_text.contains("const ENGINE_SPECS = /engine\\.spec\\.ts$/;")
+            && config_text.contains(
+                "const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];"
+            ),
+        "engine.spec.ts must be the one explicit shared exception, composed from the same \
+         MOBILE_SPECS constant rather than by widening either engine pair independently"
     );
 }
 
@@ -526,11 +534,11 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
 
     let match_block = r#"",
       use: { ...devices["Pixel 7"] },
-      testMatch: MOBILE_SPECS,
+      testMatch: MOBILE_OR_ENGINE_SPECS,
     },"#;
     assert_eq!(
         selector(match_block),
-        Some(("testMatch", "MOBILE_SPECS".to_string()))
+        Some(("testMatch", "MOBILE_OR_ENGINE_SPECS".to_string()))
     );
 }
 
@@ -563,25 +571,29 @@ fn the_matrix_records_failures_continues_and_keeps_each_projects_artifacts() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. The real-dispatch post-check selects exactly one spec
+// 5. The real-dispatch post-check selects exactly two specs
 // ---------------------------------------------------------------------------
 
 /// Reads the basic-regex argument from run-e2e.sh's live `grep -c` assignment
 /// rather than copying the expression into this test. The assertion below
 /// therefore exercises the pattern the harness will actually run.
-fn dispatch_selected_pattern(runner: &str) -> &str {
+fn real_dispatch_selected_pattern(runner: &str) -> &str {
     let assignment = runner
         .lines()
-        .find(|line| line.trim_start().starts_with("dispatch_selected="))
-        .expect("scripts/run-e2e.sh must assign dispatch_selected");
+        .find(|line| line.trim_start().starts_with("real_dispatch_selected="))
+        .expect("scripts/run-e2e.sh must assign real_dispatch_selected");
     let marker = "grep -c \"";
     let after = assignment
         .split_once(marker)
-        .unwrap_or_else(|| panic!("dispatch_selected does not contain `{marker}`: {assignment}"))
+        .unwrap_or_else(|| {
+            panic!("real_dispatch_selected does not contain `{marker}`: {assignment}")
+        })
         .1;
     let end = after
         .find('"')
-        .unwrap_or_else(|| panic!("dispatch_selected's grep pattern never closes: {assignment}"));
+        .unwrap_or_else(|| {
+            panic!("real_dispatch_selected's grep pattern never closes: {assignment}")
+        });
     &after[..end]
 }
 
@@ -615,17 +627,23 @@ fn grep_count(pattern: &str, input: &str) -> usize {
 }
 
 #[test]
-fn the_real_dispatch_postcheck_matches_only_the_exact_spec() {
+fn the_real_dispatch_postcheck_matches_only_the_two_exact_specs() {
     let runner = read("scripts/run-e2e.sh");
-    let pattern = dispatch_selected_pattern(&runner);
-    let real = "[chromium] › specs/dispatch.spec.ts:83:5 › Dispatch is absent\n";
+    let pattern = real_dispatch_selected_pattern(&runner);
+    let dispatch = "[chromium] › specs/dispatch.spec.ts:83:5 › Dispatch is absent\n";
+    let engine = "[mobile-webkit] › specs/engine.spec.ts:157:5 › Full Auto runs\n";
     let stubbed =
         "[chromium] › specs/story-context-menu-dispatch.spec.ts:72:5 › Dispatch is present\n";
 
     assert_eq!(
-        grep_count(pattern, real),
+        grep_count(pattern, dispatch),
         1,
-        "the post-check must recognize the one spec that drives a real dispatch"
+        "the post-check must recognize dispatch.spec.ts"
+    );
+    assert_eq!(
+        grep_count(pattern, engine),
+        1,
+        "the post-check must recognize engine.spec.ts"
     );
     assert_eq!(
         grep_count(pattern, stubbed),
@@ -633,8 +651,42 @@ fn the_real_dispatch_postcheck_matches_only_the_exact_spec() {
         "the post-check must not mistake the stubbed context-menu spec for dispatch.spec.ts"
     );
     assert_eq!(
-        grep_count(pattern, &format!("{stubbed}{real}")),
-        1,
-        "a mixed Playwright list must count only the exact real-dispatch spec"
+        grep_count(pattern, &format!("{stubbed}{dispatch}{engine}")),
+        2,
+        "a mixed Playwright list must count only the two exact real-dispatch specs"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Every project invocation owns the state that real dispatch mutates
+// ---------------------------------------------------------------------------
+
+#[test]
+fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+
+    for required in [
+        "data_root=\"$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)\"",
+        "export FAKE_TMUX_STATE=\"$data_root/faketmux\"",
+        "seed_dir=\"$data_root/seed\"",
+        "start_output=\"$(\"$story_bin\" daemon start 2>&1)\"",
+        "export DASHBOARD_ENGINE_STORY_ID=\"$engine_story_id\"",
+    ] {
+        assert!(
+            body.contains(required),
+            "run_one_project must own `{required}` inside its per-project subshell"
+        );
+    }
+    assert!(
+        runner.contains("run_one_project \"$project\"")
+            && runner.contains("run_one_project \"$explicit_project\""),
+        "both matrix and explicit-project paths must enter the same isolated runner"
     );
 }
