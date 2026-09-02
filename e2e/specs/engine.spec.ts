@@ -568,6 +568,38 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
 });
 
+test("changing the lane count preserves the launch button's physical click", async ({
+  page,
+}) => {
+  let submitted: unknown = null;
+  let current: EngineRun | null = null;
+  await page.route("**/api/repos/*/engine", async (route) => {
+    if (route.request().method() === "GET") {
+      await fulfillRuns(route, current ? [current] : []);
+      return;
+    }
+    submitted = route.request().postDataJSON();
+    current = run("alpha", "AA-PHYSICAL");
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator("#engine-lanes").fill("2");
+
+  // A trusted pointer gesture moves focus off the number input, firing its
+  // `change` handler between press and click. HTMLElement.click() would skip
+  // that boundary and could not witness WebKit's swallowed-click regression.
+  await page.locator(".engine-run-btn").click();
+
+  await expect.poll(() => submitted).toEqual({ lanes: 2 });
+  await expect(page.locator(".engine-state")).toHaveText("running");
+});
+
 test("a definite refusal releases the start claim for another attempt", async ({
   page,
 }) => {
