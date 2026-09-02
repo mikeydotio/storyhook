@@ -70,14 +70,13 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
   await expect(menu).toBeVisible();
   await expect(menu).toHaveAttribute("role", "menu");
 
-  // 7, not 3: Alpha has a checkout, so the Dispatch action (its own spec,
+  // 8, not 3: Alpha has a checkout, so the Dispatch action (its own spec,
   // story-context-menu-dispatch.spec.ts) follows the copy group, Set
   // Status and Set Priority (their own specs, story-context-menu-status.
   // spec.ts and story-context-menu-priority.spec.ts) follow that as one
-  // group, and Delete (its own spec, story-context-menu-delete.spec.ts) is
-  // last.
+  // group, then Close and Delete (their own specs) finish the menu.
   const items = menu.locator(".ctxmenu-item");
-  await expect(items).toHaveCount(7);
+  await expect(items).toHaveCount(8);
   await expect(items.nth(0)).toHaveText("Copy ID");
   await expect(items.nth(1)).toHaveText("Copy URL");
   await expect(items.nth(2)).toHaveText("Copy Description");
@@ -94,7 +93,8 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
     "data-direction",
     "right",
   );
-  await expect(items.nth(6)).toHaveText("Delete");
+  await expect(items.nth(6)).toHaveText("Close");
+  await expect(items.nth(7)).toHaveText("Delete");
   // Still 3, not 4: Set Priority joined the Set Status group rather than
   // adding a fourth rule -- this is what proves that.
   await expect(menu.locator(".ctxmenu-sep")).toHaveCount(3);
@@ -304,8 +304,8 @@ test("the menu works on a list-view row too", async ({ page }) => {
   await row.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  // 7, not 3: see the item-order test's identical note.
-  await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
+  // 8, not 3: see the item-order test's identical note.
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(8);
 
   await page.keyboard.press("Escape");
   await page.locator('#view-toggle button[data-view="board"]').click();

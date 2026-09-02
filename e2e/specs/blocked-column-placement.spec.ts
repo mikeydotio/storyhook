@@ -153,7 +153,11 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
     page.locator('.column[data-state="blocked"] .card', { hasText: blockerTitle }),
   ).toBeVisible();
 
-  await page.locator("#fdd-states .fdd-btn").click();
+  // The checkbox leaves this dropdown open. A live board refresh may close it,
+  // so restore the required visible state instead of blindly toggling it.
+  if (!(await page.locator("#fdd-states .fdd-panel").isVisible())) {
+    await page.locator("#fdd-states .fdd-btn").click();
+  }
   await page
     .locator("#fdd-states .fdd-option", { hasText: "blocked" })
     .locator("input[type=checkbox]")

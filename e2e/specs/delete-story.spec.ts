@@ -183,6 +183,7 @@ test("a real deletion toasts, closes the drawer, and removes the card", async ({
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
+  const id = (await card.getAttribute("data-id"))!;
 
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
