@@ -541,25 +541,33 @@ for (const width of SWEEP_WIDTHS) {
 
     const project = page.locator("#drafts-list .drafts-row-project");
     await expect(project).toBeVisible();
-    const box = await project.evaluate((el) => ({
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      textOverflow: getComputedStyle(el).textOverflow,
-      whiteSpace: getComputedStyle(el).whiteSpace,
-    }));
-    expect(
-      box.scrollWidth,
-      `.drafts-row-project (${box.clientWidth}px wide, white-space: ` +
-        `${box.whiteSpace}) is not truncating a ${LONG_PROJECT_NAME.length}-` +
-        `character project name at ${width}px -- it wrapped to more lines ` +
-        "instead, which turns a subject line into a title",
-    ).toBeGreaterThan(box.clientWidth);
-    expect(
-      box.textOverflow,
+    await expect(
+      project,
       ".drafts-row-project must truncate with an ellipsis, the treatment " +
         "`.projsel-label` and `.drafts-row-title` already use -- clipping a " +
         "name mid-glyph says nothing about where it was cut",
-    ).toBe("ellipsis");
+    ).toHaveCSS("text-overflow", "ellipsis");
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const element = document.querySelector<HTMLElement>(
+              "#drafts-list .drafts-row-project",
+            );
+            return (
+              element?.isConnected === true &&
+              element.scrollWidth > element.clientWidth
+            );
+          }),
+        {
+          message:
+            `.drafts-row-project is not truncating a ` +
+            `${LONG_PROJECT_NAME.length}-character project name at ` +
+            `${width}px -- it wrapped to more lines instead, which turns ` +
+            "a subject line into a title",
+        },
+      )
+      .toBe(true);
 
     await expectNoClippedElements(
       page.locator("#drafts-modal"),
