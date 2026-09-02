@@ -212,7 +212,7 @@ assert_eq "$(jqf "$out" .prompt)" "custom auto $id_auto" \
 out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
   STORY_PROMPT_EXTRA="EXTRA-CLAUSE" bash "$SCRIPT" dispatch "$id_auto" --auto 2>&1)
 case "$(jqf "$out" .prompt)" in
-  *"post the plan verbatim rather than summarizing it. EXTRA-CLAUSE") : ;;
+  *"every linked pull request title contains the exact story ID $id_auto. EXTRA-CLAUSE") : ;;
   *) fail_test "Codex built-in prompt: STORY_PROMPT_EXTRA is not last" ;;
 esac
 
