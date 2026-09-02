@@ -722,6 +722,9 @@ test("a global draft editor closes when its owning project is deleted elsewhere"
   await expect(page.locator("#toast-stack .toast.error")).toContainText(
     "This project was deleted",
   );
+  // Cleanup emits another catalog refresh. Drain the response-rewriting
+  // handler before fixture teardown can dispose its fetched response.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("a held Beta reply cannot clear pending, replace Alpha vocabulary, or target Beta after Delta is selected", async ({
