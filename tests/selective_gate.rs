@@ -193,6 +193,7 @@ impl SelectRepo {
         run(self.path(), "bash", &[&script("select-tests.sh")])
     }
 
+    #[cfg(target_os = "macos")]
     fn select_tests_with_tmpdir(&self, tmpdir: &Path) -> Output {
         Command::new("bash")
             .arg(script("select-tests.sh"))
