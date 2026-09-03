@@ -3782,14 +3782,20 @@ cmd_reap() {
     fi
   fi
 
-  local display="[story] reap $id: "
+  local display="[story] reap $id: " reap_ok=true
   if [ "$reaped_wt" = true ]; then
     display="${display}removed worktree \`$CMP_WT_PATH\`, "
+  elif [ -n "$wt_fail" ]; then
+    display="${display}could not remove worktree \`$CMP_WT_PATH\`, "
+    reap_ok=false
   else
     display="${display}worktree already gone, "
   fi
   if [ "$reaped_br" = true ]; then
     display="${display}deleted branch \`$CMP_WT_BRANCH\`."
+  elif [ -n "$br_fail" ]; then
+    display="${display}could not delete branch \`$CMP_WT_BRANCH\`."
+    reap_ok=false
   else
     display="${display}branch already gone."
   fi
@@ -3800,15 +3806,17 @@ cmd_reap() {
   # guard past "was a pane found at all".
   _close_story_window "$CMP_WNAME" || true
 
-  jq -n --arg id "$id" --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
+  jq -n --arg id "$id" --argjson ok "$reap_ok" \
+        --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
         --arg wtfail "$wt_fail" --arg brfail "$br_fail" --arg display "$display" '
     {
-      ok: true, id: $id,
+      ok: $ok, id: $id,
       removed: { worktree: $rwt, branch: $rbr }
     }
     + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
     + (if $brfail == "" then {} else {branch_error: $brfail} end)
     + { display: $display }'
+  [ "$reap_ok" = true ]
 }
 
 # ---- release: unclaim and reset ---------------------------------------------
