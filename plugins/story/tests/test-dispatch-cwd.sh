@@ -23,12 +23,26 @@
 # nested inside the one it was dispatched from.
 source "$(dirname "$0")/lib.sh"
 
+FAKE_TMUX_DIR="$TESTS_DIR/fakes"
+
+# Dispatch inventory is read-only even under STORY_DRY_RUN, but it still asks
+# tmux whether this story already owns a window. Keep this cwd test independent
+# of operator sessions whose window names can collide with its fixed TST ids.
+dry_dispatch() {
+  local dir="$1" id="$2"
+  (
+    cd "$dir" &&
+      PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_PANES= STORY_DRY_RUN=1 \
+        bash "$SCRIPT" dispatch "$id" 2>&1
+  )
+}
+
 repo=$(mk_story_repo)
 ready_id=$(new_story "$repo" "Ready story")
 
 # --- a plain subdirectory ---
 mkdir -p "$repo/src/deep/nested"
-out=$(cd "$repo/src/deep/nested" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$ready_id" 2>&1)
+out=$(dry_dispatch "$repo/src/deep/nested" "$ready_id")
 assert_eq "$(jqf "$out" .ok)" "true" "subdir: dispatches from a nested subdirectory"
 assert_eq "$(jqf "$out" .id)" "$ready_id" "subdir: resolved the right story"
 assert_contains "$(jqf "$out" .display)" "$ready_id" "subdir: display names the story"
@@ -52,7 +66,7 @@ assert_eq "$sub_rc" "0" "the CLI resolves the project by walking up from a subdi
 only_in_main=$(new_story "$repo" "Only in the main checkout")
 (cd "$repo" && git worktree add -q --no-track -b probe-wt "$repo/.claude/worktrees/probe" HEAD) >/dev/null 2>&1
 
-out=$(cd "$repo/.claude/worktrees/probe" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$only_in_main" 2>&1)
+out=$(dry_dispatch "$repo/.claude/worktrees/probe" "$only_in_main")
 assert_eq "$(jqf "$out" .ok)" "true" "worktree: reads the MAIN repo's tracker, not the worktree's copy"
 assert_eq "$(jqf "$out" .id)" "$only_in_main" "worktree: resolved the main-tracker-only story"
 
