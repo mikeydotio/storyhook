@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.2.1-beta.3] - 2026-09-02
+
+### Fixed
+- parse healthy false values in centralized pull request metadata as booleans, not missing fields (SH-473) (653e908)
+
+### Changed
+- Merge pull request #611 from mikeydotio/release/v2.2.1-beta.2 (c6b8aa4)
+- Merge pull request #613 from mikeydotio/fix/SH-473-verifier-ready-pr (c179f52)
+
+### Testing
+- reproduce false boolean metadata failures for ready, same-repository pull requests (SH-473) (b4536f1)
+
 ## [v2.2.1-beta.2] - 2026-09-02
 
 ### Fixed
