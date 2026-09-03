@@ -431,10 +431,12 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # TUI and exposes no corresponding tool call, so its built-in charter has to
 # carry that boundary across the turn itself: make persistence step one of the
 # approved plan, then the approved plan is the instruction Codex resumes from.
+# The same provider clause owns PR-title traceability: every Codex-authored PR
+# carries the resolved story id where an operator can see it in a PR list.
 # Kept provider-specific so Claude's established prompt stays byte-identical,
 # and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
-CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
+CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it. Ensure every linked pull request title contains the exact story ID <n>."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
@@ -1795,7 +1797,7 @@ cmd_dispatch() {
     fi
   fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
-    prompt_tpl="$prompt_tpl $CODEX_PLAN_COMMENT_CLAUSE"
+    prompt_tpl="$prompt_tpl $CODEX_BUILTIN_CLAUSE"
   fi
   # Keep legacy placeholders available to wholesale prompt overrides even
   # though the built-in charters no longer delegate completion or reap.

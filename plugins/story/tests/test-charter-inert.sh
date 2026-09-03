@@ -134,18 +134,31 @@ esac
 
 # Codex's provider-only addition is itself load-bearing: it carries the
 # persistence obligation across the UI mode switch that has no ExitPlanMode
-# tool boundary. All three built-in variants must name the resolved story,
-# exact-plan semantics, and the first implementation step.
+# tool boundary, plus the PR-title traceability contract. All three built-in
+# variants must name the resolved story in both obligations.
 for variant in "attended:$codex_attended" "auto:$codex_auto" "solo:$codex_solo"; do
   label="${variant%%:*}"; text="${variant#*:}"
   for needle in "story comment $id your-exact-approved-plan" \
                 "the first implementation step" \
-                "post the plan verbatim rather than summarizing it"; do
+                "post the plan verbatim rather than summarizing it" \
+                "every linked pull request title contains the exact story ID $id"; do
     case "$text" in
       *"$needle"*) ;;
       *) fail_test "charter-inert: the Codex $label prompt no longer instructs '$needle'" ;;
     esac
   done
+done
+
+# The PR-title instruction is a Codex provider contract. Claude's built-in
+# prompts remain byte-identical and must not inherit it through the shared
+# attended or autonomous templates.
+for variant in "attended:$attended" "auto:$auto" "solo:$solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  case "$text" in
+    *"every linked pull request title contains the exact story ID $id"*)
+      fail_test "charter-inert: the Claude $label prompt inherited Codex's PR-title contract"
+      ;;
+  esac
 done
 
 finish
