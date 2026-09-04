@@ -95,12 +95,11 @@ cd "$(dirname "$0")/.."
 # which the engine's lanes use.  `scripts/run-e2e.sh` does not take this lock
 # either; the browser leg is outside D4's wording.
 #
-# NO `--max-wait`.  `machine-lock.sh` has no default ceiling on purpose:
-# waiting is bounded by the FACT of whether the holder is still alive, not by a
-# clock.  A gate legitimately runs for a quarter of an hour, so any literal
-# here would be the bare-ceiling shape SH-394 forbids -- and giving up would
-# mean skipping the suite, which is the one outcome a gate must never produce
-# quietly.
+# NO `--max-wait`. Waiting for a holder is bounded by the FACT of whether that
+# process is still alive, never by a clock. The holder itself is different:
+# `machine-lock.sh` applies SH-536's default `--max-idle` to the reserved gate
+# name and resets it on every SH-524 journal append. That bounds a lack of
+# progress without bounding how long a progressing suite may run.
 #
 # REENTRANCY IS `machine-lock.sh`'S TO DECIDE, NOT THIS SCRIPT'S.  A run whose
 # own process tree already holds `gate` -- an operator or an engine lane having
