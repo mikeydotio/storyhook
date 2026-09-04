@@ -102,8 +102,9 @@ pub(super) fn create_engine_run(
         conn.execute(
             "INSERT INTO engine_runs \
                  (id, project_slug, scope_kind, scope_story_id, lanes, agent, state, \
-                  consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at, \
+                  recent_quarantines_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 run.id,
                 run.project_slug,
@@ -117,6 +118,7 @@ pub(super) fn create_engine_run(
                 run.acknowledged_at,
                 run.created_at,
                 run.updated_at,
+                serde_json::to_string(&run.recent_quarantines)?,
             ],
         ),
         "creating an engine run",
@@ -131,7 +133,8 @@ pub(super) fn update_engine_run(
     let updated = sql(
         conn.execute(
             "UPDATE engine_runs SET state = ?2, consecutive_hard_stops = ?3, \
-                 stop_reason = ?4, acknowledged_at = ?5, updated_at = ?6 WHERE id = ?1",
+                 stop_reason = ?4, acknowledged_at = ?5, updated_at = ?6, \
+                 recent_quarantines_json = ?7 WHERE id = ?1",
             params![
                 run.id,
                 run.state.as_str(),
@@ -139,6 +142,7 @@ pub(super) fn update_engine_run(
                 run.stop_reason,
                 run.acknowledged_at,
                 run.updated_at,
+                serde_json::to_string(&run.recent_quarantines)?,
             ],
         ),
         "updating an engine run",

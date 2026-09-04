@@ -217,6 +217,8 @@ pub struct EngineRunRecord {
     pub state: EngineRunState,
     /// Consecutive hard stops seen by the breaker.
     pub consecutive_hard_stops: u32,
+    /// The current consecutive series' three most recent hard stops.
+    pub recent_quarantines: Vec<EngineQuarantineRecord>,
     /// Machine-readable or human-readable stop classification.
     pub stop_reason: Option<String>,
     /// When the current halt/drain notification was acknowledged.
@@ -225,6 +227,27 @@ pub struct EngineRunRecord {
     pub created_at: String,
     /// RFC3339 last-update timestamp supplied by the caller.
     pub updated_at: String,
+}
+
+/// One durable hard-stop diagnosis retained on its Full Auto run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EngineQuarantineRecord {
+    /// Zero-based lane that encountered the hard stop.
+    pub lane_index: u32,
+    /// Story held by the lane when it stopped, if known.
+    pub story_id: Option<String>,
+    /// Stable hard-stop classification.
+    pub kind: String,
+    /// Provider or engine diagnosis accompanying the classification.
+    pub detail: Option<String>,
+    /// Exact tmux pane id, if dispatch supplied one.
+    pub pane_id: Option<String>,
+    /// Human-readable tmux window name.
+    pub window_name: Option<String>,
+    /// Preserved worktree path.
+    pub worktree_path: Option<String>,
+    /// RFC3339 time at which reconciliation observed the hard stop.
+    pub observed_at: String,
 }
 
 /// One row of durable Full Auto lane state.

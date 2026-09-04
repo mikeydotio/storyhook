@@ -19,8 +19,9 @@ use storyhook::service::engine::{
 use storyhook::service::{ConfigService, NewStoryInput, StoryService};
 use storyhook::store::migrate;
 use storyhook::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineRunState, EngineScope,
-    NewProject, ReadOps, SqliteStore, Store, StoreError, WriteOps, diff_read_model,
+    EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
+    EngineRunState, EngineScope, NewProject, ReadOps, SqliteStore, Store, StoreError, WriteOps,
+    diff_read_model,
 };
 use storyhook_test_support::{
     DispatcherCall, DispatcherStep, FIXTURE_NOW, FakeDispatcher, ServiceFixture, scratch_dir,
@@ -35,6 +36,7 @@ fn run(id: &str, project_slug: &str, state: EngineRunState) -> EngineRunRecord {
         agent: EngineAgent::Codex,
         state,
         consecutive_hard_stops: 0,
+        recent_quarantines: Vec::new(),
         stop_reason: None,
         acknowledged_at: None,
         created_at: "2026-08-29T20:00:00Z".into(),
@@ -155,6 +157,39 @@ fn migration_27_preserves_live_lanes_without_inventing_a_pane_id() {
 }
 
 #[test]
+fn migration_28_preserves_existing_runs_with_empty_quarantine_history() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..27]).unwrap();
+    let conn = raw(&store);
+    insert_raw_run(
+        &conn,
+        "run-before-history",
+        "project",
+        None,
+        1,
+        "codex",
+        "running",
+    )
+    .unwrap();
+    drop(conn);
+
+    let report = store.migrate_with(&migrate::MIGRATIONS[..28]).unwrap();
+
+    assert_eq!(report.from_version, 27);
+    assert_eq!(report.to_version, 28);
+    assert_eq!(report.applied, ["engine_recent_quarantines"]);
+    assert!(
+        store
+            .read(|tx| tx.engine_run("run-before-history"))
+            .unwrap()
+            .unwrap()
+            .recent_quarantines
+            .is_empty()
+    );
+}
+
+#[test]
 fn run_and_lane_records_round_trip_update_order_and_reopen() {
     let (dir, store) = new_store();
     seed_project(&store, "beta", "BE");
@@ -209,6 +244,16 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     updated.agent = EngineAgent::Claude;
     updated.state = EngineRunState::Halted;
     updated.consecutive_hard_stops = 3;
+    updated.recent_quarantines.push(EngineQuarantineRecord {
+        lane_index: 1,
+        story_id: Some("AL-7".into()),
+        kind: "window-gone".into(),
+        detail: Some("pane exited".into()),
+        pane_id: Some("%112".into()),
+        window_name: Some("AL-7".into()),
+        worktree_path: Some("/tmp/wt/AL-7".into()),
+        observed_at: "2026-08-29T20:04:00Z".into(),
+    });
     updated.stop_reason = Some("breaker-tripped".into());
     updated.acknowledged_at = Some("2026-08-29T20:05:00Z".into());
     updated.updated_at = "2026-08-29T20:05:00Z".into();
@@ -231,6 +276,7 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     assert_eq!(stored.agent, EngineAgent::Codex);
     assert_eq!(stored.state, EngineRunState::Halted);
     assert_eq!(stored.consecutive_hard_stops, 3);
+    assert_eq!(stored.recent_quarantines, updated.recent_quarantines);
     assert_eq!(stored.stop_reason.as_deref(), Some("breaker-tripped"));
     assert_eq!(
         store.read(|tx| tx.engine_lanes("run-b")).unwrap()[1],
@@ -292,6 +338,31 @@ fn every_run_check_is_enforced() {
     rejected(
         insert_raw_run(&conn, "bad-state", "project", None, 1, "codex", "waiting"),
         "run-state vocabulary",
+    );
+    insert_raw_run(
+        &conn,
+        "history-check",
+        "project",
+        None,
+        1,
+        "codex",
+        "finished",
+    )
+    .unwrap();
+    rejected(
+        conn.execute(
+            "UPDATE engine_runs SET recent_quarantines_json = '{}' WHERE id = 'history-check'",
+            [],
+        ),
+        "recent quarantine history is an array",
+    );
+    rejected(
+        conn.execute(
+            "UPDATE engine_runs SET recent_quarantines_json = '[1,2,3,4]' \
+             WHERE id = 'history-check'",
+            [],
+        ),
+        "recent quarantine history is bounded by the breaker",
     );
 }
 

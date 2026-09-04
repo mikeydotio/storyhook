@@ -274,6 +274,24 @@ fn reconcile_restart_at(
         .unwrap()
 }
 
+fn reconcile_steady_at(
+    fixture: &ServiceFixture,
+    fake: &FakeDispatcher,
+    run_id: &str,
+    now: &str,
+) -> storyhook::service::engine::ReconcileReport {
+    let ctx = Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.cwd(),
+        fixture.env().clone(),
+    )
+    .clock(Clock::Fixed(now.to_string()));
+    EngineService::new(&ctx, fake)
+        .reconcile(&run_id.to_string())
+        .unwrap()
+}
+
 /// The central case: a lane occupied when the daemon went down is
 /// quarantined `Interrupted`, and the reason names the kind and the run.
 #[test]
@@ -301,6 +319,39 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
         awaiting.contains("interrupted") && awaiting.contains(&run_id),
         "the reason names the kind and the run so a human can act on it: {awaiting}"
     );
+}
+
+/// Restart preserves evidence during its special pass, then the first steady
+/// pass releases the lane and resumes normal queue work below the breaker.
+#[test]
+fn the_first_steady_pass_after_restart_continues_with_a_fresh_story() {
+    let fixture = ServiceFixture::new();
+    let interrupted = new_story(&fixture, "interrupted", &[]);
+    let next = new_story(&fixture, "next", &[]);
+    let restart = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{interrupted}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &restart, 1);
+    occupy(&fixture, &run_id, 0, &interrupted);
+    reconcile_restart_at(&fixture, &restart, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        lane_at(&fixture, &run_id, 0).state,
+        EngineLaneState::Quarantined
+    );
+
+    let steady = FakeDispatcher::new([DispatcherStep::Dispatch(
+        storyhook::service::engine::DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "pane": "%113",
+            "window_name": next,
+            "worktree_path": "/tmp/wt/next"
+        })),
+    )]);
+    let report = reconcile_steady_at(&fixture, &steady, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.filled, [(0, next.clone())]);
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(next));
 }
 
 /// D11's own text: worktree, branch and window are preserved, and the

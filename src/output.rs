@@ -7,7 +7,9 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
-use crate::store::{EngineAgent, EngineLaneState, EngineRunState, EngineScope, PrLink};
+use crate::store::{
+    EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, EngineScope, PrLink,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleInfo {
@@ -152,6 +154,8 @@ pub struct EngineRunView {
     pub state: EngineRunState,
     pub lane_count: u32,
     pub consecutive_hard_stops: u32,
+    /// Current breaker's bounded hard-stop series, oldest first.
+    pub recent_quarantines: Vec<EngineQuarantineRecord>,
     pub stop_reason: Option<String>,
     pub acknowledged_at: Option<String>,
     pub created_at: String,
@@ -205,6 +209,7 @@ impl EngineRunView {
             state: view.run.state,
             lane_count: view.run.lanes,
             consecutive_hard_stops: view.run.consecutive_hard_stops,
+            recent_quarantines: view.run.recent_quarantines,
             stop_reason: view.run.stop_reason,
             acknowledged_at: view.run.acknowledged_at,
             created_at: view.run.created_at,
