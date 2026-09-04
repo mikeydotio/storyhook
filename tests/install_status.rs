@@ -197,3 +197,21 @@ fn the_summary_never_tells_anyone_to_revert_their_work() {
         "nothing here may suggest discarding work:\n{report}"
     );
 }
+
+#[test]
+fn plugin_sources_distinguish_current_stale_unpinned_and_checkout_installations() {
+    let report = report_for_codex_source(None);
+    assert!(
+        report.contains("release ") && !report.contains("CHECKOUT"),
+        "{report}"
+    );
+
+    let stale = report_for_codex_source(Some("release:2.2.0"));
+    assert!(stale.contains("STALE RELEASE"), "{stale}");
+
+    let unpinned = report_for_codex_source(Some("mikeydotio/storyhook"));
+    assert!(unpinned.contains("UNPINNED"), "{unpinned}");
+
+    let checkout = report_for_codex_source(Some("/Volumes/Code/storyhook"));
+    assert!(checkout.contains("CHECKOUT"), "{checkout}");
+}
