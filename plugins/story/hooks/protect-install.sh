@@ -29,11 +29,9 @@
 # test is a superset of true hits, so it errs safe. Nothing here runs `story`
 # (the binary may be mid-replacement) or talks to the daemon.
 #
-# COVERAGE IS ASYMMETRIC AND SAID SO RATHER THAN GLOSSED. Claude Code runs this
-# on Write/Edit/NotebookEdit and Bash. Codex registers only `post_tool_use`,
-# `session_start` and `stop` from this same hooks.json -- it appears not to take
-# `pre_tool_use` at all -- so on Codex this hook does not run, and `story doctor
-# install` is what covers that gap. Named here rather than glossed.
+# Both Claude Code and Codex run this on structured editors and shell commands.
+# SH-550 is the direct Codex measurement: two read-only shell commands reached
+# this hook and exposed that a path hit alone had been mistaken for an edit.
 
 set -uo pipefail
 
@@ -75,7 +73,7 @@ done < "$manifest"
 # Only now is it worth parsing. The prefilter said a managed path appears
 # SOMEWHERE in the payload; this decides whether it is actually the target.
 STORYHOOK_MANIFEST="$manifest" python3 -c '
-import json, os, sys
+import json, os, shlex, sys
 
 payload = json.load(sys.stdin)
 tool = payload.get("tool_name", "")
@@ -91,12 +89,77 @@ with open(manifest, encoding="utf-8") as handle:
         if line and not line.startswith("#"):
             prefixes.append(line)
 
-# Where a path can hide, per tool. `Bash` carries a whole command line, so the
-# whole string is searched: `sed -i`, `tee`, `cp`, `install` and `rm` all reach
-# these files, and a hook that guarded only the structured editors would be
-# bypassed by the shell it left wide open.
+# A shell command is allowed only when every simple command that names a
+# managed path can be PROVEN to be a reader. This is deliberately not a shell
+# security boundary: it recognizes the agent inspection vocabulary, and
+# denies malformed, indirect or unknown shapes rather than guessing.
+def shell_only_reads_managed_paths(command):
+    if "$(" in command or "`" in command:
+        return False
+
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="();<>|&")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    separators = {";", "&&", "||", "|", "&", "(", ")"}
+    segments = []
+    segment = []
+    for token in tokens:
+        if token in separators:
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(token)
+    if segment:
+        segments.append(segment)
+
+    readers = {"cat", "grep", "head", "rg", "sed", "tail"}
+    found_managed_path = False
+    for words in segments:
+        if not any(prefix in word for prefix in prefixes for word in words):
+            continue
+        found_managed_path = True
+
+        # Output and unsupported compound redirections are not inspections.
+        if any(">" in word or word in {"<<", "<<<", "<>"} for word in words):
+            return False
+
+        executable = os.path.basename(words[0])
+        if executable not in readers:
+            return False
+
+        arguments = words[1:]
+        if executable == "sed" and any(
+            argument == "--in-place"
+            or argument.startswith("--in-place=")
+            or (
+                argument.startswith("-")
+                and not argument.startswith("--")
+                and "i" in argument[1:]
+            )
+            for argument in arguments
+        ):
+            return False
+        if executable == "rg" and any(
+            argument == "--pre" or argument.startswith("--pre=")
+            for argument in arguments
+        ):
+            return False
+
+    return found_managed_path
+
+
 if tool == "Bash":
-    haystacks = [str(supplied.get("command", ""))]
+    command = str(supplied.get("command", ""))
+    if shell_only_reads_managed_paths(command):
+        sys.stdout.write("{}")
+        raise SystemExit(0)
+    haystacks = [command]
 else:
     haystacks = [
         str(supplied.get(key, ""))
