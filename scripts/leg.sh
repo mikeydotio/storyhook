@@ -81,7 +81,21 @@ if [ "$reuse" = 1 ]; then
         echo "leg.sh: could not fingerprint reusable leg $label" >&2
         exit 1
     }
-    receipt_dir="$common_dir/storyhook/gate-leg-receipts/$label"
+    if [ "$label" = "build" ]; then
+        worktree_git_dir="$(cd "$(git rev-parse --git-dir)" && pwd)" || {
+            echo "leg.sh: could not resolve the worktree git directory" >&2
+            exit 1
+        }
+        # A build receipt attests to an artifact in this worktree. Keep it in
+        # Git's per-worktree administrative directory so a sibling cannot
+        # reuse it, and use a fresh namespace so legacy shared receipts are
+        # never mistaken for worktree-local evidence.
+        receipt_dir="$worktree_git_dir/storyhook/gate-leg-receipts/worktree-local/$label"
+    else
+        # Pure validation results depend only on their fingerprinted inputs,
+        # so every worktree in the clone may reuse them.
+        receipt_dir="$common_dir/storyhook/gate-leg-receipts/$label"
+    fi
     receipt="$receipt_dir/$fingerprint"
 
     if [ -f "$receipt" ] \

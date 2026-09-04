@@ -99,12 +99,17 @@ nobody has tested is blind.
 ### A failed leg invalidates only itself
 
 Every executable gate leg now runs through `scripts/leg.sh --reuse`. A green
-leg records an atomic, machine-local receipt under the shared git directory,
-keyed by the leg's command line and the content of its relevant tracked input
-space. A failed leg records nothing. Retrying the same gate therefore reuses
-every still-valid green result and executes the failed leg again; a browser
-failure cannot cause formatting, clippy, Rust, build, or plugin work to repeat
-merely because the aggregate `full` receipt was never reached.
+pure-validation leg records an atomic, machine-local receipt under the shared
+git directory, keyed by the leg's command line and the content of its relevant
+tracked input space. The `build` leg is deliberately narrower: its receipt
+lives under Git's per-worktree administrative directory because the result it
+attests to, `target/debug/story`, is a worktree-local artifact. Its
+`worktree-local` namespace prevents a legacy shared build receipt from being
+accepted after this distinction was introduced. A failed leg records nothing.
+Retrying the same gate therefore reuses every still-valid green result and
+executes the failed leg again; a browser failure cannot cause formatting,
+clippy, Rust, build, or plugin work to repeat merely because the aggregate
+`full` receipt was never reached.
 
 The fingerprints are dependency scopes, not a whole-tree timestamp. Rust
 formatting follows Rust sources and rustfmt/workspace configuration; clippy
@@ -130,6 +135,12 @@ they never certify a tree by themselves. `gate-receipt.sh postlude` remains
 the sole writer of `gate`/`full` receipts and still refuses mid-run tracked
 content drift. A leg also fingerprints before and after execution and records
 nothing if its own inputs changed while it ran.
+
+`tests/gate_leg_reuse.rs` provokes the distinction through the tracked scripts
+in two real linked worktrees: each must execute an identical `build`, returning
+to the first must reuse its own result, and an identical pure-validation leg
+must still reuse the shared result. The fixture reaches the scripts by symlink,
+never by a copy that can drift from what ships.
 
 ## Merge commits reach the gate a different way (SH-396)
 
@@ -1033,12 +1044,6 @@ above is the record (SH-295: say which half is pinned).
   leading candidate on the evidence: a per-leg target dir closes two of at
   least six producer doors while reading as a class fix, which is the
   hand-kept-list shape.
-- **`scripts/leg.sh`'s cross-worktree `--reuse` receipts.** Receipts are keyed
-  under `git rev-parse --git-common-dir`, shared by every worktree of a clone,
-  and the reuse check greps the fingerprint alone — the `worktree` line written
-  at `:118` is never read. Correct for `fmt`, `clippy` and the test batteries,
-  whose results are a function of the tree; wrong for `build`, whose output is
-  a worktree-local artifact — SH-533.
 - **Nothing bounds a *holder* of the `gate` lock.** Whatever wedges, the machine
   wedges. SH-524's per-case progress journal is the fact-based signal a
   no-progress watchdog would need, so it can stay inside SH-394 — SH-536.
