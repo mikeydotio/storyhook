@@ -21,19 +21,49 @@ fn text(out: &Output) -> String {
 fn report_for_codex_source(source: Option<&str>) -> String {
     let env = TestEnv::isolated();
     let project = env.project().build();
-    let source = source.map(str::to_string).unwrap_or_else(|| {
-        env.data_dir()
+    let source = match source {
+        Some(version) if version.starts_with("release:") => env
+            .data_dir()
+            .join("plugins")
+            .join(version.trim_start_matches("release:"))
+            .display()
+            .to_string(),
+        Some(source) => source.to_string(),
+        None => env
+            .data_dir()
             .join("plugins")
             .join(env!("CARGO_PKG_VERSION"))
             .display()
-            .to_string()
-    });
+            .to_string(),
+    };
     std::fs::create_dir_all(env.home().join(".codex")).unwrap();
     std::fs::write(
         env.home().join(".codex/config.toml"),
-        format!(
-            "[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"
-        ),
+        format!("[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"),
+    )
+    .unwrap();
+    text(
+        &env.story(project.path())
+            .args(["doctor", "install"])
+            .output()
+            .expect("running `story doctor install`"),
+    )
+}
+
+fn report_for_claude_source(source: &str) -> String {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let plugins = env.home().join(".claude/plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(
+        plugins.join("known_marketplaces.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "storyhook": {
+                "source": { "source": "directory", "path": source },
+                "installLocation": source,
+            }
+        }))
+        .unwrap(),
     )
     .unwrap();
     text(
@@ -47,6 +77,12 @@ fn report_for_codex_source(source: Option<&str>) -> String {
 #[test]
 fn codex_multiline_marketplace_source_is_detected() {
     let report = report_for_codex_source(Some("/Volumes/Code/storyhook"));
+    assert!(report.contains("CHECKOUT"), "{report}");
+}
+
+#[test]
+fn claude_nested_marketplace_source_is_detected() {
+    let report = report_for_claude_source("/Volumes/Code/storyhook");
     assert!(report.contains("CHECKOUT"), "{report}");
 }
 
