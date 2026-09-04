@@ -66,7 +66,7 @@
 //!   finding.
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
-//! script as shipped, **all 9 tests pass**.
+//! script as shipped, **all 10 tests pass**.
 //!
 //! One mutation deliberately has no test and is recorded rather than fenced:
 //! deleting `unset STORYHOOK_GATE_LOCK_TAKEN`, which leaks the handshake into
@@ -184,6 +184,17 @@ fn signal(pid: u32, name: &str) {
         status.success() || status.code() == Some(1),
         "kill -{name} {pid}: {status:?}"
     );
+}
+
+/// Whether `pid` is still running rather than present only as a zombie.
+fn pid_running(pid: u32) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .expect("running ps");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 /// The pid the fake `cargo` recorded for itself. It `exec`s its sleep, so the
@@ -500,12 +511,11 @@ fn a_running_suite_is_itself_the_recorded_holder_of_the_gate_lock() {
     wait_for(&pidfile);
     let cargo_pid = fake_cargo_pid(&pidfile);
     signal(runner.pid(), "TERM");
-    // The leg is collected BEFORE the run is, because it inherited the run's
-    // own stderr: `wait_with_output` reads that pipe to EOF, and every process
-    // still holding the write end keeps it open — so collecting first would
-    // block for the whole of the fake's sleep rather than for the run.
-    signal(cargo_pid, "KILL");
     runner.collect();
+    assert!(
+        !pid_running(cargo_pid),
+        "terminating the wrapper must reap the cargo descendant before releasing the gate"
+    );
 }
 
 /// The suite is interrupted mid-leg. A lock left behind by a killed run is a
@@ -527,10 +537,11 @@ fn an_interrupted_run_releases_the_gate_lock() {
     let cargo_pid = fake_cargo_pid(&pidfile);
 
     signal(runner.pid(), "TERM");
-    // See the sibling case above: the leg holds the run's stderr, so it is
-    // collected first or `collect` waits out the fake's whole sleep.
-    signal(cargo_pid, "KILL");
     runner.collect();
+    assert!(
+        !pid_running(cargo_pid),
+        "interrupting the suite must reap the cargo descendant"
+    );
     wait_for_gone(&fixture.lock("gate"));
 }
 
