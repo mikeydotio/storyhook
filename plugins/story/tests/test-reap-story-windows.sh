@@ -16,13 +16,13 @@ socket="$FAKE_TMUX_STATE/tmux.sock"
 touch "$socket"
 printf '@10\t%s\n@11\t%s\n@12\tSH-OTHER\n' "$id" "$id" >"$FAKE_TMUX_STATE/windows"
 
-jq -n --arg project "$slug" --arg story "$id" \
+lease=$(jq -n --arg project "$slug" --arg story "$id" \
   --arg repository "$repository_path" --arg worktree "$worktree_path" \
   --arg branch "worktree-$name" --arg socket "$socket" \
   '{version:1,project_slug:$project,story_id:$story,
     repository_path:$repository,worktree_path:$worktree,branch:$branch,
-    tmux:{socket_path:$socket}}' \
-  >"$private_git/storyhook-cleanup-lease-v1.json"
+    tmux:{socket_path:$socket}}')
+printf '%s\n' "$lease" >"$private_git/storyhook-cleanup-lease-v1.json"
 (cd "$repo" && story move "$id" done >/dev/null)
 
 out=$(cd "$worktree" && PATH="$TESTS_DIR/fakes:$PATH" \
@@ -47,5 +47,21 @@ esac
 [ ! -e "$worktree" ] || fail_test "story-window reap left its exact worktree"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$name") \
   && fail_test "story-window reap left its exact branch"
+
+# The same durable lease is safe to replay after every owned resource is gone.
+again=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
+  PATH="$TESTS_DIR/fakes:$PATH" bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
+assert_eq "$(jqf "$again" .ok)" "true" "story-window reap is idempotent"
+assert_eq "$(jqf "$again" '.removed.tmux')" "false" \
+  "idempotent reap does not invent a tmux removal"
+assert_eq "$(cat "$FAKE_TMUX_STATE/windows")" $'@12\tSH-OTHER' \
+  "idempotent reap still preserves differently named windows"
+
+# A vanished tmux server is also a proved-absent postcondition.
+rm -f "$socket"
+server_gone=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
+  PATH="$TESTS_DIR/fakes:$PATH" bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
+assert_eq "$(jqf "$server_gone" .ok)" "true" \
+  "story-window reap accepts an absent tmux server"
 
 finish
