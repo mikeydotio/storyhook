@@ -340,10 +340,17 @@ fn determine_key_context(state: &AppState) -> KeyContext {
 /// The TUI has never fired them, and routing through the seam must not start:
 /// a hook is an arbitrary shell command, and a board that ran one on every
 /// keystroke would be a surprise nobody asked for. Every request the TUI makes
-/// carries `no_hooks`, so the behaviour is a property of this function rather
-/// than of each call site remembering.
+/// carries `no_hooks` and declares its actor as `tui:user`, so both behaviours
+/// are properties of this function rather than of each call site remembering
+/// (SH-527).
 fn invoke(invoker: &dyn Invoker, invocation: Invocation) -> Result<Response, AppError> {
-    invoker.invoke(InvokeRequest::new(invocation).no_hooks(true))
+    let actor = crate::domain::provenance::ActorLabel::try_from("tui:user".to_string())
+        .expect("tui:user is a valid actor label");
+    invoker.invoke(
+        InvokeRequest::new(invocation)
+            .no_hooks(true)
+            .actor(Some(actor)),
+    )
 }
 
 /// The story a mutation answered with.
@@ -1590,6 +1597,38 @@ mod tests {
         create_story_mutation(invoker, title, None, &[], None, None)
             .unwrap()
             .0
+    }
+
+    /// SH-527: the TUI's shared invocation door labels a manual mutation so an
+    /// agent reading the event log does not mistake it for another agent.
+    #[test]
+    fn a_tui_mutation_is_attributable_to_the_tui_user() {
+        use crate::store::{ReadOps as _, Store as _, StoryNo};
+
+        let fixture = TuiFixture::new();
+        let id = seed_story(&fixture.invoker(), "Changed by a person");
+        let events = fixture
+            .store
+            .read(|tx| {
+                let project = tx.projects()?.into_iter().next().expect("the project");
+                tx.events_for(project.id, StoryNo::new(1))
+            })
+            .expect("reading the created story's events");
+        let created = events
+            .iter()
+            .find(|event| event.kind == "StoryCreated")
+            .expect("a StoryCreated event");
+
+        assert_eq!(id, "SH-1");
+        assert_eq!(created.provenance.command.as_deref(), Some("new"));
+        assert_eq!(
+            created
+                .provenance
+                .actor
+                .as_ref()
+                .map(|actor| actor.as_str()),
+            Some("tui:user")
+        );
     }
 
     #[test]
