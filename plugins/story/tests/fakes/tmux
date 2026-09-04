@@ -345,12 +345,15 @@ case "${1:-}" in
     # directory a real `claude` process would `cd` into and a real
     # SessionStart hook would publish its sentinel relative to.
     nw_cwd=""
+    nw_name="${FAKE_TMUX_WINDOW_NAME:-story-window}"
+    nw_session="${FAKE_TMUX_SESSION_NAME:-story-session}"
     _i=0
     for _a in "${nw_args[@]}"; do
-      if [ "$_a" = "-c" ]; then
-        nw_cwd="${nw_args[$((_i + 1))]:-}"
-        break
-      fi
+      case "$_a" in
+        -c) nw_cwd="${nw_args[$((_i + 1))]:-}" ;;
+        -n) nw_name="${nw_args[$((_i + 1))]:-}" ;;
+        -t) nw_session="${nw_args[$((_i + 1))]:-}"; nw_session="${nw_session%:}" ;;
+      esac
       _i=$((_i + 1))
     done
     if [ "${FAKE_TMUX_INTERNAL_RESPAWN:-}" != 1 ]; then
@@ -416,6 +419,8 @@ case "${1:-}" in
       # un-redirected background job keeps a command substitution's pipe open
       # until the job itself exits).
       ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      printf '%s' "$nw_name" > "$STATE/window_name" 2>/dev/null || true
+      printf '%s' "$nw_session" > "$STATE/session_name" 2>/dev/null || true
       # The dispatch sentinel a real SessionStart hook would publish, written
       # ONLY when the launch really became claude (never for a mangled one —
       # a non-claude shell's hook never fires) and only when a test has not
@@ -542,6 +547,11 @@ case "${1:-}" in
         printf '%s\n' "${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
         ;;
       *'#{pane_pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
+      *'#{socket_path}'*) printf '%s\n' "$STATE/tmux.sock" ;;
+      *'#{pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
+      *'#{window_created}'*) printf '1700000000\n' ;;
+      *'#{session_name}'*) printf '%s\n' "$(cat "$STATE/session_name" 2>/dev/null || printf 'story-session')" ;;
+      *'#{window_name}'*) printf '%s\n' "$(cat "$STATE/window_name" 2>/dev/null || printf 'story-window')" ;;
       ''|*'#{window_id}'*) printf '@1\n' ;;
       *) printf '\n' ;;
     esac

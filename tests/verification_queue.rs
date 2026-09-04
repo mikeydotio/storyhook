@@ -6,19 +6,26 @@ use storyhook::daemon::verification::{
 };
 use storyhook::daemon::verification_progress::publish_once;
 use storyhook::domain::remote::RemoteUrl;
-use storyhook::domain::{Priority, SuperState};
+use storyhook::domain::{
+    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState,
+    TmuxWindowFingerprint, fold_story,
+};
+use storyhook::domain::provenance::Provenance;
 use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
-    Clock, ConfigService, NewStoryInput, PrLinkService, StoryService,
+    Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
     VerificationProblem, VerificationQueue,
 };
-use storyhook::store::{PrLink, ReadOps, Store, StoryNo, WriteOps};
+use storyhook::store::{
+    ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo, WriteOps, partition_known,
+};
 use storyhook_test_support::ServiceFixture;
-use storyhook_test_support::{FIXTURE_NOW, scratch_dir};
+use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -402,6 +409,7 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         created_at: "2026-01-01T00:00:00Z".into(),
         verifying_since: Some("2026-01-01T00:00:00Z".into()),
         checkout: checkout.path().to_path_buf(),
+        cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
     };
     let pull_request = PrLink {
@@ -423,6 +431,419 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         VerificationOutcome::InvalidSubmission { ref detail }
             if detail.contains("acme/replacement") && detail.contains("acme/widgets")
     ));
+}
+
+fn cleanup_candidate(
+    fixture: &ServiceFixture,
+    repository: &std::path::Path,
+) -> VerificationCandidate {
+    VerificationCandidate {
+        project: fixture.project(),
+        project_slug: "fixture".into(),
+        story_id: "SH-1".into(),
+        title: "cleanup".into(),
+        priority: Priority::High,
+        created_at: FIXTURE_NOW.into(),
+        verifying_since: Some(FIXTURE_NOW.into()),
+        checkout: repository.to_path_buf(),
+        cleanup_lease: Some(StoryCleanupLease {
+            version: CLEANUP_LEASE_VERSION,
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            repository_path: repository.to_path_buf(),
+            worktree_path: repository.join(".codex/worktrees/SH-1"),
+            branch: "worktree-SH-1".into(),
+            tmux: TmuxWindowFingerprint {
+                socket_path: repository.join("tmux.sock"),
+                server_pid: 42,
+                window_id: "@7".into(),
+                window_created: 1_700_000_000,
+                session_name: "storyhook".into(),
+                window_name: "SH-1".into(),
+            },
+        }),
+        pull_request: Err(VerificationProblem::MissingPullRequest),
+    }
+}
+
+fn append_cleanup_lease(
+    fixture: &ServiceFixture,
+    story_id: &str,
+    lease: StoryCleanupLease,
+) {
+    let story = StoryNo::parse_id("SH", story_id).unwrap();
+    fixture
+        .store()
+        .write(|tx| {
+            let head = tx.append_events(
+                fixture.project(),
+                story,
+                ExpectedSeq::Any,
+                &[StoryEvent::StoryCleanupLeaseRecorded {
+                    at: FIXTURE_NOW.into(),
+                    lease,
+                }],
+                &Provenance::unrecorded(),
+            )?;
+            let stored = tx.events_for(fixture.project(), story)?;
+            let (known, _) = partition_known(story, &stored);
+            let states = tx.state_map(fixture.project())?;
+            let snapshot = fold_story(story_id, &known, &states).map_err(StoreError::from)?;
+            tx.put_story(fixture.project(), &snapshot, head)
+        })
+        .unwrap();
+}
+
+#[test]
+fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_change() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "generations", Priority::High, PR_ONE);
+    let first_root = scratch_dir();
+    let first = cleanup_candidate(&fixture, first_root.path())
+        .cleanup_lease
+        .unwrap();
+    append_cleanup_lease(&fixture, &id, first.clone());
+    assert_eq!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()
+            .cleanup_lease,
+        Some(first)
+    );
+
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    assert_eq!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()
+            .cleanup_lease,
+        None,
+        "a later unleased verification must not reuse an older generation"
+    );
+
+    let second_root = scratch_dir();
+    let second = cleanup_candidate(&fixture, second_root.path())
+        .cleanup_lease
+        .unwrap();
+    append_cleanup_lease(&fixture, &id, second.clone());
+    let replacement = scratch_dir();
+    fixture
+        .store()
+        .write(|tx| {
+            tx.set_checkout_path(fixture.project(), Some(replacement.path()))
+        })
+        .unwrap();
+    let selected = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.checkout, replacement.path());
+    assert_eq!(selected.cleanup_lease, Some(second.clone()));
+
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .comment(
+            &id,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_ONE)
+        .unwrap();
+
+    let recovered = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.checkout, replacement.path());
+    assert_eq!(recovered.cleanup_lease, Some(second));
+}
+
+fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn verifying_transition_validates_and_atomically_records_a_private_git_marker() {
+    let fixture = ServiceFixture::new();
+    let id = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "marker capture".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    let repository = scratch_dir();
+    git_ok(repository.path(), &["init", "-q", "-b", "main"]);
+    git_ok(repository.path(), &["config", "user.name", "Test"]);
+    git_ok(repository.path(), &["config", "user.email", "test@example.test"]);
+    git_ok(repository.path(), &["commit", "--allow-empty", "-qm", "base"]);
+    let worktree = repository.path().join(".codex/worktrees").join(&id);
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    git_ok(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &format!("worktree-{id}"),
+            worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let repository_path = repository.path().canonicalize().unwrap();
+    let worktree_path = worktree.canonicalize().unwrap();
+    let private_git = PathBuf::from(git_ok(&worktree, &["rev-parse", "--absolute-git-dir"]));
+    let marker = private_git.join("storyhook-cleanup-lease-v1.json");
+    let mut lease = StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: id.clone(),
+        repository_path,
+        worktree_path,
+        branch: format!("worktree-{id}"),
+        tmux: TmuxWindowFingerprint {
+            socket_path: repository.path().join("tmux.sock"),
+            server_pid: 42,
+            window_id: "@1".into(),
+            window_created: 1_700_000_000,
+            session_name: "storyhook".into(),
+            window_name: id.clone(),
+        },
+    };
+    std::fs::write(&marker, b"not json").unwrap();
+    let ctx = Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        &worktree,
+        fixture.env().clone(),
+    )
+    .clock(Clock::Fixed(FIXTURE_NOW.into()));
+    let malformed = StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap_err()
+        .to_string();
+    assert!(malformed.contains("malformed"), "{malformed}");
+
+    lease.story_id = "SH-999".into();
+    std::fs::write(&marker, serde_json::to_vec(&lease).unwrap()).unwrap();
+    let mismatched = StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap_err()
+        .to_string();
+    assert!(mismatched.contains("story mismatch"), "{mismatched}");
+
+    lease.story_id = id.clone();
+    std::fs::write(&marker, serde_json::to_vec(&lease).unwrap()).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let events = fixture
+        .store()
+        .read(|tx| tx.events_for(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+        .unwrap();
+    let verifying = events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event.known(),
+                Some(StoryEvent::StoryStateChanged { state, .. }) if state == "verifying"
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        events.get(verifying + 1).and_then(|event| event.known()),
+        Some(StoryEvent::StoryCleanupLeaseRecorded { lease: recorded, .. }) if recorded == &lease
+    ));
+}
+
+#[test]
+fn verifying_without_a_private_git_marker_remains_an_unleased_legacy_submission() {
+    let fixture = ServiceFixture::new();
+    let id = submitted(&fixture, "legacy submission", Priority::High, PR_ONE);
+
+    assert_eq!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()
+            .cleanup_lease,
+        None
+    );
+    assert_eq!(id, "SH-1");
+}
+
+fn write_receipt_helper(root: &std::path::Path, mutation: &str, exit_status: i32) -> PathBuf {
+    let helper = root.join("receipt-helper.sh");
+    std::fs::write(
+        &helper,
+        format!(
+            r#"#!/bin/bash
+lease="$STORYHOOK_REAP_LEASE_V1"
+story=$(printf '%s' "$lease" | jq -r .story_id)
+jq -n --argjson lease "$lease" --arg story "$story" \
+  '{{ok:true,receipt_version:1,story_id:$story,lease:$lease,
+     removed:{{worktree:false,branch:false,tmux:false}},
+     postconditions:{{worktree_registration_absent:true,
+                      worktree_path_absent:true,
+                      branch_absent:true,
+                      tmux_fingerprint_absent:true}},
+     display:"fixture receipt"}} | {mutation}'
+exit {exit_status}
+"#
+        ),
+    )
+    .unwrap();
+    helper
+}
+
+#[test]
+fn shell_cleanup_requires_a_latest_generation_lease_before_spawning() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let mut candidate = cleanup_candidate(&fixture, root.path());
+    candidate.cleanup_lease = None;
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        root.path().join("must-not-run"),
+        PathBuf::from("/usr/bin/true"),
+    );
+
+    let error = actuator.reap(&candidate).unwrap_err().to_string();
+    assert!(error.contains("no cleanup lease"), "{error}");
+}
+
+#[test]
+fn shell_cleanup_accepts_only_an_exact_complete_typed_receipt() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = write_receipt_helper(root.path(), ".", 0);
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    );
+
+    actuator.reap(&candidate).unwrap();
+}
+
+#[test]
+fn shell_cleanup_rejects_nonzero_identity_version_and_postcondition_receipts() {
+    let fixture = ServiceFixture::new();
+    for (mutation, status, expected) in [
+        (".", 7, "exited"),
+        (".story_id = \"SH-999\"", 0, "does not echo"),
+        (".receipt_version = 2", 0, "unsupported version"),
+        (
+            ".postconditions.branch_absent = false",
+            0,
+            "without every exact postcondition",
+        ),
+    ] {
+        let root = scratch_dir();
+        let candidate = cleanup_candidate(&fixture, root.path());
+        let helper = write_receipt_helper(root.path(), mutation, status);
+        let actuator = ShellVerificationActuator::with_paths(
+            Environment::at(root.path()),
+            helper,
+            PathBuf::from("/usr/bin/true"),
+        );
+
+        let error = actuator.reap(&candidate).unwrap_err().to_string();
+        assert!(error.contains(expected), "{mutation}: {error}");
+    }
+}
+
+#[test]
+fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checkout() {
+    let fixture = ServiceFixture::new();
+    let id = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "real leased reap".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "done", None, None, None)
+        .unwrap();
+
+    let repository = scratch_dir();
+    git_ok(repository.path(), &["init", "-q", "-b", "main"]);
+    git_ok(repository.path(), &["config", "user.name", "Test"]);
+    git_ok(repository.path(), &["config", "user.email", "test@example.test"]);
+    git_ok(repository.path(), &["commit", "--allow-empty", "-qm", "base"]);
+    let worktree = repository.path().join(".codex/worktrees").join(&id);
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    git_ok(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &format!("worktree-{id}"),
+            worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+
+    let replacement = scratch_dir();
+    git_ok(replacement.path(), &["init", "-q", "-b", "main"]);
+    let mut candidate = cleanup_candidate(&fixture, repository.path());
+    candidate.story_id = id.clone();
+    candidate.checkout = replacement.path().to_path_buf();
+    let lease = candidate.cleanup_lease.as_mut().unwrap();
+    lease.story_id = id.clone();
+    lease.repository_path = repository.path().canonicalize().unwrap();
+    lease.worktree_path = worktree.canonicalize().unwrap();
+    lease.branch = format!("worktree-{id}");
+    lease.tmux.socket_path = repository.path().join("never-created-tmux.sock");
+    lease.tmux.server_pid = 999_999;
+    lease.tmux.window_id = "@999".into();
+    lease.tmux.session_name = "retired".into();
+    lease.tmux.window_name = id.clone();
+
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("plugins/story/bin/story.sh");
+    let actuator = ShellVerificationActuator::with_paths(
+        fixture.env().clone(),
+        helper,
+        story_binary().to_path_buf(),
+    );
+    actuator.reap(&candidate).unwrap();
+
+    assert!(!worktree.exists(), "the leased original worktree survived");
+    let branch = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/worktree-{id}")])
+        .current_dir(repository.path())
+        .status()
+        .unwrap();
+    assert!(!branch.success(), "the leased original branch survived");
+    assert!(replacement.path().join(".git").exists());
 }
 
 #[test]

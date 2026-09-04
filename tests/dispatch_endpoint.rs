@@ -39,7 +39,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// gets, rather than through an env var storyhook's own allowlist would
 /// (correctly) now strip.
 ///
-/// Declares `DISPATCH_PROTOCOL=2` (SH-196/SH-523) so this stub keeps resolving
+/// Declares the current dispatch protocol so this stub keeps resolving
 /// under `resolve_dispatch_script_from`'s protocol check, which applies to
 /// `STORYHOOK_DISPATCH_SCRIPT` the same as any other resolution source —
 /// see `a_script_below_the_required_protocol_is_refused_before_any_handle_exists`
@@ -47,7 +47,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=2
+DISPATCH_PROTOCOL=3
 set -u
 case "{mode}" in
   ok)

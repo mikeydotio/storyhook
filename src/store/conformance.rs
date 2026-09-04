@@ -71,8 +71,8 @@ macro_rules! store_conformance_suite {
             use super::*;
 
             use $crate::domain::{
-                Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef,
-                fold_story,
+                CLEANUP_LEASE_VERSION, Member, Priority, StateDef, StoryCleanupLease, StoryEvent,
+                StorySnapshot, SuperState, TmuxWindowFingerprint, TypeDef, fold_story,
             };
             use $crate::domain::remote::RemoteUrl;
             use $crate::store::{
@@ -1765,6 +1765,25 @@ macro_rules! store_conformance_suite {
                     StoryEvent::StoryStateChanged {
                         at: "2026-01-01T00:05:00Z".into(),
                         state: "in-progress".into(),
+                    },
+                    StoryEvent::StoryCleanupLeaseRecorded {
+                        at: "2026-01-01T00:05:30Z".into(),
+                        lease: StoryCleanupLease {
+                            version: CLEANUP_LEASE_VERSION,
+                            project_slug: "alpha".into(),
+                            story_id: "SH-1".into(),
+                            repository_path: "/repos/alpha".into(),
+                            worktree_path: "/repos/alpha/.codex/worktrees/SH-1".into(),
+                            branch: "worktree-SH-1".into(),
+                            tmux: TmuxWindowFingerprint {
+                                socket_path: "/tmp/tmux.sock".into(),
+                                server_pid: 42,
+                                window_id: "@7".into(),
+                                window_created: 1_700_000_000,
+                                session_name: "storyhook".into(),
+                                window_name: "SH-1".into(),
+                            },
+                        },
                     },
                     StoryEvent::StoryPrioritySet {
                         at: "2026-01-01T00:06:00Z".into(),

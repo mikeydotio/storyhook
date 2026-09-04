@@ -9,6 +9,9 @@ use serde::Deserialize;
 
 use super::bus::{Change, ChangeBus};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
+use crate::domain::{
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt,
+};
 use crate::domain::github_remote::parse_github_url;
 use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
@@ -59,13 +62,52 @@ pub trait VerificationActuator: Send + Sync {
 /// Production actuator backed by repository and plugin scripts.
 pub struct ShellVerificationActuator {
     env: Environment,
+    helper_path: Option<PathBuf>,
+    story_binary: Option<PathBuf>,
 }
 
 impl ShellVerificationActuator {
     /// Creates a shell actuator for one daemon environment.
     #[must_use]
     pub fn new(env: Environment) -> Self {
-        Self { env }
+        Self {
+            env,
+            helper_path: None,
+            story_binary: None,
+        }
+    }
+
+    /// Creates an actuator with explicit subprocess paths.
+    ///
+    /// This narrow injection seam lets integration tests execute the real
+    /// process/receipt boundary without mutating process-global environment or
+    /// depending on a machine's installed plugin cache.
+    #[must_use]
+    pub fn with_paths(
+        env: Environment,
+        helper_path: PathBuf,
+        story_binary: PathBuf,
+    ) -> Self {
+        Self {
+            env,
+            helper_path: Some(helper_path),
+            story_binary: Some(story_binary),
+        }
+    }
+
+    fn helper_path(&self) -> Result<PathBuf, AppError> {
+        if let Some(path) = &self.helper_path {
+            return Ok(path.clone());
+        }
+        resolve_dispatch_script(DispatchAgent::Codex)
+            .or_else(|_| resolve_dispatch_script(DispatchAgent::Claude))
+            .map_err(AppError::Storage)
+    }
+
+    fn story_binary(&self) -> PathBuf {
+        self.story_binary.clone().unwrap_or_else(|| {
+            std::env::current_exe().unwrap_or_else(|_| "story".into())
+        })
     }
 
     fn helper(
@@ -74,9 +116,7 @@ impl ShellVerificationActuator {
         verb: &str,
         extra: Option<&str>,
     ) -> Result<(), AppError> {
-        let script = resolve_dispatch_script(DispatchAgent::Codex)
-            .or_else(|_| resolve_dispatch_script(DispatchAgent::Claude))
-            .map_err(AppError::Storage)?;
+        let script = self.helper_path()?;
         let mut command = Command::new("bash");
         apply_dispatch_allowlist(&mut command);
         command
@@ -86,10 +126,10 @@ impl ShellVerificationActuator {
             .arg(verb)
             .arg(&candidate.story_id)
             .current_dir(&candidate.checkout)
-            .env(
-                "STORY_BIN",
-                std::env::current_exe().unwrap_or_else(|_| "story".into()),
-            )
+            // Provider selection is a dispatch concern. Notify/reap must not
+            // inherit a daemon starter's stale provider convention.
+            .env_remove("STORY_AGENT")
+            .env("STORY_BIN", self.story_binary())
             .env("STORYHOOK_STORE_PATH", self.env.store_path())
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
@@ -115,6 +155,81 @@ impl ShellVerificationActuator {
                 .unwrap_or("story helper refused without diagnostics")
                 .to_string(),
         ))
+    }
+
+    fn reap_leased(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
+            AppError::Storage(format!(
+                "story {} has no cleanup lease for its latest verification generation",
+                candidate.story_id
+            ))
+        })?;
+        let encoded = serde_json::to_string(lease).map_err(|error| {
+            AppError::Storage(format!("could not encode cleanup lease: {error}"))
+        })?;
+        let mut command = Command::new("bash");
+        apply_dispatch_allowlist(&mut command);
+        let output = command
+            .arg(self.helper_path()?)
+            .arg("--project")
+            .arg(&candidate.project_slug)
+            .arg("reap")
+            .arg(&candidate.story_id)
+            .current_dir(&lease.repository_path)
+            .env_remove("STORY_AGENT")
+            .env("STORY_BIN", self.story_binary())
+            .env("STORYHOOK_STORE_PATH", self.env.store_path())
+            .env(CLEANUP_LEASE_ENV, encoded)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| {
+                AppError::Storage(format!("could not run leased story helper `reap`: {error}"))
+            })?;
+
+        let receipt: CleanupReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
+            AppError::Storage(format!(
+                "leased story helper `reap` returned invalid receipt: {}{}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+                if output.stdout.is_empty() {
+                    String::new()
+                } else {
+                    format!("; stdout: {}", String::from_utf8_lossy(&output.stdout).trim())
+                }
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(AppError::Storage(format!(
+                "leased story helper `reap` exited {}: {}",
+                output.status, receipt.display
+            )));
+        }
+        if receipt.receipt_version != CLEANUP_LEASE_VERSION {
+            return Err(AppError::Storage(format!(
+                "leased reap receipt uses unsupported version {}",
+                receipt.receipt_version
+            )));
+        }
+        if !receipt.ok {
+            return Err(AppError::Storage(receipt.display));
+        }
+        if receipt.story_id != candidate.story_id || receipt.lease != *lease {
+            return Err(AppError::Storage(
+                "leased reap receipt does not echo the requested story and lease".to_string(),
+            ));
+        }
+        let post = &receipt.postconditions;
+        if !post.worktree_registration_absent
+            || !post.worktree_path_absent
+            || !post.branch_absent
+            || !post.tmux_fingerprint_absent
+        {
+            return Err(AppError::Storage(format!(
+                "leased reap receipt claims success without every exact postcondition: {}",
+                receipt.display
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -187,7 +302,7 @@ impl VerificationActuator for ShellVerificationActuator {
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
-        self.helper(candidate, "reap", None)
+        self.reap_leased(candidate)
     }
 }
 
@@ -416,7 +531,7 @@ fn record_cleanup_complete(
         ctx,
         candidate,
         &format!(
-            "{VERIFICATION_CLEANUP_COMPLETE_PREFIX} worktree, branch, and agent window were reaped."
+            "{VERIFICATION_CLEANUP_COMPLETE_PREFIX} exact leased worktree, branch, and agent window were verified absent."
         ),
     )
 }
