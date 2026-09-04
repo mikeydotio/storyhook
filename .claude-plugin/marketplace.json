@@ -8,7 +8,7 @@
       "name": "story",
       "description": "AI-native project management for coding agents. A full story lifecycle: bare `/story` lists ready stories to pick from, `/story new` files one, `/story do <id>` dispatches a ready story to a fresh plan-mode Claude session in a new tmux window + per-story git worktree, and `/story complete <id>` closes it and safely reclaims the worktree and merged branch. `/story work`, `/story context`, and friends cover the rest of the session lifecycle. Proactive story tracking, session handoffs, and dependency-aware task selection via the storyhook CLI.",
       "source": "./plugins/story",
-      "version": "2.2.1-beta.3",
+      "version": "2.2.1-beta.4",
       "author": { "name": "mikeydotio" },
       "homepage": "https://github.com/mikeydotio/storyhook"
     }
