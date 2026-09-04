@@ -90,10 +90,12 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
-    // Centralized verification waits for bash orchestration commands and
-    // reads their JSON results. The main gate is now bounded and file-backed;
-    // notify/reap still use output pipes until SH-547's adopted sibling fix.
-    ("src/daemon/verification.rs", "\"bash\"", Kind::Reads),
+    // Centralized verification waits for bounded bash orchestration commands.
+    // JSON and diagnostics go to regular temporary files, repository tests
+    // write their own log, and every timeout kills the whole process group.
+    // Descendants therefore hold no output pipe and cannot outlive the
+    // daemon's wall-clock boundary.
+    ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
     // `.output()`, which reads the child's stdout to EOF. `git` reads files,

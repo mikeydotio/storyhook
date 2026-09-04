@@ -1632,6 +1632,14 @@ and its existing cleanup restores the supplied base. An unconditional reset
 was therefore rejected after the test passed without one: it discarded state
 but added no recovery behavior.
 
+The same audit found that the worker's agent-notification and leased-reap
+helpers still used unbounded output pipes. They now use the shared file-backed
+runner with the engine's existing 180-second dispatch-helper deadline and
+immediate whole-group termination. These are short control operations, not a
+release gate, so reusing that boundary avoids a second opinion about helper
+patience. A stalled remediation or cleanup attempt now returns its contextual
+error to the existing awaiting/retry paths instead of wedging the worker.
+
 ### SH-466 — restart reconciliation
 
 **What shipped.** `HardStopKind::Interrupted` finally has a producer.
