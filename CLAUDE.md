@@ -1196,6 +1196,16 @@ Standing rules for every wave:
   feature green again. The feature reaches `story` only through the test-support
   dev-dependency, so `cargo test` and `cargo build` write a capable and an incapable binary
   **to one path**, from six sites plus any hand-run build, none under the `gate` lock.
+  **A test process now pins the binary it resolved, never the path Cargo can replace**
+  (SH-532): `story_binary()` hard-links that inode once into a PID-owned lease beside the
+  Cargo artifact, preserving the `story` basename for PATH-based hooks. Measured by toggle:
+  Cargo changed the source inode and hash while the link retained both and kept its fault
+  marker. The alternative partial target graph was 2.3 GB and took 36.57s cold; the link
+  duplicates no blocks and pins only the 57 MB old inode after replacement. The next
+  consumer reclaims only leases whose PID returns `ESRCH` from POSIX `kill(pid, 0)` — every
+  ambiguous answer stays, because late cleanup costs space while early cleanup breaks a
+  live daemon re-exec. No copy fallback: it would reopen a partial-read race. This covers
+  every producer, including a hand-run build, without a producer list or a wider lock.
   `crash.rs::diagnose` had named this exact cause in these exact words since long before the
   incident and could never say so, because with the feature off there is no corpse to
   diagnose. **The fix asks the binary rather than inspecting it**:
