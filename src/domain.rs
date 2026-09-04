@@ -476,26 +476,14 @@ pub const CLEANUP_LEASE_MARKER: &str = "storyhook-cleanup-lease-v1.json";
 /// Private environment variable carrying one versioned lease to `story reap`.
 pub const CLEANUP_LEASE_ENV: &str = "STORYHOOK_REAP_LEASE_V1";
 
-/// Exact identity of the tmux window created or adopted by dispatch.
+/// Tmux server on which dispatch created or adopted a story window.
 ///
-/// Names and ids alone are reusable. The socket and server process identify
-/// one tmux server, while the window id and creation instant distinguish one
-/// window generation inside it. Cleanup may kill a window only when every
-/// field still agrees.
+/// Story ids are globally unique within StoryHook. Once a story is complete,
+/// every window on this server whose name exactly equals that id is disposable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TmuxWindowFingerprint {
+pub struct TmuxCleanupTarget {
     /// Absolute tmux server socket path.
     pub socket_path: PathBuf,
-    /// Process id reported by the tmux server.
-    pub server_pid: u32,
-    /// Server-local tmux window id, such as `@7`.
-    pub window_id: String,
-    /// Window creation time as Unix seconds, reported by tmux.
-    pub window_created: u64,
-    /// Session in which dispatch created or found the window.
-    pub session_name: String,
-    /// Human-facing window name assigned by dispatch.
-    pub window_name: String,
 }
 
 /// Durable identity of every disposable resource owned by one dispatch.
@@ -517,8 +505,8 @@ pub struct StoryCleanupLease {
     pub worktree_path: PathBuf,
     /// Exact local branch checked out by the linked worktree.
     pub branch: String,
-    /// Exact tmux window generation dispatch created or adopted.
-    pub tmux: TmuxWindowFingerprint,
+    /// Tmux server containing windows named for this story.
+    pub tmux: TmuxCleanupTarget,
 }
 
 /// Postconditions a successful leased reap proves.
@@ -530,8 +518,8 @@ pub struct CleanupPostconditions {
     pub worktree_path_absent: bool,
     /// The leased local branch ref does not exist.
     pub branch_absent: bool,
-    /// No live tmux window matches the complete leased fingerprint.
-    pub tmux_fingerprint_absent: bool,
+    /// No live tmux window on the leased server is named for this story.
+    pub tmux_story_windows_absent: bool,
 }
 
 /// Which exact leased resources this reap invocation removed itself.
@@ -544,7 +532,7 @@ pub struct CleanupRemoved {
     pub worktree: bool,
     /// This invocation deleted the leased local branch.
     pub branch: bool,
-    /// This invocation killed the exact leased tmux window generation.
+    /// This invocation killed at least one window named for this story.
     pub tmux: bool,
 }
 

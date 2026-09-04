@@ -43,7 +43,10 @@ assert_eq "$(jq -r .project_slug "$lease")" "$(slug_for "$repo")" \
   "happy: cleanup lease project"
 assert_eq "$(jq -r .story_id "$lease")" "$id" "happy: cleanup lease story"
 assert_eq "$(jq -r .branch "$lease")" "worktree-$id" "happy: cleanup lease branch"
-assert_eq "$(jq -r .tmux.window_id "$lease")" "@1" "happy: cleanup lease window"
+assert_eq "$(jq -r .tmux.socket_path "$lease")" "$FAKE_TMUX_STATE/tmux.sock" \
+  "happy: cleanup lease tmux server"
+assert_eq "$(jq -r '.tmux | keys | join(",")' "$lease")" "socket_path" \
+  "happy: cleanup lease carries no single-window identity"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$claimed_state" "in-progress" "happy: story CLI itself confirms the claim"
 grep -q "^\.claude/worktrees/\$" "$repo/.gitignore" 2>/dev/null \

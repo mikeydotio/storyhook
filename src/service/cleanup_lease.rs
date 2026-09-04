@@ -95,7 +95,7 @@ pub(super) fn marker_at(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppErro
             &actual_branch,
         ));
     }
-    validate_tmux_identity(&lease, &marker_path)?;
+    validate_tmux_target(&lease, &marker_path)?;
     Ok(Some(lease))
 }
 
@@ -140,18 +140,11 @@ fn validate_path(
     Ok(())
 }
 
-fn validate_tmux_identity(lease: &StoryCleanupLease, marker: &Path) -> Result<(), AppError> {
+fn validate_tmux_target(lease: &StoryCleanupLease, marker: &Path) -> Result<(), AppError> {
     let tmux = &lease.tmux;
-    if !tmux.socket_path.is_absolute()
-        || tmux.server_pid == 0
-        || tmux.window_id.is_empty()
-        || !tmux.window_id.starts_with('@')
-        || tmux.window_created == 0
-        || tmux.session_name.is_empty()
-        || tmux.window_name.is_empty()
-    {
+    if !tmux.socket_path.is_absolute() {
         return Err(AppError::Validation(format!(
-            "cleanup lease marker `{}` carries an incomplete tmux fingerprint",
+            "cleanup lease marker `{}` carries an invalid tmux cleanup target",
             marker.display()
         )));
     }
