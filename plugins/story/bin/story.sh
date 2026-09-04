@@ -3846,7 +3846,8 @@ leased_reap_receipt() {
 }
 
 # cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
-# centralized verifier. No current checkout or ambient provider participates.
+# centralized verifier or the dispatched worktree itself. No current checkout
+# or ambient provider participates.
 cmd_reap_leased() {
   local typed_id="$1" lease="$2"
   if ! printf '%s' "$lease" | jq -e --argjson version "$CLEANUP_LEASE_VERSION" '
@@ -3863,7 +3864,7 @@ cmd_reap_leased() {
       and (.tmux.window_created | type == "number" and . > 0 and floor == .)
       and (.tmux.session_name | type == "string" and length > 0)
       and (.tmux.window_name | type == "string" and length > 0)' >/dev/null 2>&1; then
-    refuse "invalid-cleanup-lease" "story.sh reap: the centralized cleanup lease is malformed or uses an unsupported version."
+    refuse "invalid-cleanup-lease" "story.sh reap: the cleanup lease is malformed or uses an unsupported version."
   fi
 
   local lease_project lease_story leased_repo leased_worktree leased_branch
@@ -4049,6 +4050,25 @@ cmd_reap() {
   if [ -n "${STORYHOOK_REAP_LEASE_V1:-}" ]; then
     cmd_reap_leased "$id" "$STORYHOOK_REAP_LEASE_V1"
     return
+  fi
+
+  # A dispatched worktree owns an exact private marker written before handoff.
+  # Read it before _complete_prepare changes directory and before project
+  # checkout/provider discovery can redirect cleanup. The leased path validates
+  # every field and proves every postcondition; a present but unreadable marker
+  # is therefore a refusal, never permission to fall back to mutable discovery.
+  local caller_git_dir caller_marker caller_lease
+  caller_git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || printf '')
+  if [ -n "$caller_git_dir" ]; then
+    caller_marker="$caller_git_dir/$CLEANUP_LEASE_MARKER"
+    if [ -e "$caller_marker" ] || [ -L "$caller_marker" ]; then
+      [ -f "$caller_marker" ] && [ ! -L "$caller_marker" ] \
+        || refuse "invalid-cleanup-lease-marker" "story.sh reap: the calling worktree's cleanup lease marker is not a regular private file."
+      caller_lease=$(command cat -- "$caller_marker" 2>/dev/null) \
+        || refuse "unreadable-cleanup-lease-marker" "story.sh reap: could not read the calling worktree's cleanup lease marker."
+      cmd_reap_leased "$id" "$caller_lease"
+      return
+    fi
   fi
 
   _complete_prepare "$id"
