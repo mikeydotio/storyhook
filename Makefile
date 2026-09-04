@@ -32,10 +32,9 @@
 # The dashboard is a feature; the CLI is the tool storyhook actually is. A
 # push that changed only Rust code was never made safer by a browser suite
 # that exercises none of it, and a push that changed `src/web_dashboard.html`
-# is still caught — one release away, not never. There is no push/PR CI (see
-# .github/workflows/release.yml, which triggers on version tags only), so
-# `.githooks/pre-push` plus this file is the entire gate. Skipping `make test`
-# is how a non-compiling commit reaches `main` undetected (see #23).
+# is still caught — one release away, not never. There is no GitHub Actions
+# CI, so `.githooks/pre-push` plus this file is the entire gate. Skipping
+# `make test` is how a non-compiling commit reaches `main` undetected (see #23).
 #
 # `make test` used to run the browser suite too, and before that it was one of
 # two Rust legs: `make test-daemon` ran the identical suite a second time with

@@ -139,7 +139,7 @@ receipt.sh` writes a receipt as the last line of `make test`/`make test-
 full`. A PR merged with `gh pr merge --merge` is a **server-side merge** —
 GitHub computes the merge commit and updates `main` without a push ever
 reaching this machine, so the push gate never fires. This project also runs
-no test CI in GitHub Actions by policy (Actions are deploy-only). Put
+no test CI in GitHub Actions by policy (releases are assembled locally too). Put
 together: **every merge commit on `main` is an ungated tree by
 construction**, regardless of how green its two parents were.
 
