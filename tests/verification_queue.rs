@@ -477,7 +477,7 @@ fn append_cleanup_lease(fixture: &ServiceFixture, story_id: &str, lease: StoryCl
                 ExpectedSeq::Any,
                 &[StoryEvent::StoryCleanupLeaseRecorded {
                     at: FIXTURE_NOW.into(),
-                    lease,
+                    lease: Box::new(lease),
                 }],
                 &Provenance::unrecorded(),
             )?;
@@ -675,7 +675,7 @@ fn verifying_transition_validates_and_atomically_records_a_private_git_marker() 
         .unwrap();
     assert!(matches!(
         events.get(verifying + 1).and_then(|event| event.known()),
-        Some(StoryEvent::StoryCleanupLeaseRecorded { lease: recorded, .. }) if recorded == &lease
+        Some(StoryEvent::StoryCleanupLeaseRecorded { lease: recorded, .. }) if recorded.as_ref() == &lease
     ));
 }
 
