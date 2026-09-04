@@ -520,9 +520,26 @@ CLEANUP_LEASE_VERSION=1
 CLEANUP_LEASE_MARKER="storyhook-cleanup-lease-v1.json"
 # Readiness gate before typing the prompt — see lib/session.sh's wait_ready
 # for the full two-tier rationale (marker footer match, or structural
-# frame+glyph+stabilise fallback).
+# frame+glyph+stabilise fallback), and wait_ready_sentinel for the
+# sentinel-file gate the Claude provider actually uses.
 READY_PATTERN="${STORY_READY_PATTERN:-for shortcuts|for agents|mode on|to cycle}"
-READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-60}"
+# READY_ATTEMPTS * READY_DELAY is the whole poll budget both gates share (SH-544):
+# 180 * 0.25s = 45s, derived from src/daemon/lifecycle.rs's own
+# SPAWN_LOCK_DEADLINE (30s — this project's own documented tolerance for
+# ordinary daemon contention) plus a 15s margin for tmux round trips and the
+# time Claude itself takes to reach its first render, rather than a bare
+# literal (this project's own CLAUDE.md doctrine: a wall-clock ceiling must
+# derive from the deadline it disproves). Was 15s (60*0.25) — undocumented,
+# and well under SPAWN_LOCK_DEADLINE even though wait_ready_sentinel polls for
+# a file a daemon request has to complete to produce; a request that gets
+# queued behind ordinary contention on this project's own bounded worker pool
+# (`DISPATCHERS`, src/daemon/serve.rs) could legitimately outlast 15s without
+# anything about the launched agent being wrong. Widening this only ever costs
+# latency on a poll that would otherwise have timed out — both gates return
+# the instant their own conditions hold, every earlier poll included.
+# tests/dispatch_ready_budget.rs pins `>= SPAWN_LOCK_DEADLINE` so the two
+# numbers cannot silently drift apart again (the SH-136 shape).
+READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-180}"
 READY_DELAY="${STORY_READY_DELAY:-0.25}"
 READY_FALLBACK_DELAY="${STORY_READY_FALLBACK_DELAY:-3}"
 READY_STABLE_POLLS="${STORY_READY_STABLE_POLLS:-3}"
@@ -992,7 +1009,7 @@ dispatch_ready_note() {
       printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
       ;;
     no-sentinel)
-      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel — either the plugin'\''s hooks are not installed in that worktree, or %s has not started yet' "$AGENT_LABEL"
+      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
       ;;
     *)
       if [ -n "$WAIT_READY_COMMAND" ]; then
@@ -1859,7 +1876,16 @@ cmd_dispatch() {
   elif [ -n "$auto" ]; then
     auto_marker="$id"
   fi
-  marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker "
+  # STORYHOOK_DISPATCH=1 on EVERY dispatch, auto or not (SH-544) — unlike
+  # auto_marker/full_auto_marker, which name a specific story only for an
+  # --auto/--full-auto launch. session-start.sh reads it to decide whether
+  # THIS SessionStart may spend longer than an ordinary human launch waiting
+  # on a busy daemon (a dispatched pane is polled for, not watched), without
+  # slowing every interactive `claude` session down to match. Appended AFTER
+  # the AUTO/FULL_AUTO pair, never between: several tests in this suite
+  # assert the exact contiguous substring "-e STORYHOOK_AUTO=… -e
+  # STORYHOOK_FULL_AUTO=…", and appending here keeps that substring intact.
+  marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker -e STORYHOOK_DISPATCH=1 "
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
@@ -2134,6 +2160,7 @@ cmd_dispatch() {
     rm -f "$worktree_path/.claude/dispatch-sentinel.json"
     if ! tmux respawn-pane -k -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
+         -e "STORYHOOK_DISPATCH=1" \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
       fail "failed to respawn surviving tmux pane \`$pane\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
@@ -2145,7 +2172,7 @@ cmd_dispatch() {
     window_reused=true
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" "${new_window_args[@]}")
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
