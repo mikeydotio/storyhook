@@ -221,15 +221,49 @@ fn provider_row(label: &'static str, config: &Path, format: ProviderConfig) -> R
         Ok(None) => return Row::ok(label, "not registered"),
         Err(finding) => return Row::flagged(label, "unknown", finding),
     };
-    if source.contains('/') && !source.contains("mikeydotio/storyhook") {
+    let expected = crate::plugin::release_marketplace_root().ok();
+    if expected.as_deref() == Some(Path::new(&source)) {
+        return Row::ok(
+            label,
+            format!("release {}  [{source}]", env!("CARGO_PKG_VERSION")),
+        );
+    }
+    let releases = crate::plugin::release_marketplaces_root().ok();
+    if releases
+        .as_deref()
+        .is_some_and(|root| Path::new(&source).starts_with(root))
+    {
+        return Row::flagged(
+            label,
+            source,
+            format!(
+                "STALE RELEASE: this build carries plugin {} — run `story plugin install`",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
+    }
+    if source.contains("mikeydotio/storyhook")
+        || source.starts_with("https://")
+        || source.starts_with("git@")
+    {
+        return Row::flagged(
+            label,
+            source,
+            "UNPINNED Git marketplace — its default branch can change without a release; run \
+             `story plugin install`",
+        );
+    }
+    // Any other path is a checkout: every edit, merge and branch switch in
+    // that tree changes the installed plugin without a release.
+    if source.contains('/') {
         return Row::flagged(
             label,
             source,
             "sourced from a CHECKOUT, not a release — every edit in that tree is \
-             live here immediately",
+             live here immediately; run `story plugin install`",
         );
     }
-    Row::ok(label, source)
+    Row::flagged(label, source, "its marketplace source is not a release")
 }
 
 /// Whether `hooks/protect-install.sh` has anything to protect with.

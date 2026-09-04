@@ -23,16 +23,10 @@ The former plugin target `claude-code` remains accepted for install and uninstal
 deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
 `codex`.
 
-Codex development installs register the repository marketplace and then add the plugin,
-using the following Codex commands internally:
-
-```bash
-codex plugin marketplace add /absolute/path/to/storyhook
-codex plugin add story@storyhook
-```
-
-Running only those two low-level commands skips the launcher/rule lifecycle; use
-`story plugin install codex` for the complete supported installation.
+The `story` binary embeds this complete marketplace, materializes it under its versioned data
+directory, and registers that release projection with the selected provider. Running the
+provider's low-level marketplace commands instead loses that release pin and skips Codex's
+launcher/rule lifecycle; use `story plugin install codex` for the supported installation.
 
 The Codex manifest declares the shared skills and intentionally has no explicit `hooks`
 field because the current validator rejects it. Current installed-plugin discovery loads
