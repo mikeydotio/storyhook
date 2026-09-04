@@ -161,7 +161,11 @@ fn the_shell_cannot_walk_around_the_structured_editors() {
         format!("cp /tmp/x {}", target.display()),
         format!("rm -f {}", target.display()),
         format!("echo hi > {}", target.display()),
-        format!("sed -n 1p {} && rm -f {}", target.display(), target.display()),
+        format!(
+            "sed -n 1p {} && rm -f {}",
+            target.display(),
+            target.display()
+        ),
         format!("mystery-reader {}", target.display()),
         format!("rg --pre 'rm -f /tmp/unrelated' x {}", target.display()),
     ] {
@@ -189,7 +193,10 @@ fn read_only_shell_inspection_of_an_installed_file_is_untouched() {
         format!("tail -20 {}", target.display()),
         format!("grep -n Storyhook {}", target.display()),
         format!("cat {} | head -20", target.display()),
-        format!("sed -n '1,20p' {} && story show SH-550 --json", target.display()),
+        format!(
+            "sed -n '1,20p' {} && story show SH-550 --json",
+            target.display()
+        ),
     ] {
         let payload = serde_json::json!({
             "tool_name": "Bash",
