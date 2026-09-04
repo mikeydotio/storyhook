@@ -543,7 +543,7 @@ impl Dispatcher for ShellDispatcher {
                     "tmux refused to kill window `{window}`{suffix}"
                 )))
             }
-            Err(CaptureError::Timeout) => Err(AppError::Storage(format!(
+            Err(CaptureError::Timeout(_)) => Err(AppError::Storage(format!(
                 "tmux did not answer while killing window `{window}` within {}s",
                 TMUX_TIMEOUT.as_secs()
             ))),
@@ -1835,7 +1835,7 @@ pub(crate) fn run_shell_dispatch(
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the dispatch process: {detail}"))
         }
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
         )),
@@ -1878,7 +1878,7 @@ fn run_shell_unclaim(
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the unclaim helper: {detail}"))
         }
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
         )),
@@ -1922,7 +1922,7 @@ pub(crate) fn run_shell_capabilities(
         CaptureError::Wait(detail) => AppError::Storage(format!(
             "could not wait for the capabilities helper: {detail}"
         )),
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "capabilities did not finish within {}s and was terminated",
             CAPABILITIES_TIMEOUT.as_secs()
         )),
@@ -2210,7 +2210,7 @@ mod tests {
         command.args(["-c", "sleep 30"]);
         assert!(matches!(
             run_captured(command, Duration::from_millis(20)),
-            Err(CaptureError::Timeout)
+            Err(CaptureError::Timeout(_))
         ));
     }
 
