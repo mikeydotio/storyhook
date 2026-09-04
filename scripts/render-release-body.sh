@@ -59,15 +59,18 @@ done
 [ -n "$repo" ] || die "--repo is required: it decides where the changelog links point"
 [ -r "$changelog" ] || die "CHANGELOG is unreadable at ${changelog}"
 
-# Every version heading in the file, newest first. The changelog's own order is
-# the ordering used throughout -- comparing version numbers would need a semver
-# parser and would disagree with the file the humans read.
+# Every released-version heading in the file, newest first. `Unreleased` is a
+# staging bucket, not a tag, so admitting it here would manufacture a version
+# link in the release body. The changelog's own order is the ordering used
+# throughout -- comparing version numbers would need a semver parser and would
+# disagree with the file the humans read.
 versions() {
     awk '
         /^## \[/ {
             line = $0
             sub(/^## \[/, "", line)
             sub(/\].*$/, "", line)
+            if (line == "Unreleased") next
             print line
         }
     ' "$changelog"
@@ -183,8 +186,9 @@ add_line() { preamble="${preamble}${1}"$'\n'; }
 
 if [ ${#skipped[@]} -gt 0 ]; then
     add_line "> **Upgrading from \`${since}\`?** That is the newest release published before"
-    add_line "> this one. The versions below were tagged since, and never published — so they"
-    add_line "> ship here, and GitHub's generated notes further down do not cover them:"
+    add_line "> this one. The versions below were tagged since but were not available through the"
+    add_line "> stable \`/releases/latest\` channel. Stable-channel users receive their changes here,"
+    add_line "> and GitHub's generated notes further down do not cover them:"
     add_line ">"
     for candidate in "${skipped[@]}"; do
         heading="$(heading_of "$candidate")"

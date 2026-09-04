@@ -174,6 +174,35 @@ fn a_version_tagged_but_never_published_is_named() {
     );
 }
 
+/// Prereleases can be published without becoming the stable release returned
+/// by `/releases/latest`. The body must describe that channel distinction
+/// truthfully and must never present the changelog's `Unreleased` bucket as a
+/// tag the reader can follow.
+#[test]
+fn prerelease_history_names_the_stable_channel_and_excludes_unreleased() {
+    let (_directory, path) = changelog_of(
+        "# Changelog\n\n\
+         ## [v3.0.0] - 2026-09-03\n\n### Added\n- stable release\n\n\
+         ## [v2.3.0-beta.1] - 2026-09-02\n\n### Added\n- beta release\n\n\
+         ## [Unreleased]\n\n### Added\n- future work\n\n\
+         ## [v2.2.0] - 2026-08-24\n\n### Added\n- prior stable\n",
+    );
+    let body = render_ok(&arguments(&path, "v3.0.0", Some("v2.2.0")));
+
+    assert!(
+        body.contains("stable `/releases/latest` channel"),
+        "published prerelease history must be described by the actual stable-channel invariant:\n{body}"
+    );
+    assert!(
+        !body.contains("never published"),
+        "a published prerelease must not be called unpublished:\n{body}"
+    );
+    assert!(
+        !body.contains("[Unreleased]") && !body.contains("#unreleased"),
+        "the Unreleased bucket is not a tagged intermediate version:\n{body}"
+    );
+}
+
 /// Named, and linked to its changelog anchor at the tag being released — so
 /// the link keeps working after `main` moves on.
 #[test]
