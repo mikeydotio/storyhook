@@ -31,6 +31,7 @@
 
 pub mod attachment;
 pub mod catalog;
+mod cleanup_lease;
 pub mod config;
 pub mod engine;
 pub mod gate_progress;

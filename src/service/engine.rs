@@ -1769,7 +1769,7 @@ pub(crate) fn run_shell_dispatch(
             DISPATCH_TIMEOUT.as_secs()
         )),
     })?;
-    classify_dispatch_bytes(&captured.stdout, &captured.stderr)
+    classify_dispatch_capture(&captured)
 }
 
 /// Runs the non-destructive inverse of dispatch through the same helper
@@ -1812,7 +1812,7 @@ fn run_shell_unclaim(
             DISPATCH_TIMEOUT.as_secs()
         )),
     })?;
-    classify_dispatch_bytes(&captured.stdout, &captured.stderr)
+    classify_dispatch_capture(&captured)
 }
 
 /// A much shorter bound than [`DISPATCH_TIMEOUT`]: `story.sh capabilities`
@@ -1856,7 +1856,7 @@ pub(crate) fn run_shell_capabilities(
             CAPABILITIES_TIMEOUT.as_secs()
         )),
     })?;
-    classify_dispatch_bytes(&captured.stdout, &captured.stderr)
+    classify_dispatch_capture(&captured)
 }
 
 fn classify_dispatch_bytes(stdout: &[u8], stderr: &[u8]) -> Result<DispatchOutcome, AppError> {
@@ -1872,6 +1872,24 @@ fn classify_dispatch_bytes(stdout: &[u8], stderr: &[u8]) -> Result<DispatchOutco
             Err(AppError::Storage(message))
         }
     }
+}
+
+fn classify_dispatch_capture(captured: &Captured) -> Result<DispatchOutcome, AppError> {
+    let outcome = classify_dispatch_bytes(&captured.stdout, &captured.stderr)?;
+    if outcome.state == DispatchOutcomeState::Ok && !captured.status.success() {
+        let stderr = String::from_utf8_lossy(&captured.stderr);
+        let stderr = stderr.trim();
+        let detail = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        };
+        return Err(AppError::Storage(format!(
+            "story helper reported success but exited {}{detail}",
+            captured.status
+        )));
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]

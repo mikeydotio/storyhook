@@ -135,8 +135,10 @@ set -euo pipefail
 # `declared >= required`, so a script that is merely newer must keep
 # resolving, not start refusing. SH-523 is the deliberate exception: the
 # daemon now always sends optional `--resume`, so protocol 2 proves an installed
-# helper accepts the argv that this daemon requires.
-DISPATCH_PROTOCOL=2
+# helper accepts the argv that daemon requires. Protocol 3 advances helper and
+# daemon together for the versioned cleanup-lease environment and receipt: an
+# older helper must never be mistaken for one that proves exact postconditions.
+DISPATCH_PROTOCOL=3
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -512,6 +514,10 @@ CREATE_SESSION="${STORY_CREATE_SESSION:-}"
 # Per-story git-worktree hygiene AND the worktree container itself.
 WORKTREE_IGNORE_PATH="${STORY_WORKTREE_IGNORE_PATH:-$DEFAULT_WORKTREE_IGNORE_PATH}"
 WORKTREE_IGNORE_COMMENT="# story per-story git worktrees (ephemeral — never commit)"
+# Private dispatch-to-verification cleanup protocol. Keep these literals in
+# lockstep with src/domain.rs; protocol/version tests pin the agreement.
+CLEANUP_LEASE_VERSION=1
+CLEANUP_LEASE_MARKER="storyhook-cleanup-lease-v1.json"
 # Readiness gate before typing the prompt — see lib/session.sh's wait_ready
 # for the full two-tier rationale (marker footer match, or structural
 # frame+glyph+stabilise fallback).
@@ -1060,6 +1066,13 @@ registered_worktree_branch() {
 # targets, even when a later provider handoff fails.
 cleanup_dispatch_git() {
   local path="$1" branch="$2" worktree_created="$3" branch_created="$4"
+  # A failed handoff must not leave a marker that a later manual transition
+  # could mistake for a successful dispatch. This is safe for a resumed
+  # worktree too: the current attempt replaced the marker with its own exact
+  # tmux generation before any later gate could fail.
+  local private_git_dir
+  private_git_dir=$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null || printf '')
+  [ -z "$private_git_dir" ] || rm -f "$private_git_dir/$CLEANUP_LEASE_MARKER"
   if [ "$worktree_created" = true ]; then
     git worktree remove --force "$path" >/dev/null 2>&1 || true
     git worktree prune >/dev/null 2>&1 || true
@@ -1067,6 +1080,57 @@ cleanup_dispatch_git() {
   if [ "$branch_created" = true ]; then
     git branch -D "$branch" >/dev/null 2>&1 || true
   fi
+}
+
+# write_cleanup_lease_marker <project> <story> <repository> <worktree>
+# <branch> <pane> — atomically publish the exact resources this dispatch owns
+# in the linked worktree's private Git directory.
+#
+# A complete tmux fingerprint is mandatory. Window names, ids, and server pids
+# are each reusable on their own; cleanup may destroy the window only when the
+# socket, server, window generation, session and assigned name all still agree.
+write_cleanup_lease_marker() {
+  local project="$1" story="$2" repository="$3" worktree="$4" branch="$5" pane="$6"
+  local private_git_dir repository_real worktree_real
+  local socket_path server_pid window_id window_created session_name window_name
+  local marker temp
+
+  private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  repository_real=$(cd_resolve / "$repository") || return 1
+  worktree_real=$(cd_resolve / "$worktree") || return 1
+  socket_path=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null) || return 1
+  server_pid=$(tmux display-message -p -t "$pane" '#{pid}' 2>/dev/null) || return 1
+  window_id=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null) || return 1
+  window_created=$(tmux display-message -p -t "$pane" '#{window_created}' 2>/dev/null) || return 1
+  session_name=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || return 1
+  window_name=$(tmux display-message -p -t "$pane" '#{window_name}' 2>/dev/null) || return 1
+
+  [ -n "$socket_path" ] && [ "${socket_path#/}" != "$socket_path" ] || return 1
+  [[ "$server_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$window_id" =~ ^@[0-9]+$ ]] || return 1
+  [[ "$window_created" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ -n "$session_name" ] && [ -n "$window_name" ] || return 1
+
+  marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
+  temp=$(mktemp "$private_git_dir/.storyhook-cleanup-lease.XXXXXX") || return 1
+  if ! jq -n \
+      --argjson version "$CLEANUP_LEASE_VERSION" \
+      --arg project "$project" --arg story "$story" \
+      --arg repository "$repository_real" --arg worktree "$worktree_real" \
+      --arg branch "$branch" --arg socket "$socket_path" \
+      --argjson server_pid "$server_pid" --arg window_id "$window_id" \
+      --argjson window_created "$window_created" \
+      --arg session_name "$session_name" --arg window_name "$window_name" \
+      '{version:$version, project_slug:$project, story_id:$story,
+        repository_path:$repository, worktree_path:$worktree, branch:$branch,
+        tmux:{socket_path:$socket, server_pid:$server_pid,
+              window_id:$window_id, window_created:$window_created,
+              session_name:$session_name, window_name:$window_name}}' >"$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  chmod 600 "$temp" 2>/dev/null || { rm -f "$temp"; return 1; }
+  mv -f "$temp" "$marker" || { rm -f "$temp"; return 1; }
 }
 
 # missing_claim_state_vocabulary <claim-state> — confirm, never infer, that
@@ -2123,6 +2187,19 @@ cmd_dispatch() {
   # its window; wait_ready_sentinel refuses on an empty pid on its own.
   local pane_pid
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
+
+  # Publish the durable-cleanup handoff before any gate that can leave this
+  # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
+  # which removes this attempt's marker before preserving or deleting Git
+  # resources. A transition to verifying can therefore distinguish a real
+  # dispatched worktree from a manual/legacy submission without consulting
+  # the project's mutable checkout registration.
+  if ! write_cleanup_lease_marker \
+      "$PROJECT_SLUG" "$id" "$dir" "$worktree_path" "$worktree_branch" "$pane"; then
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+    refuse "cleanup-lease-unavailable" \
+      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; created Git resources were rolled back and the diagnostic window was preserved."
+  fi
 
   # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
   # used to only annotate. An unconfirmed pane gets no text at all: the charter
@@ -3669,6 +3746,260 @@ cmd_complete() {
   esac
 }
 
+# leased_tmux_status <lease-json> — publish LEASE_TMUX_STATUS as exact,
+# absent, reused, or unverifiable. `reused` means the leased fingerprint is
+# absent but a new server/window now occupies one of its reusable names; it is
+# therefore preserved. A dead original server is absence. A still-live pid
+# behind an unreadable socket is unverifiable and must fail loud.
+LEASE_TMUX_STATUS=""
+leased_tmux_status() {
+  local lease="$1" socket expected_pid expected_window expected_created
+  local expected_session expected_name target actual_pid actual_window actual_created
+  local actual_session actual_name
+  socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
+  expected_pid=$(printf '%s' "$lease" | jq -r '.tmux.server_pid')
+  expected_window=$(printf '%s' "$lease" | jq -r '.tmux.window_id')
+  expected_created=$(printf '%s' "$lease" | jq -r '.tmux.window_created')
+  expected_session=$(printf '%s' "$lease" | jq -r '.tmux.session_name')
+  expected_name=$(printf '%s' "$lease" | jq -r '.tmux.window_name')
+  target="$expected_session:$expected_window"
+
+  LEASE_TMUX_STATUS=""
+  if [ ! -e "$socket" ]; then
+    LEASE_TMUX_STATUS=absent
+    return 0
+  fi
+  if ! actual_pid=$(tmux -S "$socket" display-message -p '#{pid}' 2>/dev/null); then
+    if ! kill -0 "$expected_pid" 2>/dev/null; then
+      LEASE_TMUX_STATUS=absent
+      return 0
+    fi
+    LEASE_TMUX_STATUS=unverifiable
+    return 1
+  fi
+  if [ "$actual_pid" != "$expected_pid" ]; then
+    LEASE_TMUX_STATUS=reused
+    return 0
+  fi
+  if ! actual_window=$(tmux -S "$socket" display-message -p -t "$target" '#{window_id}' 2>/dev/null); then
+    LEASE_TMUX_STATUS=absent
+    return 0
+  fi
+  actual_created=$(tmux -S "$socket" display-message -p -t "$target" '#{window_created}' 2>/dev/null) \
+    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
+  actual_session=$(tmux -S "$socket" display-message -p -t "$target" '#{session_name}' 2>/dev/null) \
+    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
+  actual_name=$(tmux -S "$socket" display-message -p -t "$target" '#{window_name}' 2>/dev/null) \
+    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
+  if [ "$actual_window" = "$expected_window" ] \
+     && [ "$actual_created" = "$expected_created" ] \
+     && [ "$actual_session" = "$expected_session" ] \
+     && [ "$actual_name" = "$expected_name" ]; then
+    LEASE_TMUX_STATUS=exact
+  else
+    LEASE_TMUX_STATUS=reused
+  fi
+  return 0
+}
+
+# branch_worktree_path <branch> — print the registered worktree holding the
+# exact local branch, if any. Porcelain records are parsed without splitting
+# paths on spaces.
+branch_worktree_path() {
+  local wanted="$1" line path="" branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        if [ "$branch" = "$wanted" ]; then printf '%s' "$path"; return 0; fi
+        path="${line#worktree }"; branch="" ;;
+      branch\ refs/heads/*) branch="${line#branch refs/heads/}" ;;
+      '')
+        if [ "$branch" = "$wanted" ]; then printf '%s' "$path"; return 0; fi
+        path=""; branch="" ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null)
+  [ "$branch" != "$wanted" ] || { printf '%s' "$path"; return 0; }
+  return 1
+}
+
+# leased_reap_receipt <lease-json> <ok> <worktree-registration-absent>
+# <worktree-path-absent> <branch-absent> <tmux-absent> <display> — emit the
+# typed protocol receipt the daemon verifies field for field.
+leased_reap_receipt() {
+  local lease="$1" ok="$2" registration_absent="$3" path_absent="$4"
+  local branch_absent="$5" tmux_absent="$6" removed_worktree="$7"
+  local removed_branch="$8" removed_tmux="$9" display="${10}"
+  jq -n --argjson ok "$ok" --argjson version "$CLEANUP_LEASE_VERSION" \
+    --arg story "$(printf '%s' "$lease" | jq -r '.story_id')" \
+    --argjson lease "$lease" --argjson registration "$registration_absent" \
+    --argjson path "$path_absent" --argjson branch "$branch_absent" \
+    --argjson tmux "$tmux_absent" --argjson rwt "$removed_worktree" \
+    --argjson rbr "$removed_branch" --argjson rtmux "$removed_tmux" \
+    --arg display "$display" \
+    '{ok:$ok, receipt_version:$version, story_id:$story, lease:$lease,
+      removed:{worktree:$rwt,branch:$rbr,tmux:$rtmux},
+      postconditions:{worktree_registration_absent:$registration,
+                      worktree_path_absent:$path,
+                      branch_absent:$branch,
+                      tmux_fingerprint_absent:$tmux},
+      display:$display}'
+}
+
+# cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
+# centralized verifier or the dispatched worktree itself. No current checkout
+# or ambient provider participates.
+cmd_reap_leased() {
+  local typed_id="$1" lease="$2"
+  if ! printf '%s' "$lease" | jq -e --argjson version "$CLEANUP_LEASE_VERSION" '
+      type == "object" and .version == $version
+      and (.project_slug | type == "string" and length > 0)
+      and (.story_id | type == "string" and length > 0)
+      and (.repository_path | type == "string" and startswith("/"))
+      and (.worktree_path | type == "string" and startswith("/"))
+      and (.branch | type == "string" and length > 0)
+      and (.tmux | type == "object")
+      and (.tmux.socket_path | type == "string" and startswith("/"))
+      and (.tmux.server_pid | type == "number" and . > 0 and floor == .)
+      and (.tmux.window_id | type == "string" and test("^@[0-9]+$"))
+      and (.tmux.window_created | type == "number" and . > 0 and floor == .)
+      and (.tmux.session_name | type == "string" and length > 0)
+      and (.tmux.window_name | type == "string" and length > 0)' >/dev/null 2>&1; then
+    refuse "invalid-cleanup-lease" "story.sh reap: the cleanup lease is malformed or uses an unsupported version."
+  fi
+
+  local lease_project lease_story leased_repo leased_worktree leased_branch
+  lease_project=$(printf '%s' "$lease" | jq -r '.project_slug')
+  lease_story=$(printf '%s' "$lease" | jq -r '.story_id')
+  leased_repo=$(printf '%s' "$lease" | jq -r '.repository_path')
+  leased_worktree=$(printf '%s' "$lease" | jq -r '.worktree_path')
+  leased_branch=$(printf '%s' "$lease" | jq -r '.branch')
+  valid_story_id "$typed_id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $typed_id)."
+
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  [ "$lease_project" = "$PROJECT_SLUG" ] \
+    || refuse "cleanup-lease-project-mismatch" "story.sh reap: lease project \`$lease_project\` does not match selected project \`$PROJECT_SLUG\`."
+  local show_json result canonical_id state super done_state
+  show_json=$(story_cli show "$typed_id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  [ "$result" = ok ] || fail "$(printf '%s' "$show_json" | jq -r --arg id "$typed_id" '.error // ("story `" + $id + "` not found")')"
+  canonical_id=$(canonical_story_id "$show_json" "$typed_id")
+  [ "$lease_story" = "$canonical_id" ] \
+    || refuse "cleanup-lease-story-mismatch" "story.sh reap: lease story \`$lease_story\` does not match requested story \`$canonical_id\`."
+  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+  done_state=$(story_closed_state)
+  [ "$super" = CLOSED ] \
+    || refuse "not-closed" "story.sh reap: $canonical_id is not closed (state \`$state\`) -- refusing to reclaim a worktree for a story that isn't done."
+  [ "$state" = "$done_state" ] \
+    || refuse "not-completion-state" "story.sh reap: $canonical_id is in CLOSED state \`$state\`, not completion state \`$done_state\`."
+
+  local repository_real root worktree_real registered_branch branch_holder
+  repository_real=$(cd_resolve / "$leased_repo") \
+    || refuse "cleanup-lease-repository-missing" "story.sh reap: leased repository \`$leased_repo\` is unreachable."
+  [ "$repository_real" = "$leased_repo" ] \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository path is not canonical (\`$leased_repo\` resolves to \`$repository_real\`)."
+  root=$(repo_root "$leased_repo") \
+    || refuse "cleanup-lease-repository-invalid" "story.sh reap: leased repository \`$leased_repo\` is not a Git worktree."
+  [ "$root" = "$leased_repo" ] && ! is_linked_worktree "$leased_repo" \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository \`$leased_repo\` is not its repository's main worktree."
+  CDPATH= cd -- "$leased_repo" || refuse "cleanup-lease-repository-missing" "story.sh reap: cannot enter leased repository \`$leased_repo\`."
+  git check-ref-format --branch "$leased_branch" >/dev/null 2>&1 \
+    || refuse "cleanup-lease-branch-invalid" "story.sh reap: leased branch \`$leased_branch\` is not a valid local branch name."
+  [ "$leased_worktree" != "$leased_repo" ] \
+    || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree and repository paths are identical."
+  if [ -e "$leased_worktree" ]; then
+    worktree_real=$(cd_resolve / "$leased_worktree") \
+      || refuse "cleanup-lease-worktree-unreachable" "story.sh reap: leased worktree \`$leased_worktree\` cannot be resolved."
+    [ "$worktree_real" = "$leased_worktree" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree path is not canonical (\`$leased_worktree\` resolves to \`$worktree_real\`)."
+    [ "$(repo_root "$leased_worktree" 2>/dev/null || printf '')" = "$leased_repo" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` does not belong to leased repository \`$leased_repo\`."
+  fi
+  if registered_branch=$(registered_worktree_branch "$leased_worktree"); then
+    [ "$registered_branch" = "$leased_branch" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` is registered on \`$registered_branch\`, not leased branch \`$leased_branch\`."
+  elif [ -e "$leased_worktree" ]; then
+    refuse "cleanup-lease-worktree-unregistered" "story.sh reap: leased path \`$leased_worktree\` exists but is not a registered worktree."
+  fi
+  branch_holder=$(branch_worktree_path "$leased_branch" || printf '')
+  [ -z "$branch_holder" ] || [ "$branch_holder" = "$leased_worktree" ] \
+    || refuse "cleanup-lease-branch-reused" "story.sh reap: leased branch \`$leased_branch\` is checked out at unexpected path \`$branch_holder\`."
+
+  local default wt_status branch_status
+  default=$(default_branch)
+  freshen_base_ref "$default"
+  wt_status=$(_story_worktree_status "$leased_worktree" "")
+  case "$wt_status" in
+    dirty) refuse "dirty-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) has uncommitted changes." ;;
+    locked) refuse "locked-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) is locked." ;;
+  esac
+  if ! local_branch_exists "$leased_branch"; then
+    branch_status=missing
+  elif is_protected_branch "$leased_branch"; then
+    branch_status=protected
+  elif branch_is_merged "$leased_branch" "$default"; then
+    branch_status=deletable
+  else
+    branch_status=unmerged
+  fi
+  [ "$branch_status" != protected ] \
+    || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
+  [ "$branch_status" != unmerged ] \
+    || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`."
+  leased_tmux_status "$lease" \
+    || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server is still live but its exact window fingerprint cannot be verified."
+
+  local reaped_wt=false reaped_br=false reaped_tmux=false failure=""
+  if [ "$wt_status" != missing ]; then
+    if git worktree remove "$leased_worktree" >/dev/null 2>&1; then
+      git worktree prune >/dev/null 2>&1 || true
+      reaped_wt=true
+    else
+      failure="git worktree remove refused for $leased_worktree"
+    fi
+  fi
+  if [ "$branch_status" = deletable ]; then
+    if delete_merged_local_branch "$leased_branch" "$default"; then
+      reaped_br=true
+    else
+      failure="${failure:+$failure; }could not delete branch $leased_branch"
+    fi
+  fi
+  if [ "$LEASE_TMUX_STATUS" = exact ]; then
+    local socket window_id
+    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
+    window_id=$(printf '%s' "$lease" | jq -r '.tmux.window_id')
+    if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
+      reaped_tmux=true
+    else
+      failure="${failure:+$failure; }could not kill exact tmux window $window_id"
+    fi
+  fi
+
+  local registration_absent=false path_absent=false branch_absent=false tmux_absent=false
+  registered_worktree_branch "$leased_worktree" >/dev/null 2>&1 || registration_absent=true
+  [ -e "$leased_worktree" ] || path_absent=true
+  local_branch_exists "$leased_branch" || branch_absent=true
+  if leased_tmux_status "$lease"; then
+    [ "$LEASE_TMUX_STATUS" != exact ] && tmux_absent=true
+  else
+    failure="${failure:+$failure; }tmux postcondition is unverifiable"
+  fi
+  local ok=false display
+  if [ "$registration_absent" = true ] && [ "$path_absent" = true ] \
+     && [ "$branch_absent" = true ] && [ "$tmux_absent" = true ] \
+     && [ -z "$failure" ]; then
+    ok=true
+    display="[story] leased reap $canonical_id: exact worktree, branch, and tmux fingerprint are absent."
+  else
+    display="[story] leased reap $canonical_id failed: ${failure:-one or more exact postconditions remain false}."
+  fi
+  leased_reap_receipt "$lease" "$ok" "$registration_absent" "$path_absent" \
+    "$branch_absent" "$tmux_absent" "$reaped_wt" "$reaped_br" "$reaped_tmux" "$display"
+  [ "$ok" = true ]
+}
+
 # cmd_reap <story-id> — reclaim a CLOSED story's worktree and branch, then
 # close its tmux window (SH-208). The autonomous charter's own last act:
 # unlike `story.sh complete`, which is a QUESTION a human answers (plan
@@ -3715,6 +4046,30 @@ cmd_reap() {
   [ -n "$id" ] || fail "usage: story.sh reap <story-id>"
   shift
   [ "$#" -eq 0 ] || fail "usage: story.sh reap <story-id>"
+
+  if [ -n "${STORYHOOK_REAP_LEASE_V1:-}" ]; then
+    cmd_reap_leased "$id" "$STORYHOOK_REAP_LEASE_V1"
+    return
+  fi
+
+  # A dispatched worktree owns an exact private marker written before handoff.
+  # Read it before _complete_prepare changes directory and before project
+  # checkout/provider discovery can redirect cleanup. The leased path validates
+  # every field and proves every postcondition; a present but unreadable marker
+  # is therefore a refusal, never permission to fall back to mutable discovery.
+  local caller_git_dir caller_marker caller_lease
+  caller_git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || printf '')
+  if [ -n "$caller_git_dir" ]; then
+    caller_marker="$caller_git_dir/$CLEANUP_LEASE_MARKER"
+    if [ -e "$caller_marker" ] || [ -L "$caller_marker" ]; then
+      [ -f "$caller_marker" ] && [ ! -L "$caller_marker" ] \
+        || refuse "invalid-cleanup-lease-marker" "story.sh reap: the calling worktree's cleanup lease marker is not a regular private file."
+      caller_lease=$(command cat -- "$caller_marker" 2>/dev/null) \
+        || refuse "unreadable-cleanup-lease-marker" "story.sh reap: could not read the calling worktree's cleanup lease marker."
+      cmd_reap_leased "$id" "$caller_lease"
+      return
+    fi
+  fi
 
   _complete_prepare "$id"
   id="$CMP_ID"
@@ -3782,14 +4137,20 @@ cmd_reap() {
     fi
   fi
 
-  local display="[story] reap $id: "
+  local display="[story] reap $id: " reap_ok=true
   if [ "$reaped_wt" = true ]; then
     display="${display}removed worktree \`$CMP_WT_PATH\`, "
+  elif [ -n "$wt_fail" ]; then
+    display="${display}could not remove worktree \`$CMP_WT_PATH\`, "
+    reap_ok=false
   else
     display="${display}worktree already gone, "
   fi
   if [ "$reaped_br" = true ]; then
     display="${display}deleted branch \`$CMP_WT_BRANCH\`."
+  elif [ -n "$br_fail" ]; then
+    display="${display}could not delete branch \`$CMP_WT_BRANCH\`."
+    reap_ok=false
   else
     display="${display}branch already gone."
   fi
@@ -3800,15 +4161,17 @@ cmd_reap() {
   # guard past "was a pane found at all".
   _close_story_window "$CMP_WNAME" || true
 
-  jq -n --arg id "$id" --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
+  jq -n --arg id "$id" --argjson ok "$reap_ok" \
+        --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
         --arg wtfail "$wt_fail" --arg brfail "$br_fail" --arg display "$display" '
     {
-      ok: true, id: $id,
+      ok: $ok, id: $id,
       removed: { worktree: $rwt, branch: $rbr }
     }
     + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
     + (if $brfail == "" then {} else {branch_error: $brfail} end)
     + { display: $display }'
+  [ "$reap_ok" = true ]
 }
 
 # ---- release: unclaim and reset ---------------------------------------------

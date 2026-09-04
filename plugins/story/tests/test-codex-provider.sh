@@ -47,6 +47,11 @@ assert_eq "$(tail -1 "$FAKE_TMUX_STATE/submit_keys.log")" "Tab" "dispatch: submi
 [ -f "$FAKE_TMUX_STATE/plan_mode" ] || fail_test "dispatch: never sent Shift+Tab/BTab"
 [ -d "$repo/.codex/worktrees/$id" ] || fail_test "dispatch: Codex worktree missing"
 [ ! -d "$repo/.claude/worktrees/$id" ] || fail_test "dispatch: created a Claude worktree"
+codex_private_git=$(git -C "$repo/.codex/worktrees/$id" rev-parse --absolute-git-dir)
+codex_lease="$codex_private_git/storyhook-cleanup-lease-v1.json"
+[ -f "$codex_lease" ] || fail_test "dispatch: Codex cleanup lease marker missing"
+assert_eq "$(jq -r .story_id "$codex_lease")" "$id" \
+  "dispatch: Codex marker carries canonical story"
 [ ! -e "$repo/.codex/worktrees/$id/.claude/dispatch-sentinel.json" ] \
   || fail_test "dispatch: fake published a Claude-only sentinel in Codex"
 grep -q '^\.codex/worktrees/$' "$repo/.gitignore" \

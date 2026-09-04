@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::domain::{Priority, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
+use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery};
 
@@ -90,6 +90,11 @@ pub struct VerificationCandidate {
     pub verifying_since: Option<String>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
+    /// Exact disposable resources owned by this verification generation.
+    ///
+    /// `None` denotes a legacy or manual submission. Verification may still
+    /// merge it, but centralized cleanup must remain explicitly required.
+    pub cleanup_lease: Option<StoryCleanupLease>,
     /// The single submitted PR, or why the submission is ambiguous.
     pub pull_request: Result<PrLink, VerificationProblem>,
 }
@@ -157,6 +162,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         )),
                     };
                     let verifying_since = verifying_since(tx, project.id, row.story_no)?;
+                    let cleanup_lease = latest_cleanup_lease(tx, project.id, row.story_no)?;
                     candidates.push(VerificationCandidate {
                         project: project.id,
                         project_slug: project.slug.clone(),
@@ -166,6 +172,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         created_at: row.created_at,
                         verifying_since,
                         checkout: checkout.clone().unwrap_or_default(),
+                        cleanup_lease,
                         pull_request,
                     });
                 }
@@ -220,6 +227,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         // there is no queue wait left to report.
                         verifying_since: None,
                         checkout: checkout.clone(),
+                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                         pull_request,
                     });
                 }
@@ -328,6 +336,35 @@ fn verifying_since(
         }
         _ => None,
     }))
+}
+
+/// The lease paired with the story's latest entry into verification.
+///
+/// The service writes the lease immediately after `StoryStateChanged`, in the
+/// same event batch. Requiring that adjacency means a later legacy/manual
+/// unleased submission shadows every older lease by construction rather than
+/// accidentally reusing stale resource ownership.
+fn latest_cleanup_lease(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<StoryCleanupLease>, AppError> {
+    let events = tx.events_for(project, story)?;
+    let Some(verifying_index) = events.iter().rposition(|event| {
+        matches!(
+            event.known(),
+            Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE
+        )
+    }) else {
+        return Ok(None);
+    };
+    Ok(events
+        .get(verifying_index + 1)
+        .and_then(|event| event.known())
+        .and_then(|event| match event {
+            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
+            _ => None,
+        }))
 }
 
 fn sort_candidates(candidates: &mut [VerificationCandidate]) {

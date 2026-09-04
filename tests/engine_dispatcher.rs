@@ -74,6 +74,26 @@ fn shell_dispatcher_relays_a_nonzero_refusal_instead_of_reclassifying_it_as_fail
 }
 
 #[test]
+fn shell_dispatcher_rejects_success_json_from_a_failed_process() {
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        "printf '%s\\n' '{\"ok\":true,\"display\":\"not actually dispatched\"}'; exit 17",
+    );
+
+    let error = ShellDispatcher::new(&script, Environment::at(home))
+        .dispatch(request())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("reported success"), "{error}");
+    assert!(error.contains("17"), "{error}");
+}
+
+#[test]
 fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     let root = scratch_dir();
     let home = root.path().join("home");
@@ -95,6 +115,26 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     assert_eq!(outcome.payload["store"], expected_store);
     assert_eq!(outcome.payload["closed_window"], true);
     assert_eq!(outcome.payload["worktree_status"], "dirty");
+}
+
+#[test]
+fn shell_dispatcher_rejects_success_json_from_a_failed_unclaim_process() {
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        "printf '%s\\n' '{\"ok\":true,\"display\":\"not actually unclaimed\"}'; exit 23",
+    );
+
+    let error = ShellDispatcher::new(&script, Environment::at(home))
+        .unclaim(unclaim_request())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("reported success"), "{error}");
+    assert!(error.contains("23"), "{error}");
 }
 
 #[test]

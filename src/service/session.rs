@@ -440,6 +440,7 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
     match event {
         E::StoryCreated { title, state, .. } => format!("created in {state} — {title}"),
         E::StoryStateChanged { state, .. } => format!("state → {state}"),
+        E::StoryCleanupLeaseRecorded { .. } => "cleanup lease recorded".to_string(),
         E::StoryStateCleared { .. } => "state cleared (computed from children)".to_string(),
         E::StoryClosedAndArchived { state, .. } => format!("closed and archived in {state}"),
         E::StoryDeleted { reason, .. } => format!("deleted — {reason}"),

@@ -17,14 +17,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::UnclaimComment;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, is_epic,
-    normalize_labels, undefined_state_error,
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, VERIFYING_STATE_SLUG,
+    active_state, is_epic, normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::output::{HideStatePlan, StoryDeletePlan, UnclaimFallback, UnclaimOutcome};
 use crate::store::{
-    EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
+    EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery, StoryRow,
+    WriteOps,
 };
 
 use super::{
@@ -565,6 +566,11 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
+        let cleanup_lease = if state == VERIFYING_STATE_SLUG {
+            super::cleanup_lease::marker_at(self.ctx.cwd())?
+        } else {
+            None
+        };
         let awaiting = awaiting
             .map(str::trim)
             .map(|reason| {
@@ -580,6 +586,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let (before, snapshot) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
+            let project_record = tx.project(project)?.ok_or_else(|| {
+                StoreError::Corrupt(format!("project id {} disappeared", project.get()))
+            })?;
 
             if let Some(expected) = if_state {
                 let (_, current) = resolve_story(&*tx, project, &prefix, id)?;
@@ -593,6 +602,21 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }
 
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            if let Some(lease) = &cleanup_lease {
+                let canonical_id = story_no.to_id(&prefix);
+                if lease.project_slug != project_record.slug {
+                    return Err(StoreError::Validation(format!(
+                        "cleanup lease project mismatch: marker says `{}`, selected project is `{}`",
+                        lease.project_slug, project_record.slug
+                    )));
+                }
+                if lease.story_id != canonical_id {
+                    return Err(StoreError::Validation(format!(
+                        "cleanup lease story mismatch: marker says `{}`, transition targets `{canonical_id}`",
+                        lease.story_id
+                    )));
+                }
+            }
             refuse_epic_state_change(&row.snapshot)?;
             let target = states
                 .get(state)
@@ -606,8 +630,14 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 )
                 .into());
             }
-            let extra = comment
-                .map(|text| StoryEvent::StoryCommentAdded {
+            let mut extra = Vec::new();
+            if let Some(lease) = cleanup_lease.clone() {
+                extra.push(StoryEvent::StoryCleanupLeaseRecorded {
+                    at: now.clone(),
+                    lease: Box::new(lease),
+                });
+            }
+            extra.extend(comment.map(|text| StoryEvent::StoryCommentAdded {
                     at: now.clone(),
                     text: text.to_string(),
                 })
@@ -615,8 +645,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 .chain(awaiting.clone().map(|reason| StoryEvent::StoryAwaitingSet {
                     at: now.clone(),
                     awaiting: reason,
-                }))
-                .collect();
+                })));
             let snapshot = append_state_transition(
                 tx,
                 project,
