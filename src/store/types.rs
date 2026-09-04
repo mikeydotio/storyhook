@@ -238,6 +238,11 @@ pub struct EngineLaneRecord {
     pub state: EngineLaneState,
     /// Claimed story id, absent exactly while idle.
     pub story_id: Option<String>,
+    /// Exact tmux pane id returned by dispatch, such as `%112`.
+    ///
+    /// Older live lanes may not have one; reconciliation then uses the
+    /// project session plus [`Self::window_name`] as an exact fallback.
+    pub pane_id: Option<String>,
     /// The tmux window identity returned by dispatch.
     pub window_name: Option<String>,
     /// The lane's preserved worktree path.

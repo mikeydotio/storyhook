@@ -667,7 +667,7 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
     let fixture = ServiceFixture::new();
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -719,7 +719,7 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     let fixture = ServiceFixture::new();
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -780,7 +780,7 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
 fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -810,7 +810,7 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
 fn a_closed_story_with_a_dead_window_completes_rather_than_quarantining() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -851,7 +851,7 @@ fn a_closed_story_with_a_dead_window_completes_rather_than_quarantining() {
 fn a_verifying_story_holds_its_lane_without_quarantine_or_refill() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -901,7 +901,7 @@ fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
     let ready = new_story(&fixture, "claim me", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{held}"),
+            window: format!("=fixture:=story-{held}"),
             alive: false,
         },
         DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
@@ -931,7 +931,7 @@ fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
 fn a_verified_story_that_closes_frees_its_lane() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -948,7 +948,7 @@ fn a_verified_story_that_closes_frees_its_lane() {
         .set_state(&story, "done", None, None, None)
         .unwrap();
     let fake2 = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true, // irrelevant -- `story_closed` short-circuits before this matters
     }]);
     let report = reconcile_at(&fixture, &fake2, &run_id, FIXTURE_NOW);
@@ -1022,15 +1022,15 @@ fn three_consecutive_hard_stops_halt_the_run_and_stop_it_claiming() {
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-3".into(),
+            window: "=fixture:=story-SH-3".into(),
             alive: false,
         },
     ]);
@@ -1097,11 +1097,11 @@ fn two_hard_stops_leave_the_run_running() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
     ]);
@@ -1135,11 +1135,11 @@ fn a_completion_zeroes_an_existing_streak_so_the_breaker_never_trips() {
     let fake = FakeDispatcher::new([
         // Pass 1: two dead windows -> streak 2, one short of the breaker.
         DispatcherStep::WindowAlive {
-            window: format!("story-{a}"),
+            window: format!("=fixture:=story-{a}"),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{b}"),
+            window: format!("=fixture:=story-{b}"),
             alive: false,
         },
     ]);
@@ -1160,7 +1160,7 @@ fn a_completion_zeroes_an_existing_streak_so_the_breaker_never_trips() {
     // streak would stay at 2 and the very next hard stop would halt the run.
     let c = new_story(&fixture, "c", &[]);
     let fake2 = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: format!("story-{c}"),
+        window: format!("=fixture:=story-{c}"),
         alive: true,
     }]);
     occupy(&fixture, &run_id, 0, &c);
@@ -1293,7 +1293,7 @@ fn a_draining_run_still_finishes_once_its_lane_clears_despite_a_parked_no_auto_s
     let _parked = new_story(&fixture, "human work", &["no-auto"]);
     let working = new_story(&fixture, "in flight", &[]);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: format!("story-{working}"),
+        window: format!("=fixture:=story-{working}"),
         alive: true,
     }]);
     let run_id = started_run(&fixture, &fake, 1);
@@ -1332,6 +1332,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
         serde_json::json!({
             "ok": true,
+            "pane": "%112",
             "window_name": "SH-1",
             "worktree_path": "/tmp/wt/SH-1"
         }),
@@ -1344,6 +1345,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     let lane = lane_at(&fixture, &run_id, 0);
     assert_eq!(lane.state, EngineLaneState::Working);
     assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(lane.pane_id.as_deref(), Some("%112"));
     assert_eq!(lane.window_name.as_deref(), Some("SH-1"));
     assert_eq!(lane.worktree_path.as_deref(), Some("/tmp/wt/SH-1"));
     assert_eq!(
@@ -1361,6 +1363,34 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     assert_eq!(state, "in-progress");
 }
 
+/// The helper returns the pane id that tmux guarantees is stable for the
+/// pane lifetime. Reconciliation must use it instead of heuristically
+/// resolving the human-readable window name (SH-542).
+#[test]
+fn a_dispatched_lane_is_observed_through_its_exact_pane_id() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "claim me", &[]);
+    let dispatch = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({
+            "ok": true,
+            "pane": "%112",
+            "window_name": "SH-1",
+            "worktree_path": "/tmp/wt/SH-1"
+        }),
+    ))]);
+    let run_id = started_run(&fixture, &dispatch, 1);
+    reconcile_at(&fixture, &dispatch, &run_id, FIXTURE_NOW);
+
+    let observer = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "%112".into(),
+        alive: true,
+    }]);
+    let report = reconcile_at(&fixture, &observer, &run_id, FIXTURE_NOW);
+
+    assert!(report.quarantined.is_empty());
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(story));
+}
+
 /// The stall row, wired: the seq has not moved and the ceiling has passed.
 ///
 /// Provoked by moving the CLOCK rather than by sleeping — a test that slept
@@ -1372,11 +1402,11 @@ fn a_lane_whose_story_has_not_moved_past_the_ceiling_is_quarantined_as_stalled()
     let story = new_story(&fixture, "quiet lane", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
     ]);
@@ -1413,11 +1443,11 @@ fn a_lane_whose_story_moved_is_not_stalled_however_long_the_clock_says() {
     let story = new_story(&fixture, "busy lane", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
     ]);
