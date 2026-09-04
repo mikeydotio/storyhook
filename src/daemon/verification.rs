@@ -9,10 +9,8 @@ use serde::Deserialize;
 
 use super::bus::{Change, ChangeBus};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
-use crate::domain::{
-    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt,
-};
 use crate::domain::github_remote::parse_github_url;
+use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
 use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
 use crate::error::AppError;
@@ -83,11 +81,7 @@ impl ShellVerificationActuator {
     /// process/receipt boundary without mutating process-global environment or
     /// depending on a machine's installed plugin cache.
     #[must_use]
-    pub fn with_paths(
-        env: Environment,
-        helper_path: PathBuf,
-        story_binary: PathBuf,
-    ) -> Self {
+    pub fn with_paths(env: Environment, helper_path: PathBuf, story_binary: PathBuf) -> Self {
         Self {
             env,
             helper_path: Some(helper_path),
@@ -105,9 +99,9 @@ impl ShellVerificationActuator {
     }
 
     fn story_binary(&self) -> PathBuf {
-        self.story_binary.clone().unwrap_or_else(|| {
-            std::env::current_exe().unwrap_or_else(|_| "story".into())
-        })
+        self.story_binary
+            .clone()
+            .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| "story".into()))
     }
 
     fn helper(
@@ -194,7 +188,10 @@ impl ShellVerificationActuator {
                 if output.stdout.is_empty() {
                     String::new()
                 } else {
-                    format!("; stdout: {}", String::from_utf8_lossy(&output.stdout).trim())
+                    format!(
+                        "; stdout: {}",
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    )
                 }
             ))
         })?;

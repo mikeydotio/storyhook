@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::UnclaimComment;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, is_epic,
-    normalize_labels, undefined_state_error, VERIFYING_STATE_SLUG,
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, VERIFYING_STATE_SLUG,
+    active_state, is_epic, normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
