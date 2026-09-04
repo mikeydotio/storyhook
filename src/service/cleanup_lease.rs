@@ -8,9 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{
-    CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease,
-};
+use crate::domain::{CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease};
 use crate::env::git_env;
 use crate::error::AppError;
 
@@ -69,8 +67,8 @@ pub(super) fn marker_at(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppErro
 
     let actual_worktree = canonical_existing(Path::new(&toplevel), "linked worktree")?;
     let actual_repository = main_worktree(cwd)?;
-    let actual_branch = git_env::output(cwd, &["symbolic-ref", "--short", "HEAD"])
-        .ok_or_else(|| {
+    let actual_branch =
+        git_env::output(cwd, &["symbolic-ref", "--short", "HEAD"]).ok_or_else(|| {
             AppError::Validation(format!(
                 "cleanup lease marker `{}` belongs to a detached or unreadable worktree",
                 marker_path.display()

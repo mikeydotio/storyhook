@@ -5,12 +5,12 @@ use storyhook::daemon::verification::{
     tick_with,
 };
 use storyhook::daemon::verification_progress::publish_once;
+use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
     CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState,
     TmuxWindowFingerprint, fold_story,
 };
-use storyhook::domain::provenance::Provenance;
 use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
@@ -466,11 +466,7 @@ fn cleanup_candidate(
     }
 }
 
-fn append_cleanup_lease(
-    fixture: &ServiceFixture,
-    story_id: &str,
-    lease: StoryCleanupLease,
-) {
+fn append_cleanup_lease(fixture: &ServiceFixture, story_id: &str, lease: StoryCleanupLease) {
     let story = StoryNo::parse_id("SH", story_id).unwrap();
     fixture
         .store()
@@ -537,9 +533,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     let replacement = scratch_dir();
     fixture
         .store()
-        .write(|tx| {
-            tx.set_checkout_path(fixture.project(), Some(replacement.path()))
-        })
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(replacement.path())))
         .unwrap();
     let selected = VerificationQueue::new(fixture.store())
         .next()
@@ -597,8 +591,14 @@ fn verifying_transition_validates_and_atomically_records_a_private_git_marker() 
     let repository = scratch_dir();
     git_ok(repository.path(), &["init", "-q", "-b", "main"]);
     git_ok(repository.path(), &["config", "user.name", "Test"]);
-    git_ok(repository.path(), &["config", "user.email", "test@example.test"]);
-    git_ok(repository.path(), &["commit", "--allow-empty", "-qm", "base"]);
+    git_ok(
+        repository.path(),
+        &["config", "user.email", "test@example.test"],
+    );
+    git_ok(
+        repository.path(),
+        &["commit", "--allow-empty", "-qm", "base"],
+    );
     let worktree = repository.path().join(".codex/worktrees").join(&id);
     std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
     git_ok(
@@ -794,8 +794,14 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
     let repository = scratch_dir();
     git_ok(repository.path(), &["init", "-q", "-b", "main"]);
     git_ok(repository.path(), &["config", "user.name", "Test"]);
-    git_ok(repository.path(), &["config", "user.email", "test@example.test"]);
-    git_ok(repository.path(), &["commit", "--allow-empty", "-qm", "base"]);
+    git_ok(
+        repository.path(),
+        &["config", "user.email", "test@example.test"],
+    );
+    git_ok(
+        repository.path(),
+        &["commit", "--allow-empty", "-qm", "base"],
+    );
     let worktree = repository.path().join(".codex/worktrees").join(&id);
     std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
     git_ok(
@@ -827,8 +833,7 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
     lease.tmux.session_name = "retired".into();
     lease.tmux.window_name = id.clone();
 
-    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("plugins/story/bin/story.sh");
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
     let actuator = ShellVerificationActuator::with_paths(
         fixture.env().clone(),
         helper,
@@ -838,7 +843,12 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
 
     assert!(!worktree.exists(), "the leased original worktree survived");
     let branch = Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/worktree-{id}")])
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/worktree-{id}"),
+        ])
         .current_dir(repository.path())
         .status()
         .unwrap();

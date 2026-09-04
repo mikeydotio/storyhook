@@ -7,9 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::domain::{
-    Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG,
-};
+use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery};
 
@@ -229,11 +227,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         // there is no queue wait left to report.
                         verifying_since: None,
                         checkout: checkout.clone(),
-                        cleanup_lease: latest_cleanup_lease(
-                            tx,
-                            project.id,
-                            row.story_no,
-                        )?,
+                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                         pull_request,
                     });
                 }
