@@ -208,9 +208,10 @@ log="$data_root/test-output.log"
 # this invocation's cases nest under -- set by run-rust-battery.sh per mode,
 # defaulting to the rust-suite leg's own path for run-changed.sh's selective
 # call, which is always that leg under `make test-changed`. This script emits
-# ONLY "case" lines, never "item" lines: leg.sh already owns the item
-# lifecycle (running/passed/failed) for both paths, since it wraps this
-# script's whole invocation.
+# one "item" line carrying the exact pre-run total, then only "case" lines.
+# leg.sh still owns the item's running/passed/failed lifecycle because it wraps
+# this script's whole invocation; the fold preserves a total omitted by its
+# later terminal line.
 gate_progress_case_path="${STORYHOOK_GATE_PROGRESS_PATH:-release gate/rust-suite}"
 run_leg() {
     if [ -n "$(gate_progress_journal)" ]; then
@@ -234,20 +235,11 @@ run_leg() {
     return "${PIPESTATUS[0]}"
 }
 
-status=0
-
-if [ "$only_mode" -eq 0 ]; then
-    run_leg cargo test --workspace "$@" || status=$?
-else
-    if [ "${#only_names[@]}" -eq 0 ]; then
-        echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
-    else
-        # Resolves a lib target's own name (e.g. storyhook_test_support) to
-        # the PACKAGE name `cargo test -p` needs (storyhook-test-support) by
-        # asking cargo, never by guessing the hyphen/underscore convention or
-        # hardcoding the pair.
-        resolve_lib_package() {
-            cargo metadata --no-deps --format-version=1 2>/dev/null | python3 -c '
+# Resolves a lib target's own name (e.g. storyhook_test_support) to the
+# PACKAGE name `cargo test -p` needs (storyhook-test-support) by asking cargo,
+# never by guessing the hyphen/underscore convention or hardcoding the pair.
+resolve_lib_package() {
+    cargo metadata --no-deps --format-version=1 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 name = sys.argv[1]
@@ -258,23 +250,131 @@ for pkg in d["packages"]:
             sys.exit(0)
 sys.exit(1)
 ' "$1"
-        }
+}
 
-        storyhook_test_args=()
-        lib_packages=()
-        for name in "${only_names[@]}"; do
-            if [ -f "tests/$name.rs" ]; then
-                storyhook_test_args+=(--test "$name")
-                continue
-            fi
-            pkg="$(resolve_lib_package "$name")" || {
-                echo "run-tests.sh: --only names '$name', which is neither a \
+storyhook_test_args=()
+lib_packages=()
+if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
+    for name in "${only_names[@]}"; do
+        if [ -f "tests/$name.rs" ]; then
+            storyhook_test_args+=(--test "$name")
+            continue
+        fi
+        pkg="$(resolve_lib_package "$name")" || {
+            echo "run-tests.sh: --only names '$name', which is neither a \
 tests/*.rs binary nor a workspace lib target -- refusing rather than silently \
 skipping it" >&2
-                exit 1
-            }
-            lib_packages+=("$pkg")
+            exit 1
+        }
+        lib_packages+=("$pkg")
+    done
+fi
+
+# Exact progress totals come from the same libtest discovery that owns test
+# selection, never from source scanning. `--list` applies the real cfg, target,
+# name-filter and skip rules without executing a test. In libtest's default
+# mode it still lists #[ignore] cases, so a second ignored-only discovery is
+# subtracted. `--ignored` and `--include-ignored` already describe exactly the
+# runnable set and need only the first discovery.
+ignored_selection=default
+after_separator=0
+for arg in "$@"; do
+    if [ "$after_separator" -eq 0 ]; then
+        [ "$arg" = "--" ] && after_separator=1
+        continue
+    fi
+    case "$arg" in
+    (--ignored) ignored_selection=only ;;
+    (--include-ignored) ignored_selection=include ;;
+    esac
+done
+
+listed_test_count() {
+    local ignored_only="$1"
+    shift
+    local inserted=0 arg output count
+    local command=()
+    for arg in "$@"; do
+        command+=("$arg")
+        if [ "$inserted" -eq 0 ] && [ "$arg" = "--" ]; then
+            command+=(--list)
+            [ "$ignored_only" -eq 1 ] && command+=(--ignored)
+            inserted=1
+        fi
+    done
+    if [ "$inserted" -eq 0 ]; then
+        command+=(-- --list)
+        [ "$ignored_only" -eq 1 ] && command+=(--ignored)
+    fi
+
+    output="$(mktemp "$data_root/test-list.XXXXXX")"
+    if ! env -u STORYHOOK_GATE_PROGRESS -u STORYHOOK_GATE_PROGRESS_PATH \
+        "${command[@]}" >"$output" 2>&1; then
+        cat "$output" >&2
+        echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
+        return 1
+    fi
+    count="$(awk -f "$script_dir/test-list-count.awk" "$output")" || {
+        echo "run-tests.sh: could not count discovered tests in $output" >&2
+        return 1
+    }
+    case "$count" in
+    ('' | *[!0-9]*)
+        echo "run-tests.sh: test discovery returned a non-numeric count '$count'" >&2
+        return 1
+        ;;
+    esac
+    printf '%s\n' "$count"
+}
+
+runnable_test_count() {
+    local discovered ignored
+    discovered="$(listed_test_count 0 "$@")" || return 1
+    if [ "$ignored_selection" = default ]; then
+        ignored="$(listed_test_count 1 "$@")" || return 1
+        if [ "$ignored" -gt "$discovered" ]; then
+            echo "run-tests.sh: ignored discovery ($ignored) exceeds all discovery ($discovered)" >&2
+            return 1
+        fi
+        discovered=$((discovered - ignored))
+    fi
+    printf '%s\n' "$discovered"
+}
+
+exact_total=0
+add_to_exact_total() {
+    local count
+    count="$(runnable_test_count "$@")" || return 1
+    exact_total=$((exact_total + count))
+}
+
+if [ -n "$(gate_progress_journal)" ]; then
+    if [ "$only_mode" -eq 0 ]; then
+        add_to_exact_total cargo test --workspace "$@" || exit 1
+    else
+        if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
+            add_to_exact_total cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || exit 1
+        fi
+        i=0
+        while [ "$i" -lt "${#lib_packages[@]}" ]; do
+            add_to_exact_total cargo test -p "${lib_packages[$i]}" --lib "$@" || exit 1
+            i=$((i + 1))
         done
+        if [ "$run_docs" -eq 1 ]; then
+            add_to_exact_total cargo test --workspace --doc "$@" || exit 1
+        fi
+    fi
+    gate_progress_emit_item "$gate_progress_case_path" running "total=$exact_total"
+fi
+
+status=0
+
+if [ "$only_mode" -eq 0 ]; then
+    run_leg cargo test --workspace "$@" || status=$?
+else
+    if [ "${#only_names[@]}" -eq 0 ]; then
+        echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
+    else
 
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
             run_leg cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?

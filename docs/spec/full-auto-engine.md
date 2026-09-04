@@ -1528,13 +1528,17 @@ never explicitly named in the journal (`release gate` itself, most of the
 time) derives its status from its children rather than needing its own
 emission.
 
-**A denominator is estimated exactly until it cannot be.** `plugins/story/
-tests/run-tests.sh` and `scripts/run-e2e.sh` both know their own test count
-synchronously, before the run starts, and report it as an explicit `total` —
-never estimated, even mid-run. `scripts/run-tests.sh`'s own rust batteries
-have no such upfront count; their denominator is however many cases have
-been *seen so far*, marked `~` (estimated) until the item reaches a terminal
-status, at which point the seen count **is** the total, definitionally.
+**Every suite denominator is exact before its first test starts.** Plugin and
+Playwright producers count their selected files/cases synchronously. Each Rust
+battery first asks the same Cargo/libtest commands it will execute to `--list`
+their selected integration, library and doctest cases. Because default libtest
+discovery includes `#[ignore]` cases that execution skips, an identical
+ignored-only discovery is subtracted unless the caller explicitly selected
+`--ignored` or `--include-ignored`. Totals from every command in the battery
+are summed and emitted once before execution. Discovery failure refuses the
+run rather than falling back to the former `N/~N` seen-so-far display: a
+moving denominator made unfinished work look complete, defeating the progress
+surface precisely when an operator was deciding whether a gate had wedged.
 
 **Publishing needs no coordination with the verifier thread.** The obvious
 design — a shared `Arc<Mutex<Option<ActiveRun>>>` the verifier writes and the

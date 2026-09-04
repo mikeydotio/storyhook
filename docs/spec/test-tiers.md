@@ -786,6 +786,16 @@ and exports the same variable to the suite. Losing access to the journal or
 observing it shrink is a safety failure, never a reason to continue without a
 watchdog.
 
+Before either Rust battery executes its first test, `run-tests.sh` uses the
+same Cargo/libtest target and filter arguments with `--list` to enumerate every
+integration, library and doctest case it plans to run. A second ignored-only
+listing is subtracted in libtest's default mode; explicit `--ignored` and
+`--include-ignored` selections are preserved. The commands' totals are summed
+and written to the journal as one exact denominator before execution begins.
+If discovery fails, the battery refuses to start: displaying completed cases
+over a moving seen-so-far estimate made an incomplete gate look 100% complete
+and therefore could not distinguish progress from a wedge.
+
 The wrapped command is a process-group leader. On expiry, the lock prints the
 last journal record and the group's live commands, appends a failed gate item,
 sends `SIGTERM`, waits two lock-poll observations, escalates survivors to

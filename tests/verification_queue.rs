@@ -1047,7 +1047,7 @@ fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
     std::fs::write(
         &journal,
         "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":2}\n\
-         {\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"t\"}\n\
+         {\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"t\",\"total\":4}\n\
          {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n",
     )
     .unwrap();
@@ -1061,7 +1061,11 @@ fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
     let comment = last_comment(&fixture, &id);
     assert!(comment.starts_with(GATE_PROGRESS_PREFIX), "{comment}");
     assert!(comment.contains("- [x] fmt (1/1, 2s)"), "{comment}");
-    assert!(comment.contains("rust-suite (1/~1, running)"), "{comment}");
+    assert!(comment.contains("rust-suite (1/4, running)"), "{comment}");
+    assert!(
+        !comment.contains('~'),
+        "a production progress comment must never imply its completed count is the total: {comment}"
+    );
     assert_eq!(progress_comment_count(&fixture, &id), 1);
 }
 
