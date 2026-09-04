@@ -151,12 +151,12 @@ pub struct WireRequest {
     /// entirely when there is none, rather than present and null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<crate::domain::secret::GithubToken>,
-    /// Who the client says it is, from its own `$STORYHOOK_ACTOR` (SH-246).
+    /// Who the client says it is (SH-246, SH-527).
     ///
-    /// Carried for the same reason [`stdin`](Self::stdin) is: the daemon
-    /// outlives the client and holds whatever environment the process that
-    /// happened to start it had, so a daemon reading this variable itself would
-    /// label every write on the machine with one stale value.
+    /// A CLI client reads this from its own `$STORYHOOK_ACTOR`; an interactive
+    /// client can declare its surface directly. It is carried for the same
+    /// reason [`stdin`](Self::stdin) is: the daemon outlives the client and
+    /// cannot recover a caller-specific fact from its own environment.
     ///
     /// Typed as [`ActorLabel`], so the bound and the control-character refusal
     /// are applied again on deserialization — a client that skipped storyhook's

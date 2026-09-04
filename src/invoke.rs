@@ -103,14 +103,14 @@ pub struct InvokeRequest {
     /// look elsewhere: the refusal is raised where the work runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<crate::domain::secret::GithubToken>,
-    /// Who the caller says it is, from `$STORYHOOK_ACTOR` (SH-246).
+    /// Who the caller says it is (SH-246, SH-527).
     ///
-    /// Read by the client from its own environment and carried here for the
+    /// A CLI client reads this from its own `$STORYHOOK_ACTOR`; an interactive
+    /// client can declare its surface directly. It is carried here for the
     /// same reason [`stdin`](Self::stdin) and
     /// [`github_token`](Self::github_token) are: the daemon's environment
-    /// belongs to whichever process happened to start it, so a daemon reading
-    /// `$STORYHOOK_ACTOR` directly would label every write with whatever the
-    /// *first* caller of the day had exported.
+    /// belongs to whichever process happened to start it and cannot supply a
+    /// caller-specific fact.
     ///
     /// `None` means the caller declared nothing, which is the common case and
     /// is never filled in from the command beside it — an undeclared actor and

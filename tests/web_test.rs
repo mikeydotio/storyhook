@@ -23,7 +23,6 @@ use std::sync::Arc;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
-use storyhook::domain::provenance::Provenance;
 use storyhook::env::Environment;
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
@@ -4624,14 +4623,10 @@ fn web_create_story_invalid_priority_is_422() {
     assert_eq!(data_json["summary"]["total_open"], 0);
 }
 
-/// SH-312: before this, `route_create_story`'s `Ctx` carried no provenance at
-/// all, so a web-created story's `StoryCreated` event read back as
-/// [`Provenance::unrecorded`] — indistinguishable from a pre-SH-246 row or a
-/// test fixture, which is what made diagnosing SH-310/SH-311 (two identical
-/// stories filed 24 seconds apart from the dashboard) require a raw store
-/// dump instead of a `story log`.
+/// SH-527: a dashboard write identifies the person using the dashboard, not
+/// only the HTTP door that carried the request.
 #[test]
-fn web_create_story_is_attributable_to_the_web_door() {
+fn web_create_story_is_attributable_to_the_web_user() {
     let fixture = served();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -4653,9 +4648,17 @@ fn web_create_story_is_attributable_to_the_web_door() {
         .expect("a StoryCreated event");
     assert!(
         !created.provenance.is_unrecorded(),
-        "a web-door write must not fold to Provenance::unrecorded"
+        "a web-door write must not fold to unrecorded provenance"
     );
-    assert_eq!(created.provenance, Provenance::command("web:new"));
+    assert_eq!(created.provenance.command.as_deref(), Some("web:new"));
+    assert_eq!(
+        created
+            .provenance
+            .actor
+            .as_ref()
+            .map(|actor| actor.as_str()),
+        Some("web:user")
+    );
 }
 
 /// SH-312's council verdict (on that story, and reasoned through in

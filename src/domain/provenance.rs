@@ -3,8 +3,10 @@
 //! # The two halves, and why they never merge
 //!
 //! Every append carries a [`Provenance`]: a **command**, derived by the daemon
-//! from the arm it dispatched, and an optional **actor**, declared by the caller
-//! in `$STORYHOOK_ACTOR`. They are stored in two columns and rendered
+//! from the arm it dispatched, and an optional **actor**, declared by the
+//! caller. The CLI reads that declaration from `$STORYHOOK_ACTOR`; interactive
+//! clients such as the dashboard and TUI declare their own surface-specific
+//! labels. The two values are stored in separate columns and rendered
 //! differently on purpose.
 //!
 //! A caller cannot misstate the command, because a caller is never asked for it
@@ -18,9 +20,9 @@
 //! # What this is not
 //!
 //! **Not a tamper-proof audit log, and it must never be described as one.** The
-//! daemon is single-user and loopback-bound; anyone who can set
-//! `$STORYHOOK_ACTOR` can already write to the store directly, so a signature
-//! would protect against an adversary who does not exist here. It is a
+//! daemon is single-user and loopback-bound; anyone who can supply a caller's
+//! actor label can already ask that caller to write to the store, so a
+//! signature would protect against an adversary who does not exist here. It is a
 //! diagnostic aid: it answers "what wrote this" for a *cooperating* caller,
 //! which is the question that took a store dump and three source files to answer
 //! the day SH-246 was filed.
@@ -31,8 +33,9 @@
 //! reason from. A newline lets one entry forge extra lines; an ANSI escape lets
 //! it rewrite what a reader sees. Silently stripping either would leave the
 //! store holding something the caller did not say, which is the one failure an
-//! audit trail cannot survive. So [`ActorLabel::parse`] refuses, loudly, naming
-//! the variable — and the refusal happens at the CLI edge, before any write.
+//! audit trail cannot survive. So [`ActorLabel::parse`] refuses, loudly; for an
+//! environment declaration the refusal names the variable and happens at the
+//! CLI edge, before any write.
 
 use std::fmt;
 
