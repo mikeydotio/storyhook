@@ -736,6 +736,32 @@ fn shell_cleanup_requires_a_latest_generation_lease_before_spawning() {
 }
 
 #[test]
+fn shell_notification_rejects_success_json_from_a_failed_process() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("notify-helper.sh");
+    std::fs::write(
+        &helper,
+        "#!/bin/bash\nprintf '%s\\n' '{\"ok\":true,\"display\":\"not actually notified\"}'\nexit 31\n",
+    )
+    .unwrap();
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    );
+
+    let error = actuator
+        .notify(&candidate, "retry the failed gate")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("reported success"), "{error}");
+    assert!(error.contains("31"), "{error}");
+}
+
+#[test]
 fn shell_cleanup_accepts_only_an_exact_complete_typed_receipt() {
     let fixture = ServiceFixture::new();
     let root = scratch_dir();

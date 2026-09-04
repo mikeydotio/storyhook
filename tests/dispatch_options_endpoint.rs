@@ -67,6 +67,15 @@ printf '{"ok":true,"id":"%s","display":"stub dispatched"}\n' "$4"
     .to_string()
 }
 
+fn contradictory_success_stub() -> String {
+    r#"#!/usr/bin/env bash
+DISPATCH_PROTOCOL=3
+printf '{"ok":true,"agent":"%s","models":[],"efforts":[],"speeds":[]}\n' "${2#--agent=}"
+exit 29
+"#
+    .to_string()
+}
+
 fn write_script(content: &str) -> tempfile::NamedTempFile {
     let mut file = tempfile::NamedTempFile::new().expect("a scratch file for the stub script");
     file.write_all(content.as_bytes())
@@ -244,4 +253,22 @@ exit 7
     assert_eq!(body["claude"]["ok"], false);
     assert!(body["claude"]["reason"].is_string());
     assert_eq!(body["codex"]["ok"], false);
+}
+
+/// Parseable stdout cannot override the process-level failure signal. Each
+/// provider degrades independently, exactly as it does for invalid JSON.
+#[test]
+fn a_helper_cannot_report_capabilities_success_after_a_nonzero_exit() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_script(&contradictory_success_stub());
+    let info = start_with_stub(&env, stub.path());
+
+    let body = body_json(get_options(&info, &info.token).expect("dispatch-options accepted"));
+    for agent in ["claude", "codex"] {
+        assert_eq!(body[agent]["ok"], false, "{agent}: {body}");
+        let reason = body[agent]["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("reported success"), "{agent}: {body}");
+        assert!(reason.contains("29"), "{agent}: {body}");
+    }
 }
