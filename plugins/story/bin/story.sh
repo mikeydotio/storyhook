@@ -1083,33 +1083,20 @@ cleanup_dispatch_git() {
 }
 
 # write_cleanup_lease_marker <project> <story> <repository> <worktree>
-# <branch> <pane> — atomically publish the exact resources this dispatch owns
-# in the linked worktree's private Git directory.
-#
-# A complete tmux fingerprint is mandatory. Window names, ids, and server pids
-# are each reusable on their own; cleanup may destroy the window only when the
-# socket, server, window generation, session and assigned name all still agree.
+# <branch> <pane> — atomically publish the exact Git resources this dispatch
+# owns and the tmux server on which it placed the story window.
 write_cleanup_lease_marker() {
   local project="$1" story="$2" repository="$3" worktree="$4" branch="$5" pane="$6"
   local private_git_dir repository_real worktree_real
-  local socket_path server_pid window_id window_created session_name window_name
+  local socket_path
   local marker temp
 
   private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
   repository_real=$(cd_resolve / "$repository") || return 1
   worktree_real=$(cd_resolve / "$worktree") || return 1
   socket_path=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null) || return 1
-  server_pid=$(tmux display-message -p -t "$pane" '#{pid}' 2>/dev/null) || return 1
-  window_id=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null) || return 1
-  window_created=$(tmux display-message -p -t "$pane" '#{window_created}' 2>/dev/null) || return 1
-  session_name=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || return 1
-  window_name=$(tmux display-message -p -t "$pane" '#{window_name}' 2>/dev/null) || return 1
 
   [ -n "$socket_path" ] && [ "${socket_path#/}" != "$socket_path" ] || return 1
-  [[ "$server_pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  [[ "$window_id" =~ ^@[0-9]+$ ]] || return 1
-  [[ "$window_created" =~ ^[1-9][0-9]*$ ]] || return 1
-  [ -n "$session_name" ] && [ -n "$window_name" ] || return 1
 
   marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
   temp=$(mktemp "$private_git_dir/.storyhook-cleanup-lease.XXXXXX") || return 1
@@ -1118,14 +1105,9 @@ write_cleanup_lease_marker() {
       --arg project "$project" --arg story "$story" \
       --arg repository "$repository_real" --arg worktree "$worktree_real" \
       --arg branch "$branch" --arg socket "$socket_path" \
-      --argjson server_pid "$server_pid" --arg window_id "$window_id" \
-      --argjson window_created "$window_created" \
-      --arg session_name "$session_name" --arg window_name "$window_name" \
       '{version:$version, project_slug:$project, story_id:$story,
         repository_path:$repository, worktree_path:$worktree, branch:$branch,
-        tmux:{socket_path:$socket, server_pid:$server_pid,
-              window_id:$window_id, window_created:$window_created,
-              session_name:$session_name, window_name:$window_name}}' >"$temp"; then
+        tmux:{socket_path:$socket}}' >"$temp"; then
     rm -f "$temp"
     return 1
   fi
@@ -3746,59 +3728,30 @@ cmd_complete() {
   esac
 }
 
-# leased_tmux_status <lease-json> — publish LEASE_TMUX_STATUS as exact,
-# absent, reused, or unverifiable. `reused` means the leased fingerprint is
-# absent but a new server/window now occupies one of its reusable names; it is
-# therefore preserved. A dead original server is absence. A still-live pid
-# behind an unreadable socket is unverifiable and must fail loud.
-LEASE_TMUX_STATUS=""
-leased_tmux_status() {
-  local lease="$1" socket expected_pid expected_window expected_created
-  local expected_session expected_name target actual_pid actual_window actual_created
-  local actual_session actual_name
+# leased_story_windows <lease-json> <story-id> — publish the unique window ids
+# whose names exactly equal the completed story id on the leased tmux server.
+# A missing socket proves absence. An existing but unreadable socket fails loud
+# because cleanup cannot prove that every matching window is gone.
+LEASE_TMUX_WINDOWS=""
+leased_story_windows() {
+  local lease="$1" story="$2" socket listing window_id window_name seen=""
   socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-  expected_pid=$(printf '%s' "$lease" | jq -r '.tmux.server_pid')
-  expected_window=$(printf '%s' "$lease" | jq -r '.tmux.window_id')
-  expected_created=$(printf '%s' "$lease" | jq -r '.tmux.window_created')
-  expected_session=$(printf '%s' "$lease" | jq -r '.tmux.session_name')
-  expected_name=$(printf '%s' "$lease" | jq -r '.tmux.window_name')
-  target="$expected_session:$expected_window"
-
-  LEASE_TMUX_STATUS=""
+  LEASE_TMUX_WINDOWS=""
   if [ ! -e "$socket" ]; then
-    LEASE_TMUX_STATUS=absent
     return 0
   fi
-  if ! actual_pid=$(tmux -S "$socket" display-message -p '#{pid}' 2>/dev/null); then
-    if ! kill -0 "$expected_pid" 2>/dev/null; then
-      LEASE_TMUX_STATUS=absent
-      return 0
-    fi
-    LEASE_TMUX_STATUS=unverifiable
+  if ! listing=$(tmux -S "$socket" list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null); then
+    [ ! -e "$socket" ] && return 0
     return 1
   fi
-  if [ "$actual_pid" != "$expected_pid" ]; then
-    LEASE_TMUX_STATUS=reused
-    return 0
-  fi
-  if ! actual_window=$(tmux -S "$socket" display-message -p -t "$target" '#{window_id}' 2>/dev/null); then
-    LEASE_TMUX_STATUS=absent
-    return 0
-  fi
-  actual_created=$(tmux -S "$socket" display-message -p -t "$target" '#{window_created}' 2>/dev/null) \
-    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
-  actual_session=$(tmux -S "$socket" display-message -p -t "$target" '#{session_name}' 2>/dev/null) \
-    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
-  actual_name=$(tmux -S "$socket" display-message -p -t "$target" '#{window_name}' 2>/dev/null) \
-    || { LEASE_TMUX_STATUS=unverifiable; return 1; }
-  if [ "$actual_window" = "$expected_window" ] \
-     && [ "$actual_created" = "$expected_created" ] \
-     && [ "$actual_session" = "$expected_session" ] \
-     && [ "$actual_name" = "$expected_name" ]; then
-    LEASE_TMUX_STATUS=exact
-  else
-    LEASE_TMUX_STATUS=reused
-  fi
+  [ -z "$listing" ] && return 0
+  while read -r window_id window_name; do
+    [[ "$window_id" =~ ^@[0-9]+$ ]] || return 1
+    [ "$window_name" = "$story" ] || continue
+    case "$seen" in *"|$window_id|"*) continue ;; esac
+    seen="${seen}|$window_id|"
+    LEASE_TMUX_WINDOWS="${LEASE_TMUX_WINDOWS:+$LEASE_TMUX_WINDOWS$'\n'}$window_id"
+  done <<< "$listing"
   return 0
 }
 
@@ -3841,7 +3794,7 @@ leased_reap_receipt() {
       postconditions:{worktree_registration_absent:$registration,
                       worktree_path_absent:$path,
                       branch_absent:$branch,
-                      tmux_fingerprint_absent:$tmux},
+                      tmux_story_windows_absent:$tmux},
       display:$display}'
 }
 
@@ -3858,12 +3811,7 @@ cmd_reap_leased() {
       and (.worktree_path | type == "string" and startswith("/"))
       and (.branch | type == "string" and length > 0)
       and (.tmux | type == "object")
-      and (.tmux.socket_path | type == "string" and startswith("/"))
-      and (.tmux.server_pid | type == "number" and . > 0 and floor == .)
-      and (.tmux.window_id | type == "string" and test("^@[0-9]+$"))
-      and (.tmux.window_created | type == "number" and . > 0 and floor == .)
-      and (.tmux.session_name | type == "string" and length > 0)
-      and (.tmux.window_name | type == "string" and length > 0)' >/dev/null 2>&1; then
+      and (.tmux.socket_path | type == "string" and startswith("/"))' >/dev/null 2>&1; then
     refuse "invalid-cleanup-lease" "story.sh reap: the cleanup lease is malformed or uses an unsupported version."
   fi
 
@@ -3947,8 +3895,9 @@ cmd_reap_leased() {
     || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
   [ "$branch_status" != unmerged ] \
     || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`."
-  leased_tmux_status "$lease" \
-    || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server is still live but its exact window fingerprint cannot be verified."
+  leased_story_windows "$lease" "$canonical_id" \
+    || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
+  local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
 
   local reaped_wt=false reaped_br=false reaped_tmux=false failure=""
   if [ "$wt_status" != missing ]; then
@@ -3966,23 +3915,26 @@ cmd_reap_leased() {
       failure="${failure:+$failure; }could not delete branch $leased_branch"
     fi
   fi
-  if [ "$LEASE_TMUX_STATUS" = exact ]; then
+  if [ -n "$initial_tmux_windows" ]; then
     local socket window_id
     socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-    window_id=$(printf '%s' "$lease" | jq -r '.tmux.window_id')
-    if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
-      reaped_tmux=true
-    else
-      failure="${failure:+$failure; }could not kill exact tmux window $window_id"
-    fi
+    while IFS= read -r window_id; do
+      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
+        reaped_tmux=true
+      fi
+    done <<< "$initial_tmux_windows"
   fi
 
   local registration_absent=false path_absent=false branch_absent=false tmux_absent=false
   registered_worktree_branch "$leased_worktree" >/dev/null 2>&1 || registration_absent=true
   [ -e "$leased_worktree" ] || path_absent=true
   local_branch_exists "$leased_branch" || branch_absent=true
-  if leased_tmux_status "$lease"; then
-    [ "$LEASE_TMUX_STATUS" != exact ] && tmux_absent=true
+  if leased_story_windows "$lease" "$canonical_id"; then
+    if [ -z "$LEASE_TMUX_WINDOWS" ]; then
+      tmux_absent=true
+    else
+      failure="${failure:+$failure; }story tmux windows remain: $(printf '%s' "$LEASE_TMUX_WINDOWS" | tr '\n' ' ')"
+    fi
   else
     failure="${failure:+$failure; }tmux postcondition is unverifiable"
   fi
@@ -3991,7 +3943,7 @@ cmd_reap_leased() {
      && [ "$branch_absent" = true ] && [ "$tmux_absent" = true ] \
      && [ -z "$failure" ]; then
     ok=true
-    display="[story] leased reap $canonical_id: exact worktree, branch, and tmux fingerprint are absent."
+    display="[story] leased reap $canonical_id: exact worktree and branch are absent; no tmux window is named for the story."
   else
     display="[story] leased reap $canonical_id failed: ${failure:-one or more exact postconditions remain false}."
   fi

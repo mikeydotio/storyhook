@@ -232,7 +232,7 @@ impl ShellVerificationActuator {
         if !post.worktree_registration_absent
             || !post.worktree_path_absent
             || !post.branch_absent
-            || !post.tmux_fingerprint_absent
+            || !post.tmux_story_windows_absent
         {
             return Err(AppError::Storage(format!(
                 "leased reap receipt claims success without every exact postcondition: {}",
