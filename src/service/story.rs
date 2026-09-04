@@ -634,7 +634,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             if let Some(lease) = cleanup_lease.clone() {
                 extra.push(StoryEvent::StoryCleanupLeaseRecorded {
                     at: now.clone(),
-                    lease,
+                    lease: Box::new(lease),
                 });
             }
             extra.extend(comment.map(|text| StoryEvent::StoryCommentAdded {

@@ -1768,7 +1768,7 @@ macro_rules! store_conformance_suite {
                     },
                     StoryEvent::StoryCleanupLeaseRecorded {
                         at: "2026-01-01T00:05:30Z".into(),
-                        lease: StoryCleanupLease {
+                        lease: Box::new(StoryCleanupLease {
                             version: CLEANUP_LEASE_VERSION,
                             project_slug: "alpha".into(),
                             story_id: "SH-1".into(),
@@ -1783,7 +1783,7 @@ macro_rules! store_conformance_suite {
                                 session_name: "storyhook".into(),
                                 window_name: "SH-1".into(),
                             },
-                        },
+                        }),
                     },
                     StoryEvent::StoryPrioritySet {
                         at: "2026-01-01T00:06:00Z".into(),

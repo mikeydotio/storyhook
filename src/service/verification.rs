@@ -362,7 +362,7 @@ fn latest_cleanup_lease(
         .get(verifying_index + 1)
         .and_then(|event| event.known())
         .and_then(|event| match event {
-            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.clone()),
+            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
             _ => None,
         }))
 }

@@ -627,7 +627,7 @@ pub enum StoryEvent {
         /// Timestamp at which the verifying transition captured this lease.
         at: String,
         /// Exact resource identity dispatch published for this generation.
-        lease: StoryCleanupLease,
+        lease: Box<StoryCleanupLease>,
     },
     /// Removes this story's own state from authority when it gains its first
     /// child. The materialized snapshot retains its last string only as a
