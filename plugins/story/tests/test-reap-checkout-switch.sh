@@ -19,9 +19,7 @@ write_dead_window_cleanup_marker() {
     --arg branch "worktree-$name" \
     '{version:1,project_slug:$project,story_id:$story,
       repository_path:$repository,worktree_path:$worktree,branch:$branch,
-      tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock",server_pid:999999,
-            window_id:"@999",window_created:1700000000,
-            session_name:"retired",window_name:$story}}' \
+      tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock"}}' \
     >"$private_git/storyhook-cleanup-lease-v1.json"
 }
 
@@ -92,9 +90,7 @@ lease=$(jq -n --arg project "$slug" --arg story "$leased_id" \
   --arg branch "worktree-$leased_name" \
   '{version:1,project_slug:$project,story_id:$story,
     repository_path:$repository,worktree_path:$worktree,branch:$branch,
-    tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock",server_pid:999999,
-          window_id:"@999",window_created:1700000000,
-          session_name:"retired",window_name:$story}}')
+    tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock"}}')
 out=$(cd "$other" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
   bash "$SCRIPT" --project "$slug" reap "$leased_id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "leased switch: exact reap succeeds"
@@ -106,8 +102,8 @@ assert_eq "$(jqf "$out" '.postconditions.worktree_path_absent')" "true" \
   "leased switch: path absent"
 assert_eq "$(jqf "$out" '.postconditions.branch_absent')" "true" \
   "leased switch: branch absent"
-assert_eq "$(jqf "$out" '.postconditions.tmux_fingerprint_absent')" "true" \
-  "leased switch: tmux fingerprint absent"
+assert_eq "$(jqf "$out" '.postconditions.tmux_story_windows_absent')" "true" \
+  "leased switch: story windows absent"
 [ ! -d "$repo/.claude/worktrees/$leased_name" ] \
   || fail_test "leased switch: original worktree survived"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$leased_name") \

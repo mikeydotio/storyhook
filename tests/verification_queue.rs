@@ -8,8 +8,8 @@ use storyhook::daemon::verification_progress::publish_once;
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState,
-    TmuxWindowFingerprint, fold_story,
+    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
+    fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -453,13 +453,8 @@ fn cleanup_candidate(
             repository_path: repository.to_path_buf(),
             worktree_path: repository.join(".codex/worktrees/SH-1"),
             branch: "worktree-SH-1".into(),
-            tmux: TmuxWindowFingerprint {
+            tmux: TmuxCleanupTarget {
                 socket_path: repository.join("tmux.sock"),
-                server_pid: 42,
-                window_id: "@7".into(),
-                window_created: 1_700_000_000,
-                session_name: "storyhook".into(),
-                window_name: "SH-1".into(),
             },
         }),
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -624,13 +619,8 @@ fn verifying_transition_validates_and_atomically_records_a_private_git_marker() 
         repository_path,
         worktree_path,
         branch: format!("worktree-{id}"),
-        tmux: TmuxWindowFingerprint {
+        tmux: TmuxCleanupTarget {
             socket_path: repository.path().join("tmux.sock"),
-            server_pid: 42,
-            window_id: "@1".into(),
-            window_created: 1_700_000_000,
-            session_name: "storyhook".into(),
-            window_name: id.clone(),
         },
     };
     std::fs::write(&marker, b"not json").unwrap();
@@ -709,7 +699,7 @@ jq -n --argjson lease "$lease" --arg story "$story" \
      postconditions:{{worktree_registration_absent:true,
                       worktree_path_absent:true,
                       branch_absent:true,
-                      tmux_fingerprint_absent:true}},
+                      tmux_story_windows_absent:true}},
      display:"fixture receipt"}} | {mutation}'
 exit {exit_status}
 "#
@@ -854,10 +844,6 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
     lease.worktree_path = worktree.canonicalize().unwrap();
     lease.branch = format!("worktree-{id}");
     lease.tmux.socket_path = repository.path().join("never-created-tmux.sock");
-    lease.tmux.server_pid = 999_999;
-    lease.tmux.window_id = "@999".into();
-    lease.tmux.session_name = "retired".into();
-    lease.tmux.window_name = id.clone();
 
     let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
     let actuator = ShellVerificationActuator::with_paths(

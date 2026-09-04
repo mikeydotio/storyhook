@@ -72,7 +72,7 @@ macro_rules! store_conformance_suite {
 
             use $crate::domain::{
                 CLEANUP_LEASE_VERSION, Member, Priority, StateDef, StoryCleanupLease, StoryEvent,
-                StorySnapshot, SuperState, TmuxWindowFingerprint, TypeDef, fold_story,
+                StorySnapshot, SuperState, TmuxCleanupTarget, TypeDef, fold_story,
             };
             use $crate::domain::remote::RemoteUrl;
             use $crate::store::{
@@ -1775,13 +1775,8 @@ macro_rules! store_conformance_suite {
                             repository_path: "/repos/alpha".into(),
                             worktree_path: "/repos/alpha/.codex/worktrees/SH-1".into(),
                             branch: "worktree-SH-1".into(),
-                            tmux: TmuxWindowFingerprint {
+                            tmux: TmuxCleanupTarget {
                                 socket_path: "/tmp/tmux.sock".into(),
-                                server_pid: 42,
-                                window_id: "@7".into(),
-                                window_created: 1_700_000_000,
-                                session_name: "storyhook".into(),
-                                window_name: "SH-1".into(),
                             },
                         }),
                     },
