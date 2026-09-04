@@ -33,6 +33,7 @@ source: tests/golden_cli.rs
             "title": "Approve the rollout"
           }
         ],
+        "recent_quarantines": [],
         "scope": {
           "epic": "SH-15",
           "kind": "epic"

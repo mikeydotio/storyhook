@@ -100,22 +100,13 @@ session hooks. There are two ways to install it.
 story plugin install claude
 ```
 
-This registers `mikeydotio/storyhook` as a marketplace and installs the plugin through the
+The binary materializes its exact embedded marketplace under the versioned StoryHook data
+directory, registers that immutable release projection, and installs the plugin through the
 `claude` CLI. It requires the `claude` CLI on your PATH.
 The former target `claude-code` remains accepted by `story plugin install` and
 `story plugin uninstall` as a deprecated, warned compatibility alias.
 
-**Marketplace-first** — if you prefer to install the plugin before the CLI:
-
-```text
-/plugin marketplace add mikeydotio/storyhook
-/plugin install story@storyhook
-```
-
-The marketplace route installs the plugin but not the `story` CLI. Once the plugin loads,
-run `/story-install` and the plugin will install and verify the CLI for you.
-
-> After installing the plugin (either route), start a new Claude Code session so the
+> After installing the plugin, start a new Claude Code session so the
 > `/story` and `/story-*` commands load.
 
 #### Codex local marketplace
@@ -126,8 +117,8 @@ If the `story` CLI is already installed, use its supported installer:
 story plugin install codex
 ```
 
-It detects the current checkout during development and otherwise registers
-`mikeydotio/storyhook`. It also installs an unversioned launcher at
+It registers the versioned marketplace embedded in the `story` binary. It also installs an
+unversioned launcher at
 `~/.codex/storyhook/story.sh` and a dedicated rule at
 `~/.codex/rules/storyhook.rules`. The rule allows only `bash` followed by that exact
 launcher path; it never allowlists bare `bash`. The launcher resolves Codex's currently

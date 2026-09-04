@@ -32,8 +32,8 @@ use crate::service::engine::{
     StartRequest, UnclaimRequest,
 };
 use crate::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineScope, ReadOps,
-    SqliteStore, Store,
+    EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
+    EngineScope, ReadOps, SqliteStore, Store,
 };
 
 /// One persistent store handle for engine requests, shared by every worker.
@@ -372,6 +372,7 @@ struct HttpRunView {
     state: &'static str,
     lanes: Vec<HttpLaneView>,
     consecutive_hard_stops: u32,
+    recent_quarantines: Vec<EngineQuarantineRecord>,
     stop_reason: Option<String>,
     acknowledged_at: Option<String>,
     created_at: String,
@@ -388,6 +389,7 @@ impl From<RunView> for HttpRunView {
             agent,
             state,
             consecutive_hard_stops,
+            recent_quarantines,
             stop_reason,
             acknowledged_at,
             created_at,
@@ -402,6 +404,7 @@ impl From<RunView> for HttpRunView {
             state: state.as_str(),
             lanes: value.lanes.into_iter().map(Into::into).collect(),
             consecutive_hard_stops,
+            recent_quarantines,
             stop_reason,
             acknowledged_at,
             created_at,
