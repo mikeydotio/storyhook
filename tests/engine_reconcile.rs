@@ -15,6 +15,7 @@
 
 mod store_support;
 
+use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, DispatchOutcome, ENGINE_LANE_BUDGET, EngineService,
     GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, OPERATOR_STOPPED,
@@ -29,6 +30,20 @@ use storyhook::store::{
 use storyhook_test_support::{
     DispatcherCall, DispatcherStep, FIXTURE_NOW, FakeDispatcher, ServiceFixture,
 };
+
+fn cleanup_lease(story: &str, worktree: &str) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story.into(),
+        repository_path: "/repos/original".into(),
+        worktree_path: worktree.into(),
+        branch: format!("worktree-{story}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: "/tmp/tmux-original/default".into(),
+        },
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The taxonomy, as a table over the pure decision
@@ -1329,11 +1344,13 @@ fn a_draining_run_still_finishes_once_its_lane_clears_despite_a_parked_no_auto_s
 fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     let fixture = ServiceFixture::new();
     let story = new_story(&fixture, "claim me", &[]);
+    let lease = cleanup_lease(&story, "/tmp/wt/SH-1");
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
         serde_json::json!({
             "ok": true,
             "window_name": "SH-1",
-            "worktree_path": "/tmp/wt/SH-1"
+            "worktree_path": "/tmp/wt/SH-1",
+            "cleanup_lease": lease
         }),
     ))]);
     let run_id = started_run(&fixture, &fake, 1);
@@ -1346,6 +1363,10 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
     assert_eq!(lane.window_name.as_deref(), Some("SH-1"));
     assert_eq!(lane.worktree_path.as_deref(), Some("/tmp/wt/SH-1"));
+    assert_eq!(
+        lane.cleanup_lease,
+        Some(cleanup_lease(&story, "/tmp/wt/SH-1"))
+    );
     assert_eq!(
         run_state(&fixture, &run_id),
         EngineRunState::Running,
