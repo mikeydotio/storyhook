@@ -49,7 +49,7 @@
 //!   `the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it`.
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
-//! script as shipped, **all 19 tests pass**.
+//! script as shipped, **all 26 tests pass**.
 
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -265,6 +265,21 @@ fn wait_for(path: &Path) {
     );
 }
 
+/// Blocks until `pid` is no longer running, bounded by the lock's observation
+/// cycle so a failed process-group reap turns one case red instead of hanging
+/// this test binary.
+fn wait_for_process_exit(pid: u32) {
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
+    while std::time::Instant::now() < deadline {
+        if !pid_running(pid) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("process {pid} survived the machine-lock cleanup ceiling");
+}
+
 /// How many of the script's own poll cycles a fixture may spend waiting for a
 /// process to reach an expected state. Generous on purpose — this machine runs
 /// several suites at once, and the thing under test is never the latency.
@@ -374,6 +389,181 @@ fn the_lock_is_released_on_both_a_zero_and_a_nonzero_exit() {
     assert!(
         !fixture.lock("gate").exists(),
         "a nonzero exit must leave no lock behind either"
+    );
+}
+
+/// SH-536: the ceiling is over silence, never over the command's total wall
+/// clock. Every append to the gate journal buys a fresh full idle budget.
+#[test]
+fn journal_progress_resets_the_idle_ceiling() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let helper = fixture.helper(
+        "progressing.sh",
+        "#!/bin/sh\nfor step in 1 2 3 4; do\n  printf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\",\"step\":%s}\\n' \"$step\" >> \"$STORYHOOK_GATE_PROGRESS\"\n  sleep 1\ndone\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "2",
+            "gate",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a progressing holder");
+
+    assert_eq!(
+        code(&out),
+        0,
+        "four seconds of progress must outlive a two-second silence ceiling: {out:?}"
+    );
+    assert!(
+        !stderr(&out).contains("made no progress"),
+        "progress must reset the watchdog, not merely be reported: {}",
+        stderr(&out)
+    );
+}
+
+/// SH-536's incident shape, with the harder descendant case included: a live
+/// holder and its child both ignore TERM and emit no further progress. The
+/// watchdog must diagnose them, escalate to KILL, reap, and release the lock.
+#[test]
+fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let descendant = fixture.path().join("descendant.pid");
+    let helper = fixture.helper(
+        "stubborn-holder.sh",
+        "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"fixture-time\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsh -c 'trap \"\" TERM; while :; do sleep 1; done' &\nprintf '%s\\n' \"$!\" > \"$1\"\ntrap '' TERM\nwhile :; do sleep 1; done\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "2",
+            "gate",
+            "--",
+            &helper.display().to_string(),
+            &descendant.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a silent holder");
+
+    assert_eq!(
+        code(&out),
+        124,
+        "a watchdog expiry has a distinct status: {out:?}"
+    );
+    let err = stderr(&out);
+    for expected in [
+        "made no progress for 2s",
+        "last gate progress",
+        "rust-suite",
+        "active process group",
+        "stubborn-holder.sh",
+        "SIGTERM",
+        "SIGKILL",
+    ] {
+        assert!(
+            err.contains(expected),
+            "the failure must report {expected:?}\nstderr: {err}"
+        );
+    }
+    let descendant_pid: u32 = std::fs::read_to_string(&descendant)
+        .expect("reading the stubborn descendant pid")
+        .trim()
+        .parse()
+        .expect("the stubborn descendant pid must parse");
+    wait_for_process_exit(descendant_pid);
+    assert!(
+        !fixture.lock("gate").exists(),
+        "the lock must be released only after the stubborn group is gone"
+    );
+    assert_eq!(
+        code(&fixture.run(&["--max-idle", "2", "gate", "--", "true"])),
+        0,
+        "the next holder must be able to enter after cleanup"
+    );
+}
+
+/// An interactive gate has no daemon-provided journal, so the lock must mint
+/// one and hand it to the holder rather than silently disabling SH-536.
+#[test]
+fn a_gate_without_an_external_journal_exports_a_private_one() {
+    let fixture = Fixture::new();
+    let seen = fixture.path().join("seen-journal");
+    let helper = fixture.helper(
+        "record-journal.sh",
+        "#!/bin/sh\nprintf '%s\\n' \"$STORYHOOK_GATE_PROGRESS\" > \"$1\"\nprintf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\n",
+    );
+
+    let out = fixture.run(&[
+        "--max-idle",
+        "2",
+        "gate",
+        "--",
+        &helper.display().to_string(),
+        &seen.display().to_string(),
+    ]);
+
+    assert_eq!(
+        code(&out),
+        0,
+        "the private journal path must be usable: {out:?}"
+    );
+    let path = std::fs::read_to_string(&seen).expect("reading the exported journal path");
+    assert!(
+        path.trim()
+            .starts_with(&fixture.lock("gate").display().to_string()),
+        "the private journal must be owned by the lock directory: {path:?}"
+    );
+    assert!(
+        !Path::new(path.trim()).exists(),
+        "releasing the lock must remove its private journal"
+    );
+}
+
+/// Losing the safety signal must end the holder, not merely end the watchdog
+/// and leave the machine wedged behind an unobserved live process.
+#[test]
+fn a_journal_that_disappears_fails_the_holder_loudly() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let helper = fixture.helper(
+        "remove-journal.sh",
+        "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep 1\nrm \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "5",
+            "gate",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a holder that removes its journal");
+
+    assert_eq!(
+        code(&out),
+        124,
+        "losing the journal is a watchdog failure: {out:?}"
+    );
+    let err = stderr(&out);
+    assert!(err.contains("lost access"), "stderr: {err}");
+    assert!(
+        err.contains(&journal.display().to_string()),
+        "stderr: {err}"
+    );
+    assert!(
+        !fixture.lock("gate").exists(),
+        "journal loss must still reap and release the holder"
     );
 }
 
@@ -799,6 +989,22 @@ fn max_wait_refuses_a_value_that_is_not_a_whole_number() {
     }
 }
 
+/// An idle budget of zero cannot observe progress even once, and a malformed
+/// word must not be accepted as if it disabled the watchdog.
+#[test]
+fn max_idle_requires_a_positive_whole_number() {
+    let fixture = Fixture::new();
+    for bad in ["0", "soon", "-1", "1.5"] {
+        let out = fixture.run(&["--max-idle", bad, "gate", "--", "true"]);
+        assert_eq!(code(&out), 2, "--max-idle {bad} must be refused: {out:?}");
+        assert!(
+            stderr(&out).contains("--max-idle"),
+            "stderr: {}",
+            stderr(&out)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // --plan, and the root derivation it makes testable
 // ---------------------------------------------------------------------------
@@ -823,11 +1029,23 @@ fn plan_reports_the_resolved_lock_and_runs_nothing() {
         printed.contains("command=touch"),
         "--plan must print the command it would run\nstdout: {printed}"
     );
+    assert!(
+        printed.contains("max_idle=288"),
+        "the reserved gate's derived watchdog default must be inspectable\nstdout: {printed}"
+    );
     assert!(!Path::new(&sentinel).exists(), "--plan must run nothing");
     assert!(
         !fixture.lock("gate").exists(),
         "--plan must take nothing -- a planner that created the directory would be a lock nobody released"
     );
+}
+
+#[test]
+fn non_gate_locks_have_no_implicit_idle_ceiling() {
+    let fixture = Fixture::new();
+    let out = fixture.run(&["--plan", "merge", "--", "true"]);
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(printed.contains("max_idle=none"), "stdout: {printed}");
 }
 
 /// **The load-bearing derivation.** `scripts/run-tests.sh` exports
@@ -954,6 +1172,33 @@ fn the_wait_report_cadence_still_matches_the_measured_gate_median() {
     assert!(
         src.contains("readonly WAIT_REPORT_SECS=$GATE_MEDIAN_SECS"),
         "the report cadence must be spelled as the derived constant rather than re-typed as the same digits -- a second copy is a second place to disagree"
+    );
+}
+
+/// The watchdog ceiling is a formula over three named facts, not a literal
+/// that happens to equal today's result.
+#[test]
+fn the_gate_idle_ceiling_stays_derived() {
+    let src = read_checkout_file("scripts/machine-lock.sh");
+    assert!(
+        src.contains(
+            "readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))"
+        ),
+        "the ceiling must preserve its derivation in source"
+    );
+    assert_eq!(script_constant("GATE_CONCURRENT_RUNS"), 4);
+    assert_eq!(script_constant("GATE_IDLE_MARGIN"), 2);
+    assert_eq!(
+        measured_gate_median_secs()
+            * script_constant("GATE_CONCURRENT_RUNS")
+            * script_constant("GATE_IDLE_MARGIN"),
+        288
+    );
+
+    let dispatch = read_checkout_file("src/api/dispatch.rs");
+    assert!(
+        dispatch.contains("const MAX_RUNNING: usize = 4;"),
+        "GATE_CONCURRENT_RUNS must be re-derived when MAX_RUNNING changes"
     );
 }
 
