@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.2.1-beta.4] - 2026-09-03
+
+### Fixed
+- require helper success exits (SH-473) (54742da)
+- reap from the caller's exact lease (SH-473) (ae088f4)
+- box cleanup lease event payload (SH-473) (2da37b0)
+- persist exact cleanup leases (SH-473) (26af45f)
+- report reap deletion failures truthfully (SH-473) (abf543c)
+- require story IDs in Codex PR titles (SH-522) (836e57a)
+
+### Changed
+- Merge pull request #615 from mikeydotio/worktree-SH-473 (eaa7d5d)
+- Merge pull request #612 from mikeydotio/worktree-SH-522 (ce40af9)
+- Merge branch 'main' into worktree-SH-522 (11254db)
+- Merge pull request #614 from mikeydotio/release/v2.2.1-beta.3 (9ddeab8)
+
+### Documentation
+- preserve cleanup failure lessons (SH-473) (bdf400a)
+
+### Testing
+- follow required protocol constant (SH-473) (4380f10)
+- reproduce checkout-switch reap leak (SH-473) (8263950)
+- isolate cwd dispatch from ambient tmux (SH-522) (16551c2)
+- preserve Codex prompt extra ordering (SH-522) (bc76a4c)
+
 ## [v2.2.1-beta.3] - 2026-09-02
 
 ### Fixed
