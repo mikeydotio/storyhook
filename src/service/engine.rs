@@ -37,7 +37,7 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// This is the dashboard dispatch bound moved to the shared seam: the script's
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The design record models lane count as a `u8`. Keep the service boundary
 /// faithful even though SQLite stores the value in an INTEGER column.

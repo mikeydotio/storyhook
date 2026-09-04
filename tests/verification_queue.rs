@@ -494,6 +494,7 @@ wait
         checkout.path().join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
         Duration::from_millis(100),
+        Duration::from_secs(1),
         Duration::from_millis(100),
     );
 
@@ -838,6 +839,85 @@ fn shell_notification_rejects_success_json_from_a_failed_process() {
 
     assert!(error.contains("reported success"), "{error}");
     assert!(error.contains("31"), "{error}");
+}
+
+fn write_hanging_helper(root: &std::path::Path) -> PathBuf {
+    let helper = root.join("hanging-helper.sh");
+    std::fs::write(
+        &helper,
+        r#"#!/bin/bash
+verb="$3"
+sh -c 'trap "" TERM; printf "%s" "$$" > "$1"; while :; do sleep 30; done' helper-child "$PWD/$verb-child-pid" &
+wait
+"#,
+    )
+    .unwrap();
+    helper
+}
+
+fn assert_recorded_process_stopped(pid_path: &std::path::Path) {
+    let ready_by = Instant::now() + Duration::from_secs(2);
+    while !pid_path.is_file() && Instant::now() < ready_by {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let pid: i32 = std::fs::read_to_string(pid_path)
+        .unwrap_or_else(|error| panic!("helper did not record {}: {error}", pid_path.display()))
+        .parse()
+        .unwrap();
+    let stopped_by = Instant::now() + Duration::from_secs(2);
+    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < stopped_by {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_ne!(
+        unsafe { libc::kill(pid, 0) },
+        0,
+        "helper descendant {pid} survived the control timeout"
+    );
+}
+
+#[test]
+fn shell_notification_timeout_terminates_the_helper_process_group() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        Environment::at(root.path()),
+        write_hanging_helper(root.path()),
+        PathBuf::from("/usr/bin/true"),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let error = actuator
+        .notify(&candidate, "timeout probe")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("`notify`"), "{error}");
+    assert!(error.contains("100ms"), "{error}");
+    assert_recorded_process_stopped(&root.path().join("notify-child-pid"));
+}
+
+#[test]
+fn shell_cleanup_timeout_terminates_the_helper_process_group() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        Environment::at(root.path()),
+        write_hanging_helper(root.path()),
+        PathBuf::from("/usr/bin/true"),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let error = actuator.reap(&candidate).unwrap_err().to_string();
+
+    assert!(error.contains("`reap`"), "{error}");
+    assert!(error.contains("100ms"), "{error}");
+    assert_recorded_process_stopped(&root.path().join("reap-child-pid"));
 }
 
 #[test]

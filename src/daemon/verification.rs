@@ -15,8 +15,10 @@ use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, TerminationPolicy, TimeoutTermination, run_captured_with_termination,
+    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured,
+    run_captured_with_termination,
 };
+use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
@@ -81,6 +83,7 @@ pub struct ShellVerificationActuator {
     helper_path: Option<PathBuf>,
     story_binary: Option<PathBuf>,
     verification_timeout: Duration,
+    control_timeout: Duration,
     termination_grace: Duration,
 }
 
@@ -93,6 +96,7 @@ impl ShellVerificationActuator {
             helper_path: None,
             story_binary: None,
             verification_timeout: VERIFICATION_TIMEOUT,
+            control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
         }
     }
@@ -109,6 +113,7 @@ impl ShellVerificationActuator {
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
             verification_timeout: VERIFICATION_TIMEOUT,
+            control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
         }
     }
@@ -124,6 +129,7 @@ impl ShellVerificationActuator {
         helper_path: PathBuf,
         story_binary: PathBuf,
         verification_timeout: Duration,
+        control_timeout: Duration,
         termination_grace: Duration,
     ) -> Self {
         Self {
@@ -131,6 +137,7 @@ impl ShellVerificationActuator {
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
             verification_timeout,
+            control_timeout,
             termination_grace,
         }
     }
@@ -148,6 +155,16 @@ impl ShellVerificationActuator {
         self.story_binary
             .clone()
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| "story".into()))
+    }
+
+    fn run_control_command(&self, command: Command, operation: &str) -> Result<Captured, AppError> {
+        run_captured(command, self.control_timeout).map_err(|error| match error {
+            CaptureError::Timeout(_) => AppError::Storage(format!(
+                "{operation} did not finish within {:?}; its process group was terminated",
+                self.control_timeout
+            )),
+            other => AppError::Storage(format!("could not run {operation}: {}", other.detail())),
+        })
     }
 
     fn helper(
@@ -176,9 +193,7 @@ impl ShellVerificationActuator {
         if let Some(extra) = extra {
             command.arg(extra);
         }
-        let output = command.output().map_err(|error| {
-            AppError::Storage(format!("could not run story helper `{verb}`: {error}"))
-        })?;
+        let output = self.run_control_command(command, &format!("story helper `{verb}`"))?;
         let payload: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
                 "story helper `{verb}` returned invalid JSON: {}",
@@ -222,7 +237,7 @@ impl ShellVerificationActuator {
         })?;
         let mut command = Command::new("bash");
         apply_dispatch_allowlist(&mut command);
-        let output = command
+        command
             .arg(self.helper_path()?)
             .arg("--project")
             .arg(&candidate.project_slug)
@@ -234,11 +249,8 @@ impl ShellVerificationActuator {
             .env("STORYHOOK_STORE_PATH", self.env.store_path())
             .env(CLEANUP_LEASE_ENV, encoded)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| {
-                AppError::Storage(format!("could not run leased story helper `reap`: {error}"))
-            })?;
+            .stdin(Stdio::null());
+        let output = self.run_control_command(command, "leased story helper `reap`")?;
 
         let receipt: CleanupReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
