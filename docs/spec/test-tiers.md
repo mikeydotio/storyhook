@@ -1024,15 +1024,54 @@ the feature, and every binary `cargo test` can reach has it, that being the
 thing the probe measures. It was measured by hand instead, and the toggle table
 above is the record (SH-295: say which half is pinned).
 
+### The producer conflict is prevented at the consumer (SH-532)
+
+The probe above turned an indefinite hang into a fast refusal; it did not stop
+a concurrent producer replacing the capable binary before a test used it.
+`storyhook_test_support::story_binary()` now resolves Cargo's artifact once per
+test process and immediately hard-links it into a PID-owned lease under
+`target/debug/.storyhook-test-binaries/`. Every direct invocation, PATH-based
+hook, daemon spawn, capability probe and binary-identity comparison in that
+process uses the lease path. The basename remains `story`, so a hook resolving
+the first PATH entry sees the same executable the harness invokes directly.
+
+This is an inode snapshot, not a byte copy. The deciding toggle was run on the
+same checkout: the source and snapshot began as inode `62386974` with identical
+SHA-256 `34815ba…`; after `cargo build --bin story`, the source was inode
+`62389142` with SHA-256 `8b5694…`, while the snapshot stayed on inode `62386974`
+with its original hash and live fault marker. Cargo therefore replaces the
+directory entry rather than writing through the existing inode, which is the
+mechanism a hard link needs.
+
+The rejected separate-target alternative had already cost 185 GB across 17
+worktrees in the analogous whole-target shape. Even the partial target graph
+built for this decision occupied **2.3 GB** and took **36.57 seconds** cold;
+the binary itself was **57 MB**. Creating its hard link duplicates no payload
+blocks. Once Cargo replaces the source, a live lease temporarily pins that one
+57 MB inode — not another dependency graph — until a later consumer observes
+that its owner has exited and reclaims it.
+
+Leases must outlive the test process because a command may later re-exec the
+same path as a daemon. They therefore cannot be unlinked immediately and a
+Rust static cannot clean them on drop. Each lease directory encodes its owner
+PID; the next consumer sweeps only owners that POSIX `kill(pid, 0)` reports as
+`ESRCH`. Success, `EPERM`, every other error and malformed names are retained:
+space may be reclaimed late, but a cleanup pass may never remove a possibly
+live consumer's executable. The lease lives beside the Cargo artifact because
+this machine's `/private/tmp` and checkout are different filesystems. There is
+no copy fallback: a copy would reopen a partial-read race and duplicate the
+binary's blocks, so an unsupported hard link fails loudly with both paths.
+
+This closes every producer door without naming one: Makefile builds, E2E,
+baseline capture and a hand-run `cargo build` can all replace the shared path,
+and no already-running consumer follows it. Widening the machine-wide `gate`
+lock remains rejected because it enlarges the critical section and still
+cannot cover a hand-run producer. A per-leg `CARGO_TARGET_DIR` remains rejected
+because it covers only listed legs while paying the graph's disk and cold-build
+cost in each worktree.
+
 ### Filed, not fixed
 
-- **The producer conflict.** `target/debug/story` is one path with two
-  legitimate tenants, and the prevention candidates — a per-leg
-  `CARGO_TARGET_DIR`, widening the `gate` lock, a consumer-side snapshot — are
-  each a cost decision needing numbers — SH-532. The council withdrew its own
-  leading candidate on the evidence: a per-leg target dir closes two of at
-  least six producer doors while reading as a class fix, which is the
-  hand-kept-list shape.
 - **`scripts/leg.sh`'s cross-worktree `--reuse` receipts.** Receipts are keyed
   under `git rev-parse --git-common-dir`, shared by every worktree of a clone,
   and the reuse check greps the fingerprint alone — the `worktree` line written
