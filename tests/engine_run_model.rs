@@ -48,6 +48,7 @@ fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
         lane_index,
         state: EngineLaneState::Idle,
         story_id: None,
+        pane_id: None,
         window_name: None,
         worktree_path: None,
         dispatched_at: None,
@@ -114,6 +115,46 @@ fn migration_24_applies_forward_without_touching_story_data() {
 }
 
 #[test]
+fn migration_27_preserves_live_lanes_without_inventing_a_pane_id() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..26]).unwrap();
+    let conn = raw(&store);
+    insert_raw_run(
+        &conn,
+        "run-before-pane-ids",
+        "project",
+        None,
+        1,
+        "codex",
+        "running",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO engine_lanes \
+             (run_id, lane_index, state, story_id, window_name, last_observed_at) \
+         VALUES ('run-before-pane-ids', 0, 'working', 'AL-7', 'AL-7', \
+                 '2026-08-29T20:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let report = store.migrate_with(&migrate::MIGRATIONS[..27]).unwrap();
+
+    assert_eq!(report.from_version, 26);
+    assert_eq!(report.to_version, 27);
+    assert_eq!(report.applied, ["engine_lane_pane_id"]);
+    let lane = store
+        .read(|tx| tx.engine_lanes("run-before-pane-ids"))
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(lane.window_name.as_deref(), Some("AL-7"));
+    assert_eq!(lane.pane_id, None);
+}
+
+#[test]
 fn run_and_lane_records_round_trip_update_order_and_reopen() {
     let (dir, store) = new_store();
     seed_project(&store, "beta", "BE");
@@ -174,6 +215,7 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     let mut working = lane("run-b", 1);
     working.state = EngineLaneState::Working;
     working.story_id = Some("AL-7".into());
+    working.pane_id = Some("%112".into());
     working.window_name = Some("story-SH-462-lane-1".into());
     store
         .write(|tx| {

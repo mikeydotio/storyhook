@@ -302,6 +302,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // rebuild, no referenced table touched, no event appended.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 27,
+        name: "engine_lane_pane_id",
+        sql: include_str!("schema/0027_engine_lane_pane_id.sql"),
+        // One nullable column added in place to operational state. Existing
+        // lanes fall back to an exact session-qualified window target.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

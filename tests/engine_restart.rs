@@ -283,7 +283,7 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
     // `ShellDispatcher` answers `false` for a session that does not exist;
     // the fake needs a step regardless, since `observe_lanes` still probes.
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -312,7 +312,7 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
 fn an_interrupted_lane_preserves_its_worktree_and_window_and_is_never_torn_down() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -361,7 +361,7 @@ fn an_interrupted_lane_preserves_its_worktree_and_window_and_is_never_torn_down(
 fn a_lane_whose_window_survived_the_restart_is_untouched_and_its_clock_is_reseeded() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -452,15 +452,15 @@ fn three_interrupted_lanes_halt_the_run() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-3".into(),
+            window: "=fixture:=story-SH-3".into(),
             alive: false,
         },
     ]);
@@ -493,11 +493,11 @@ fn two_interrupted_lanes_leave_the_run_running() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
     ]);
@@ -532,11 +532,11 @@ fn a_completion_zeroes_the_streak_before_this_passs_hard_stops_are_added() {
         // `story_closed`, so the fake needs an answer even though it is
         // irrelevant to the outcome.
         DispatcherStep::WindowAlive {
-            window: format!("story-{a}"),
+            window: format!("=fixture:=story-{a}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{b}"),
+            window: format!("=fixture:=story-{b}"),
             alive: false,
         },
     ]);
@@ -579,7 +579,7 @@ fn an_idle_lane_is_untouched_by_a_restart_pass() {
 fn a_second_restart_pass_does_not_re_quarantine_or_grow_the_streak() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);

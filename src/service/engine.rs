@@ -946,9 +946,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         for (lane, row) in facts {
             // The window probe is a subprocess, so it runs outside the read.
             let window_alive = lane
-                .window_name
+                .pane_id
                 .as_deref()
-                .is_some_and(|window| self.dispatcher.window_alive(window));
+                .filter(|pane| valid_pane_id(pane))
+                .map(str::to_string)
+                .or_else(|| {
+                    lane.window_name
+                        .as_deref()
+                        .map(|window| exact_window_target(slug, window))
+                })
+                .is_some_and(|target| self.dispatcher.window_alive(&target));
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             let observation = LaneObservation {
                 story_closed: row
@@ -1258,6 +1265,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 DispatchOutcomeState::Ok => {
                     let mut live = working.clone();
                     live.state = EngineLaneState::Working;
+                    live.pane_id = outcome
+                        .payload
+                        .get("pane")
+                        .and_then(|v| v.as_str())
+                        .filter(|pane| valid_pane_id(pane))
+                        .map(str::to_string);
                     live.window_name = outcome
                         .payload
                         .get("window_name")
@@ -1556,6 +1569,7 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         lane_index,
         state: EngineLaneState::Idle,
         story_id: None,
+        pane_id: None,
         window_name: None,
         worktree_path: None,
         dispatched_at: None,
@@ -1565,6 +1579,16 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         outcome: None,
         outcome_detail: None,
     }
+}
+
+fn valid_pane_id(value: &str) -> bool {
+    value.strip_prefix('%').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn exact_window_target(session: &str, window: &str) -> String {
+    format!("={session}:={window}")
 }
 
 /// One human-readable line for a quarantined lane, for the

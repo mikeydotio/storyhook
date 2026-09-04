@@ -380,7 +380,7 @@ pub(super) fn engine_lanes(
             // names every field correctly and fills every one wrong).
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
                     dispatched_at, last_observed_at, outcome, outcome_detail, \
-                    last_progress_seq, last_progress_at \
+                    last_progress_seq, last_progress_at, pane_id \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -400,6 +400,7 @@ pub(super) fn engine_lanes(
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
             ))
         }),
         "reading engine lanes",
@@ -420,6 +421,7 @@ pub(super) fn engine_lanes(
                 outcome_detail,
                 last_progress_seq,
                 last_progress_at,
+                pane_id,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -429,6 +431,7 @@ pub(super) fn engine_lanes(
                     lane_index: stored_u32(lane_index, "engine_lanes.lane_index")?,
                     state,
                     story_id,
+                    pane_id,
                     window_name,
                     worktree_path,
                     dispatched_at,
