@@ -160,29 +160,67 @@ fn store_row(env: &Environment) -> Row {
     Row::ok("store", format!("schema {found}"))
 }
 
+#[derive(Clone, Copy)]
+enum ProviderConfig {
+    Claude,
+    Codex,
+}
+
+fn configured_source(body: &str, format: ProviderConfig) -> Result<Option<String>, String> {
+    match format {
+        ProviderConfig::Claude => {
+            let value: serde_json::Value = serde_json::from_str(body)
+                .map_err(|error| format!("its configuration is invalid JSON: {error}"))?;
+            let Some(marketplace) = value.get("storyhook") else {
+                return Ok(None);
+            };
+            let source = marketplace
+                .get("source")
+                .ok_or_else(|| "its storyhook marketplace has no `source` record".to_string())?;
+            if let Some(source) = source.as_str() {
+                return Ok(Some(source.to_string()));
+            }
+            for key in ["path", "repo", "url"] {
+                if let Some(source) = source.get(key).and_then(serde_json::Value::as_str) {
+                    return Ok(Some(source.to_string()));
+                }
+            }
+            Err("its storyhook marketplace source has no path, repository or URL".to_string())
+        }
+        ProviderConfig::Codex => {
+            let value: toml::Value = toml::from_str(body)
+                .map_err(|error| format!("its configuration is invalid TOML: {error}"))?;
+            let Some(marketplace) = value
+                .get("marketplaces")
+                .and_then(|value| value.get("storyhook"))
+            else {
+                return Ok(None);
+            };
+            marketplace
+                .get("source")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+                .map(Some)
+                .ok_or_else(|| "its storyhook marketplace has no string `source`".to_string())
+        }
+    }
+}
+
 /// A provider's registered marketplace source, read from the provider's own
 /// configuration rather than by invoking it — this must answer on a machine
 /// where the provider CLI is not installed, and must not pay a subprocess.
-fn provider_row(label: &'static str, config: &Path, needle: &str) -> Row {
+fn provider_row(label: &'static str, config: &Path, format: ProviderConfig) -> Row {
     if !config.exists() {
         return Row::ok(label, "not registered");
     }
     let Ok(body) = std::fs::read_to_string(config) else {
         return Row::flagged(label, "unknown", "its configuration could not be read");
     };
-    let mut lines = body.lines();
-    let Some(anchor) = lines.find(|line| line.contains(needle)) else {
-        return Row::ok(label, "not registered");
+    let source = match configured_source(&body, format) {
+        Ok(Some(source)) => source,
+        Ok(None) => return Row::ok(label, "not registered"),
+        Err(finding) => return Row::flagged(label, "unknown", finding),
     };
-    let Some(line) = std::iter::once(anchor).chain(lines).find(|line| {
-        line.contains("source") && !line.contains("source_type")
-    }) else {
-        return Row::flagged(label, "unknown", "its registered source was not recorded");
-    };
-    let source = line.trim().to_string();
-    // A source that names a filesystem path is a checkout, which is the defect
-    // SH-530 is about: the installed plugin is then a live view of a working
-    // tree, changing under every merge, checkout and uncommitted edit.
     if source.contains('/') && !source.contains("mikeydotio/storyhook") {
         return Row::flagged(
             label,
@@ -227,12 +265,12 @@ pub fn report() -> Result<String, AppError> {
         provider_row(
             "claude plugin",
             &home.join(".claude/plugins/known_marketplaces.json"),
-            "storyhook",
+            ProviderConfig::Claude,
         ),
         provider_row(
             "codex plugin",
             &home.join(".codex/config.toml"),
-            "storyhook",
+            ProviderConfig::Codex,
         ),
         hook_row(),
     ];
