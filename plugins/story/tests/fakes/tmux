@@ -432,13 +432,33 @@ case "${1:-}" in
       # a non-claude shell's hook never fires) and only when a test has not
       # asked to model "started, but the hook never published" via
       # FAKE_TMUX_SUPPRESS_SENTINEL.
+      #
+      # FAKE_TMUX_SENTINEL_DELAY_SECS (SH-544): before this, the fake only
+      # modelled "immediate" (this block, synchronous) or "never"
+      # (FAKE_TMUX_SUPPRESS_SENTINEL) — nothing in between, so no test in this
+      # suite could exercise a poll that has to survive a genuinely SLOW
+      # daemon (the exact SH-544 shape: a live, correctly-named pane whose
+      # SessionStart request just has not finished yet). When set, the write
+      # is deferred to a backgrounded, delayed subshell instead of running
+      # here — stdio redirected away from the inherited pipe for the same
+      # reason the pane-placeholder job above is (SH-231): an un-redirected
+      # background job keeps `$(tmux new-window ...)`'s own command
+      # substitution pipe open until the job itself exits.
       if [ "${FAKE_TMUX_LAUNCH_MANGLE:-}" != 1 ] \
          && [ "${FAKE_TMUX_SUPPRESS_SENTINEL:-}" != 1 ] \
          && [ "$launch_bin" != codex ] \
          && [ -n "$nw_cwd" ]; then
-        mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
-          '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
-          > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
+        if [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
+          ( sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"
+            mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
+              '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
+              > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
+          ) </dev/null >/dev/null 2>&1 &
+        else
+          mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
+            '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
+            > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
+        fi
       fi
       # Record each chained set-window-option segment for its own sake, so a
       # test can confirm SH-230's own design decisions (remain-on-exit, the
