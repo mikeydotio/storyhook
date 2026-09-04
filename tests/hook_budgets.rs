@@ -399,7 +399,12 @@ fn hook_manifest_has_the_shared_provider_contract() {
     // measured (SH-459) only for a plain tool name, and a wildcard would pay a
     // hook process on every tool call a lane makes.
     let expected = [
-        ("SessionStart", "*", "session-start.sh", 5),
+        // 25s (SH-544, was 5): a DISPATCHED pane's own `story --deadline 20`
+        // branch needs room this outer ceiling did not use to give it; an
+        // ordinary human-launched session still returns via its own 3s inner
+        // deadline and never claims the extra slack. See session-start.sh's
+        // own comment on the two literal `--deadline` call sites.
+        ("SessionStart", "*", "session-start.sh", 25),
         // SH-530. Matched on Bash as well as the structured editors, because
         // `sed -i`, `tee`, `cp`, `install` and `rm` reach the same files, and a
         // guard on the editors alone is bypassed by the shell it left open.
