@@ -47,7 +47,7 @@ being picked.
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
-| D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. | One hard story never halts a run; a broken tree halts within three attempts. |
+| D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. Below the threshold, durable evidence moves to the story and run while the lane returns to service. | One hard story never strands a run; a broken tree halts within three attempts, with the whole triggering series retained even when one lane produced it sequentially. |
 | D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a dashboard banner that persists until acknowledged.** | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a banner you cannot is the pair that survives a missed notification. |
@@ -263,6 +263,9 @@ stateDiagram-v2
 
 `Completed` resets the run's `consecutive_hard_stops` to zero. Every
 `Quarantined` transition increments it; reaching three halts the run (D10).
+A restart pass and paused or halted run retain the quarantined lane itself.
+A steady running pass releases it after breaker accounting; draining releases
+it before checking whether the run finished.
 
 ## One story through a lane
 
@@ -310,6 +313,7 @@ CREATE TABLE engine_runs (
   agent                  TEXT NOT NULL CHECK (agent IN ('claude','codex')),
   state                  TEXT NOT NULL CHECK (state IN ('running','paused','draining','halted','finished')),
   consecutive_hard_stops INTEGER NOT NULL DEFAULT 0,
+  recent_quarantines_json TEXT NOT NULL DEFAULT '[]',
   stop_reason            TEXT,
   acknowledged_at        TEXT,
   created_at             TEXT NOT NULL,
@@ -327,6 +331,7 @@ CREATE TABLE engine_lanes (
   lane_index        INTEGER NOT NULL,
   state             TEXT NOT NULL CHECK (state IN ('idle','dispatching','working','quarantined')),
   story_id          TEXT,
+  pane_id           TEXT,
   window_name       TEXT,
   worktree_path     TEXT,
   dispatched_at     TEXT,
@@ -363,19 +368,23 @@ The engine has no busy loop. `reconcile` runs when woken by
 One pass, per live run:
 
 1. **Observe.** For each non-idle lane, read its story's superstate and state,
-   and probe its window with the same `pane_runs`-style identity check dispatch
-   already uses (SH-239: ask what a process *is*, not what it is spelled).
+   and probe dispatch's stable `%pane-id`. Pre-migration lanes fall back to an
+   exact `=session:=window` target; bare tmux names are never script identity.
 2. **Classify** each lane per the lifecycle diagram above.
 3. **Quarantine** each hard stop: `story block <id> "<reason>"` naming the kind,
    the lane, the run, the window and the worktree; leave worktree, branch, PR
    and window intact. The reason is free text, not a `--on` edge, because the
    blocker is not a story — SH-398's rule is about blockers that *are* stories.
-4. **Breaker.** Three consecutive hard stops → `state = halted`, `stop_reason =
-   BreakerTripped`, fire the hook, raise the banner. A completion zeroes the
-   streak.
-5. **Fill** idle lanes while the run is `running` and the machine lane budget
+4. **Breaker.** Append the hard stop to the run's bounded recent series. Three
+   consecutive hard stops → `state = halted`, `stop_reason = BreakerTripped`,
+   fire the hook, raise the banner. A completion zeroes the streak and series.
+5. **Release** quarantined lanes only when the run remains running in a steady
+   pass, or is draining. Halted, paused, and restart-pass lanes retain evidence.
+6. **Fill** idle lanes while the run is `running` and the machine lane budget
    allows: `story claim --next` scoped and label-filtered, then dispatch.
-6. **Terminate.** Nothing claimable and every lane idle → `finished`,
+   A refusal is accounted immediately and ends that fill attempt; it cannot
+   prove the queue drained until the next wake.
+7. **Terminate.** Nothing claimable and every lane idle → `finished`,
    `stop_reason = QueueDrained`, hook + banner.
 
 `paused` is what `pause` produces: no new claims, existing lanes run to their
@@ -1853,3 +1862,14 @@ than a second policy copy. The program is not accepted by browser coverage
 alone: SH-473 remains open until a deployed main-branch engine is recorded
 claiming, dispatching, merging, and closing a real story without operator
 keystrokes.
+
+### SH-542 — exact pane identity and real quarantine continuation
+
+Dispatch's `%pane-id` is the liveness authority; legacy rows use a fully
+qualified session/window target. A hard stop is first written to the story and
+the run's bounded three-record series, then its lane is reusable below the
+breaker threshold. Dispatch refusals enter the same accounting immediately and
+cannot masquerade as queue drain. Restart, pause, and halt retain live lane
+evidence; drain releases stopped lanes so it can finish. Engine-status JSON and
+the dashboard read the run history, so three sequential failures in one lane
+still explain a breaker halt after reload.

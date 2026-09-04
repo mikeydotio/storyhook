@@ -310,6 +310,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // lanes fall back to an exact session-qualified window target.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 28,
+        name: "engine_recent_quarantines",
+        sql: include_str!("schema/0028_engine_recent_quarantines.sql"),
+        // One validated JSON column added in place to operational state. The
+        // empty default preserves every existing run without inference.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
