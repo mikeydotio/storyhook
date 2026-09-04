@@ -24,10 +24,10 @@ use crate::domain::{Member, StateDef, StoryEvent, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
-    AttachmentBlobRow, EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord,
-    EngineRunState, EngineScope, FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord,
-    ProjectSettings, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
-    parse_priority, parse_superstate,
+    AttachmentBlobRow, EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord,
+    EngineRunRecord, EngineRunState, EngineScope, FeedEvent, PrLink, ProjectRecord,
+    ProjectRemoteRecord, ProjectSettings, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
+    StoryRow, StorySort, parse_priority, parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -230,7 +230,8 @@ pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreErr
 // ---------------------------------------------------------------------------
 
 const ENGINE_RUN_COLUMNS: &str = "id, project_slug, scope_kind, scope_story_id, lanes, agent, \
-    state, consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at";
+    state, consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at, \
+    recent_quarantines_json";
 
 #[derive(Debug)]
 struct RawEngineRun {
@@ -246,6 +247,7 @@ struct RawEngineRun {
     acknowledged_at: Option<String>,
     created_at: String,
     updated_at: String,
+    recent_quarantines_json: String,
 }
 
 fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
@@ -262,6 +264,7 @@ fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
         acknowledged_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+        recent_quarantines_json: row.get(12)?,
     })
 }
 
@@ -302,6 +305,9 @@ fn hydrate_engine_run(raw: RawEngineRun) -> Result<EngineRunRecord, StoreError> 
         consecutive_hard_stops: stored_u32(
             raw.consecutive_hard_stops,
             "engine_runs.consecutive_hard_stops",
+        )?,
+        recent_quarantines: serde_json::from_str::<Vec<EngineQuarantineRecord>>(
+            &raw.recent_quarantines_json,
         )?,
         stop_reason: raw.stop_reason,
         acknowledged_at: raw.acknowledged_at,
@@ -380,7 +386,7 @@ pub(super) fn engine_lanes(
             // names every field correctly and fills every one wrong).
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
                     dispatched_at, last_observed_at, outcome, outcome_detail, \
-                    last_progress_seq, last_progress_at \
+                    last_progress_seq, last_progress_at, pane_id \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -400,6 +406,7 @@ pub(super) fn engine_lanes(
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
             ))
         }),
         "reading engine lanes",
@@ -420,6 +427,7 @@ pub(super) fn engine_lanes(
                 outcome_detail,
                 last_progress_seq,
                 last_progress_at,
+                pane_id,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -429,6 +437,7 @@ pub(super) fn engine_lanes(
                     lane_index: stored_u32(lane_index, "engine_lanes.lane_index")?,
                     state,
                     story_id,
+                    pane_id,
                     window_name,
                     worktree_path,
                     dispatched_at,

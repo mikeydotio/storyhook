@@ -667,7 +667,7 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
     let fixture = ServiceFixture::new();
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -705,8 +705,8 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
     );
 }
 
-/// Row 2, wired: the agent set `awaiting`, so the lane is quarantined and its
-/// evidence preserved.
+/// Row 2, wired: the agent set `awaiting`, so the hard stop and its evidence
+/// are preserved even after the lane returns to service.
 ///
 /// This also covers the SH-120 relay rule for quarantine's own message:
 /// `quarantine_lane` must not overwrite the agent's own diagnosis with a
@@ -719,7 +719,7 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     let fixture = ServiceFixture::new();
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -733,15 +733,23 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
 
     assert_eq!(report.quarantined, [(0, HardStopKind::AgentBlocked)]);
     let lane = lane_at(&fixture, &run_id, 0);
-    assert_eq!(lane.state, EngineLaneState::Quarantined);
+    assert_eq!(lane.state, EngineLaneState::Idle);
     assert_eq!(lane.outcome.as_deref(), Some("agent-blocked"));
+    let quarantine = fixture
+        .store()
+        .read(|tx| tx.engine_run(&run_id))
+        .unwrap()
+        .unwrap()
+        .recent_quarantines
+        .pop()
+        .unwrap();
     assert_eq!(
-        lane.worktree_path.as_deref(),
+        quarantine.worktree_path.as_deref(),
         Some(format!("/tmp/wt/{story}").as_str()),
         "D11 preserves a stopped agent's worktree for a human to look at"
     );
     assert!(
-        lane.window_name.is_some(),
+        quarantine.window_name.is_some(),
         "the window name is diagnostic evidence and must survive quarantine"
     );
     let awaiting = fixture
@@ -780,7 +788,7 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
 fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -803,6 +811,119 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
     );
 }
 
+/// D10 is a continuation policy, not only a counter: below the breaker
+/// threshold the failed story keeps its diagnosis while the lane immediately
+/// takes the next ready story (SH-542).
+#[test]
+fn a_one_lane_run_continues_after_one_hard_stop() {
+    let fixture = ServiceFixture::new();
+    let failed = new_story(&fixture, "fails", &[]);
+    let next = new_story(&fixture, "continues", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{failed}"),
+            alive: false,
+        },
+        DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "pane": "%113",
+            "window_name": next,
+            "worktree_path": "/tmp/wt/next"
+        }))),
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &failed);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::WindowGone)]);
+    assert_eq!(report.filled, [(0, next.clone())]);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert_eq!(lane.story_id, Some(next));
+    assert_eq!(lane.pane_id.as_deref(), Some("%113"));
+    assert_eq!(streak(&fixture, &run_id), 1);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .awaiting
+            .is_some(),
+        "the failed story retains the durable quarantine diagnosis"
+    );
+}
+
+/// Reusing one lane must not erase the evidence the breaker needs to explain
+/// why its third consecutive hard stop halted the run.
+#[test]
+fn three_sequential_hard_stops_in_one_lane_halt_with_all_three_reasons() {
+    let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
+    let first = new_story(&fixture, "first", &[]);
+    let second = new_story(&fixture, "second", &[]);
+    let third = new_story(&fixture, "third", &[]);
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    occupy(&fixture, &run_id, 0, &first);
+
+    for (target, next, pane) in [
+        (format!("=fixture:=story-{first}"), &second, "%201"),
+        ("%201".to_string(), &third, "%202"),
+    ] {
+        let fake = FakeDispatcher::new([
+            DispatcherStep::WindowAlive {
+                window: target,
+                alive: false,
+            },
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
+                "ok": true,
+                "pane": pane,
+                "window_name": next,
+                "worktree_path": format!("/tmp/wt/{next}")
+            }))),
+        ]);
+        let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+        assert_eq!(report.filled, [(0, next.clone())]);
+    }
+
+    let final_stop = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "%202".into(),
+        alive: false,
+    }]);
+    let report = reconcile_at(&fixture, &final_stop, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.run_state, EngineRunState::Halted);
+    let run = fixture
+        .store()
+        .read(|tx| tx.engine_run(&run_id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.recent_quarantines.len(), 3);
+    assert_eq!(
+        run.recent_quarantines
+            .iter()
+            .map(|item| item.story_id.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some(first.as_str()),
+            Some(second.as_str()),
+            Some(third.as_str())
+        ]
+    );
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(third));
+
+    let halted = fired_engine_hooks(&fixture, "engine_run_halted");
+    assert_eq!(halted.len(), 1);
+    assert_eq!(
+        halted[0]["last_quarantine_reasons"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
 /// The precedence case, wired end to end: a finished agent whose pane exited
 /// is a COMPLETION, and must never be counted as a hard stop against the
 /// breaker that halts the run.
@@ -810,7 +931,7 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
 fn a_closed_story_with_a_dead_window_completes_rather_than_quarantining() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -851,7 +972,7 @@ fn a_closed_story_with_a_dead_window_completes_rather_than_quarantining() {
 fn a_verifying_story_holds_its_lane_without_quarantine_or_refill() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -901,7 +1022,7 @@ fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
     let ready = new_story(&fixture, "claim me", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{held}"),
+            window: format!("=fixture:=story-{held}"),
             alive: false,
         },
         DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
@@ -931,7 +1052,7 @@ fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
 fn a_verified_story_that_closes_frees_its_lane() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -948,7 +1069,7 @@ fn a_verified_story_that_closes_frees_its_lane() {
         .set_state(&story, "done", None, None, None)
         .unwrap();
     let fake2 = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true, // irrelevant -- `story_closed` short-circuits before this matters
     }]);
     let report = reconcile_at(&fixture, &fake2, &run_id, FIXTURE_NOW);
@@ -987,17 +1108,35 @@ fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
         "a dispatch refusal must not be reported as WindowGone"
     );
     let lane = lane_at(&fixture, &run_id, 0);
-    assert_eq!(lane.state, EngineLaneState::Quarantined);
+    assert_eq!(lane.state, EngineLaneState::Idle);
     assert_eq!(
         lane.outcome.as_deref(),
         Some("dispatch-refused"),
         "the report and the lane's own stored outcome must spell the same event"
     );
-    assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(lane.outcome_detail.as_deref(), Some(story.as_str()));
+    assert_eq!(streak(&fixture, &run_id), 1);
+    assert_eq!(report.run_state, EngineRunState::Running);
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_run(&run_id))
+            .unwrap()
+            .unwrap()
+            .recent_quarantines
+            .len(),
+        1
+    );
+    let awaiting = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .awaiting
+        .expect("a refused dispatch leaves its diagnosis on the claimed story");
+    assert!(awaiting.contains("worktree already exists"), "{awaiting}");
 
-    // `fill_idle_lanes` quarantines this inline rather than calling
-    // `quarantine_lane` — proving the hook fires from that second producer
-    // too, not just the taxonomy-driven path (SH-472).
+    // A refusal is a full hard-stop producer, including the hook.
     let quarantined_hooks = fired_engine_hooks(&fixture, "engine_lane_quarantined");
     assert_eq!(
         quarantined_hooks.len(),
@@ -1008,6 +1147,104 @@ fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
     assert_eq!(payload["kind"], "dispatch-refused");
     assert_eq!(payload["story_id"], story);
     assert_eq!(payload["reason"], "worktree already exists");
+}
+
+/// Graceful drain must not wait forever on a quarantined lane: no agent is
+/// still running there, and the story already owns the durable diagnosis.
+#[test]
+fn a_draining_run_clears_a_hard_stopped_lane_and_finishes() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "lane work", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    EngineService::new(&fixture.ctx(), &fake)
+        .stop(&run_id, false)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::WindowGone)]);
+    assert_eq!(report.run_state, EngineRunState::Finished);
+    assert_eq!(lane_at(&fixture, &run_id, 0).state, EngineLaneState::Idle);
+}
+
+/// Pause preserves a stopped lane for inspection; resume makes the next
+/// steady pass release it and continue with queued work.
+#[test]
+fn a_paused_quarantine_is_preserved_until_resume() {
+    let fixture = ServiceFixture::new();
+    let failed = new_story(&fixture, "failed", &[]);
+    let next = new_story(&fixture, "next", &[]);
+    let stopped = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{failed}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &stopped, 1);
+    occupy(&fixture, &run_id, 0, &failed);
+    EngineService::new(&fixture.ctx(), &stopped)
+        .pause(&run_id)
+        .unwrap();
+
+    let paused = reconcile_at(&fixture, &stopped, &run_id, FIXTURE_NOW);
+    assert_eq!(paused.run_state, EngineRunState::Paused);
+    assert_eq!(
+        lane_at(&fixture, &run_id, 0).state,
+        EngineLaneState::Quarantined
+    );
+
+    EngineService::new(&fixture.ctx(), &FakeDispatcher::default())
+        .resume(&run_id)
+        .unwrap();
+    let resumed = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({
+            "ok": true,
+            "pane": "%301",
+            "window_name": next,
+            "worktree_path": "/tmp/wt/next"
+        }),
+    ))]);
+    let report = reconcile_at(&fixture, &resumed, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.filled, [(0, next.clone())]);
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(next));
+}
+
+/// A helper refusal is a hard stop at dispatch time, so three sequential
+/// refusals trip the same breaker without needing a later observation pass.
+#[test]
+fn three_dispatch_refusals_halt_immediately_on_the_third() {
+    let fixture = ServiceFixture::new();
+    for title in ["first", "second", "third"] {
+        new_story(&fixture, title, &[]);
+    }
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+
+    for expected in 1..=3 {
+        let refused = FakeDispatcher::new([DispatcherStep::Dispatch(
+            DispatchOutcome::from_payload(serde_json::json!({
+                "ok": false,
+                "display": format!("refusal {expected}")
+            })),
+        )]);
+        let report = reconcile_at(&fixture, &refused, &run_id, FIXTURE_NOW);
+        assert_eq!(streak(&fixture, &run_id), expected);
+        assert_eq!(
+            report.run_state,
+            if expected == 3 {
+                EngineRunState::Halted
+            } else {
+                EngineRunState::Running
+            }
+        );
+    }
+
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Quarantined);
+    assert_eq!(lane.outcome.as_deref(), Some("dispatch-refused"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,15 +1259,15 @@ fn three_consecutive_hard_stops_halt_the_run_and_stop_it_claiming() {
     record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-3".into(),
+            window: "=fixture:=story-SH-3".into(),
             alive: false,
         },
     ]);
@@ -1097,16 +1334,17 @@ fn two_hard_stops_leave_the_run_running() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
     ]);
     let a = new_story(&fixture, "a", &[]);
     let b = new_story(&fixture, "b", &[]);
+    let _human = new_story(&fixture, "human", &["no-auto"]);
     let run_id = started_run(&fixture, &fake, 2);
     occupy(&fixture, &run_id, 0, &a);
     occupy(&fixture, &run_id, 1, &b);
@@ -1132,14 +1370,15 @@ fn a_completion_zeroes_an_existing_streak_so_the_breaker_never_trips() {
     let fixture = ServiceFixture::new();
     let a = new_story(&fixture, "a", &[]);
     let b = new_story(&fixture, "b", &[]);
+    let _human = new_story(&fixture, "human", &["no-auto"]);
     let fake = FakeDispatcher::new([
         // Pass 1: two dead windows -> streak 2, one short of the breaker.
         DispatcherStep::WindowAlive {
-            window: format!("story-{a}"),
+            window: format!("=fixture:=story-{a}"),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{b}"),
+            window: format!("=fixture:=story-{b}"),
             alive: false,
         },
     ]);
@@ -1160,7 +1399,7 @@ fn a_completion_zeroes_an_existing_streak_so_the_breaker_never_trips() {
     // streak would stay at 2 and the very next hard stop would halt the run.
     let c = new_story(&fixture, "c", &[]);
     let fake2 = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: format!("story-{c}"),
+        window: format!("=fixture:=story-{c}"),
         alive: true,
     }]);
     occupy(&fixture, &run_id, 0, &c);
@@ -1177,6 +1416,16 @@ fn a_completion_zeroes_an_existing_streak_so_the_breaker_never_trips() {
         "a completion must zero an EXISTING streak, not merely fail to add to it"
     );
     assert_eq!(second.run_state, EngineRunState::Running);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_run(&run_id))
+            .unwrap()
+            .unwrap()
+            .recent_quarantines
+            .is_empty(),
+        "a completion starts a new consecutive series"
+    );
 }
 
 /// The run's current consecutive-hard-stop count.
@@ -1293,7 +1542,7 @@ fn a_draining_run_still_finishes_once_its_lane_clears_despite_a_parked_no_auto_s
     let _parked = new_story(&fixture, "human work", &["no-auto"]);
     let working = new_story(&fixture, "in flight", &[]);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: format!("story-{working}"),
+        window: format!("=fixture:=story-{working}"),
         alive: true,
     }]);
     let run_id = started_run(&fixture, &fake, 1);
@@ -1332,6 +1581,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
         serde_json::json!({
             "ok": true,
+            "pane": "%112",
             "window_name": "SH-1",
             "worktree_path": "/tmp/wt/SH-1"
         }),
@@ -1344,6 +1594,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     let lane = lane_at(&fixture, &run_id, 0);
     assert_eq!(lane.state, EngineLaneState::Working);
     assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(lane.pane_id.as_deref(), Some("%112"));
     assert_eq!(lane.window_name.as_deref(), Some("SH-1"));
     assert_eq!(lane.worktree_path.as_deref(), Some("/tmp/wt/SH-1"));
     assert_eq!(
@@ -1361,6 +1612,34 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
     assert_eq!(state, "in-progress");
 }
 
+/// The helper returns the pane id that tmux guarantees is stable for the
+/// pane lifetime. Reconciliation must use it instead of heuristically
+/// resolving the human-readable window name (SH-542).
+#[test]
+fn a_dispatched_lane_is_observed_through_its_exact_pane_id() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "claim me", &[]);
+    let dispatch = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({
+            "ok": true,
+            "pane": "%112",
+            "window_name": "SH-1",
+            "worktree_path": "/tmp/wt/SH-1"
+        }),
+    ))]);
+    let run_id = started_run(&fixture, &dispatch, 1);
+    reconcile_at(&fixture, &dispatch, &run_id, FIXTURE_NOW);
+
+    let observer = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "%112".into(),
+        alive: true,
+    }]);
+    let report = reconcile_at(&fixture, &observer, &run_id, FIXTURE_NOW);
+
+    assert!(report.quarantined.is_empty());
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(story));
+}
+
 /// The stall row, wired: the seq has not moved and the ceiling has passed.
 ///
 /// Provoked by moving the CLOCK rather than by sleeping — a test that slept
@@ -1372,11 +1651,11 @@ fn a_lane_whose_story_has_not_moved_past_the_ceiling_is_quarantined_as_stalled()
     let story = new_story(&fixture, "quiet lane", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
     ]);
@@ -1413,11 +1692,11 @@ fn a_lane_whose_story_moved_is_not_stalled_however_long_the_clock_says() {
     let story = new_story(&fixture, "busy lane", &[]);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{story}"),
+            window: format!("=fixture:=story-{story}"),
             alive: true,
         },
     ]);
