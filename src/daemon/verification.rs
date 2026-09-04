@@ -140,6 +140,19 @@ impl ShellVerificationActuator {
             ))
         })?;
         if payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                let detail = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                };
+                return Err(AppError::Storage(format!(
+                    "story helper `{verb}` reported success but exited {}{detail}",
+                    output.status
+                )));
+            }
             return Ok(());
         }
         Err(AppError::Storage(
