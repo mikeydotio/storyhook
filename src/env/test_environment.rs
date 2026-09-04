@@ -225,6 +225,15 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
         reason: "the same, for the guard that stops an uninstalled build \
                  advancing the default store's schema",
     },
+    Parameter {
+        name: "STORYHOOK_VERIFIER_MIRROR",
+        disposition: Disposition::Literal("0"),
+        scope: Scope::Anywhere,
+        reason: "the developer's own tmux server, on which the centralized \
+                 verifier's live-observability mirror otherwise creates a \
+                 fixed session and window and leaves a follower process \
+                 running",
+    },
 ];
 
 impl Parameter {

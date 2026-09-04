@@ -1605,6 +1605,68 @@ checklist ships with pass/fail/status words and elapsed time only; a quoted
 note is a follow-up, not a defect, since nothing in the story's own
 acceptance example required it.
 
+### SH-545 — verifier observability (a tmux mirror, not a second execution path)
+
+SH-524's checklist answers "how far along is this candidate," but not "what
+is `make test` printing right now" — the one artifact that already grows
+incrementally (`verify-pr.sh`'s own `>"$log" 2>&1` redirect around the gate
+leg) had no reader until an operator went looking for the path by hand. A
+`/council-vote` (three seats: software-architect, observability-engineer,
+security-researcher; verdict recorded on the story, per this project's own
+rule that a council's own working directory does not survive worktree
+teardown) settled two questions this section states as decided rather than
+open:
+
+- **The verifier's own process boundary is untouched.**
+  `ShellVerificationActuator::verify`'s `Command::output()` call and its
+  JSON-on-stdout contract are exactly as SH-521 left them. Executing
+  `verify-pr.sh` itself as a tmux pane's foreground process was considered
+  and rejected: it would require reconstructing
+  `apply_verification_allowlist`'s sanitized environment through a single
+  tmux shell-command string — the exact quoting-hazard shape SH-493's
+  `/Users/Ada Lovelace` incident already cost this project once — and would
+  invent a new completion/timeout policy on the correctness-critical merge
+  path where none exists today (a separate, filed gap: `story show
+  SH-547`).
+- **The mirror is a fixed session on tmux's *default* server, never a
+  candidate's own dispatch socket.** `VerificationCandidate.cleanup_lease`
+  carries the exact tmux socket a story was dispatched on
+  (`StoryCleanupLease.tmux.socket_path`), and addressing it directly was
+  the council's own leading design for two rounds — until ranked-choice
+  deliberation converged, unanimously, on the opposite: verification is
+  strictly serial (D4), so a per-candidate socket relocates a human's
+  attach point to a different tmux server every time verification advances
+  to the next candidate, defeating the point of checking in on a possibly-
+  hung run. A single fixed `storyhook-verifier` session/`verification`
+  window, reused across every candidate and every project sharing one
+  daemon, gives one stable place to look — and, structurally rather than
+  by naming convention alone, keeps `plugins/story/bin/story.sh`'s leased
+  `reap` (which kills any window named after the story id on *that*
+  story's own socket) unable to reach it regardless of what the window is
+  named.
+
+**What shipped.** `scripts/verify-window.sh`, sourced by `verify-pr.sh` in
+the identical source-if-present/no-op-fallback shape `gate-progress.sh`
+already established, offers two entry points: `verifier_window_banner
+<text>` (a static line, for phases that write no log — PR metadata,
+preflight, land, and the preflight-*reused* cached-green path, which
+streams nothing at all and says so explicitly rather than looking broken
+on the fastest, most common runs) and `verifier_window_tail <log-path>`
+(a genuine `tail -F` read of the gate's own log file once the release-gate
+leg starts). Every path or text a caller supplies reaches tmux as its own
+argv element — multi-word `respawn-pane`, or a literal `bash -c` script's
+own `$1` positional parameter — never interpolated into a shell-command
+string, verified empirically (not merely reasoned about) against tmux 3.7c
+with a path containing a space and text containing an apostrophe, backtick,
+and `$(...)` substitution. This is why the mirror needed no Rust-side
+`Command::new` at all: every tmux call lives in shell, so
+`tests/spawn_inventory.rs`'s classified inventory is unchanged. The kill
+switch (`STORYHOOK_VERIFIER_MIRROR=0`) ships in
+`storyhook::env::test_environment::TEST_ENVIRONMENT` alongside every other
+variable that stops a storyhook process reaching a developer's own real
+state, so every isolating harness gets it for free the same way it already
+gets the rest of that table.
+
 ### SH-466 — restart reconciliation
 
 **What shipped.** `HardStopKind::Interrupted` finally has a producer.
