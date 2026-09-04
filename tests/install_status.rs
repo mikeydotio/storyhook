@@ -18,6 +18,38 @@ fn text(out: &Output) -> String {
     )
 }
 
+fn report_for_codex_source(source: Option<&str>) -> String {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let source = source.map(str::to_string).unwrap_or_else(|| {
+        env.data_dir()
+            .join("plugins")
+            .join(env!("CARGO_PKG_VERSION"))
+            .display()
+            .to_string()
+    });
+    std::fs::create_dir_all(env.home().join(".codex")).unwrap();
+    std::fs::write(
+        env.home().join(".codex/config.toml"),
+        format!(
+            "[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"
+        ),
+    )
+    .unwrap();
+    text(
+        &env.story(project.path())
+            .args(["doctor", "install"])
+            .output()
+            .expect("running `story doctor install`"),
+    )
+}
+
+#[test]
+fn codex_multiline_marketplace_source_is_detected() {
+    let report = report_for_codex_source(Some("/Volumes/Code/storyhook"));
+    assert!(report.contains("CHECKOUT"), "{report}");
+}
+
 #[test]
 fn it_reports_the_installed_set_on_an_ordinary_machine() {
     let env = TestEnv::isolated();

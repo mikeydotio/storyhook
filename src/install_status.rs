@@ -170,11 +170,14 @@ fn provider_row(label: &'static str, config: &Path, needle: &str) -> Row {
     let Ok(body) = std::fs::read_to_string(config) else {
         return Row::flagged(label, "unknown", "its configuration could not be read");
     };
-    let Some(line) = body
-        .lines()
-        .find(|line| line.contains(needle) && line.contains("source"))
-    else {
+    let mut lines = body.lines();
+    let Some(anchor) = lines.find(|line| line.contains(needle)) else {
         return Row::ok(label, "not registered");
+    };
+    let Some(line) = std::iter::once(anchor).chain(lines).find(|line| {
+        line.contains("source") && !line.contains("source_type")
+    }) else {
+        return Row::flagged(label, "unknown", "its registered source was not recorded");
     };
     let source = line.trim().to_string();
     // A source that names a filesystem path is a checkout, which is the defect
