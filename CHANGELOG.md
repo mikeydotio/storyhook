@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [v2.2.1-beta.4] - 2026-09-03
+## [v2.3.0] - 2026-09-03
 
 ### Fixed
 - require helper success exits (SH-473) (54742da)
