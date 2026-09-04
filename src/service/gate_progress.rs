@@ -124,11 +124,11 @@ impl ItemStatus {
 pub struct Counts {
     pub passed: u32,
     pub failed: u32,
-    /// A denominator a producer already knew synchronously — `plugins/story/
-    /// tests/run-tests.sh`'s file count, `scripts/run-e2e.sh`'s Playwright
-    /// `--list` count. `None` means the only available denominator is
-    /// however many cases have been *seen* so far, which is an ESTIMATE
-    /// until the item reaches a terminal status.
+    /// A denominator a producer already knew synchronously — the Rust and
+    /// Playwright harnesses' `--list` counts or the plugin runner's file
+    /// count. `None` means the producer omitted its plan, so the only
+    /// available denominator is however many cases have been *seen* so far;
+    /// that compatibility fallback is estimated until the item terminates.
     pub explicit_total: Option<u32>,
 }
 
