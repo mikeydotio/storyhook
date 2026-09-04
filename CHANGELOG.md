@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.3.1] - 2026-09-03
+
+### Fixed
+- reap completed-story windows by name (SH-473) (7d796813)
+
+### Changed
+- Merge pull request #617 from mikeydotio/fix/SH-473-tmux-server-generation (a080521c)
+
+### Testing
+- reproduce incomplete story-window reap (SH-473) (c6310b44)
+
 ## [v2.3.0] - 2026-09-03
 
 ### Fixed
