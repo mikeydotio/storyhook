@@ -212,12 +212,11 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: surface Full Auto halt and drain outcomes as durable dashboard
-  alerts that remain until the operator acknowledges each run.
-- Next: reconcile Full Auto lane accounting so `verifying` is an intentional
+- Current: reconcile Full Auto lane accounting so `verifying` is an intentional
   handoff, not a stall or dead-window failure.
-- Later: expose queue health and verification diagnostics in engine/dashboard
+- Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
+- Later: harden provider UI automation against future approval-contract drift.
 "#,
         done_state = done_state,
         prefix = prefix,
