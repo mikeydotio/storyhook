@@ -25,8 +25,8 @@ use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::store::ids::GlobalSeq;
 use crate::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineRunState, EngineScope,
-    ReadOps, Store, StoreError, WriteOps,
+    EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
+    EngineRunState, EngineScope, ReadOps, Store, StoreError, WriteOps,
 };
 
 use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story};
@@ -644,6 +644,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 agent: request.agent,
                 state: EngineRunState::Running,
                 consecutive_hard_stops: 0,
+                recent_quarantines: Vec::new(),
                 stop_reason: None,
                 acknowledged_at: None,
                 created_at: now.clone(),
@@ -842,6 +843,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let observed = self.observe_lanes(&slug, run_id, pass)?;
 
         // ---- apply: free completions, hold handoffs, quarantine hard stops
+        let mut hard_stops = Vec::new();
         for (lane, classification, observation) in observed {
             match classification {
                 LaneClassification::Progressing => {
@@ -862,12 +864,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }
                 LaneClassification::HardStop(kind) => {
                     report.quarantined.push((lane.lane_index, kind));
-                    self.quarantine_lane(
+                    hard_stops.push(self.quarantine_lane(
                         run_id,
                         &lane,
                         kind,
                         observation.awaiting_reason.as_deref(),
-                    )?;
+                    )?);
                 }
             }
         }
@@ -877,7 +879,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         // Applied AFTER every lane is classified so one pass that both
         // completes and fails is scored once, in a defined order, rather than
         // depending on lane index.
-        let view = self.apply_breaker(run_id, &report)?;
+        let view = self.apply_breaker(run_id, report.completed.len(), &hard_stops)?;
         report.run_state = view.run.state;
         report.stop_reason = view.run.stop_reason.clone();
         if view.run.state != EngineRunState::Running {
@@ -885,6 +887,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             // run whose last lane just freed still needs the terminal check
             // below, so fall through to it rather than returning here.
             if view.run.state == EngineRunState::Draining {
+                self.clear_quarantined_lanes(run_id)?;
                 let view = self.finish_if_drained(run_id, QUEUE_DRAINED)?;
                 report.run_state = view.run.state;
                 report.stop_reason = view.run.stop_reason.clone();
@@ -901,8 +904,24 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             return Ok(report);
         }
 
+        // Below the breaker threshold, the story and run own the durable
+        // diagnosis; the lane returns to the dispatch pool (D10).
+        self.clear_quarantined_lanes(run_id)?;
+
         // ---- fill ---------------------------------------------------------
-        self.fill_idle_lanes(&slug, run_id, &mut report)?;
+        let dispatch_stops = self.fill_idle_lanes(&slug, run_id, &mut report)?;
+        if !dispatch_stops.is_empty() {
+            let view = self.apply_breaker(run_id, 0, &dispatch_stops)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason.clone();
+            if view.run.state == EngineRunState::Running {
+                self.clear_quarantined_lanes(run_id)?;
+            }
+            // A refused dispatch ended this fill attempt. Even after its lane
+            // is released, an empty `filled` list is not evidence that the
+            // queue drained; the next wake may claim the next story.
+            return Ok(report);
+        }
 
         // ---- terminate ----------------------------------------------------
         // Nothing claimable and every lane idle. Checked after filling, so a
@@ -954,9 +973,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         for (lane, row) in facts {
             // The window probe is a subprocess, so it runs outside the read.
             let window_alive = lane
-                .window_name
+                .pane_id
                 .as_deref()
-                .is_some_and(|window| self.dispatcher.window_alive(window));
+                .filter(|pane| valid_pane_id(pane))
+                .map(str::to_string)
+                .or_else(|| {
+                    lane.window_name
+                        .as_deref()
+                        .map(|window| exact_window_target(slug, window))
+                })
+                .is_some_and(|target| self.dispatcher.window_alive(&target));
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             let observation = LaneObservation {
                 story_closed: row
@@ -1053,7 +1079,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         lane: &EngineLaneRecord,
         kind: HardStopKind,
         existing_reason: Option<&str>,
-    ) -> Result<(), AppError> {
+    ) -> Result<EngineQuarantineRecord, AppError> {
         let observed_at = self.ctx.now();
         let mut fired_reason = None;
         if let Some(story) = lane.story_id.as_deref() {
@@ -1079,7 +1105,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         }
         let mut quarantined = lane.clone();
         quarantined.state = EngineLaneState::Quarantined;
-        quarantined.last_observed_at = observed_at;
+        quarantined.last_observed_at = observed_at.clone();
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
         self.ctx
@@ -1094,7 +1120,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             lane.window_name.as_deref(),
             lane.worktree_path.as_deref(),
         );
-        Ok(())
+        Ok(EngineQuarantineRecord {
+            lane_index: lane.lane_index,
+            story_id: lane.story_id.clone(),
+            kind: kind.as_str().to_string(),
+            detail: fired_reason,
+            pane_id: lane.pane_id.clone(),
+            window_name: lane.window_name.clone(),
+            worktree_path: lane.worktree_path.clone(),
+            observed_at,
+        })
     }
 
     /// Fires the `engine_lane_quarantined` hook for a lane just quarantined
@@ -1135,9 +1170,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     /// Applies this pass's completions and hard stops to the breaker.
-    fn apply_breaker(&self, run_id: &RunId, report: &ReconcileReport) -> Result<RunView, AppError> {
-        let completions = report.completed.len();
-        let hard_stops = report.quarantined.len();
+    fn apply_breaker(
+        &self,
+        run_id: &RunId,
+        completions: usize,
+        hard_stops: &[EngineQuarantineRecord],
+    ) -> Result<RunView, AppError> {
         // Set only on the pass that actually flips Running -> Halted, never
         // on a later pass over an already-halted run (whose own lanes may
         // still individually hard-stop afterward, incrementing the streak
@@ -1148,8 +1186,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let view = self.transition(run_id, |run, _| {
             if completions > 0 {
                 run.consecutive_hard_stops = 0;
+                run.recent_quarantines.clear();
             }
-            run.consecutive_hard_stops += u32::try_from(hard_stops).unwrap_or(u32::MAX);
+            run.consecutive_hard_stops += u32::try_from(hard_stops.len()).unwrap_or(u32::MAX);
+            run.recent_quarantines.extend_from_slice(hard_stops);
+            if run.recent_quarantines.len() > HARD_STOP_BREAKER as usize {
+                let excess = run.recent_quarantines.len() - HARD_STOP_BREAKER as usize;
+                run.recent_quarantines.drain(..excess);
+            }
             if run.consecutive_hard_stops >= HARD_STOP_BREAKER
                 && run.state == EngineRunState::Running
             {
@@ -1169,28 +1213,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// Fires the `engine_run_halted` hook once the breaker has actually
     /// tripped and that halt has committed (SH-472).
     ///
-    /// The "last three quarantine reasons" the story asks for are read back
-    /// from the freshly-committed lane rows rather than only this pass's own
-    /// `ReconcileReport`, because the three hard stops the breaker counted
-    /// may have accumulated one at a time across several earlier passes —
-    /// the report only carries what changed on *this* pass. The sort mirrors
-    /// the dashboard's own `lastEngineQuarantines`
-    /// (`src/web_dashboard.html`): most-recently-observed first, lane index
-    /// as the tiebreak for a simultaneous observation.
+    /// The "last three quarantine reasons" come from the run's bounded,
+    /// durable consecutive series. A lane may already have returned to work,
+    /// so its current row cannot be the authority for earlier failures.
     fn fire_run_halted_hook(&self, run_id: &RunId, view: &RunView) {
-        let mut quarantined: Vec<&EngineLaneRecord> = view
-            .lanes
+        let reasons: Vec<String> = view
+            .run
+            .recent_quarantines
             .iter()
-            .filter(|lane| lane.state == EngineLaneState::Quarantined)
-            .collect();
-        quarantined.sort_by(|a, b| {
-            b.last_observed_at
-                .cmp(&a.last_observed_at)
-                .then(b.lane_index.cmp(&a.lane_index))
-        });
-        quarantined.truncate(3);
-        let reasons: Vec<String> = quarantined
-            .into_iter()
+            .rev()
             .map(quarantine_reason_line)
             .collect();
         self.ctx.fire_hook(
@@ -1215,7 +1246,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         slug: &str,
         run_id: &RunId,
         report: &mut ReconcileReport,
-    ) -> Result<(), AppError> {
+    ) -> Result<Vec<EngineQuarantineRecord>, AppError> {
+        let mut hard_stops = Vec::new();
         let view = self.one_view(run_id)?;
         let scope_epic = match &view.run.scope {
             EngineScope::Epic(id) => Some(id.clone()),
@@ -1266,6 +1298,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 DispatchOutcomeState::Ok => {
                     let mut live = working.clone();
                     live.state = EngineLaneState::Working;
+                    live.pane_id = outcome
+                        .payload
+                        .get("pane")
+                        .and_then(|v| v.as_str())
+                        .filter(|pane| valid_pane_id(pane))
+                        .map(str::to_string);
                     live.window_name = outcome
                         .payload
                         .get("window_name")
@@ -1293,7 +1331,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     let mut stuck = working.clone();
                     stuck.state = EngineLaneState::Quarantined;
                     stuck.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
-                    stuck.outcome_detail = Some(helper_diagnosis(&outcome.payload));
+                    let diagnosis = helper_diagnosis(&outcome.payload);
+                    super::StoryService::new(self.ctx).set_awaiting(&story, &diagnosis)?;
+                    stuck.outcome_detail = Some(story.clone());
                     self.ctx.store().write(|tx| tx.put_engine_lane(&stuck))?;
                     // This branch quarantines inline rather than calling
                     // `quarantine_lane` (the story is freshly claimed here,
@@ -1305,18 +1345,28 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         lane.lane_index,
                         Some(story.as_str()),
                         HardStopKind::DispatchRefused,
-                        stuck.outcome_detail.as_deref(),
+                        Some(&diagnosis),
                         None,
                         None,
                     );
                     report
                         .quarantined
                         .push((lane.lane_index, HardStopKind::DispatchRefused));
+                    hard_stops.push(EngineQuarantineRecord {
+                        lane_index: lane.lane_index,
+                        story_id: Some(story),
+                        kind: HardStopKind::DispatchRefused.as_str().to_string(),
+                        detail: Some(diagnosis),
+                        pane_id: None,
+                        window_name: None,
+                        worktree_path: None,
+                        observed_at: dispatched_at,
+                    });
                     break;
                 }
             }
         }
-        Ok(())
+        Ok(hard_stops)
     }
 
     /// Ends a run whose lanes are all idle.
@@ -1491,6 +1541,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         Ok(())
     }
 
+    fn clear_quarantined_lanes(&self, run_id: &RunId) -> Result<(), AppError> {
+        let lanes = self.ctx.store().read(|tx| tx.engine_lanes(run_id))?;
+        for lane in lanes
+            .iter()
+            .filter(|lane| lane.state == EngineLaneState::Quarantined)
+        {
+            self.clear_quarantined_lane(lane)?;
+        }
+        Ok(())
+    }
+
     fn transition(
         &self,
         run_id: &RunId,
@@ -1573,6 +1634,7 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         lane_index,
         state: EngineLaneState::Idle,
         story_id: None,
+        pane_id: None,
         window_name: None,
         worktree_path: None,
         cleanup_lease: None,
@@ -1585,6 +1647,16 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     }
 }
 
+fn valid_pane_id(value: &str) -> bool {
+    value.strip_prefix('%').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn exact_window_target(session: &str, window: &str) -> String {
+    format!("={session}:={window}")
+}
+
 /// One human-readable line for a quarantined lane, for the
 /// `engine_run_halted` hook's `last_quarantine_reasons` (SH-472).
 ///
@@ -1594,14 +1666,14 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
 /// `outcome_detail` *is* the story id) versus a `DispatchRefused` quarantine
 /// (where it is the helper's own diagnosis text instead) — so the two stay
 /// in visual agreement rather than drifting on their own formatting rules.
-fn quarantine_reason_line(lane: &EngineLaneRecord) -> String {
-    let story = lane.story_id.as_deref().unwrap_or("no story");
-    let kind = lane.outcome.as_deref().unwrap_or("unknown");
-    match lane.outcome_detail.as_deref() {
+fn quarantine_reason_line(item: &EngineQuarantineRecord) -> String {
+    let story = item.story_id.as_deref().unwrap_or("no story");
+    let kind = &item.kind;
+    match item.detail.as_deref() {
         Some(detail) if detail != story => {
-            format!("lane {} ({story}): {kind} — {detail}", lane.lane_index)
+            format!("lane {} ({story}): {kind} — {detail}", item.lane_index)
         }
-        _ => format!("lane {} ({story}): {kind}", lane.lane_index),
+        _ => format!("lane {} ({story}): {kind}", item.lane_index),
     }
 }
 

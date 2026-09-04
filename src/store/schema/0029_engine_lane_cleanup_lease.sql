@@ -1,4 +1,4 @@
--- storyhook store — schema version 27: Full Auto lanes retain the immutable
+-- storyhook store — schema version 29: Full Auto lanes retain the immutable
 -- resource identity returned by dispatch (SH-539).
 --
 -- Existing rows stay NULL. Absence is not inferred: an upgraded daemon must

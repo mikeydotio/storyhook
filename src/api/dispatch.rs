@@ -1532,8 +1532,9 @@ pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 4;
 ///    since the marketplace installs to a version-scoped cache directory
 ///    that is not otherwise discoverable.
 /// 3. A dev checkout's own copy, via [`crate::plugin::dev_repo_root`] — the
-///    same lookup `story plugin install` uses to prefer a local checkout
-///    over the published one.
+///    explicit fallback for an uninstalled development build. `story plugin
+///    install` never uses this path; it registers the marketplace embedded in
+///    the binary.
 ///
 /// Deliberately does not check that `bash`, `jq`, `git` or `tmux` are on
 /// PATH: those are the *script's* dependencies, and its own `set -euo

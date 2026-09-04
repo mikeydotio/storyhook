@@ -391,6 +391,7 @@ impl ManifestFixture {
     fn run_build_script(&self, extra_env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new(compiled_build_rs());
         cmd.env("CARGO_MANIFEST_DIR", self.path())
+            .env_remove("OUT_DIR")
             .env_remove("STORYHOOK_BUILD_ID");
         for (k, v) in extra_env {
             cmd.env(k, v);

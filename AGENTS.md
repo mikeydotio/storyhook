@@ -193,4 +193,4 @@ project it is looking at.
   receipts for SH-539.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: add operator recovery actions for surfaced verification failures.
+- Later: harden remaining Full Auto recovery and cleanup ownership boundaries.

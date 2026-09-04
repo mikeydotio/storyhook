@@ -192,10 +192,10 @@ fn second_project_run(fixture: &ServiceFixture, slug: &str, prefix: &str) -> Str
     run_id
 }
 
-/// `reconcile_tick` quarantines an interrupted-looking lane `WindowGone`
-/// through the REAL dispatcher — proving script resolution, `Ctx`
-/// construction and `EngineService::reconcile` are wired together
-/// correctly, not just individually correct.
+/// `reconcile_tick` records an interrupted-looking lane as `WindowGone`
+/// through the REAL dispatcher, then releases it below the breaker threshold.
+/// This proves script resolution, `Ctx` construction and the continuation
+/// policy are wired together, not just individually correct.
 #[test]
 fn reconcile_tick_quarantines_a_dead_window_through_the_real_dispatcher() {
     with_fake_dispatch_script(|| {
@@ -207,10 +207,20 @@ fn reconcile_tick_quarantines_a_dead_window_through_the_real_dispatcher() {
         reconcile_tick(fixture.store(), fixture.env());
 
         let lane = lane_at(&fixture, &run_id, 0);
-        assert_eq!(lane.state, EngineLaneState::Quarantined);
+        assert_eq!(lane.state, EngineLaneState::Idle);
         assert_eq!(
             lane.outcome.as_deref(),
             Some(HardStopKind::WindowGone.as_str())
+        );
+        let run = fixture
+            .store()
+            .read(|tx| tx.engine_run(&run_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.recent_quarantines.len(), 1);
+        assert_eq!(
+            run.recent_quarantines[0].story_id.as_deref(),
+            Some(story.as_str())
         );
     });
 }

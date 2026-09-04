@@ -3562,14 +3562,14 @@ fn migration_twenty_five_inserts_verifying_before_required_blocked() {
 }
 
 // ---------------------------------------------------------------------------
-// Migration 27: engine lanes retain exact cleanup identity (SH-539)
+// Migration 29: engine lanes retain exact cleanup identity (SH-539)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migration_twenty_seven_adds_a_nullable_cleanup_lease_without_rewriting_lanes() {
+fn migration_twenty_nine_adds_a_nullable_cleanup_lease_without_rewriting_lanes() {
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
-    store.migrate_with(&migrate::MIGRATIONS[..26]).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..28]).unwrap();
     let conn = Connection::open(store.path()).unwrap();
     conn.execute_batch(
         "INSERT INTO engine_runs
@@ -3590,7 +3590,7 @@ fn migration_twenty_seven_adds_a_nullable_cleanup_lease_without_rewriting_lanes(
     .unwrap();
     drop(conn);
 
-    store.migrate_with(&migrate::MIGRATIONS[..27]).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..29]).unwrap();
 
     let conn = Connection::open(store.path()).unwrap();
     let lease: Option<String> = conn

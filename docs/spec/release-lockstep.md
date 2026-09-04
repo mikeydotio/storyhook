@@ -107,6 +107,41 @@ to try … work that needs its own design review":
 | a `PreToolUse` hook refusing edits to the *installed* copy | the plugin payload travelling inside the binary |
 | `story doctor install` — the installed set, and what is pending | tightening `migration_guard` once a beta channel exists to recover through |
 
+## As built: the plugin is part of the binary release
+
+SH-538 closed the plugin-distribution row above by making the marketplace a
+compile-time payload of `story`. `build.rs` generates an `include_bytes!` table
+for both provider marketplace manifests and every regular file beneath
+`plugins/story`, including whether each file is executable. A build refuses a
+symlink, special file or unsafe relative path: a release binary without the
+complete marketplace it promises is not a valid artifact.
+
+`story plugin install <provider>` materializes those exact bytes under
+`<storyhook-data>/plugins/<crate-version>/`. An installer lock serializes
+concurrent materialization attempts; a same-parent staged directory is
+verified before rename, an exact existing tree is reused, and a damaged
+same-version tree is replaced with rollback if publication fails. The edit
+guard records the stable
+`<storyhook-data>/plugins` parent so retained older projections remain
+installer-owned and immutable too.
+
+Both provider registrations keep the stable `story@storyhook` identity, but
+their source is replaced: plugin, then marketplace, are removed idempotently
+before the versioned release projection is registered and installed. This
+order is necessary because neither provider promises that adding an existing
+marketplace name changes its source. The Codex launcher and sandbox rule remain
+unversioned; they still resolve the provider's exact enabled cache version at
+call time. The local release workflow delegates to the newly installed
+binary's `story plugin install claude` instead of registering its checkout.
+
+This deliberately chooses binary/plugin lockstep over plugin-only releases.
+The rejected fifth release asset would preserve independent plugin delivery,
+but adds a separately fallible artifact and a network fetch at install time;
+Claude's marketplace CLI cannot pin a repository source to a release ref, so a
+Git source cannot satisfy the shared contract. `story doctor install` reports
+the resulting states explicitly: current release projection, stale managed
+release, unpinned Git source, or checkout.
+
 ## Rules this establishes
 
 - **A refusal that leaves a tracker unopenable is a last resort, not a default.**
