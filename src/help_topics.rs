@@ -1596,6 +1596,9 @@ The last column, which is the point of the command:
                                    caller declared this about itself in
                                    $STORYHOOK_ACTOR.
 
+  web:new (web:user)               Interactive clients declare the person
+  set-state (tui:user)             using that surface as their actor.
+
   (unrecorded)                     Nothing was captured. Events written
                                    before storyhook recorded provenance,
                                    and events replayed by 'story migrate'
@@ -1614,6 +1617,10 @@ Declaring an actor:
   "something moved this story" and "dispatch rolled its claim back".
 
     STORYHOOK_ACTOR=story.sh:dispatch-rollback story move SH-1 todo
+
+  The dashboard and TUI declare `web:user` and `tui:user` themselves. Their
+  event-log entries therefore distinguish a person's action from an agent's
+  unlabelled command without requiring shell configuration.
 
   A label is at most 128 bytes and may not contain control characters.
   A bad one is REFUSED rather than cleaned up: the value is rendered into

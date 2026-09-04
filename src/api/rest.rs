@@ -35,7 +35,7 @@ use crate::api::http::{
 };
 use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
 use crate::cli::{Invocation, ProjectAction, StateAction};
-use crate::domain::provenance::Provenance;
+use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{Priority, default_open_state, default_type};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -145,16 +145,19 @@ pub(crate) fn mutating(method: &Method) -> bool {
 /// from the dashboard) take a forensic pass over the raw database instead of
 /// a `story log`.
 ///
-/// Labelled `web:<verb>` rather than reusing [`crate::invoke::invocation_name`]
-/// bare: several of these routes (`route_patch_story` most notably) answer
+/// Labelled `web:<verb> (web:user)` rather than reusing
+/// [`crate::invoke::invocation_name`] bare: several of these routes
+/// (`route_patch_story` most notably) answer
 /// without ever building an [`Invocation`] at all, so there is no single verb
 /// source every arm shares — and prefixing makes a REST-door write visually
 /// distinct from a CLI one at a glance, which is the more useful fact for a
-/// reader asking "did this come from the terminal or the browser?" A read
-/// route gets a label too, even though nothing it does ever appends an event
-/// that would render it — assigning it here costs nothing and keeps this
-/// function total over [`ProjectRoute`] rather than reaching for a `_` arm a
-/// route added later could silently fall into.
+/// reader asking "did this come from the terminal or the browser?" The actor
+/// names the person using this interactive surface, so an agent does not
+/// mistake the manual change for an unlabelled agent action (SH-527). A read
+/// route gets both labels too, even though nothing it does ever appends an
+/// event that would render them — assigning them here costs nothing and keeps
+/// this function total over [`ProjectRoute`] rather than reaching for a `_`
+/// arm a route added later could silently fall into.
 fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
         ProjectRoute::Data => "data",
@@ -194,7 +197,9 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::MethodNotAllowed => "method-not-allowed",
         ProjectRoute::NotFound => "not-found",
     };
-    Provenance::command(format!("web:{verb}"))
+    Provenance::command(format!("web:{verb}")).with_actor(Some(
+        ActorLabel::try_from("web:user".to_string()).expect("web:user is a valid actor label"),
+    ))
 }
 
 /// Decides how to respond to a request against `store`.
