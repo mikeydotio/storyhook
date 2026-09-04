@@ -189,6 +189,7 @@ project it is looking at.
 
 ## Mini-roadmap
 
+- Completed: assemble and verify releases locally; tag pushes run no Actions.
 - Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
   through the centralized verifier.
 - Next: expose queue health and verification diagnostics in engine/dashboard

@@ -366,28 +366,28 @@ Standing rules for every wave:
   or `tests/`, and the compiler never warned: `dead_code` only fires for an item
   unreachable from a crate root, and `pub` makes everything reachable — correct for a
   published library, wrong here, since this crate is published nowhere
-  (`.github/workflows/release.yml` ships binaries on version tags, never `cargo
-  publish`) and nothing outside `src/` and `tests/` can ever call one. Nine more had
+  (`scripts/release.sh` ships binaries, never `cargo publish`) and nothing outside
+  `src/` and `tests/` can ever call one. Nine more had
   already accumulated the same way, two of them actively misleading rather than merely
   idle — `is_executable`'s doc promised an execute-bit check its body never performed,
   and `ArchiveRepairReport` documented a function (`repair_archived_snapshots`) that a
   prior deletion had already removed. `tests/dead_public_surface.rs` fences the class:
   derived over `git ls-files`, the same style the store-isolation scans use, rather than
   a hand-maintained list — which is exactly what let ten of these go uncounted.
-- **Platform-specific code needs a platform in the release matrix, or it needs to not
+- **Platform-specific code needs a platform in the release target set, or it needs to not
   exist** (SH-260, SH-276). `cfg(target_os = "windows")` accumulated in two shapes with
-  no Windows target anywhere in `.github/workflows/release.yml`'s matrix and no signal,
+  no Windows target anywhere in `scripts/release-targets.sh` and no signal,
   on any platform, that either compiled: a Cargo dependency table (SH-260 —
   `windows-native-keyring-store`, activated by default, deleted) and, once that scan
   couldn't see them, two bare source arms with no dependency behind them at all
   (SH-276 — `src/clipboard.rs`, `src/web.rs`, deleted). `tests/release_targets.rs` pins
   both shapes now — `every_platform_gated_dependency_table_targets_a_built_platform` for
   manifests, `every_platform_gated_source_arm_targets_a_built_platform` for `cfg` arms in
-  tracked `.rs` files — and both are matrix-derived, not Windows-specific: a `target_os`
+  tracked `.rs` files — and both are target-derived, not Windows-specific: a `target_os`
   this project has not been taught (`matrix_substring_for`) panics rather than passing,
-  and a target_os the matrix *does* build passes with no edit. Adding a platform for
-  real means adding it to the matrix and proving the code by building it there; the test
-  passing is the matrix's decision, not this file's.
+  and a target_os the release command *does* build passes with no edit. Adding a platform
+  for real means adding it to the target set and proving the code by building it there;
+  the test passing is the release definition's decision, not this file's.
 - **An argument that lands nowhere must be refused, not dropped** (SH-357). `story daemon
   token new psamathe` printed the daemon's **master** bearer token and exited 0: `parse_daemon`'s
   `"token"` arm was a bare unit variant that never read `args[2..]`, so a request to mint a

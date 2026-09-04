@@ -4,8 +4,8 @@
 //! `tests/`, and rustc never warned. `dead_code` only fires for an item
 //! unreachable from a crate root; `pub` makes everything reachable, which is
 //! the right rule for a published library and the wrong one here — this
-//! crate is published nowhere (`.github/workflows/release.yml` ships
-//! binaries, never `cargo publish`), so its `pub` surface has exactly the
+//! crate is published nowhere (`scripts/release.sh` ships binaries, never
+//! `cargo publish`), so its `pub` surface has exactly the
 //! consumers `src/` and `tests/` give it, and the compiler cannot see when
 //! that count drops to zero. This file is the check that can.
 //!
