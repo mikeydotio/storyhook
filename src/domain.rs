@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -462,6 +463,110 @@ fn is_first_attachment_id(value: &u32) -> bool {
     *value == default_next_attachment_id()
 }
 
+/// Wire-format version for a dispatch cleanup lease and its reap receipt.
+pub const CLEANUP_LEASE_VERSION: u32 = 1;
+
+/// Filename dispatch writes inside a linked worktree's private Git directory.
+///
+/// The private directory is removed with the worktree and is never committed,
+/// so the marker is durable for the lifetime of the dispatch without becoming
+/// project data.
+pub const CLEANUP_LEASE_MARKER: &str = "storyhook-cleanup-lease-v1.json";
+
+/// Private environment variable carrying one versioned lease to `story reap`.
+pub const CLEANUP_LEASE_ENV: &str = "STORYHOOK_REAP_LEASE_V1";
+
+/// Exact identity of the tmux window created or adopted by dispatch.
+///
+/// Names and ids alone are reusable. The socket and server process identify
+/// one tmux server, while the window id and creation instant distinguish one
+/// window generation inside it. Cleanup may kill a window only when every
+/// field still agrees.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TmuxWindowFingerprint {
+    /// Absolute tmux server socket path.
+    pub socket_path: PathBuf,
+    /// Process id reported by the tmux server.
+    pub server_pid: u32,
+    /// Server-local tmux window id, such as `@7`.
+    pub window_id: String,
+    /// Window creation time as Unix seconds, reported by tmux.
+    pub window_created: u64,
+    /// Session in which dispatch created or found the window.
+    pub session_name: String,
+    /// Human-facing window name assigned by dispatch.
+    pub window_name: String,
+}
+
+/// Durable identity of every disposable resource owned by one dispatch.
+///
+/// A lease is copied from the linked worktree's private Git marker into story
+/// history when that worktree submits its story for verification. It therefore
+/// survives daemon restart, project-checkout replacement, and provider changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoryCleanupLease {
+    /// Wire-format version; currently [`CLEANUP_LEASE_VERSION`].
+    pub version: u32,
+    /// Canonical project slug that owns the story.
+    pub project_slug: String,
+    /// Canonical prefixed story id, such as `SH-473`.
+    pub story_id: String,
+    /// Canonical main-worktree repository path where Git bookkeeping lives.
+    pub repository_path: PathBuf,
+    /// Canonical linked-worktree path dispatch created or adopted.
+    pub worktree_path: PathBuf,
+    /// Exact local branch checked out by the linked worktree.
+    pub branch: String,
+    /// Exact tmux window generation dispatch created or adopted.
+    pub tmux: TmuxWindowFingerprint,
+}
+
+/// Postconditions a successful leased reap proves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupPostconditions {
+    /// The leased worktree is absent from `git worktree list --porcelain`.
+    pub worktree_registration_absent: bool,
+    /// The leased worktree path does not exist on disk.
+    pub worktree_path_absent: bool,
+    /// The leased local branch ref does not exist.
+    pub branch_absent: bool,
+    /// No live tmux window matches the complete leased fingerprint.
+    pub tmux_fingerprint_absent: bool,
+}
+
+/// Which exact leased resources this reap invocation removed itself.
+///
+/// `false` is not failure: an exact resource that was already absent remains
+/// idempotent success when the corresponding postcondition is true.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupRemoved {
+    /// This invocation removed the leased linked worktree.
+    pub worktree: bool,
+    /// This invocation deleted the leased local branch.
+    pub branch: bool,
+    /// This invocation killed the exact leased tmux window generation.
+    pub tmux: bool,
+}
+
+/// Machine-verifiable receipt returned by a successful leased reap.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupReceipt {
+    /// Whether the helper verified the complete leased cleanup contract.
+    pub ok: bool,
+    /// Receipt wire-format version; currently [`CLEANUP_LEASE_VERSION`].
+    pub receipt_version: u32,
+    /// Canonical story id echoed independently for defensive validation.
+    pub story_id: String,
+    /// Exact lease the helper consumed.
+    pub lease: StoryCleanupLease,
+    /// Resources removed by this invocation rather than already absent.
+    pub removed: CleanupRemoved,
+    /// Verified absence of each leased resource.
+    pub postconditions: CleanupPostconditions,
+    /// Human-readable helper result for diagnostics.
+    pub display: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StoryEvent {
@@ -511,6 +616,18 @@ pub enum StoryEvent {
     StoryStateChanged {
         at: String,
         state: String,
+    },
+    /// Records the exact disposable resources owned by the verification
+    /// generation immediately preceding this event.
+    ///
+    /// Event order is the generation boundary: only a lease after the most
+    /// recent transition into `verifying` applies. A later unleased transition
+    /// therefore shadows this event without deleting append-only history.
+    StoryCleanupLeaseRecorded {
+        /// Timestamp at which the verifying transition captured this lease.
+        at: String,
+        /// Exact resource identity dispatch published for this generation.
+        lease: Box<StoryCleanupLease>,
     },
     /// Removes this story's own state from authority when it gains its first
     /// child. The materialized snapshot retains its last string only as a
@@ -858,7 +975,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 30] = [
+pub const EVENT_KINDS: [&str; 31] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -867,6 +984,7 @@ pub const EVENT_KINDS: [&str; 30] = [
     "StoryAwaitingSet",
     "StoryAwaitingCleared",
     "StoryStateChanged",
+    "StoryCleanupLeaseRecorded",
     "StoryStateCleared",
     "StoryRelationshipAdded",
     "StoryRelationshipRemoved",
@@ -912,6 +1030,7 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
         StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
         StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
+        StoryEvent::StoryCleanupLeaseRecorded { .. } => "StoryCleanupLeaseRecorded",
         StoryEvent::StoryStateCleared { .. } => "StoryStateCleared",
         StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
         StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
@@ -981,6 +1100,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryAwaitingSet { .. } => "awaiting-set",
             StoryEvent::StoryAwaitingCleared { .. } => "awaiting-cleared",
             StoryEvent::StoryStateChanged { .. } => "state-change",
+            StoryEvent::StoryCleanupLeaseRecorded { .. } => "cleanup-lease-recorded",
             StoryEvent::StoryStateCleared { .. } => "state-cleared",
             StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
@@ -1652,6 +1772,12 @@ pub fn fold_story(
                     }
                     legacy_deletion_active = false;
                 }
+            }
+            StoryEvent::StoryCleanupLeaseRecorded { at, .. } => {
+                // The lease is consumed from event history, not materialized
+                // into the story snapshot. It still counts as activity because
+                // it is an authoritative lifecycle fact.
+                updated_at = Some(at.clone());
             }
             StoryEvent::StoryStateCleared { at } => {
                 // Keep the last literal in `state` as the non-null read-model

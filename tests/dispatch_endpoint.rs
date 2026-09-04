@@ -19,6 +19,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use storyhook::api::dispatch::REQUIRED_DISPATCH_PROTOCOL;
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
@@ -39,7 +40,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// gets, rather than through an env var storyhook's own allowlist would
 /// (correctly) now strip.
 ///
-/// Declares `DISPATCH_PROTOCOL=2` (SH-196/SH-523) so this stub keeps resolving
+/// Declares the current dispatch protocol so this stub keeps resolving
 /// under `resolve_dispatch_script_from`'s protocol check, which applies to
 /// `STORYHOOK_DISPATCH_SCRIPT` the same as any other resolution source —
 /// see `a_script_below_the_required_protocol_is_refused_before_any_handle_exists`
@@ -47,7 +48,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=2
+DISPATCH_PROTOCOL=3
 set -u
 case "{mode}" in
   ok)
@@ -694,7 +695,7 @@ fn an_unselected_dispatch_carries_no_model_effort_or_speed_flag() {
 }
 
 #[test]
-fn a_protocol_one_helper_is_refused_before_the_dashboard_requires_resume() {
+fn a_helper_below_the_required_protocol_is_refused_before_dispatch() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let stub =
@@ -713,7 +714,10 @@ fn a_protocol_one_helper_is_refused_before_the_dashboard_requires_resume() {
     assert_eq!(response.status(), 500);
     let body = response.into_body().read_to_string().unwrap();
     assert!(body.contains("protocol 1"), "{body}");
-    assert!(body.contains("needs at least 2"), "{body}");
+    assert!(
+        body.contains(&format!("needs at least {REQUIRED_DISPATCH_PROTOCOL}")),
+        "{body}"
+    );
 }
 
 /// `?model=`/`?effort=`/`?speed=fast` each append their own flag to the

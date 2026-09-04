@@ -36,6 +36,14 @@ assert_eq "$(jqf "$out" 'has("warning")')" "false" "happy: no warning on the cle
 [ -d "$repo/.claude/worktrees/$id" ] || fail_test "happy: worktree directory missing"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$id") \
   || fail_test "happy: worktree branch missing"
+private_git=$(git -C "$repo/.claude/worktrees/$id" rev-parse --absolute-git-dir)
+lease="$private_git/storyhook-cleanup-lease-v1.json"
+[ -f "$lease" ] || fail_test "happy: private cleanup lease marker missing"
+assert_eq "$(jq -r .project_slug "$lease")" "$(slug_for "$repo")" \
+  "happy: cleanup lease project"
+assert_eq "$(jq -r .story_id "$lease")" "$id" "happy: cleanup lease story"
+assert_eq "$(jq -r .branch "$lease")" "worktree-$id" "happy: cleanup lease branch"
+assert_eq "$(jq -r .tmux.window_id "$lease")" "@1" "happy: cleanup lease window"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$claimed_state" "in-progress" "happy: story CLI itself confirms the claim"
 grep -q "^\.claude/worktrees/\$" "$repo/.gitignore" 2>/dev/null \

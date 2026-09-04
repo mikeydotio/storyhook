@@ -24,7 +24,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn capabilities_stub(hits_file: &Path) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=2
+DISPATCH_PROTOCOL=3
 set -u
 echo x >> {hits_file:?}
 if [ "$1" = "capabilities" ]; then
@@ -56,13 +56,22 @@ printf '{{"ok":true,"id":"%s","display":"stub dispatched"}}\n' "$4"
 /// contract for an unknown verb.
 fn no_capabilities_stub() -> String {
     r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=2
+DISPATCH_PROTOCOL=3
 set -u
 if [ "$1" = "capabilities" ]; then
   printf '{"ok":false,"display":"usage: story.sh <list | view ... > -- capabilities not recognized"}\n'
   exit 1
 fi
 printf '{"ok":true,"id":"%s","display":"stub dispatched"}\n' "$4"
+"#
+    .to_string()
+}
+
+fn contradictory_success_stub() -> String {
+    r#"#!/usr/bin/env bash
+DISPATCH_PROTOCOL=3
+printf '{"ok":true,"agent":"%s","models":[],"efforts":[],"speeds":[]}\n' "${2#--agent=}"
+exit 29
 "#
     .to_string()
 }
@@ -234,7 +243,7 @@ fn a_helper_that_prints_nothing_parseable_also_degrades_gracefully() {
     let _guard = DaemonGuard(&env);
     let stub = write_script(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=2
+DISPATCH_PROTOCOL=3
 exit 7
 "#,
     );
@@ -244,4 +253,22 @@ exit 7
     assert_eq!(body["claude"]["ok"], false);
     assert!(body["claude"]["reason"].is_string());
     assert_eq!(body["codex"]["ok"], false);
+}
+
+/// Parseable stdout cannot override the process-level failure signal. Each
+/// provider degrades independently, exactly as it does for invalid JSON.
+#[test]
+fn a_helper_cannot_report_capabilities_success_after_a_nonzero_exit() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_script(&contradictory_success_stub());
+    let info = start_with_stub(&env, stub.path());
+
+    let body = body_json(get_options(&info, &info.token).expect("dispatch-options accepted"));
+    for agent in ["claude", "codex"] {
+        assert_eq!(body[agent]["ok"], false, "{agent}: {body}");
+        let reason = body[agent]["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("reported success"), "{agent}: {body}");
+        assert!(reason.contains("29"), "{agent}: {body}");
+    }
 }
