@@ -303,6 +303,24 @@ impl Fixture {
             std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
                 .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
+        // `run-tests.sh` reaches this non-shell parser only when progress is
+        // enabled. Derive its name from the tracked caller's source instead
+        // of extending the old hand-kept shell list with another exception.
+        for token in read_checkout_file("scripts/run-tests.sh").split('"') {
+            if !token.ends_with(".awk") {
+                continue;
+            }
+            let name = Path::new(token)
+                .file_name()
+                .expect("a referenced awk script name")
+                .to_str()
+                .expect("a UTF-8 awk script name");
+            std::os::unix::fs::symlink(
+                checkout().join("scripts").join(name),
+                path.join("scripts").join(name),
+            )
+            .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
+        }
         let fixture = Self { root };
         // Refusing to answer is a path the tracked script already tolerates —
         // a tarball or a corrupt index produces it — and it is what keeps
@@ -536,6 +554,36 @@ fn a_failing_run_releases_the_gate_lock() {
         !fixture.lock("gate").exists(),
         "a failing run must not leave the gate lock behind at {}",
         fixture.lock("gate").display()
+    );
+}
+
+/// SH-536's end-to-end wiring: the daemon-provided journal crosses the
+/// run-tests re-exec into machine-lock, and completed libtest output still
+/// appends progress while the watchdog owns the gate.
+#[test]
+fn a_running_suite_advances_the_journal_observed_by_the_gate() {
+    let fixture = Fixture::new();
+    fixture.integration_test("progressing");
+    fixture.fake_cargo(
+        "#!/bin/sh\nprintf '     Running tests/progressing.rs (target/debug/deps/progressing-fixture)\\n'\nprintf 'test proves_progress ... ok\\n'\n",
+    );
+    let journal = fixture.path().join("gate-progress.ndjson");
+
+    let out = fixture
+        .command(&["--only-no-doc", "progressing"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running the journalled suite");
+
+    assert_eq!(code(&out), 0, "the journalled suite must pass: {out:?}");
+    let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
+    assert!(
+        progress.contains(r#"{"kind":"case","path":"release gate/rust-suite","outcome":"pass"}"#),
+        "the case completion must reach the exact journal machine-lock observes: {progress}\noutput: {out:?}"
+    );
+    assert!(
+        !fixture.lock("gate").exists(),
+        "a journalled run must release the gate normally"
     );
 }
 
