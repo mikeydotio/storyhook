@@ -37,7 +37,9 @@ use storyhook::output::{
     StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome, render_error,
     render_response,
 };
-use storyhook::store::{EngineAgent, EngineLaneState, EngineRunState, GlobalSeq, PrLink};
+use storyhook::store::{
+    EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, GlobalSeq, PrLink,
+};
 
 /// The four ways a `Response` can be rendered. Every case in this file is
 /// checked in all of them, because `--quiet` and `--json` route through
@@ -352,6 +354,16 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 state: EngineRunState::Draining,
                 lane_count: 2,
                 consecutive_hard_stops: 2,
+                recent_quarantines: vec![EngineQuarantineRecord {
+                    lane_index: 0,
+                    story_id: Some("SH-10".to_string()),
+                    kind: "window-gone".to_string(),
+                    detail: Some("pane exited".to_string()),
+                    pane_id: Some("%112".to_string()),
+                    window_name: Some("SH-10".to_string()),
+                    worktree_path: Some("/tmp/storyhook/SH-10".to_string()),
+                    observed_at: "2026-08-30T20:00:30Z".to_string(),
+                }],
                 stop_reason: Some("operator-stopped".to_string()),
                 acknowledged_at: None,
                 created_at: "2026-08-30T20:00:00Z".to_string(),
