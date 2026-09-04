@@ -2,7 +2,8 @@
 #
 # A pid-checked, stale-tolerant, machine-wide advisory lock — SH-456.
 #
-#   machine-lock.sh [--plan] [--max-wait <seconds>] <name> -- <command...>
+#   machine-lock.sh [--plan] [--max-wait <seconds>]
+#                   [--max-idle <seconds>] <name> -- <command...>
 #
 # Runs <command...> with <name> held, and exits with the command's own status.
 # Two names are reserved by later stories in the Full Auto epic (SH-452):
@@ -60,6 +61,8 @@
 #   75                    --max-wait elapsed with the lock still held
 #                         (EX_TEMPFAIL). The command did NOT run, and the
 #                         stderr line says so.
+#   124                   the holder made no journal progress before its
+#                         --max-idle budget; its process group was reaped
 #
 # STATED LIMITS, named rather than glossed:
 #   * Waiters are unordered. A `mkdir` lock has no queue, so a waiter can be
@@ -78,7 +81,7 @@
 
 set -uo pipefail
 
-readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] <name> -- <command...>"
+readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>"
 
 die() {
     printf 'machine-lock: %s\n' "$1" >&2
@@ -106,6 +109,19 @@ readonly LOCK_POLL_SECS=1
 # disagree with the first).
 readonly GATE_MEDIAN_SECS=36
 #
+# The number of Full Auto runs which can be live at once. It is the shell
+# rendering of api::dispatch::MAX_RUNNING; tests/machine_lock.rs binds the two
+# so changing the dispatch budget cannot leave this derivation stale.
+readonly GATE_CONCURRENT_RUNS=4
+#
+# One further whole concurrency window is deliberate tolerance for the build,
+# fmt and clippy work other worktrees can still perform outside this lock.
+readonly GATE_IDLE_MARGIN=2
+#
+# This is a ceiling on SILENCE, never on the suite. Every journal append resets
+# it, so a progressing gate may run indefinitely (SH-536).
+readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))
+#
 # A waiter is told immediately, then once per typical suite it is queued
 # behind — so every follow-up line means "another whole nominal `make test`
 # has passed", which is a unit a reader can act on.
@@ -117,6 +133,9 @@ readonly WAIT_REPORT_SECS=$GATE_MEDIAN_SECS
 # two whole observation periods is not mid-write, it is one whose writer died
 # inside that window.
 readonly IDENTITY_GRACE_POLLS=2
+# A signalled process group gets the same two observations used to distinguish
+# an unnamed live lock writer from a dead one before SIGKILL is necessary.
+readonly TERMINATION_GRACE_SECS=$((LOCK_POLL_SECS * IDENTITY_GRACE_POLLS))
 
 # There is no default wait ceiling, and that is the third derivation: waiting
 # is bounded by a FACT — whether the recorded holder is still alive — rather
@@ -125,6 +144,7 @@ readonly IDENTITY_GRACE_POLLS=2
 
 plan=0
 max_wait=""
+max_idle=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     (--plan)
@@ -140,6 +160,17 @@ while [ "$#" -gt 0 ]; do
             ;;
         esac
         max_wait="$1"
+        shift
+        ;;
+    (--max-idle)
+        shift
+        [ "$#" -gt 0 ] || die "--max-idle needs a positive whole number of seconds -- $USAGE"
+        case "$1" in
+        (*[!0-9]* | '' | 0)
+            die "--max-idle takes a positive whole number of seconds, not '$1' -- $USAGE"
+            ;;
+        esac
+        max_idle="$1"
         shift
         ;;
     (--)
@@ -172,6 +203,10 @@ shift
 shift
 [ "$#" -gt 0 ] || die "'--' must be followed by a command to run -- $USAGE"
 
+if [ -z "$max_idle" ] && [ "$name" = gate ]; then
+    max_idle="$GATE_IDLE_CEILING_SECS"
+fi
+
 lock_root="${STORYHOOK_LOCK_DIR:-}"
 if [ -z "$lock_root" ]; then
     [ -n "${HOME:-}" ] \
@@ -184,6 +219,7 @@ if [ "$plan" = 1 ]; then
     printf 'name=%s\n' "$name"
     printf 'lock=%s\n' "$lock"
     printf 'max_wait=%s\n' "${max_wait:-none}"
+    printf 'max_idle=%s\n' "${max_idle:-none}"
     printf 'command=%s\n' "$*"
     exit 0
 fi
@@ -273,6 +309,29 @@ release() {
     fi
 }
 
+group_alive() {
+    [ -n "${child:-}" ] && kill -0 -- "-$child" 2>/dev/null
+}
+
+# The child is its own process-group leader. A deadline that kills only its
+# immediate bash leaves cargo, a test binary or a daemon alive and releases
+# the lock over it — the same machine wedge under a different pid.
+terminate_group() {
+    reason="$1"
+    group_alive || return 0
+    note "$reason: sending SIGTERM to process group $child"
+    kill -TERM -- "-$child" 2>/dev/null || true
+    remaining="$TERMINATION_GRACE_SECS"
+    while [ "$remaining" -gt 0 ] && group_alive; do
+        sleep "$LOCK_POLL_SECS"
+        remaining=$((remaining - LOCK_POLL_SECS))
+    done
+    if group_alive; then
+        note "$reason: process group $child survived SIGTERM; sending SIGKILL"
+        kill -KILL -- "-$child" 2>/dev/null || true
+    fi
+}
+
 # THE SIGNAL TRAPS ARE NOT DECORATION, AND THIS IS THE FIRST SCRIPT IN THE
 # REPO TO CARRY THEM. `trap ... EXIT` alone is not enough here: bash defers a
 # trap until the current foreground command returns, so a SIGTERM arriving
@@ -281,14 +340,17 @@ release() {
 # the command runs in the BACKGROUND with an explicit `wait`, during which a
 # trap does fire.
 #
-# The signal is FORWARDED to the command, never escalated. The command owns
-# its own teardown — `make test`'s legs each carry their own EXIT traps —
-# and SIGKILLing it here would defeat exactly that. Re-raising on self after
-# resetting the trap is what keeps this script's own exit status a truthful
-# 128+signal rather than a fabricated one.
+# Re-raising on self after resetting the trap keeps this script's own status a
+# truthful 128+signal rather than a fabricated one. The lock is not released
+# until the whole child group has received the bounded TERM/KILL cleanup.
 on_signal() {
     if [ -n "${child:-}" ]; then
-        kill -s "$1" "$child" 2>/dev/null || true
+        terminate_group "received SIG$1"
+        wait "$child" 2>/dev/null || true
+    fi
+    if [ -n "${watchdog:-}" ]; then
+        kill "$watchdog" 2>/dev/null || true
+        wait "$watchdog" 2>/dev/null || true
     fi
     release
     trap - "$1" EXIT
@@ -318,14 +380,95 @@ else
 fi
 export STORYHOOK_MACHINE_LOCKS
 
+# A daemon verification supplies its durable SH-524 journal. An interactive
+# gate does not, so the lock owns a private one and exports it to the suite.
+# Either way, inability to observe the journal is a refusal: silently dropping
+# the watchdog would recreate SH-536 while printing a reassuring lock notice.
+journal="${STORYHOOK_GATE_PROGRESS:-}"
+if [ -n "$max_idle" ]; then
+    if [ -z "$journal" ]; then
+        journal="$lock/progress.ndjson"
+    fi
+    : >> "$journal" || die "could not prepare the progress journal at $journal"
+    [ -r "$journal" ] && [ -w "$journal" ] \
+        || die "the progress journal at $journal must be readable and writable"
+    STORYHOOK_GATE_PROGRESS="$journal"
+    export STORYHOOK_GATE_PROGRESS
+fi
+
 # Bash redirects a background command's stdin from /dev/null in a
 # non-interactive shell, which would silently break any command that reads
 # stdin. Handing the child this script's own stdin on fd 3 is what keeps the
 # wrapper transparent.
 exec 3<&0
+set -m
 "$@" <&3 &
 child=$!
+set +m
 exec 3<&-
 
+watchdog=""
+if [ -n "$max_idle" ]; then
+    stalled="$lock/stalled"
+    (
+        last_size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
+            note "lost access to the progress journal at $journal before the watchdog could observe it"
+            printf 'journal unreadable\n' > "$stalled"
+            terminate_group "progress watchdog failed"
+            exit 0
+        }
+        idle=0
+        while kill -0 "$child" 2>/dev/null; do
+            sleep "$LOCK_POLL_SECS"
+            kill -0 "$child" 2>/dev/null || exit 0
+            size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
+                note "lost access to the progress journal at $journal while the gate was running"
+                printf 'journal unreadable\n' > "$stalled"
+                terminate_group "progress watchdog failed"
+                exit 0
+            }
+            if [ "$size" -lt "$last_size" ]; then
+                note "the append-only progress journal at $journal shrank from $last_size to $size bytes"
+                printf 'journal shrank\n' > "$stalled"
+                terminate_group "progress watchdog failed"
+                exit 0
+            fi
+            if [ "$size" -gt "$last_size" ]; then
+                last_size="$size"
+                idle=0
+                continue
+            fi
+            idle=$((idle + LOCK_POLL_SECS))
+            if [ "$idle" -ge "$max_idle" ]; then
+                note "the '$name' holder made no progress for ${idle}s (ceiling ${max_idle}s)"
+                last="$(tail -n 1 "$journal" 2>/dev/null || true)"
+                note "last gate progress: ${last:-<journal is empty>}"
+                note "active process group $child:"
+                ps -o pid=,ppid=,etime=,command= -g "$child" >&2 2>/dev/null \
+                    || note "could not inspect process group $child"
+                printf 'stalled after %ss\n' "$idle" > "$stalled"
+                printf '{"kind":"item","path":"release gate","status":"failed","at":"%s","seconds":%s}\n' \
+                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$idle" >> "$journal" 2>/dev/null || true
+                terminate_group "progress watchdog expired"
+                exit 0
+            fi
+        done
+    ) &
+    watchdog=$!
+fi
+
 wait "$child"
-exit $?
+status=$?
+
+if [ -n "$watchdog" ]; then
+    if [ -f "$stalled" ]; then
+        wait "$watchdog" 2>/dev/null || true
+        # Reap after the watchdog has completed its TERM/KILL sequence.
+        wait "$child" 2>/dev/null || true
+        exit 124
+    fi
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+fi
+
+exit "$status"

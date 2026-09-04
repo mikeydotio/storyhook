@@ -236,6 +236,12 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+fn refresh_metadata(head: &str) -> String {
+    format!(
+        r#"{{"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","baseRefOid":"stale-pr-base","headRefName":"feature","headRefOid":"{head}"}}"#,
+    )
+}
+
 fn wait_for(path: &Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
@@ -256,6 +262,60 @@ fn the_public_command_refuses_a_missing_pr() {
 
     assert!(!out.status.success());
     assert!(stderr(&out).contains("usage: land-pr.sh <pr>"));
+}
+
+#[test]
+fn a_stale_pr_base_oid_does_not_veto_the_fetched_base_tip() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let fetched_head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&fetched_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &fetched_head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating refreshed refs");
+
+    assert_ok(&out, "refresh metadata with a stale PR base OID");
+    assert_eq!(stdout(&out), fetched_base);
+}
+
+#[test]
+fn refresh_validation_still_rejects_a_moved_head() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let reported_head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&reported_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            "different-fetched-head",
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating a moved head");
+
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("head moved while it was being refreshed"));
 }
 
 #[test]

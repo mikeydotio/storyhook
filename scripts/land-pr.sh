@@ -16,9 +16,13 @@
 # script, and the script itself serializes certification immediately beside
 # the merge (SH-452 decision D5).
 #
-# WHY THE HEAD IS MATCHED AND THE LANDED TREE IS CHECKED. `gh pr merge` offers
-# an expected-head guard, so a branch update cannot make the command merge
-# content other than what was certified. It offers no expected-base guard;
+# WHY THE FETCHED BASE IS AUTHORITATIVE. A pull request's `baseRefOid` is the
+# base ref associated with that PR; it does not necessarily advance when
+# another PR moves the target branch. The fetched target ref is the current
+# base used to build the predicted merge. The reported head remains an exact
+# guard because `gh pr merge --match-head-commit` supports that same invariant.
+#
+# WHY THE LANDED TREE IS CHECKED. GitHub offers no expected-base merge guard;
 # SH-474 tracks that platform-level race separately. Fetching the reported
 # merge commit and comparing its tree with STORYHOOK_CERTIFIED_MERGE_TREE makes
 # such a race a loud hard failure rather than an asserted success. The remote
@@ -53,6 +57,47 @@ require_merge_lock() {
     (*) die "the private landing phase must run under machine-lock.sh merge" ;;
     esac
 }
+
+validate_refresh() {
+    number="$1"
+    expected_base_ref="$2"
+    fetched_base="$3"
+    fetched_head="$4"
+    current="$5"
+
+    state="$(printf '%s\n' "$current" | jq -er '.state')" \
+        || die "PR #$number returned no state"
+    draft="$(printf '%s\n' "$current" | jq -r '.isDraft')" \
+        || die "PR #$number returned no draft status"
+    cross="$(printf '%s\n' "$current" | jq -r '.isCrossRepository')" \
+        || die "PR #$number returned no repository relationship"
+    current_base_ref="$(printf '%s\n' "$current" | jq -er '.baseRefName')" \
+        || die "PR #$number returned no base branch"
+    head_ref="$(printf '%s\n' "$current" | jq -er '.headRefName')" \
+        || die "PR #$number returned no head branch"
+    head_sha="$(printf '%s\n' "$current" | jq -er '.headRefOid')" \
+        || die "PR #$number returned no head SHA"
+
+    [ "$state" = "OPEN" ] || die "PR #$number is '$state', not OPEN"
+    [ "$draft" = "false" ] \
+        || die "PR #$number is a draft or returned an invalid draft status '$draft'"
+    [ "$cross" = "false" ] \
+        || die "PR #$number comes from a fork; autonomous lanes only land same-repository branches"
+    [ "$current_base_ref" = "$expected_base_ref" ] \
+        || die "PR #$number changed base branches while its refs were being refreshed"
+    [ "$fetched_head" = "$head_sha" ] \
+        || die "PR #$number head moved while it was being refreshed ($fetched_head fetched, $head_sha reported); rerun land-pr.sh"
+}
+
+# Pure metadata/ref seam. Tests supply GitHub's wire shape and real commit IDs
+# directly; they do not imitate the GitHub service or a merge mutation.
+if [ "${1:-}" = "--validate-refresh" ]; then
+    [ "$#" -eq 6 ] \
+        || die "private usage: land-pr.sh --validate-refresh <number> <base-name> <fetched-base> <fetched-head> <metadata>"
+    validate_refresh "$2" "$3" "$4" "$5" "$6"
+    printf '%s\n' "$fetched_base"
+    exit 0
+fi
 
 # The deliberately narrow behavioural seam: real refs, the production
 # receipt reader, and a real lock, followed by an arbitrary command. The live
@@ -135,8 +180,8 @@ if [ "${1:-}" = "--merge" ]; then
 fi
 
 # Everything from metadata resolution through verification stays under the
-# lock. A metadata/ref disagreement is refused rather than retried silently:
-# the caller can rerun, obtaining a fresh, auditable certification attempt.
+# lock. The freshly fetched target ref defines the certification base. A head
+# disagreement is refused because GitHub can enforce that same head at merge.
 if [ "${1:-}" = "--locked" ]; then
     require_merge_lock
     [ "$#" -eq 2 ] || die "$USAGE"
@@ -160,33 +205,16 @@ if [ "${1:-}" = "--locked" ]; then
         "+refs/pull/$number/head:$head_remote_ref" \
         || die "could not fetch the base and head refs for PR #$number"
 
-    current="$(gh pr view "$number" --json state,isDraft,isCrossRepository,baseRefName,baseRefOid,headRefName,headRefOid 2>/dev/null)" \
+    current="$(gh pr view "$number" --json state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid 2>/dev/null)" \
         || die "could not refresh metadata for PR #$number"
-    state="$(printf '%s\n' "$current" | jq -er '.state')" || die "PR #$number returned no state"
-    draft="$(printf '%s\n' "$current" | jq -r '.isDraft')" || die "PR #$number returned no draft status"
-    cross="$(printf '%s\n' "$current" | jq -r '.isCrossRepository')" || die "PR #$number returned no repository relationship"
-    current_base_ref="$(printf '%s\n' "$current" | jq -er '.baseRefName')" || die "PR #$number returned no base branch"
-    base_sha="$(printf '%s\n' "$current" | jq -er '.baseRefOid')" || die "PR #$number returned no base SHA"
-    head_ref="$(printf '%s\n' "$current" | jq -er '.headRefName')" || die "PR #$number returned no head branch"
-    head_sha="$(printf '%s\n' "$current" | jq -er '.headRefOid')" || die "PR #$number returned no head SHA"
-
-    [ "$state" = "OPEN" ] || die "PR #$number is '$state', not OPEN"
-    [ "$draft" = "false" ] || die "PR #$number is a draft or returned an invalid draft status '$draft'"
-    [ "$cross" = "false" ] \
-        || die "PR #$number comes from a fork; autonomous lanes only land same-repository branches"
-    [ "$current_base_ref" = "$base_ref" ] \
-        || die "PR #$number changed base branches while its refs were being refreshed"
 
     fetched_base="$(git rev-parse "$base_remote_ref" 2>/dev/null)" \
         || die "could not resolve fetched base ref $base_remote_ref"
     fetched_head="$(git rev-parse "$head_remote_ref" 2>/dev/null)" \
         || die "could not resolve fetched head ref $head_remote_ref"
-    [ "$fetched_base" = "$base_sha" ] \
-        || die "PR #$number base moved while it was being refreshed ($fetched_base fetched, $base_sha reported); rerun land-pr.sh"
-    [ "$fetched_head" = "$head_sha" ] \
-        || die "PR #$number head moved while it was being refreshed ($fetched_head fetched, $head_sha reported); rerun land-pr.sh"
+    validate_refresh "$number" "$base_ref" "$fetched_base" "$fetched_head" "$current"
 
-    exec bash "$script" --certified-run "$base_sha" "$head_sha" -- \
+    exec bash "$script" --certified-run "$fetched_base" "$head_sha" -- \
         bash "$script" --merge "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
 fi
 

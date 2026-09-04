@@ -946,10 +946,22 @@ is unusable without them:**
   alone is not enough and looks like it is: bash defers a trap until the current
   *foreground* command returns, so a SIGTERM arriving during a fourteen-minute
   `make test` would not release the lock until that suite finished — the exact
-  wedge this script exists to prevent. The command therefore runs in the
-  background under an explicit `wait`. The signal is **forwarded, never
-  escalated**: the command owns its own teardown, and `make test`'s legs each
-  carry their own EXIT traps.
+  wedge this script exists to prevent. The command therefore runs in its own
+  background process group under an explicit `wait`. External signals and the
+  SH-536 progress watchdog send `SIGTERM` to that whole group, wait a grace
+  derived from the lock's observation period, escalate survivors to `SIGKILL`,
+  reap, and only then release the lock. Signalling only the immediate bash
+  would leave cargo, test binaries or daemons active underneath the next gate
+  holder.
+- **A progress ceiling for `gate`, never a duration ceiling.** The SH-524
+  append-only journal is the fact: each growth event resets the full budget, so
+  a progressing suite may run indefinitely. The default 288 silent seconds is
+  written as measured gate median × Full Auto concurrency × a named twofold
+  margin and mechanically bound to those inputs. The daemon supplies a durable
+  journal; an interactive gate gets a private one owned by its lock directory.
+  Expiry reports the last record and active process group, performs the cleanup
+  above, and exits 124. Other lock names remain unbounded unless their caller
+  gives `--max-idle` a positive derived budget.
 - **Reentrancy, via `STORYHOOK_MACHINE_LOCKS` in the command's environment.**
   A caller who wraps a whole `make test` in `machine-lock.sh gate --` would
   otherwise wait forever on a lock its own process tree holds — provably alive,
@@ -1516,13 +1528,17 @@ never explicitly named in the journal (`release gate` itself, most of the
 time) derives its status from its children rather than needing its own
 emission.
 
-**A denominator is estimated exactly until it cannot be.** `plugins/story/
-tests/run-tests.sh` and `scripts/run-e2e.sh` both know their own test count
-synchronously, before the run starts, and report it as an explicit `total` —
-never estimated, even mid-run. `scripts/run-tests.sh`'s own rust batteries
-have no such upfront count; their denominator is however many cases have
-been *seen so far*, marked `~` (estimated) until the item reaches a terminal
-status, at which point the seen count **is** the total, definitionally.
+**Every suite denominator is exact before its first test starts.** Plugin and
+Playwright producers count their selected files/cases synchronously. Each Rust
+battery first asks the same Cargo/libtest commands it will execute to `--list`
+their selected integration, library and doctest cases. Because default libtest
+discovery includes `#[ignore]` cases that execution skips, an identical
+ignored-only discovery is subtracted unless the caller explicitly selected
+`--ignored` or `--include-ignored`. Totals from every command in the battery
+are summed and emitted once before execution. Discovery failure refuses the
+run rather than falling back to the former `N/~N` seen-so-far display: a
+moving denominator made unfinished work look complete, defeating the progress
+surface precisely when an operator was deciding whether a gate had wedged.
 
 **Publishing needs no coordination with the verifier thread.** The obvious
 design — a shared `Arc<Mutex<Option<ActiveRun>>>` the verifier writes and the

@@ -66,7 +66,7 @@
 //!   finding.
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
-//! script as shipped, **all 9 tests pass**.
+//! script as shipped, **all 10 tests pass**.
 //!
 //! One mutation deliberately has no test and is recorded rather than fenced:
 //! deleting `unset STORYHOOK_GATE_LOCK_TAKEN`, which leaks the handshake into
@@ -186,6 +186,17 @@ fn signal(pid: u32, name: &str) {
     );
 }
 
+/// Whether `pid` is still running rather than present only as a zombie.
+fn pid_running(pid: u32) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .expect("running ps");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
 /// The pid the fake `cargo` recorded for itself. It `exec`s its sleep, so the
 /// pid it printed before that is the pid of the process actually running — a
 /// shell that merely started one would leave a child this test could not name.
@@ -302,6 +313,24 @@ impl Fixture {
             }
             std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
                 .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
+        }
+        // `run-tests.sh` reaches this non-shell parser only when progress is
+        // enabled. Derive its name from the tracked caller's source instead
+        // of extending the old hand-kept shell list with another exception.
+        for token in read_checkout_file("scripts/run-tests.sh").split('"') {
+            if !token.ends_with(".awk") {
+                continue;
+            }
+            let name = Path::new(token)
+                .file_name()
+                .expect("a referenced awk script name")
+                .to_str()
+                .expect("a UTF-8 awk script name");
+            std::os::unix::fs::symlink(
+                checkout().join("scripts").join(name),
+                path.join("scripts").join(name),
+            )
+            .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
         let fixture = Self { root };
         // Refusing to answer is a path the tracked script already tolerates —
@@ -482,12 +511,11 @@ fn a_running_suite_is_itself_the_recorded_holder_of_the_gate_lock() {
     wait_for(&pidfile);
     let cargo_pid = fake_cargo_pid(&pidfile);
     signal(runner.pid(), "TERM");
-    // The leg is collected BEFORE the run is, because it inherited the run's
-    // own stderr: `wait_with_output` reads that pipe to EOF, and every process
-    // still holding the write end keeps it open — so collecting first would
-    // block for the whole of the fake's sleep rather than for the run.
-    signal(cargo_pid, "KILL");
     runner.collect();
+    assert!(
+        !pid_running(cargo_pid),
+        "terminating the wrapper must reap the cargo descendant before releasing the gate"
+    );
 }
 
 /// The suite is interrupted mid-leg. A lock left behind by a killed run is a
@@ -509,10 +537,11 @@ fn an_interrupted_run_releases_the_gate_lock() {
     let cargo_pid = fake_cargo_pid(&pidfile);
 
     signal(runner.pid(), "TERM");
-    // See the sibling case above: the leg holds the run's stderr, so it is
-    // collected first or `collect` waits out the fake's whole sleep.
-    signal(cargo_pid, "KILL");
     runner.collect();
+    assert!(
+        !pid_running(cargo_pid),
+        "interrupting the suite must reap the cargo descendant"
+    );
     wait_for_gone(&fixture.lock("gate"));
 }
 
@@ -536,6 +565,145 @@ fn a_failing_run_releases_the_gate_lock() {
         !fixture.lock("gate").exists(),
         "a failing run must not leave the gate lock behind at {}",
         fixture.lock("gate").display()
+    );
+}
+
+/// SH-536's end-to-end wiring: the daemon-provided journal crosses the
+/// run-tests re-exec into machine-lock, and completed libtest output still
+/// appends progress while the watchdog owns the gate.
+#[test]
+fn a_running_suite_advances_the_journal_observed_by_the_gate() {
+    let fixture = Fixture::new();
+    fixture.integration_test("progressing");
+    fixture.fake_cargo(
+        "#!/bin/sh\nargs=\" $* \"\ncase \"$args\" in\n(*\" --list \"*)\n    case \"$args\" in\n    (*\" --ignored \"*) ;;\n    (*) printf 'proves_progress: test\\n' ;;\n    esac\n    ;;\n(*)\n    printf '     Running tests/progressing.rs (target/debug/deps/progressing-fixture)\\n'\n    printf 'test proves_progress ... ok\\n'\n    ;;\nesac\n",
+    );
+    let journal = fixture.path().join("gate-progress.ndjson");
+
+    let out = fixture
+        .command(&["--only-no-doc", "progressing"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running the journalled suite");
+
+    assert_eq!(code(&out), 0, "the journalled suite must pass: {out:?}");
+    let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
+    assert!(
+        progress.contains(r#"{"kind":"case","path":"release gate/rust-suite","outcome":"pass"}"#),
+        "the case completion must reach the exact journal machine-lock observes: {progress}\noutput: {out:?}"
+    );
+    assert!(
+        progress.contains(r#""total":1"#),
+        "the journal must know the suite total before recording its completion: {progress}"
+    );
+    assert!(
+        !fixture.lock("gate").exists(),
+        "a journalled run must release the gate normally"
+    );
+}
+
+/// The progress denominator is a plan, not a count of what happened to have
+/// finished so far. The integration and doctest commands below are separate
+/// Cargo invocations, and the ignored case is discoverable but will not run;
+/// the wrapper must therefore publish their aggregate runnable total before
+/// either real invocation starts.
+#[test]
+fn a_journalled_battery_publishes_its_exact_total_before_the_first_test() {
+    let fixture = Fixture::new();
+    fixture.integration_test("progressing");
+    let journal = fixture.path().join("gate-progress.ndjson");
+    fixture.fake_cargo(&format!(
+        r#"#!/bin/sh
+args=" $* "
+case "$args" in
+(*" --list "*)
+    case "$args" in
+    (*" --doc "*)
+        case "$args" in
+        (*" --ignored "*) ;;
+        (*) printf 'src/lib.rs - example (line 1): test\n' ;;
+        esac
+        ;;
+    (*)
+        case "$args" in
+        (*" --ignored "*) printf 'ignored_case: test\n' ;;
+        (*) printf 'runs_case: test\nignored_case: test\n' ;;
+        esac
+        ;;
+    esac
+    ;;
+(*)
+    grep -F '"total":2' '{}' >/dev/null || exit 91
+    case "$args" in
+    (*" --doc "*)
+        printf '   Doc-tests fixture\n\n'
+        printf 'test src/lib.rs - example (line 1) ... ok\n'
+        ;;
+    (*)
+        printf '     Running tests/progressing.rs (target/debug/deps/progressing-fixture)\n'
+        printf 'test runs_case ... ok\n'
+        printf 'test ignored_case ... ignored\n'
+        ;;
+    esac
+    ;;
+esac
+"#,
+        journal.display()
+    ));
+
+    let out = fixture
+        .command(&["--only", "progressing"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running the exactly counted battery");
+
+    let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
+    assert_eq!(
+        code(&out),
+        0,
+        "the counted battery must pass: {out:?}\nprogress: {progress}"
+    );
+    let total = progress
+        .find(r#""total":2"#)
+        .unwrap_or_else(|| panic!("the two runnable tests need an exact total: {progress}"));
+    let first_case = progress
+        .find(r#""kind":"case""#)
+        .unwrap_or_else(|| panic!("the tests must still report completions: {progress}"));
+    assert!(
+        total < first_case,
+        "the exact total must be recorded before the first test finishes: {progress}"
+    );
+}
+
+/// An unavailable denominator is a failed precondition, not permission to
+/// display completed/completed as an estimate. No real test command may run
+/// after authoritative harness discovery fails.
+#[test]
+fn failed_test_discovery_refuses_before_a_test_can_begin() {
+    let fixture = Fixture::new();
+    fixture.integration_test("progressing");
+    let journal = fixture.path().join("gate-progress.ndjson");
+    let began = fixture.path().join("test-began");
+    fixture.fake_cargo(&format!(
+        "#!/bin/sh\ncase \" $* \" in\n*\" --list \"*) echo 'fixture discovery failure' >&2; exit 42 ;;\n*) touch '{}'; exit 0 ;;\nesac\n",
+        began.display()
+    ));
+
+    let out = fixture
+        .command(&["--only-no-doc", "progressing"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running with failed test discovery");
+    let err = stderr(&out);
+
+    assert_ne!(code(&out), 0, "failed discovery must fail the run");
+    assert!(
+        err.contains("test discovery failed before execution"),
+        "the refusal must name the failed precondition: {err}"
+    );
+    assert!(
+        !began.exists(),
+        "the real test command must not begin without an exact total"
     );
 }
 

@@ -763,6 +763,48 @@ is a property of running the suite, not of the way it was invoked — the same
 reason `gate-receipt.sh preflight` enrols the clone from inside `make test`
 rather than asking anyone to remember a step.
 
+### A live holder is bounded by progress, not duration (SH-536)
+
+Liveness is sufficient for a waiter and insufficient for a holder: an
+infinite loop, deadlocked mutex or wedged syscall leaves the process alive
+while it holds every later verification off the machine-wide gate. The lock
+therefore watches the SH-524 append-only journal while `gate` is held. Each
+growth event resets the full inactivity budget; total runtime has no ceiling.
+
+The default is **288 silent seconds**, expressed in `machine-lock.sh` as the
+product of three named inputs rather than as that literal: the measured
+36-second warm gate median, `api::dispatch::MAX_RUNNING`'s four concurrent
+Full Auto runs, and a twofold margin for fmt, clippy and build work that other
+worktrees can still perform outside this lock. `tests/machine_lock.rs` binds
+the measurement, concurrency value and source-level formula. `--max-idle`
+accepts a positive caller-derived override; non-`gate` locks remain unbounded
+unless a caller supplies one.
+
+Central verification provides the durable journal. An interactive gate has no
+publisher, so the lock creates a private journal inside its owned directory
+and exports the same variable to the suite. Losing access to the journal or
+observing it shrink is a safety failure, never a reason to continue without a
+watchdog.
+
+Before either Rust battery executes its first test, `run-tests.sh` uses the
+same Cargo/libtest target and filter arguments with `--list` to enumerate every
+integration, library and doctest case it plans to run. A second ignored-only
+listing is subtracted in libtest's default mode; explicit `--ignored` and
+`--include-ignored` selections are preserved. The commands' totals are summed
+and written to the journal as one exact denominator before execution begins.
+If discovery fails, the battery refuses to start: displaying completed cases
+over a moving seen-so-far estimate made an incomplete gate look 100% complete
+and therefore could not distinguish progress from a wedge.
+
+The wrapped command is a process-group leader. On expiry, the lock prints the
+last journal record and the group's live commands, appends a failed gate item,
+sends `SIGTERM`, waits two lock-poll observations, escalates survivors to
+`SIGKILL`, reaps, and only then releases the lock. Exit 124 distinguishes that
+outcome from both the command's own failure and a waiter's exit 75. External
+`INT`, `TERM` and `HUP` use the same group cleanup before re-raising the signal.
+This ordering prevents the next verifier from entering while descendants of
+the failed holder are still active.
+
 ### The escape hatch is reported, always
 
 `STORYHOOK_GATE_LOCK=0` skips the lock and prints a line on **stderr** naming
