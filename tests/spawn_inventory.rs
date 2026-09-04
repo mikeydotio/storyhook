@@ -90,9 +90,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
-    // Centralized verification waits for one bash orchestration command and
-    // reads its one JSON result. Repository test output goes to a regular log
-    // file inside verify-pr.sh, so test descendants hold no output pipe.
+    // Centralized verification waits for bash orchestration commands and
+    // reads their JSON results. The main gate is now bounded and file-backed;
+    // notify/reap still use output pipes until SH-547's adopted sibling fix.
     ("src/daemon/verification.rs", "\"bash\"", Kind::Reads),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses

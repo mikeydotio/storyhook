@@ -28,6 +28,8 @@ use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 const PR_ONE: &str = "https://github.com/acme/widgets/pull/1";
 const PR_TWO: &str = "https://github.com/acme/widgets/pull/2";
@@ -431,6 +433,93 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         VerificationOutcome::InvalidSubmission { ref detail }
             if detail.contains("acme/replacement") && detail.contains("acme/widgets")
     ));
+}
+
+#[test]
+fn the_shell_actuator_times_out_the_whole_group_after_allowing_cleanup() {
+    let fixture = ServiceFixture::new();
+    let checkout = scratch_dir();
+    let init = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(checkout.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let origin = Command::new("git")
+        .args([
+            "config",
+            "remote.origin.url",
+            "https://github.com/acme/widgets.git",
+        ])
+        .current_dir(checkout.path())
+        .output()
+        .unwrap();
+    assert!(origin.status.success());
+    std::fs::create_dir(checkout.path().join("scripts")).unwrap();
+    std::fs::write(
+        checkout.path().join("scripts/verify-pr.sh"),
+        r#"#!/bin/bash
+trap 'printf cleanup > cleanup-started; wait; exit 143' TERM
+sh -c 'trap "" TERM; printf "%s" "$$" > stubborn-child-pid; while :; do sleep 30; done' &
+wait
+"#,
+    )
+    .unwrap();
+
+    let candidate = VerificationCandidate {
+        project: fixture.project(),
+        project_slug: "fixture".into(),
+        story_id: "SH-1".into(),
+        title: "bounded verification".into(),
+        priority: Priority::High,
+        created_at: FIXTURE_NOW.into(),
+        verifying_since: Some(FIXTURE_NOW.into()),
+        checkout: checkout.path().to_path_buf(),
+        cleanup_lease: None,
+        pull_request: Err(VerificationProblem::MissingPullRequest),
+    };
+    let pull_request = PrLink {
+        owner: "acme".into(),
+        repo: "widgets".into(),
+        number: 1,
+        url: PR_ONE.into(),
+        close_on_merge: true,
+        status: "open".into(),
+        linked_at: FIXTURE_NOW.into(),
+        last_checked_at: None,
+    };
+    let env_root = scratch_dir();
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        Environment::at(env_root.path()),
+        checkout.path().join("unused-helper"),
+        PathBuf::from("/usr/bin/true"),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let outcome = actuator.verify(&candidate, &pull_request);
+
+    let detail = match outcome {
+        VerificationOutcome::InfrastructureFailure { detail } => detail,
+        other => panic!("a timed-out verifier is infrastructure failure, got {other:?}"),
+    };
+    assert!(detail.contains("100ms"), "{detail}");
+    assert!(detail.contains("SIGTERM"), "{detail}");
+    assert!(detail.contains("SIGKILL"), "{detail}");
+    assert!(checkout.path().join("cleanup-started").is_file());
+    let pid: i32 = std::fs::read_to_string(checkout.path().join("stubborn-child-pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_ne!(
+        unsafe { libc::kill(pid, 0) },
+        0,
+        "stubborn verifier descendant {pid} survived the timeout"
+    );
 }
 
 fn cleanup_candidate(

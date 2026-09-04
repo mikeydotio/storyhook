@@ -189,8 +189,10 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
-  through the centralized verifier.
-- Next: expose queue health and verification diagnostics in engine/dashboard
+- Current: bound centralized verification subprocesses and preserve recovery
+  of the persistent verifier worktree after timeout.
+- Next: make verification ownership durable and priority-preemptible so a
+  queued high-priority candidate is never hidden behind stale ownership.
+- Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden remaining Full Auto recovery and cleanup ownership boundaries.

@@ -1605,6 +1605,33 @@ checklist ships with pass/fail/status words and elapsed time only; a quoted
 note is a follow-up, not a defect, since nothing in the story's own
 acceptance example required it.
 
+### SH-547 — bounded centralized verification
+
+The one daemon verification worker no longer lends one repository an
+unbounded wall clock. `ShellVerificationActuator::verify` gives
+`verify-pr.sh` 1,746 seconds: twice the 873-second `make test` runtime already
+measured under this machine's ordinary concurrent workload. The second whole
+gate window covers machine-lock waiting plus the GitHub, fetch, preflight and
+landing phases around the gate; it is a derivation from observed cost, not a
+bare opinion about how fast verification should be.
+
+The subprocess owns a fresh process group and writes stdout/stderr to bounded
+temporary files. At the deadline the actuator sends `SIGTERM` to the entire
+group, then grants the same 30-second interval used by the infrastructure
+recovery wake. That lets `merge-watch.sh`'s existing signal trap restore the
+persistent verifier worktree and remove its private-object lease. A survivor
+after that grace receives `SIGKILL`; the outcome is an infrastructure failure,
+never a red classification of submitted code, and the existing recovery wake
+retries it.
+
+Forced termination cannot permanently poison the verifier worktree. A real-Git
+regression strands that worktree on a commit whose private object directory is
+then removed, reproducing `fatal: bad object HEAD`; the unchanged next
+`--speculative-run` checkout moves directly onto its new private merge commit
+and its existing cleanup restores the supplied base. An unconditional reset
+was therefore rejected after the test passed without one: it discarded state
+but added no recovery behavior.
+
 ### SH-466 — restart reconciliation
 
 **What shipped.** `HardStopKind::Interrupted` finally has a producer.

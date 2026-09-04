@@ -14,6 +14,9 @@ use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
 use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
 use crate::error::AppError;
+use crate::process::{
+    CaptureError, TerminationPolicy, TimeoutTermination, run_captured_with_termination,
+};
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
@@ -22,6 +25,21 @@ use crate::store::{PrLink, ReadOps, Store};
 
 /// Infrastructure recovery cadence when no store event arrives.
 const RECOVERY_WAKE: Duration = Duration::from_secs(30);
+
+/// Largest observed `make test` runtime under this machine's ordinary
+/// concurrent workload, recorded by the Full Auto design investigation.
+const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
+
+/// Slack above the measured contended gate for GitHub, fetch, and landing.
+const VERIFICATION_TIMEOUT_MARGIN: u64 = 2;
+
+/// Maximum wall-clock duration of one centralized verification attempt.
+///
+/// Derived from the largest measured contended gate rather than a bare
+/// deadline. Twice that measurement leaves one additional full gate window
+/// for lock waiting and the networked phases surrounding `make test`.
+pub const VERIFICATION_TIMEOUT: Duration =
+    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_TIMEOUT_MARGIN);
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +80,8 @@ pub struct ShellVerificationActuator {
     env: Environment,
     helper_path: Option<PathBuf>,
     story_binary: Option<PathBuf>,
+    verification_timeout: Duration,
+    termination_grace: Duration,
 }
 
 impl ShellVerificationActuator {
@@ -72,6 +92,8 @@ impl ShellVerificationActuator {
             env,
             helper_path: None,
             story_binary: None,
+            verification_timeout: VERIFICATION_TIMEOUT,
+            termination_grace: RECOVERY_WAKE,
         }
     }
 
@@ -86,6 +108,30 @@ impl ShellVerificationActuator {
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
+            verification_timeout: VERIFICATION_TIMEOUT,
+            termination_grace: RECOVERY_WAKE,
+        }
+    }
+
+    /// Creates an actuator with explicit subprocess paths and timing policy.
+    ///
+    /// Production uses [`Self::new`]. This injection seam lets integration
+    /// tests provoke the full timeout and process-group boundary without
+    /// waiting for the production deadline.
+    #[must_use]
+    pub fn with_paths_and_timing(
+        env: Environment,
+        helper_path: PathBuf,
+        story_binary: PathBuf,
+        verification_timeout: Duration,
+        termination_grace: Duration,
+    ) -> Self {
+        Self {
+            env,
+            helper_path: Some(helper_path),
+            story_binary: Some(story_binary),
+            verification_timeout,
+            termination_grace,
         }
     }
 
@@ -276,30 +322,63 @@ impl VerificationActuator for ShellVerificationActuator {
         }
         let mut command = Command::new("bash");
         apply_verification_allowlist(&mut command);
-        let output = command
+        command
             .arg("scripts/verify-pr.sh")
             .arg(&pull_request.url)
             .current_dir(&candidate.checkout)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
-            .env("STORYHOOK_GATE_PROGRESS", &journal)
-            .stdin(Stdio::null())
-            .output();
-        let output = match output {
-            Ok(output) => output,
-            Err(error) => {
+            .env("STORYHOOK_GATE_PROGRESS", &journal);
+        let captured = match run_captured_with_termination(
+            command,
+            self.verification_timeout,
+            TerminationPolicy::TerminateThenKill {
+                grace: self.termination_grace,
+            },
+        ) {
+            Ok(captured) => captured,
+            Err(CaptureError::Stage(error)) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!("could not stage scripts/verify-pr.sh output: {error}"),
+                };
+            }
+            Err(CaptureError::Spawn(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not start scripts/verify-pr.sh: {error}"),
                 };
             }
+            Err(CaptureError::Wait(error)) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!("could not wait for scripts/verify-pr.sh: {error}"),
+                };
+            }
+            Err(CaptureError::Timeout(termination)) => {
+                let termination = match termination {
+                    TimeoutTermination::ExitedAfterTerminate => format!(
+                        "sent SIGTERM to its process group, which exited within the {:?} cleanup grace",
+                        self.termination_grace
+                    ),
+                    TimeoutTermination::KilledAfterTerminate => format!(
+                        "sent SIGTERM to its process group, then SIGKILL to survivors after the {:?} cleanup grace",
+                        self.termination_grace
+                    ),
+                    TimeoutTermination::Killed => "sent SIGKILL to its process group".to_string(),
+                };
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!(
+                        "scripts/verify-pr.sh did not finish within {:?}; {termination}",
+                        self.verification_timeout
+                    ),
+                };
+            }
         };
-        let parsed: WireOutcome = match serde_json::from_slice(&output.stdout) {
+        let parsed: WireOutcome = match serde_json::from_slice(&captured.stdout) {
             Ok(parsed) => parsed,
             Err(_) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
                         "scripts/verify-pr.sh returned invalid JSON: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
+                        String::from_utf8_lossy(&captured.stderr).trim()
                     ),
                 };
             }
