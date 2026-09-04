@@ -28,6 +28,17 @@ else
     gate_progress_emit_item() { :; }
     gate_progress_emit_case() { :; }
 fi
+# SH-545: the verifier tmux mirror. Same source-if-present shape as
+# gate-progress.sh above, and the same degrade-silently posture: a mirror
+# failure (missing tmux, a disposable test fixture with no scripts/ tree,
+# STORYHOOK_VERIFIER_MIRROR=0) must never affect verification's own result.
+if [ -f "$root/scripts/verify-window.sh" ]; then
+    # shellcheck source=verify-window.sh
+    . "$root/scripts/verify-window.sh"
+else
+    verifier_window_banner() { :; }
+    verifier_window_tail() { :; }
+fi
 command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
@@ -136,6 +147,7 @@ fi
 submitted_pr="$1"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
+verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
 metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
@@ -169,6 +181,7 @@ if [ ! -e "$verifier_wt/.git" ]; then
         || die_json "could not create the persistent verifier worktree"
 fi
 
+verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
 preflight="$(bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
@@ -184,12 +197,14 @@ case "$preflight_status" in
 (0)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
     gate_progress_emit_item "release gate" reused
+    verifier_window_banner "PR #$pr — merge tree $tree already certified; release gate reused, no live make-test output for this run"
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$logs/pr-$pr-$tree.log"
+    verifier_window_tail "$log"
     if ! bash scripts/merge-watch.sh --speculative-run "$tree" \
         "$base_ref" "$head_ref" "$verifier_wt" -- make test >"$log" 2>&1; then
         tail_context="$(tail -n 40 "$log")"
@@ -204,6 +219,7 @@ case "$preflight_status" in
     ;;
 esac
 
+verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running
 _land_start=$(date +%s)
 land_output="$(bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
