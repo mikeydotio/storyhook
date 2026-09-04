@@ -66,4 +66,39 @@ if [ -n "$branch_error" ]; then
     "switched checkout: branch_error forbids ok:true"
 fi
 
+# Origin fix: centralized cleanup carries the original dispatch identity. From
+# the clean replacement checkout, with no same-named target to collide with,
+# leased reap must still remove the original repository's resources and return
+# a complete typed receipt. No ambient provider selects the .claude path.
+leased_id=$(new_story "$repo" "Leased cleanup after checkout switch")
+leased_name=$(mk_dispatched "$repo" "$leased_id")
+(cd "$repo" && story move "$leased_id" done >/dev/null)
+repository_path=$(cd "$repo" && pwd -P)
+worktree_path=$(cd "$repo/.claude/worktrees/$leased_name" && pwd -P)
+lease=$(jq -n --arg project "$slug" --arg story "$leased_id" \
+  --arg repository "$repository_path" --arg worktree "$worktree_path" \
+  --arg branch "worktree-$leased_name" \
+  '{version:1,project_slug:$project,story_id:$story,
+    repository_path:$repository,worktree_path:$worktree,branch:$branch,
+    tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock",server_pid:999999,
+          window_id:"@999",window_created:1700000000,
+          session_name:"retired",window_name:$story}}')
+out=$(cd "$other" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
+  bash "$SCRIPT" --project "$slug" reap "$leased_id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "leased switch: exact reap succeeds"
+assert_eq "$(jqf "$out" .receipt_version)" "1" "leased switch: receipt version"
+assert_eq "$(jqf "$out" .story_id)" "$leased_id" "leased switch: receipt story"
+assert_eq "$(jqf "$out" '.postconditions.worktree_registration_absent')" "true" \
+  "leased switch: registration absent"
+assert_eq "$(jqf "$out" '.postconditions.worktree_path_absent')" "true" \
+  "leased switch: path absent"
+assert_eq "$(jqf "$out" '.postconditions.branch_absent')" "true" \
+  "leased switch: branch absent"
+assert_eq "$(jqf "$out" '.postconditions.tmux_fingerprint_absent')" "true" \
+  "leased switch: tmux fingerprint absent"
+[ ! -d "$repo/.claude/worktrees/$leased_name" ] \
+  || fail_test "leased switch: original worktree survived"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$leased_name") \
+  && fail_test "leased switch: original branch survived"
+
 finish
