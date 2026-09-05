@@ -66,6 +66,7 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
@@ -822,6 +823,189 @@ fn speculative_run_recovers_a_poller_whose_private_head_is_unavailable() {
     assert_ok(&recovered, "running after a forced verifier termination");
     assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
     assert!(repo.merge_object_artifacts().is_empty());
+}
+
+#[test]
+fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let verifier = repo
+        .common_dir()
+        .join("storyhook")
+        .join("verification-worktree");
+    fs::create_dir_all(verifier.parent().unwrap()).expect("creating the verifier state directory");
+    assert_ok(
+        &repo.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &verifier.display().to_string(),
+            &base,
+        ]),
+        "creating the legacy verifier worktree",
+    );
+
+    let private_objects = scratch_dir();
+    let source_objects = repo.common_dir().join("objects");
+    fs::write(verifier.join("private"), "private\n").expect("writing the private verifier file");
+    assert_ok(
+        &git_with_objects(
+            &verifier,
+            private_objects.path(),
+            &source_objects,
+            &["add", "private"],
+        ),
+        "staging the private verifier file",
+    );
+    let private_tree = git_with_objects(
+        &verifier,
+        private_objects.path(),
+        &source_objects,
+        &["write-tree"],
+    );
+    assert_ok(&private_tree, "writing the private verifier tree");
+    let private_tree = stdout(&private_tree);
+    let private_commit = git_with_objects(
+        &verifier,
+        private_objects.path(),
+        &source_objects,
+        &["commit-tree", &private_tree, "-p", &base, "-m", "private"],
+    );
+    assert_ok(&private_commit, "creating the private verifier commit");
+    let private_commit = stdout(&private_commit);
+    assert_ok(
+        &git_with_objects(
+            &verifier,
+            private_objects.path(),
+            &source_objects,
+            &["checkout", "-q", "--detach", &private_commit],
+        ),
+        "checking out the private verifier commit",
+    );
+    drop(private_objects);
+
+    let broken_fetch = repo.git(&["fetch", "-q", "."]);
+    assert!(
+        !broken_fetch.status.success(),
+        "the fixture must reproduce fetch failure"
+    );
+    assert!(
+        stderr(&broken_fetch).contains("bad object"),
+        "the fixture must fail on the missing verifier object: {}",
+        stderr(&broken_fetch)
+    );
+
+    let script = checkout().join("scripts/verify-pr.sh");
+    let repaired = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
+    );
+    assert_ok(&repaired, "repairing the verifier worktree");
+    let payload: serde_json::Value = serde_json::from_slice(&repaired.stdout)
+        .expect("the verifier repair seam must return JSON");
+    assert_eq!(payload["result"], "verifier-worktree-ready");
+
+    assert_eq!(stdout(&run(&verifier, "git", &["rev-parse", "HEAD"])), base);
+    assert!(!verifier.join("private").exists());
+    assert_eq!(
+        fs::read_to_string(
+            repo.common_dir()
+                .join("storyhook/verification-worktree.format")
+        )
+        .expect("reading the verifier format marker"),
+        "private-gitdir-v1\n"
+    );
+    assert_ok(&repo.git(&["fetch", "-q", "."]), "fetching after repair");
+    assert_ok(
+        &repo.git(&[
+            "fsck",
+            "--no-progress",
+            "--connectivity-only",
+            "--no-dangling",
+        ]),
+        "checking connectivity after repair",
+    );
+
+    let sentinel = verifier.join("persistent-cache-sentinel");
+    fs::write(&sentinel, "keep\n").expect("writing the persistent cache sentinel");
+    let reused = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
+    );
+    assert_ok(&reused, "reusing the healthy verifier worktree");
+    assert!(
+        sentinel.exists(),
+        "a healthy formatted verifier must preserve its caches"
+    );
+
+    fs::write(
+        repo.common_dir()
+            .join("storyhook/verification-worktree.format"),
+        "legacy\n",
+    )
+    .expect("downgrading the verifier format marker");
+    let wrapper_root = scratch_dir();
+    let git_wrapper = wrapper_root.path().join("git");
+    fs::write(
+        &git_wrapper,
+        r#"#!/bin/sh
+if [ "$1" = worktree ] && [ "$2" = remove ]; then
+    "$SH555_REAL_GIT" "$@"
+    exit 42
+fi
+exec "$SH555_REAL_GIT" "$@"
+"#,
+    )
+    .expect("writing the Git exit-status wrapper");
+    let mut permissions = fs::metadata(&git_wrapper)
+        .expect("reading the Git wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&git_wrapper, permissions).expect("making the Git wrapper executable");
+    let real_git = stdout(&run(repo.path(), "sh", &["-c", "command -v git"]));
+    let wrapped_path = format!(
+        "{}:{}",
+        wrapper_root.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let postcondition_repair = Command::new("bash")
+        .args([
+            script.as_os_str(),
+            "--ensure-verifier-worktree".as_ref(),
+            base.as_ref(),
+        ])
+        .current_dir(repo.path())
+        .env("PATH", wrapped_path)
+        .env("SH555_REAL_GIT", real_git)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .output()
+        .expect("running verifier repair through the Git wrapper");
+    assert_ok(
+        &postcondition_repair,
+        "accepting a completed removal despite Git's stale exit status",
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&postcondition_repair.stdout)
+        .expect("the postcondition repair must return JSON");
+    assert_eq!(payload["result"], "verifier-worktree-ready");
+    assert!(
+        !sentinel.exists(),
+        "the mismatched verifier must have been rebuilt"
+    );
 }
 
 #[test]

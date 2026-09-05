@@ -1630,7 +1630,8 @@ fn poll_change_token<S: Store>(
     }
 }
 
-/// Exits when the process named by `STORYHOOK_PARENT_PID` goes away.
+/// Exits when the process named by `STORYHOOK_PARENT_PID` and its optional
+/// `STORYHOOK_PARENT_START_TIME` incarnation goes away.
 ///
 /// The suicide contract, and the layer of orphan defence that catches what the
 /// other three miss. A test binary names itself; every `story` it runs inherits
@@ -1651,9 +1652,11 @@ fn watch_parent(env: &Environment, stop: &AtomicBool) {
     let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
         return;
     };
+    let parent_start_time = crate::daemon::lifecycle::parent_start_time();
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(SHUTDOWN_CHECK);
-        if !crate::daemon::lifecycle::pid_is_live(parent) {
+        if !crate::daemon::lifecycle::process_identity_is_live(parent, parent_start_time.as_deref())
+        {
             eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
             crate::daemon::lifecycle::clear_info(env);
             std::process::exit(0);
