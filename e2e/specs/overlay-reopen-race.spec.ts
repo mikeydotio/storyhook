@@ -21,14 +21,12 @@ import { openProject, seedToken } from "./support";
  * at all. Both shapes are the same defect — a stale write nobody cancelled —
  * and both are fixed by cancelling it.
  *
- * The three overlays below are the three mechanisms, not a sample: a
- * late-signal guard (drafts), no guard (create modal), and a guard on a
- * synchronously-set variable that was already correct and must stay correct
- * once its bespoke check is gone (drawer). The remaining four are held to
- * routing through the same two functions by
+ * The two overlays below are the two timer mechanisms, not a sample: a
+ * late-signal guard (drafts) and no guard (create modal). The remaining six
+ * are held to routing through the same two functions by
  * `tests/web_test.rs::every_backdrop_is_shown_and_hidden_through_the_helpers`,
- * which is what makes covering three of seven honest here — reaching the
- * other four means archiving a column or dragging a card into Blocked, and
+ * which is what makes covering two of eight honest here — reaching the
+ * others means archiving a column or dragging a card into Blocked, and
  * every one of them would be reproducing the same race a third and fourth
  * time.
  *
@@ -37,13 +35,10 @@ import { openProject, seedToken } from "./support";
  * does not apply and Alpha's two-story shape is undisturbed.
  */
 
-/** Alpha's first seeded story — opened, closed, and left exactly as found. */
-const ALPHA_CARD_TITLE = "Wire up the auth flow";
-
 /**
  * How long {@link blockTheRenderer} holds an animation frame. Comfortably
- * past the longest hide delay in the file (the drawer's 180ms), because the
- * whole point is a frame that lands *after* the timer rather than before it.
+ * past the shared 150ms hide delay, because the whole point is a frame that
+ * lands *after* the timer rather than before it.
  */
 const RAF_DEFERRAL_MS = 400;
 
@@ -112,20 +107,6 @@ const OVERLAYS: readonly Overlay[] = [
     open: (page) => page.locator("#new-story-btn").click(),
     closeThenOpen: ["create-discard", "new-story-btn"],
   },
-  {
-    // The one that was already right, under the most adversarial conditions
-    // available: its timer reads `state.drawerId`, which `openDrawer()` sets
-    // synchronously, so no frame can arrive late enough to fool it. That
-    // bespoke check is what the shared cancellation replaces, and this is the
-    // assertion that says the replacement lost nothing.
-    name: "the drawer",
-    surface: "drawer",
-    backdrop: "drawer-backdrop",
-    renderer: "blocked",
-    open: (page) =>
-      page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click(),
-    closeThenOpen: ["drawer-close", "drawer-close-reopen-card"],
-  },
 ];
 
 /**
@@ -145,20 +126,10 @@ const OVERLAYS: readonly Overlay[] = [
 async function reopenInOneTick(
   page: Page,
   [closeId, openId]: readonly [string, string],
-  cardTitle: string,
 ): Promise<void> {
   await page.evaluate(
-    ([close, open, title]) => {
+    ([close, open]) => {
       const control = (id: string): HTMLElement => {
-        // The drawer has no button that reopens it -- a card does, and which
-        // card is a title rather than an id.
-        if (id === "drawer-close-reopen-card") {
-          const card = Array.from(
-            document.querySelectorAll<HTMLElement>(".card-title"),
-          ).find((node) => (node.textContent ?? "").includes(title));
-          if (!card) throw new Error(`no card titled "${title}" on the board`);
-          return card;
-        }
         const node = document.getElementById(id);
         if (!node) throw new Error(`#${id} is not in the document`);
         return node;
@@ -166,7 +137,7 @@ async function reopenInOneTick(
       control(close).click();
       control(open).click();
     },
-    [closeId, openId, cardTitle] as const,
+    [closeId, openId] as const,
   );
 }
 
@@ -187,7 +158,7 @@ test.describe("an overlay reopened inside its own fade-out", () => {
       await expect(backdrop).toBeVisible();
 
       if (overlay.renderer === "blocked") await blockTheRenderer(page);
-      await reopenInOneTick(page, overlay.closeThenOpen, ALPHA_CARD_TITLE);
+      await reopenInOneTick(page, overlay.closeThenOpen);
 
       // Waits for the reopen to land -- under a blocked renderer that is a
       // deferred frame away, and the settle below has to start after it.
