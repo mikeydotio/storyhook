@@ -118,6 +118,18 @@ the store the same way any `story` caller does, and the engine reads the store.
 There is no lane-to-engine channel to go stale, and no agent assertion of
 completion to be wrong (D3).
 
+**Daemon-owned non-retryable work drains before graceful replacement
+(SH-556).** The centralized verifier and synchronous dashboard `stop --now`
+cleanup both enter the daemon's shared lifecycle registry before they mutate
+external state. Verification publishes
+`verify:<project>:<story>:<generation>` and stays owned through outcome and
+story-state recording. Immediate engine stop publishes
+`engine-stop:<project>:<run>` and stays owned through lane termination,
+unclaim, and final run-state recording. Ordinary engine controls and requests
+rejected during validation never enter the registry. Graceful replacement
+therefore waits for either operation; forced shutdown retains its existing
+stale-ledger recovery behavior.
+
 ## Type-system proposal
 
 ```mermaid
@@ -752,9 +764,11 @@ directions.
 | `plugins/story/tests/test-full-auto-hook.sh` | hook decisions against real payloads |
 | `plugins/story/tests/test-full-auto-inert.sh` | the hook is inert with the marker unset |
 | `e2e/specs/engine.spec.ts` | header control, lanes stepper, live lane panel, banner + ack |
-| `src/service/gate_progress.rs` (unit tests) | the SH-524 journal fold and render: truncated lines, unknown kinds, estimated-vs-explicit denominators, derived parent status, the stale-gate header |
-| `src/daemon/verification_progress.rs` (unit tests) | `PublishBackoff`'s exact 1→2→5→10 minute ladder and its reset-on-any-move |
-| `tests/verification_queue.rs` | the running candidate's live checklist, a queued candidate's position, rewrite-not-append, an unchanged body writing nothing, a story leaving `verifying` freezing its checklist |
+| `src/service/gate_progress.rs` (unit tests) | the SH-524 journal fold and render: attempt generation, current step, exact totals, truncated lines, unknown kinds, derived parent status, and the stale-gate header |
+| `src/daemon/verification_progress.rs` (unit tests) | `PublishBackoff`'s exact 1→2→5→10 minute ladder, reset-on-any-move, and file-activity staleness for untimestamped case records |
+| `tests/verification_queue.rs` | active ownership during the blocking actuator call and outcome writes; priority overtaking; release on result/error/unwind; generation isolation; running/queued `/data`; live checklist and queue comments |
+| `tests/verification_shutdown_drain.rs` | accepted verification joins the daemon's durable drain set while a higher-priority arrival stays queued, then retracts ownership after outcome recording |
+| `tests/web_test.rs`; `e2e/specs/verification-status.spec.ts` | queued wire status and omission elsewhere; running, queued, starting, accessible status, percentage, and deterministic one-second elapsed updates in Chromium and WebKit |
 | `tests/store_isolation.rs` | every data-dir-isolating harness also neutralizes `$STORYHOOK_GATE_PROGRESS`, `scripts/run-e2e.sh` named as the one exception |
 | `tests/invoker_seam.rs` | the `Intent::Append` set is exactly three, named |
 
@@ -1554,20 +1568,39 @@ run rather than falling back to the former `N/~N` seen-so-far display: a
 moving denominator made unfinished work look complete, defeating the progress
 surface precisely when an operator was deciding whether a gate had wedged.
 
-**Publishing needs no coordination with the verifier thread.** The obvious
-design — a shared `Arc<Mutex<Option<ActiveRun>>>` the verifier writes and the
-publisher reads — was considered and dropped: verification is strictly
-serial and queue membership is already a store fact
-(`crate::service::verification`'s own module doc says so for `next()`
-itself), so the publisher independently asks the identical
-`VerificationQueue::ordered()` the verifier drains from. Its first element is
-always the candidate whose journal the actuator is currently writing;
-everything after it is queued, and its position and "ahead of it" breakdown
-(higher priority vs. equal priority and older) fall out of the same sorted
-list with no second query that could race the one `next()` used. A story
-that leaves `verifying` — landed, or returned to its agent for repair —
-simply stops appearing in `ordered()`, so its checklist freezes at its last
-state with no special-case code.
+**Queue order and active ownership are different facts (SH-549).** The
+verification worker is serial, but its ordered store query is live: a newly
+submitted higher-priority story can become the queue head while a lower-
+priority actuator call is still blocking. The daemon therefore shares one
+process-local `VerificationActivity` slot across the worker, progress
+publisher, and dashboard route. An RAII guard acquires the exact `(project,
+story, verifying-transition generation)` for the accepted verification
+transaction and clears it after the outcome is recorded, on every return or
+unwind. `VerificationQueue::ordered()` still defines waiting order, after
+excluding that exact active generation; it never answers which attempt is
+running. A story that leaves `verifying` simply disappears from both status
+surfaces and its last progress comment remains frozen.
+
+**Active verification is daemon work and drains before graceful replacement
+(SH-556).** The worker shares the daemon's one `InFlight` registry with request
+dispatch and shutdown. After candidate checkout and pull-request validation,
+it publishes a `verify:<project>:<story>:<generation>` entry before acquiring
+the process-local activity guard, then holds both guards through the actuator
+and durable outcome/state transition. Thus “under test” implies both exact UI
+ownership and membership in the set graceful shutdown waits to empty. Idle,
+malformed, missing-checkout, and cleanup-only candidates never enter that set.
+Forced shutdown and crashes remain different by design: the next daemon
+ledgers and clears their stale entry, starts with an empty activity slot, and
+reapplies live queue priority rather than honoring dead ownership.
+
+**Journal detail belongs to one generation.** The actuator initializes each
+journal with a `run` record naming the latest `verifying` transition. Current
+step and exact test totals are consumed only when that generation matches the
+active slot; an old attempt can never supply telemetry to a resubmission.
+Before matching telemetry arrives, active ownership is still known and the
+dashboard reports `Verifying · starting…`. Journal staleness follows file
+modification time rather than embedded event timestamps because `case` records
+intentionally omit `at` while still proving the gate is making progress.
 
 **The cadence is a backoff, not a fixed interval, by binding operator
 determination (2026-08-31).** Comments are append-only events and every
@@ -1706,6 +1739,24 @@ immediate whole-group termination. These are short control operations, not a
 release gate, so reusing that boundary avoids a second opinion about helper
 patience. A stalled remediation or cleanup attempt now returns its contextual
 error to the existing awaiting/retry paths instead of wedging the worker.
+
+### SH-555 — legacy verifier worktree recovery
+
+SH-552 keeps new speculative commits out of the persistent verifier's shared
+Git administration, but worktrees created before that boundary can retain
+HEAD and reflog entries whose private objects have already been deleted. Git's
+fetch connectivity check walks those shared entries, so it can install every
+requested remote object and still exit with `fatal: bad object`.
+
+`verify-pr.sh` now establishes the verifier worktree before its first fetch.
+A format marker distinguishes worktrees created under SH-552's private-Git-dir
+contract. A markerless, mismatched, or unresolvable verifier is disposable:
+the script removes it through `git worktree remove --force` and recreates it
+detached at a known local commit, replacing its HEAD, reflog and index as one
+Git-owned lifecycle operation. A healthy marked verifier is reused so its
+build caches survive. The private `--ensure-verifier-worktree` seam lets a
+real-Git regression reproduce the missing-object fetch failure and prove both
+recovery and healthy reuse without imitating GitHub.
 
 ### SH-466 — restart reconciliation
 
@@ -1906,8 +1957,17 @@ must use that lease and accept success only after the helper echoes it and
 proves that no exact-name story window remains on the leased tmux server. A
 legacy lane without a lease is retained with an explicit error instead of
 inventing cleanup identity from mutable checkout or provider settings. A
-partially failed stop-now can be retried. Quarantined lanes are already
-evidence and are cleared without unclaiming or deleting that evidence.
+fresh dispatching lane is not legacy: stop-now first makes the run draining,
+waits within the dispatch helper's existing bound for its validated lease, and
+then performs the same exact cleanup. A reconcile already inside one dispatch
+checks that the run is still `running` in the same write transaction that
+selects and claims the next story **and** marks its lane `dispatching`. Stop
+transitioning the run to `draining` therefore linearizes before any later
+claim, while a claim that linearizes first is already visible to stop as an
+occupied lane; neither a separate preflight read nor a later lane write can
+authorize work after stop. A partially failed stop-now can be retried.
+Quarantined lanes are already evidence and are cleared without unclaiming or
+deleting that evidence.
 
 ### SH-467 — a singular operational CLI
 

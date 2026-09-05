@@ -6,8 +6,10 @@
 
 mod store_support;
 
-use std::path::Path;
-use std::sync::{Arc, Barrier};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
+use std::time::Duration;
 
 use rusqlite::{Connection, params};
 use store_support::{create_story, new_store, raw, seed_project};
@@ -16,12 +18,13 @@ use storyhook::error::AppError;
 use storyhook::service::engine::{
     DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW, StartRequest,
 };
-use storyhook::service::{ConfigService, NewStoryInput, StoryService};
+use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
+use storyhook::store::ids::StoryNo;
 use storyhook::store::migrate;
 use storyhook::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
-    EngineRunState, EngineScope, NewProject, ReadOps, SqliteStore, Store, StoreError, WriteOps,
-    diff_read_model,
+    Access, EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord,
+    EngineRunRecord, EngineRunState, EngineScope, MigrationReport, NewProject, ReadOps,
+    SqliteStore, Store, StoreError, WriteOps, WriteWithSnapshot, diff_read_model,
 };
 use storyhook_test_support::{
     DispatcherCall, DispatcherStep, FIXTURE_NOW, FakeDispatcher, ServiceFixture, scratch_dir,
@@ -709,6 +712,249 @@ fn duplicate_live_start_is_settled_by_the_partial_index_and_named() {
     assert_eq!(
         refusal.to_string(),
         "project `fixture` already has a live engine run"
+    );
+}
+
+/// A second connection whose selected write pauses before opening its SQLite
+/// transaction. This makes the old run-check/claim gap deterministic: stop can
+/// commit through the first connection while reconcile is between those two
+/// operations, without adding a production timing seam.
+struct WriteGateStore {
+    inner: SqliteStore,
+    write_index: AtomicUsize,
+    gated_index: usize,
+    gate_after_commit: bool,
+    entered: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl WriteGateStore {
+    fn before(
+        inner: SqliteStore,
+        gated_index: usize,
+    ) -> (Self, mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        Self::at(inner, gated_index, false)
+    }
+
+    fn after(
+        inner: SqliteStore,
+        gated_index: usize,
+    ) -> (Self, mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        Self::at(inner, gated_index, true)
+    }
+
+    fn at(
+        inner: SqliteStore,
+        gated_index: usize,
+        gate_after_commit: bool,
+    ) -> (Self, mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        (
+            Self {
+                inner,
+                write_index: AtomicUsize::new(0),
+                gated_index,
+                gate_after_commit,
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            },
+            entered_rx,
+            release_tx,
+        )
+    }
+}
+
+impl Store for WriteGateStore {
+    fn access(&self) -> Access {
+        self.inner.access()
+    }
+
+    type ReadTx<'a> = <SqliteStore as Store>::ReadTx<'a>;
+    type WriteTx<'a> = <SqliteStore as Store>::WriteTx<'a>;
+
+    fn read<T>(
+        &self,
+        f: impl FnOnce(&Self::ReadTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.inner.read(f)
+    }
+
+    fn write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let gated = self.write_index.fetch_add(1, Ordering::SeqCst) == self.gated_index;
+        if gated && !self.gate_after_commit {
+            self.entered.send(()).expect("announce gated engine write");
+            self.release
+                .lock()
+                .expect("write gate release mutex")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release gated engine write");
+        }
+        let result = self.inner.write(f);
+        if gated && self.gate_after_commit {
+            self.entered.send(()).expect("announce gated engine write");
+            self.release
+                .lock()
+                .expect("write gate release mutex")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release gated engine write");
+        }
+        result
+    }
+
+    fn migrate(&self) -> Result<MigrationReport, StoreError> {
+        self.inner.migrate()
+    }
+
+    fn change_token(&self) -> Result<u64, StoreError> {
+        self.inner.change_token()
+    }
+
+    fn snapshot(&self, dir: &Path, label: &str) -> Result<PathBuf, StoreError> {
+        self.inner.snapshot(dir, label)
+    }
+
+    fn write_with_snapshot<T>(
+        &self,
+        dir: &Path,
+        label: &str,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<WriteWithSnapshot<T>, StoreError> {
+        self.inner.write_with_snapshot(dir, label, f)
+    }
+}
+
+#[test]
+fn stop_linearizes_before_the_next_engine_claim_and_prevents_late_dispatch() {
+    let fixture = ServiceFixture::new();
+    StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "must not be reclaimed after stop".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    let start_ctx = fixture.ctx();
+    let start_dispatcher = FakeDispatcher::default();
+    let run = EngineService::new(&start_ctx, &start_dispatcher)
+        .start(start_request(2))
+        .unwrap();
+
+    let second_connection = SqliteStore::open(fixture.env().store_path()).unwrap();
+    // Reconcile's first write is its no-op breaker fold. The second is the
+    // ready claim, immediately after the old standalone run-state read.
+    let (gated_store, claim_entered, release_claim) = WriteGateStore::before(second_connection, 1);
+    let dispatch = FakeDispatcher::default();
+
+    let reconcile = std::thread::scope(|scope| {
+        let run_id = run.id.clone();
+        let ctx = Ctx::new(
+            &gated_store,
+            fixture.project(),
+            fixture.cwd(),
+            fixture.env().clone(),
+        )
+        .clock(Clock::Fixed(FIXTURE_NOW.into()));
+        let worker_dispatch = dispatch.clone();
+        let worker =
+            scope.spawn(move || EngineService::new(&ctx, &worker_dispatch).reconcile(&run_id));
+
+        claim_entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reconcile reached the claim transaction boundary");
+        let stop_ctx = fixture.ctx();
+        let stop_dispatcher = FakeDispatcher::default();
+        let stopped = EngineService::new(&stop_ctx, &stop_dispatcher)
+            .stop(&run.id, true)
+            .unwrap();
+        assert_eq!(stopped.run.state, EngineRunState::Finished);
+        release_claim.send(()).expect("release the pending claim");
+        worker.join()
+    });
+
+    reconcile
+        .expect("reconcile must not reach the unscripted dispatcher after stop")
+        .unwrap();
+    assert!(dispatch.calls().is_empty());
+    let story = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(story.state, "todo");
+    let lanes = fixture.store().read(|tx| tx.engine_lanes(&run.id)).unwrap();
+    assert!(lanes.iter().all(|lane| lane.state == EngineLaneState::Idle));
+}
+
+#[test]
+fn a_claim_and_its_dispatching_lane_become_visible_in_one_commit() {
+    let fixture = ServiceFixture::new();
+    StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "claim and lane share ownership".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    let start_ctx = fixture.ctx();
+    let start_dispatcher = FakeDispatcher::default();
+    let run = EngineService::new(&start_ctx, &start_dispatcher)
+        .start(start_request(2))
+        .unwrap();
+
+    let second_connection = SqliteStore::open(fixture.env().store_path()).unwrap();
+    // Pause after the claim transaction commits but before reconcile can make
+    // any later write. A reader must never observe the claimed story beside an
+    // idle lane: stop would treat that combination as safe to finish.
+    let (gated_store, claim_committed, release_reconcile) =
+        WriteGateStore::after(second_connection, 1);
+    let dispatch = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({
+            "ok": true,
+            "cleanup_lease": cleanup_lease("SH-1", Path::new("/preserved/SH-1")),
+        }),
+    ))]);
+
+    let atomic_view = std::thread::scope(|scope| {
+        let run_id = run.id.clone();
+        let ctx = Ctx::new(
+            &gated_store,
+            fixture.project(),
+            fixture.cwd(),
+            fixture.env().clone(),
+        )
+        .clock(Clock::Fixed(FIXTURE_NOW.into()));
+        let worker_dispatch = dispatch.clone();
+        let worker =
+            scope.spawn(move || EngineService::new(&ctx, &worker_dispatch).reconcile(&run_id));
+
+        claim_committed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reconcile committed its claim transaction");
+        let story = fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        let lane = fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run.id))
+            .unwrap()
+            .into_iter()
+            .find(|lane| lane.story_id.as_deref() == Some("SH-1"));
+        let atomic = story.state == "in-progress"
+            && lane.is_some_and(|lane| lane.state == EngineLaneState::Dispatching);
+        release_reconcile
+            .send(())
+            .expect("release reconcile after observing its commit");
+        worker.join().unwrap().unwrap();
+        atomic
+    });
+
+    assert!(
+        atomic_view,
+        "a claimed engine story was visible before its dispatching lane"
     );
 }
 

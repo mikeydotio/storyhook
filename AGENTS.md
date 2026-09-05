@@ -190,11 +190,9 @@ project it is looking at.
 ## Mini-roadmap
 
 - Current: verify SH-204's lowercase label identity and shared label editor
-  while SH-552 keeps verifier worktree refs resolvable throughout speculative
-  centralized-gate runs.
-- Next: make verification ownership durable and priority-preemptible so a
-  queued high-priority candidate is never hidden behind stale ownership.
-- Later: expose queue health and verification diagnostics in engine/dashboard
-  surfaces.
-- Later: harden provider UI automation against approval-contract drift and
-  remaining Full Auto recovery and cleanup ownership boundaries.
+  through the repaired, installed centralized verifier.
+- Next: audit verifier behavior end to end (SH-560).
+- Later: separate the project-owned roadmap from generated agent instructions
+  (SH-557).
+- Later: resume the attachment epic's authenticated serving and upload work
+  (SH-315).

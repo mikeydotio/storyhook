@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
 use super::bus::{Change, ChangeBus};
+use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
 use crate::domain::github_remote::parse_github_url;
 use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
@@ -23,10 +25,100 @@ use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
 };
-use crate::store::{PrLink, ReadOps, Store};
+use crate::store::{GlobalSeq, PrLink, ProjectId, ReadOps, Store};
 
 /// Infrastructure recovery cadence when no store event arrives.
 const RECOVERY_WAKE: Duration = Duration::from_secs(30);
+
+/// One verification generation currently owned by this daemon's serialized
+/// verifier. Queue rank is deliberately absent: priority may change while an
+/// attempt is running, but ownership cannot (SH-549).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveVerification {
+    /// Store identity of the story's project.
+    pub project: ProjectId,
+    /// Display id of the story being verified.
+    pub story_id: String,
+    /// Exact latest transition into `verifying` that this attempt owns.
+    pub generation: Option<GlobalSeq>,
+    /// When the verifier acquired this generation.
+    pub started_at: String,
+}
+
+/// Process-local source of truth for verifier ownership.
+///
+/// Ownership cannot survive the daemon process that owns the synchronous
+/// verification subprocess, so persisting it would create stale leases after
+/// crashes. Clones share one slot across the verifier, progress publisher and
+/// HTTP dispatcher.
+#[derive(Clone, Default)]
+pub struct VerificationActivity {
+    active: Arc<Mutex<Option<ActiveVerification>>>,
+}
+
+impl VerificationActivity {
+    /// Creates an empty registry. After daemon restart every surviving
+    /// `verifying` story is queued until the new worker acquires it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the generation owned at this instant, if any.
+    #[must_use]
+    pub fn active(&self) -> Option<ActiveVerification> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Marks `candidate` active until the returned guard is dropped.
+    ///
+    /// The daemon has one serialized worker; a second simultaneous acquire is
+    /// therefore an invariant violation rather than another queue slot.
+    #[must_use]
+    pub fn acquire(
+        &self,
+        candidate: &VerificationCandidate,
+        started_at: String,
+    ) -> VerificationGuard {
+        let active = ActiveVerification {
+            project: candidate.project,
+            story_id: candidate.story_id.clone(),
+            generation: candidate.verifying_generation,
+            started_at,
+        };
+        let mut slot = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(slot.is_none(), "the serialized verifier acquired twice");
+        *slot = Some(active.clone());
+        VerificationGuard {
+            registry: self.clone(),
+            active,
+        }
+    }
+}
+
+/// Clears exactly the acquisition it represents. The identity check prevents
+/// a delayed drop from clearing a later attempt if verifier concurrency ever
+/// changes accidentally.
+pub struct VerificationGuard {
+    registry: VerificationActivity,
+    active: ActiveVerification,
+}
+
+impl Drop for VerificationGuard {
+    fn drop(&mut self) {
+        let mut slot = self
+            .registry
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref() == Some(&self.active) {
+            *slot = None;
+        }
+    }
+}
 
 /// Largest observed `make test` runtime under this machine's ordinary
 /// concurrent workload, recorded by the Full Auto design investigation.
@@ -326,7 +418,19 @@ impl VerificationActuator for ShellVerificationActuator {
                 parent.display()
             );
         }
-        if let Err(error) = std::fs::write(&journal, "") {
+        let initial = candidate
+            .verifying_generation
+            .map_or_else(String::new, |generation| {
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "kind": "run",
+                        "generation": generation.get(),
+                        "at": self.env.now(),
+                    })
+                )
+            });
+        if let Err(error) = std::fs::write(&journal, initial) {
             eprintln!(
                 "storyhook: could not truncate verification progress journal {}: {error}",
                 journal.display()
@@ -510,6 +614,28 @@ pub fn tick_with<S: Store, A: VerificationActuator>(
     env: &Environment,
     actuator: &A,
 ) -> Result<TickResult, AppError> {
+    let inflight = InFlight::new(env.clone());
+    tick_with_activity(
+        store,
+        env,
+        actuator,
+        &VerificationActivity::new(),
+        &inflight,
+    )
+}
+
+/// Runs one verification attempt while publishing process-local ownership
+/// through `activity` and shutdown ownership through `inflight`.
+///
+/// Public for the blocking-actuator integration tests that prove queue
+/// reordering cannot steal either ownership signal (SH-549, SH-556).
+pub fn tick_with_activity<S: Store, A: VerificationActuator>(
+    store: &S,
+    env: &Environment,
+    actuator: &A,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+) -> Result<TickResult, AppError> {
     let queue = VerificationQueue::new(store);
     let Some(candidate) = queue.next()? else {
         let Some(candidate) = queue.next_cleanup()? else {
@@ -559,7 +685,28 @@ pub fn tick_with<S: Store, A: VerificationActuator>(
         }
     };
 
-    match actuator.verify(&candidate, &pull_request) {
+    let started_at = env.now();
+    let generation = candidate.verifying_generation.map_or_else(
+        || "legacy".to_string(),
+        |generation| generation.get().to_string(),
+    );
+    let lifecycle_entry = inflight.enter();
+    lifecycle_entry.name(CurrentRequest {
+        request_id: format!(
+            "verify:{}:{}:{generation}",
+            candidate.project_slug, candidate.story_id
+        ),
+        command: "verify".to_string(),
+        project: Some(candidate.project_slug.clone()),
+        pid: std::process::id(),
+        started_at: started_at.clone(),
+        served_deadline_secs: VERIFICATION_TIMEOUT.as_secs(),
+        cwd: candidate.checkout.clone(),
+    });
+    let active = activity.acquire(&candidate, started_at);
+    let outcome = actuator.verify(&candidate, &pull_request);
+
+    match outcome {
         VerificationOutcome::Merged { tree, detail } => {
             StoryService::new(&ctx).comment(
                 &candidate.story_id,
@@ -569,6 +716,11 @@ pub fn tick_with<S: Store, A: VerificationActuator>(
                 ),
             )?;
             queue.record_merged(&ctx, &candidate.story_id, &pull_request.url)?;
+            // Reaping is cleanup for work whose durable outcome is already
+            // recorded; it must not keep graceful shutdown waiting on the
+            // completed verification transaction.
+            drop(active);
+            drop(lifecycle_entry);
             match actuator.reap(&candidate) {
                 Ok(()) => record_cleanup_complete(&ctx, &candidate)?,
                 Err(error) => record_cleanup_required(&ctx, &candidate, &error)?,
@@ -704,11 +856,13 @@ pub(crate) fn poll_verification(
     env: &Environment,
     bus: &ChangeBus,
     stop: &AtomicBool,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
 ) {
     let subscription = bus.subscribe();
     let actuator = ShellVerificationActuator::new(env.clone());
     while !stop.load(Ordering::Relaxed) {
-        match tick_with(store, env, &actuator) {
+        match tick_with_activity(store, env, &actuator, activity, inflight) {
             Ok(TickResult::Completed | TickResult::Returned) => continue,
             Ok(TickResult::RetryLater) => {
                 let retry_at = Instant::now() + RECOVERY_WAKE;
