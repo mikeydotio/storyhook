@@ -212,10 +212,11 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of exact, durable non-verification cleanup
-  receipts for SH-539, while reconciling Full Auto lane accounting so
-  `verifying` is an intentional handoff rather than a stall.
-- Next: expose queue health and verification diagnostics in engine/dashboard
+- Current: bound centralized verification subprocesses and preserve recovery
+  of the persistent verifier worktree after timeout.
+- Next: make verification ownership durable and priority-preemptible so a
+  queued high-priority candidate is never hidden behind stale ownership.
+- Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.
