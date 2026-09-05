@@ -1,26 +1,26 @@
-# SH-539 Handoff
+# SH-555 Handoff
 
 ## Delivered
 
-- Dispatch protocol 4 returns its versioned creation-time cleanup lease.
-- Migration 29 persists that lease on each engine lane across daemon restart,
-  after main's pane-identity and quarantine-history migrations 27 and 28.
-- Stop-now uses only the persisted lease and requires an echoed exact-window
-  absence receipt; legacy unleased lanes remain occupied with a loud error.
-- `complete`, `unclaim`, and `reset` now return nonzero `ok:false` when attempted
-  tmux or Git cleanup cannot prove its postcondition.
-- Failed dispatch rollback reports surviving markers, worktrees, and branches.
+- Repaired this repository's legacy persistent verifier worktree under a
+  graceful daemon stop; connectivity checks and ordinary fetch now succeed.
+- `verify-pr.sh` repairs legacy or unreadable verifier administration before
+  fetch, then marks worktrees created under SH-552's private-Git-dir contract.
+- Healthy marked worktrees remain persistent and retain build caches.
+- A real-Git regression reproduces missing private HEAD/reflog/index objects
+  and proves repair, fetch connectivity, and healthy reuse.
 
 ## Verification scope
 
-- Rust: engine run model, restart/reconcile, dispatcher, daemon/dispatch API,
-  plugin contract, schema migration/fixture.
-- Shell: dispatch lease output, dispatch rollback survivor, complete, unclaim,
-  and reset cleanup failures.
+- `bash -n scripts/verify-pr.sh`
+- `cargo fmt --all -- --check`
+- `cargo clippy --test merge_gate -- -D warnings`
+- `cargo test --test merge_gate`
+- Repository/generated AGENTS equality regression
 
 ## Submission contract
 
-- Branch: `worktree-SH-539`.
-- Current `origin/main` is merged additively; published history is unchanged.
-- The one linked PR must remain open for the centralized verifier.
-- The verifier owns the full suite, merge, completion, and worktree cleanup.
+- Branch: `worktree-SH-555`.
+- Exactly one open PR references SH-555 and contains SH-555 in its title.
+- The centralized verifier owns the complete suite, merge, story completion,
+  and worktree cleanup.
