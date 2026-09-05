@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use storyhook_test_support::{
-    TestEnv, daemon_containment, path_without_tailscale, scratch_dir, story_binary,
+    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, daemon_containment, path_without_tailscale,
+    scratch_dir, story_binary,
 };
 use tempfile::TempDir;
 
@@ -385,21 +386,17 @@ fn concurrent_clients_produce_exactly_one_daemon_per_store() {
     let mut running = Vec::new();
     for _ in 0..4 {
         for store in [&one, &two] {
+            let mut command = probe.story(&repo);
+            command.args(["--store-path", store.to_str().unwrap(), "project", "list"]);
             running.push(
-                probe
-                    .story(&repo)
-                    .args(["--store-path", store.to_str().unwrap(), "project", "list"])
-                    // Piped, so that a loser's diagnostics reach the assertion
-                    // below instead of the test runner's own output.
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
-                    .expect("spawning a racing client"),
+                ChildGuard::spawn_with_output(&mut command).expect("spawning a racing client"),
             );
         }
     }
-    for child in running {
-        let out = child.wait_with_output().expect("waiting for a client");
+    for mut child in running {
+        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a racing store client did not finish".to_string()
+        });
         assert!(
             out.status.success(),
             "every racing client must succeed; one said:\n{}",
@@ -1368,13 +1365,11 @@ fn every_spelling_that_starts_a_daemon_honours_the_preferred_port() {
             .args(*spelling);
 
         let bound = if *foreground {
-            let child = command
+            command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .expect("spawning a foreground daemon");
-            let _guard = storyhook_test_support::ChildGuard::new(child);
+                .stderr(std::process::Stdio::null());
+            let _guard = ChildGuard::spawn(&mut command).expect("spawning a foreground daemon");
             await_published_port(&probe)
         } else {
             ok(&mut command);

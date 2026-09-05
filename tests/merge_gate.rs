@@ -62,13 +62,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output};
+use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
 
 /// The checkout under test — the tracked scripts and hooks live here.
@@ -237,7 +237,7 @@ impl MergeRepo {
         head: &str,
         poller: &Path,
         marker: &Path,
-    ) -> Child {
+    ) -> ChildGuard {
         let mut command = Command::new("bash");
         command
             .arg(checkout().join("scripts/merge-watch.sh"))
@@ -271,9 +271,7 @@ impl MergeRepo {
                 Ok(())
             });
         }
-        command
-            .spawn()
-            .expect("spawning the speculative-run signal probe")
+        ChildGuard::spawn(&mut command).expect("spawning the speculative-run signal probe")
     }
 
     fn spawn_blocked_speculative_run(
@@ -284,8 +282,9 @@ impl MergeRepo {
         poller: &Path,
         ready: &Path,
         release: &Path,
-    ) -> Child {
-        Command::new("bash")
+    ) -> ChildGuard {
+        let mut command = Command::new("bash");
+        command
             .arg(checkout().join("scripts/merge-watch.sh"))
             .args([
                 "--speculative-run",
@@ -306,9 +305,8 @@ impl MergeRepo {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-            .spawn()
-            .expect("spawning the blocked speculative run")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+        ChildGuard::spawn(&mut command).expect("spawning the blocked speculative run")
     }
 
     fn merge_object_artifacts(&self) -> Vec<PathBuf> {
@@ -679,7 +677,9 @@ fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked()
     let fetch = repo.git(&["fetch", "-q", "."]);
 
     fs::write(&release, "release\n").expect("releasing the speculative gate");
-    let status = child.wait().expect("waiting for the speculative gate");
+    let status = child.wait_within(Duration::from_secs(5), || {
+        "the speculative gate did not exit after release".to_owned()
+    });
 
     assert!(
         status.success(),
@@ -782,11 +782,13 @@ fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
         let mut child = repo.spawn_speculative_run(&expected_tree, &base, &head, &poller, &marker);
         wait_for(&marker);
         let signal = Command::new("kill")
-            .args(["-s", name, &child.id().to_string()])
+            .args(["-s", name, &child.pid().to_string()])
             .output()
             .expect("signalling speculative-run");
         assert_ok(&signal, "signalling speculative-run");
-        let status = child.wait().expect("waiting for signalled speculative-run");
+        let status = child.wait_within(Duration::from_secs(5), || {
+            format!("the speculative run did not exit after {name}")
+        });
         assert_eq!(status.signal(), Some(number), "{name} must be re-raised");
         assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
         assert!(

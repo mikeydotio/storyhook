@@ -1,6 +1,6 @@
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
-import { fullKeyboardAccess, openProject, seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * SH-299 — an overlay is modal for every input device, or it is modal for
@@ -9,26 +9,20 @@ import { fullKeyboardAccess, openProject, seedToken } from "./support";
  * `.backdrop` is `position: fixed; inset: 0; z-index: 40`, so every overlay in
  * `web_dashboard.html` has always been modal for the *mouse*. Nothing marked
  * the background `inert`, so none of them was ever modal for the *keyboard*:
- * the board, the topbar and the settings table behind an open drawer kept
- * their place in the tab order and stayed activatable with Enter. The two
+ * the board and topbar behind an open overlay kept their place in the tab
+ * order and stayed activatable with Enter. The two
  * halves of the same surface disagreed about whether it was modal, and the
  * users who lost that disagreement were the ones least able to work around
  * it.
  *
- * That asymmetry is also the mechanism SH-290's defect was reachable through:
- * with a drawer open over Settings, the Statuses button could not be clicked
- * (the click landed on the backdrop, which dismissed the drawer) and could be
- * pressed. `drawer-screen-scope.spec.ts` was built on exactly that route and
- * had to be re-driven when this closed it — see its own header.
+ * SH-554 later removed story detail from this registry entirely: it is now a
+ * non-modal workspace peer, covered by `detail-panel.spec.ts`.
  *
  * Everything here is read-only against the seeded fixtures: no story is
  * created, moved or deleted, so `tests/e2e_fixture_hygiene.rs`'s cleanup
  * registration does not apply, and Alpha's byte-for-byte two-story shape (per
  * `run-e2e.sh`) is undisturbed.
  */
-
-/** Alpha's first seeded story — opened, inspected, and left exactly as found. */
-const ALPHA_CARD_TITLE = "Wire up the auth flow";
 
 /**
  * The surface id of every backdrop-based overlay, read off the live document
@@ -54,12 +48,11 @@ async function overlaySurfaceIds(page: Page): Promise<string[]> {
  *
  * `activeId` names the one surface that may be interactive; `null` means
  * nothing is open. Note what is asserted in *that* case: the app shell is
- * live, and all seven surfaces are still `inert`. A closed `.modal` is only
- * `opacity: 0; pointer-events: none` and a closed `.drawer` only
- * `translateX(100%)`, neither of which takes anything out of the tab order,
- * so before SH-299 six shut dialogs' fields sat in the sequence in front of
- * the board. "Nothing is open" is a state with an invariant of its own, not
- * an absence of one.
+ * live, and all registered surfaces are still `inert`. A closed `.modal` is
+ * only `opacity: 0; pointer-events: none`, which does not take anything out
+ * of the tab order, so before SH-299 shut dialogs' fields sat in the sequence
+ * in front of the board. "Nothing is open" is a state with an invariant of
+ * its own, not an absence of one.
  */
 async function expectModalityFor(
   page: Page,
@@ -78,7 +71,7 @@ async function expectModalityFor(
   // Covered is exactly what the backdrop dims. `#toast-stack` and
   // `#dispatch-history` are `z-index: 60` against its 40 and render over an
   // open overlay by an older, deliberate decision, so a mouse has always
-  // reached them with a drawer open — they are already symmetric, and
+  // reached them with a modal open — they are already symmetric, and
   // inerting them would invent a new behaviour rather than repair one.
   await expect(page.locator("#toast-stack")).not.toHaveAttribute("inert", "");
   await expect(page.locator("#dispatch-history")).not.toHaveAttribute(
@@ -114,22 +107,15 @@ test.describe("with a credential", () => {
   });
 
   /**
-   * The three overlays reachable without writing anything. The other four are
+   * The overlays reachable without writing anything. The others are
    * driven elsewhere in this file (the delete modal, below) or reached only by
-   * mutating a fixture — a drag into Blocked, a column archive — and all seven
+   * mutating a fixture — a drag into Blocked, a column archive — and all eight
    * are held to calling the same two functions by
    * `tests/web_test.rs::every_backdrop_overlay_is_wired_into_the_focus_trap`,
    * which is what makes covering a representative set here honest rather than
    * a sample.
    */
   const OVERLAYS = [
-    {
-      name: "the drawer",
-      surface: "drawer",
-      open: (page: Page) =>
-        page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click(),
-      close: (page: Page) => page.locator("#drawer-close").click(),
-    },
     {
       name: "the create modal",
       surface: "create-modal",
@@ -170,65 +156,6 @@ test.describe("with a credential", () => {
   }
 
   /**
-   * The property the story is named for, asserted against the exact control
-   * SH-290 rode in on. `#settings-btn` is asked to take focus through the DOM
-   * API itself rather than through a Playwright action, so what is being
-   * proved is that the *platform* refuses — an inert element is not a
-   * focusable area — rather than that a helper declined to try.
-   */
-  test("no background control can be focused while the drawer is open", async ({
-    page,
-  }) => {
-    await page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click();
-    await expect(page.locator("#drawer")).toHaveClass(/open/);
-
-    for (const id of ["settings-btn", "home-btn", "new-story-btn"]) {
-      await page.evaluate((target) => {
-        document.getElementById(target)?.focus();
-      }, id);
-      await expect(page.locator(`#${id}`)).not.toBeFocused();
-    }
-    expect(await focusIsInside(page, "drawer")).toBe(true);
-  });
-
-  /**
-   * The same property from the user's side rather than the API's: Tab, over
-   * and over, never leaves the drawer. Twenty presses is more than the drawer
-   * holds focusable controls, so this crosses whatever wrap the browser
-   * performs at the end of the document — which is the moment a hole in the
-   * trap would show, and the one a single Tab would miss.
-   *
-   * "Never leaves the drawer" is exact here rather than approximate: the two
-   * uncovered regions (`#toast-stack`, `#dispatch-history`) are empty in this
-   * arrangement, and the first holds nothing focusable in any arrangement, so
-   * the only thing a stray Tab could reach is the dimmed background.
-   */
-  test("Tab never escapes the open drawer", async ({ page, browserName }) => {
-    // WebKit's Tab order skips buttons and links unless this machine has
-    // Full Keyboard Access on (`AppleKeyboardUIMode >= 2`) -- real Safari's
-    // own out-of-box behavior, not a bug this suite can assert around
-    // (SH-335 -- story show SH-335 carries the verdict). The trap
-    // itself is unconditional in `web_dashboard.html`; what's untestable
-    // here without that setting is Tab actually reaching every control it
-    // traps. Fully load-bearing on `chromium`, and on a `webkit` this
-    // machine has configured for full keyboard access.
-    test.skip(
-      browserName === "webkit" && !fullKeyboardAccess(),
-      "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
-    );
-    await page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click();
-    await expect(page.locator("#drawer")).toHaveClass(/open/);
-
-    for (let press = 1; press <= 20; press += 1) {
-      await page.keyboard.press("Tab");
-      expect(
-        await focusIsInside(page, "drawer"),
-        `focus left the drawer after ${press} Tab press(es)`,
-      ).toBe(true);
-    }
-  });
-
-  /**
    * A closed dialog is not merely invisible, it is unreachable. Before
    * SH-299 this field was focusable — and tabbable — with the modal shut,
    * which is the same defect as the background one seen from the other side.
@@ -241,71 +168,6 @@ test.describe("with a credential", () => {
     });
 
     await expect(page.locator("#create-title")).not.toBeFocused();
-  });
-
-  /**
-   * Focus goes in on open and comes back out on close, driven entirely from
-   * the keyboard — the input device the whole story is about. Enter on a
-   * focused card opens the drawer (SH-197's roving tabindex); Escape closes
-   * it, and the card that opened it is where the user is put back.
-   */
-  test("the drawer hands focus back to the card that opened it", async ({
-    page,
-  }) => {
-    const card = page.locator(".card", { hasText: ALPHA_CARD_TITLE });
-    await card.focus();
-    await expect(card).toBeFocused();
-
-    await page.keyboard.press("Enter");
-    await expect(page.locator("#drawer")).toHaveClass(/open/);
-    expect(await focusIsInside(page, "drawer")).toBe(true);
-
-    await page.keyboard.press("Escape");
-    await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-    await expect(card).toBeFocused();
-  });
-
-  /**
-   * Overlays nest, so the trap is a stack rather than a flag: the drawer's own
-   * footer opens the delete modal over it, and while that modal is up the
-   * drawer underneath must be as inert as the board. Closing it hands the
-   * drawer back, live, with focus on the button that left.
-   *
-   * Cancel throughout — nothing is deleted, and the fixture story this opens
-   * is the same one every other test here opens.
-   */
-  test("a modal opened from the drawer covers the drawer, then gives it back", async ({
-    page,
-    browserName,
-  }) => {
-    // The same macOS setting governs both halves of this assertion: without
-    // Full Keyboard Access, WebKit does not focus a `<button>` on click, so
-    // `deleteButton.click()` below never makes it the element
-    // `activateOverlay()` captures to restore -- the closing assertion would
-    // find focus back on whatever WAS active before, not this button. That
-    // is the exact WebKit behavior SH-324/SH-334 are about; asserting past
-    // it here needs the same machine configuration `fullKeyboardAccess()`
-    // reports (SH-335 -- story show SH-335 carries the verdict).
-    test.skip(
-      browserName === "webkit" && !fullKeyboardAccess(),
-      "WebKit doesn't focus a <button> on click unless AppleKeyboardUIMode>=2 (SH-335)",
-    );
-    await page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click();
-    await expect(page.locator("#drawer")).toHaveClass(/open/);
-
-    const deleteButton = page.locator("#drawer-footer button", {
-      hasText: "Delete",
-    });
-    await deleteButton.click();
-    await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-
-    await expectModalityFor(page, "delete-modal");
-    await expect(page.locator("#delete-modal-cancel")).toBeFocused();
-
-    await page.locator("#delete-modal-cancel").click();
-    await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
-    await expectModalityFor(page, "drawer");
-    await expect(deleteButton).toBeFocused();
   });
 });
 

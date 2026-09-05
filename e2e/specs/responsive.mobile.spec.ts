@@ -38,6 +38,66 @@ test.beforeEach(async ({ page }) => {
 });
 
 /**
+ * SH-554: the story panel remains a layout peer at phone and tablet widths.
+ * Once the 30rem ceiling no longer fits, the content pane yields the complete
+ * content-region width; the full-width toolbar/filter chrome stays above it.
+ */
+for (const width of SWEEP_WIDTHS) {
+  test(`the story detail peer stays below the toolbar at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: SWEEP_HEIGHT });
+    await page.goto("/");
+    await openProject(page, "Alpha Project");
+    await page
+      .locator(".card-title", { hasText: "Wire up the auth flow" })
+      .click();
+    await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+    await expect
+      .poll(async () =>
+        page.locator("#drawer").evaluate((node) =>
+          Math.round(node.getBoundingClientRect().width),
+        ),
+      )
+      .toBe(Math.min(width, 480));
+
+    const geometry = await page.evaluate(() => {
+      const rect = (selector: string) =>
+        document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+      const topbar = rect(".topbar");
+      const filter = rect("#filter-bar");
+      const workspace = rect("#repo-workspace");
+      const content = rect("#workspace-content");
+      const panel = rect("#drawer");
+      return {
+        viewportWidth: document.documentElement.clientWidth,
+        topbarWidth: topbar.width,
+        filterWidth: filter.width,
+        workspaceTop: workspace.top,
+        workspaceRight: workspace.right,
+        contentRight: content.right,
+        panelTop: panel.top,
+        panelLeft: panel.left,
+        panelRight: panel.right,
+      };
+    });
+
+    expect(geometry.topbarWidth).toBe(geometry.viewportWidth);
+    expect(geometry.filterWidth).toBe(geometry.viewportWidth);
+    expect(geometry.panelTop).toBe(geometry.workspaceTop);
+    expect(geometry.contentRight).toBe(geometry.panelLeft);
+    expect(geometry.panelRight).toBe(geometry.workspaceRight);
+    await expect(page.locator("#drawer-backdrop")).toHaveCount(0);
+    await expect(page.locator("#home-btn")).toBeVisible();
+    await expectNoHorizontalOverflow(page, `the story detail peer @ ${width}px`);
+
+    await page.getByRole("button", { name: "Close story details" }).click();
+    await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  });
+}
+
+/**
  * Creates a story in Alpha Project's `todo` column -- default state/type,
  * same helper shape as `zoom.mobile.spec.ts`'s own local `createStory`.
  */
@@ -269,8 +329,8 @@ interface MeasuredTarget {
  * smaller than `minPx` on either axis -- WCAG 2.2 SC 2.5.8's Target Size
  * (Minimum), 24 CSS px, or the coarse-pointer 44px this suite holds tap
  * targets to (see `--tap-min` in `web_dashboard.html`). Zero-size boxes
- * (`display: none`, an unopened popover) are excluded -- a hidden control
- * cannot be mis-tapped.
+ * (`display: none`, an unopened popover) and targets inside an inert subtree
+ * are excluded -- neither can be tapped.
  *
  * SH-420: the comparison is not a bare `<`. WebKit returns rect coordinates
  * as float32 (measured: `Math.fround(r.top) === r.top` for every select on
@@ -325,6 +385,7 @@ async function findSmallTargets(
         shortBy: number;
       }[] = [];
       for (const el of Array.from(node.querySelectorAll(selector))) {
+        if (el.closest("[inert]")) continue;
         // SH-217: a link inside rendered markdown (a description or a
         // comment body) sits inline within a sentence or block of
         // running text -- WCAG 2.2 SC 2.5.8 explicitly exempts a target
