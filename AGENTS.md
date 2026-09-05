@@ -193,4 +193,5 @@ project it is looking at.
   centralized-gate runs (SH-552).
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.

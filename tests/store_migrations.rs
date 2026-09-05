@@ -3560,3 +3560,58 @@ fn migration_twenty_five_inserts_verifying_before_required_blocked() {
         .unwrap();
     assert_eq!(description.as_deref(), Some("custom description"));
 }
+
+// ---------------------------------------------------------------------------
+// Migration 29: engine lanes retain exact cleanup identity (SH-539)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_twenty_nine_adds_a_nullable_cleanup_lease_without_rewriting_lanes() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..28]).unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO engine_runs
+             (id, project_slug, scope_kind, lanes, agent, state,
+              consecutive_hard_stops, created_at, updated_at)
+         VALUES
+             ('run-legacy', 'alpha', 'project', 1, 'codex', 'running',
+              0, '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z');
+         INSERT INTO engine_lanes
+             (run_id, lane_index, state, story_id, window_name, worktree_path,
+              dispatched_at, last_observed_at, outcome, outcome_detail,
+              last_progress_seq, last_progress_at)
+         VALUES
+             ('run-legacy', 0, 'working', 'SH-1', 'SH-1', '/old/SH-1',
+              '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z', NULL, NULL,
+              1, '2026-09-04T00:00:00Z');",
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate_with(&migrate::MIGRATIONS[..29]).unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    let lease: Option<String> = conn
+        .query_row(
+            "SELECT cleanup_lease_json FROM engine_lanes
+             WHERE run_id = 'run-legacy' AND lane_index = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        lease, None,
+        "legacy lanes carry no invented cleanup identity"
+    );
+    let story_id: String = conn
+        .query_row(
+            "SELECT story_id FROM engine_lanes
+             WHERE run_id = 'run-legacy' AND lane_index = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(story_id, "SH-1", "the occupied lane survives unchanged");
+}
