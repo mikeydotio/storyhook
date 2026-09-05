@@ -189,8 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
-  through the centralized verifier.
+- Current: keep verifier worktree refs resolvable throughout speculative
+  centralized-gate runs (SH-552).
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
