@@ -232,7 +232,7 @@ pub fn publish_once(
     activity: &VerificationActivity,
 ) -> Result<bool, AppError> {
     let ordered = VerificationQueue::new(store).ordered()?;
-    let active = activity.snapshot();
+    let active = activity.active();
     let statuses = status_snapshot(&ordered, active.as_ref(), env, now);
     let mut moved = false;
     for (candidate, (_, _, status)) in ordered.iter().zip(statuses) {

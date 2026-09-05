@@ -127,7 +127,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 
     let statuses = status_snapshot(
         &ordered,
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -149,7 +149,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
     drop(guard);
     let statuses = status_snapshot(
         &ordered,
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -256,7 +256,7 @@ fn a_different_verifying_generation_cannot_inherit_active_ownership() {
 
     let statuses = status_snapshot(
         &[new_candidate],
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -292,7 +292,7 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 
     let statuses = status_snapshot(
         &[candidate],
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -321,7 +321,7 @@ impl VerificationActuator for ActivityObservingActuator {
     ) -> VerificationOutcome {
         let active = self
             .activity
-            .snapshot()
+            .active()
             .expect("ownership must be visible while the actuator runs");
         assert_eq!(active.project, candidate.project);
         assert_eq!(active.story_id, candidate.story_id);
@@ -398,14 +398,14 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
             actuator.observed_story.lock().unwrap().as_deref(),
             Some(id.as_str())
         );
-        assert_eq!(activity.snapshot(), None);
+        assert_eq!(activity.active(), None);
 
         if expected == TickResult::RetryLater {
             let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
             assert!(matches!(
                 status_snapshot(
                     &ordered,
-                    activity.snapshot().as_ref(),
+                    activity.active().as_ref(),
                     fixture.env(),
                     FIXTURE_NOW
                 )[0]
@@ -437,7 +437,7 @@ fn ownership_is_cleared_during_unwind() {
         actuator.observed_story.lock().unwrap().as_deref(),
         Some("SH-1")
     );
-    assert_eq!(activity.snapshot(), None);
+    assert_eq!(activity.active(), None);
 }
 
 /// A story's own comment-driven `updated_at` moves on every publish of the

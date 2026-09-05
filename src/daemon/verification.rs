@@ -65,7 +65,7 @@ impl VerificationActivity {
 
     /// Returns the generation owned at this instant, if any.
     #[must_use]
-    pub fn snapshot(&self) -> Option<ActiveVerification> {
+    pub fn active(&self) -> Option<ActiveVerification> {
         self.active
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
