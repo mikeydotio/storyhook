@@ -69,8 +69,17 @@ ensure_verifier_worktree() {
     fi
 
     if [ "$rebuild" -eq 1 ]; then
-        git worktree remove --force "$verifier_wt" >/dev/null 2>&1 \
-            || die_json "could not remove invalid verifier worktree metadata at $verifier_wt"
+        remove_output="$(git worktree remove --force "$verifier_wt" 2>&1)"
+        remove_status=$?
+        registration_survives=0
+        git worktree list --porcelain 2>/dev/null \
+            | awk -v target="$verifier_wt" \
+                '$1 == "worktree" && substr($0, 10) == target { found = 1 } END { exit !found }' \
+            && registration_survives=1
+        if [ -e "$verifier_wt" ] || [ "$registration_survives" -eq 1 ]; then
+            remove_detail="${remove_output:-git worktree remove exited $remove_status without a diagnostic}"
+            die_json "could not remove invalid verifier worktree metadata at $verifier_wt: $remove_detail"
+        fi
     fi
     if [ ! -e "$verifier_wt/.git" ]; then
         git worktree add -q --detach "$verifier_wt" "$fallback" \
