@@ -20,7 +20,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::lifecycle;
-use storyhook_test_support::TestEnv;
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv};
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
 struct DaemonGuard<'a>(&'a TestEnv);
@@ -132,10 +132,8 @@ fn a_slow_command_does_not_block_another_client() {
     let baseline = alone.elapsed();
 
     let mut slow = env.raw_story(project.path());
-    let mut child = slow
-        .args(["comment", "PB-1", "trip the hook"])
-        .spawn()
-        .expect("spawning the slow command");
+    slow.args(["comment", "PB-1", "trip the hook"]);
+    let mut child = ChildGuard::spawn(&mut slow).expect("spawning the slow command");
 
     wait_for(
         "the daemon to publish the slow comment as in flight",
@@ -184,7 +182,9 @@ fn a_slow_command_does_not_block_another_client() {
          instead of running concurrently with it"
     );
 
-    child.wait().expect("the slow command finishes");
+    child.wait_within(STORY_COMMAND_DEADLINE, || {
+        "the slow command did not finish".to_string()
+    });
 }
 
 /// A hook that calls `story` never queues behind its own parent.

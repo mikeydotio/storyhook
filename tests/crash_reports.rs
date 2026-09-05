@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification, FiledOutcome};
 use storyhook::daemon::lifecycle;
-use storyhook_test_support::{TestEnv, scratch_dir};
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
 struct DaemonGuard<'a>(&'a TestEnv);
@@ -78,15 +78,16 @@ fn panic_the_daemon_with_marker(env: &TestEnv, cwd: &Path, marker: &str) {
         !env.daemon_is_live(),
         "a daemon must not be running before arming a crash"
     );
-    let mut panicking = env
-        .raw_story(cwd)
+    let mut command = env.raw_story(cwd);
+    command
         .env("STORYHOOK_TEST_PANIC", marker)
         .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawning a daemon armed to panic");
-    let status = panicking.wait().expect("reaping the panicking daemon");
+        .stderr(Stdio::null());
+    let mut panicking = ChildGuard::spawn(&mut command).expect("spawning a daemon armed to panic");
+    let status = panicking.wait_within(STORY_COMMAND_DEADLINE, || {
+        "the panicking daemon did not exit".to_string()
+    });
     assert!(
         !status.success(),
         "a panicking daemon must not exit cleanly"
@@ -170,22 +171,18 @@ fn an_unclean_exit_with_no_evidence_files_nothing() {
         !env.daemon_is_live(),
         "a daemon must not be running before arming a crash"
     );
-    let mut started = env
-        .raw_story(dir.path())
+    let mut command = env.raw_story(dir.path());
+    command
         .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawning a daemon");
+        .stderr(Stdio::null());
+    let mut started = ChildGuard::spawn(&mut command).expect("spawning a daemon");
     wait_for("the daemon to publish a portfile", || {
         env.daemon().is_some()
     });
     // SIGKILL, not a panic: no PanicRecord, so the next start must classify
     // this as an unclean exit rather than a defect.
-    unsafe {
-        libc::kill(started.id() as libc::pid_t, libc::SIGKILL);
-    }
-    started.wait().expect("reaping the killed daemon");
+    started.kill_and_reap();
     wait_for("the pidfile lock to release", || {
         !lifecycle::is_live(&env.environment())
     });
