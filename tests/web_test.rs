@@ -3347,6 +3347,67 @@ fn web_serve_api_data_with_stories() {
     }
 }
 
+#[test]
+fn web_serve_api_data_reports_queued_verification_and_omits_other_states() {
+    use storyhook::domain::StoryEvent;
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::store::{ExpectedSeq, WriteOps};
+
+    let fixture = served();
+    fixture.seed(&["new", "Waiting for verification"]);
+    fixture.seed(&["new", "Ordinary story"]);
+    fixture.deregister();
+    fixture
+        .store
+        .write(|tx| {
+            let story = StoryNo::new(1);
+            let head = tx.append_events(
+                fixture.project,
+                story,
+                ExpectedSeq::Any,
+                &[StoryEvent::StoryStateChanged {
+                    at: "2026-01-01T00:01:00Z".into(),
+                    state: "verifying".into(),
+                }],
+                &Provenance::unrecorded(),
+            )?;
+            let stored = tx.events_for(fixture.project, story)?;
+            let (known, _) = storyhook::store::partition_known(story, &stored);
+            let states = tx.state_map(fixture.project)?;
+            let snapshot = storyhook::domain::fold_story("SH-1", &known, &states)
+                .map_err(storyhook::store::StoreError::from)?;
+            tx.put_story(fixture.project, &snapshot, head)
+        })
+        .unwrap();
+
+    let response = fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{}/api/repos/{}/data",
+            fixture.port, fixture.repo_id
+        ))
+        .call()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    let stories = json["stories"].as_array().unwrap();
+    let waiting = stories
+        .iter()
+        .find(|view| view["story"]["id"] == "SH-1")
+        .unwrap();
+    let ordinary = stories
+        .iter()
+        .find(|view| view["story"]["id"] == "SH-2")
+        .unwrap();
+
+    assert_eq!(
+        waiting["verification"]["status"], "queued",
+        "unexpected dashboard payload: {json}"
+    );
+    assert_eq!(waiting["verification"]["position"], 1);
+    assert!(ordinary.get("verification").is_none());
+}
+
 /// SH-336: `head_global_seq` must reach the wire on `/data`, or the board's
 /// same-second recency tiebreak has nothing to read. Two stories written
 /// back to back get two distinct, increasing values — proving the field is

@@ -17,17 +17,19 @@
 - Storage/API commit: `b6a87191` (`fix(labels): canonicalize labels as lowercase`).
 - Dashboard commit: `6d7b3def` (`fix(dashboard): unify label combobox behavior`).
 - Store schema is version 30; upstream migration 29 remains unchanged.
-- Reconciliation merges `origin/main` at `e56df766` without rewriting the
-  published SH-204 commits.
+- Reconciliation merges `origin/main` at `e00733a9` without rewriting the
+  published SH-204 history.
+- SH-555 repair and the installed StoryHook 2.4.0 verifier clear the earlier
+  infrastructure block.
 
 ## Focused verification
 
 - After reconciliation, domain, service, migration, label CLI/query, integrity,
-  help, and static dashboard suites passed.
+  doctor, web endpoint, help, README, and generated-roadmap checks passed.
 - Clippy with warnings denied and formatting checks passed.
 - New label-editor E2E: 2 passed in Chromium and 2 in WebKit.
-- Directly impacted label E2E: 8 passed in Chromium.
-- Main's directly impacted peer-panel E2E: 4 passed in Chromium.
+- Directly impacted existing label E2E: 9 passed in Chromium.
+- Main's overlapping verification-status E2E: 2 passed in Chromium.
 
 ## Submission boundary
 

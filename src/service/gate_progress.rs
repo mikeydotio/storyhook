@@ -36,9 +36,15 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum JournalLine {
+    Run {
+        generation: i64,
+        at: String,
+    },
     Item {
         path: String,
         status: String,
+        #[serde(default)]
+        at: Option<String>,
         #[serde(default)]
         seconds: Option<u64>,
         #[serde(default)]
@@ -159,6 +165,8 @@ pub struct ProgressItem {
     pub counts: Counts,
     pub seconds: Option<u64>,
     pub children: Vec<ProgressItem>,
+    status_started_at: Option<String>,
+    status_order: usize,
 }
 
 impl ProgressItem {
@@ -170,6 +178,8 @@ impl ProgressItem {
             counts: Counts::default(),
             seconds: None,
             children: Vec::new(),
+            status_started_at: None,
+            status_order: 0,
         }
     }
 
@@ -239,6 +249,88 @@ impl ProgressItem {
 #[derive(Debug, Clone, Default)]
 pub struct GateProgress {
     pub items: Vec<ProgressItem>,
+    /// Verification generation and acquisition time that own this journal.
+    /// Absent on journals written before SH-549 or while journal preparation
+    /// failed; consumers must not reuse their progress for a later attempt.
+    pub run: Option<GateRun>,
+}
+
+/// Identity of the verification attempt that owns a journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRun {
+    /// Store event generation for the attempt's transition into `verifying`.
+    pub generation: i64,
+    /// Time at which the verifier acquired this attempt.
+    pub started_at: String,
+}
+
+/// The deepest explicit checklist item currently running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentStep {
+    /// Human-readable leaf label emitted by the gate producer.
+    pub label: String,
+    /// Time at which this item most recently entered `running`.
+    pub started_at: String,
+}
+
+impl GateProgress {
+    /// Returns the most recently started explicit running item. An implied
+    /// parent is never a step; its child is the actionable unit shown to the
+    /// operator.
+    #[must_use]
+    pub fn current_step(&self) -> Option<CurrentStep> {
+        fn visit(item: &ProgressItem, best: &mut Option<(usize, CurrentStep)>) {
+            if item.explicit
+                && item.status == ItemStatus::Running
+                && let Some(started_at) = &item.status_started_at
+                && best
+                    .as_ref()
+                    .is_none_or(|(order, _)| item.status_order > *order)
+            {
+                *best = Some((
+                    item.status_order,
+                    CurrentStep {
+                        label: item.label.clone(),
+                        started_at: started_at.clone(),
+                    },
+                ));
+            }
+            for child in &item.children {
+                visit(child, best);
+            }
+        }
+
+        let mut best = None;
+        for item in &self.items {
+            visit(item, &mut best);
+        }
+        best.map(|(_, step)| step)
+    }
+
+    /// Completed and planned test cases across leaves carrying an exact
+    /// producer-supplied denominator. Status-only gate legs are deliberately
+    /// excluded: the dashboard promises "tests", not heterogeneous units.
+    #[must_use]
+    pub fn exact_test_counts(&self) -> Option<(u32, u32)> {
+        fn add(item: &ProgressItem, counts: &mut (u32, u32)) {
+            if item.children.is_empty() {
+                if let Some(total) = item.counts.explicit_total {
+                    counts.0 += item.counts.seen().min(total);
+                    counts.1 += total;
+                }
+                return;
+            }
+            for child in &item.children {
+                add(child, counts);
+            }
+        }
+
+        let mut counts = (0, 0);
+        for item in &self.items {
+            add(item, &mut counts);
+        }
+        (counts.1 > 0).then_some(counts)
+    }
 }
 
 impl GateProgress {
@@ -278,7 +370,7 @@ impl GateProgress {
 #[must_use]
 pub fn fold(journal_text: &str) -> GateProgress {
     let mut progress = GateProgress::default();
-    for line in journal_text.lines() {
+    for (order, line) in journal_text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -287,9 +379,16 @@ pub fn fold(journal_text: &str) -> GateProgress {
             continue;
         };
         match parsed {
+            JournalLine::Run { generation, at } => {
+                progress.run = Some(GateRun {
+                    generation,
+                    started_at: at,
+                });
+            }
             JournalLine::Item {
                 path,
                 status,
+                at,
                 seconds,
                 total,
             } => {
@@ -299,6 +398,8 @@ pub fn fold(journal_text: &str) -> GateProgress {
                 let item = progress.item_mut(&path);
                 item.explicit = true;
                 item.status = status;
+                item.status_order = order;
+                item.status_started_at = (status == ItemStatus::Running).then_some(at).flatten();
                 if let Some(seconds) = seconds {
                     item.seconds = Some(seconds);
                 }
@@ -388,8 +489,8 @@ pub enum VerificationProgressView<'a> {
         progress: &'a GateProgress,
         /// Elapsed seconds since this story last entered `verifying`.
         elapsed_seconds: Option<u64>,
-        /// Elapsed seconds since the journal's last line, when known — the
-        /// staleness signal a wedged run shows up as.
+        /// Elapsed seconds since the journal file last changed, when known —
+        /// the staleness signal a wedged run shows up as.
         seconds_since_last_event: Option<u64>,
     },
 }
@@ -547,6 +648,33 @@ mod tests {
              {\"kind\":\"case\",\"path\":\"release gate/plugin\",\"outcome\":\"pass\"}\n",
         );
         assert_eq!(progress.items[0].children[0].contribution(), (1, 10, false));
+    }
+
+    #[test]
+    fn attempt_identity_current_step_and_exact_test_counts_fold_together() {
+        let progress = fold(
+            "{\"kind\":\"run\",\"generation\":42,\"at\":\"2026-01-01T00:00:00Z\"}\n\
+             {\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"2026-01-01T00:00:01Z\"}\n\
+             {\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"2026-01-01T00:00:02Z\",\"total\":4}\n\
+             {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n\
+             {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"fail\"}\n",
+        );
+
+        assert_eq!(
+            progress.run,
+            Some(GateRun {
+                generation: 42,
+                started_at: "2026-01-01T00:00:00Z".into(),
+            })
+        );
+        assert_eq!(
+            progress.current_step(),
+            Some(CurrentStep {
+                label: "rust-suite".into(),
+                started_at: "2026-01-01T00:00:02Z".into(),
+            })
+        );
+        assert_eq!(progress.exact_test_counts(), Some((2, 4)));
     }
 
     #[test]

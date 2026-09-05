@@ -703,6 +703,13 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   }
 }
 .card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
+.verification-chip {
+  display: block; width: 100%; box-sizing: border-box; margin: 0 0 0.4375rem;
+  padding: 0.1875rem 0.4375rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-sunken); color: var(--fg-muted); font-size: 0.625rem; font-weight: 650;
+  font-variant-numeric: tabular-nums; line-height: 1.35;
+}
+.verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .chip {
@@ -2297,6 +2304,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // time. Council verdicts on SH-324 and SH-334.
     statusPrompt: null,
     data: null,
+    // Client time at which the current `/data` verification counters were
+    // observed. The one-second footer tick advances only elapsed durations;
+    // test counts remain server-owned and refresh with the next snapshot.
+    verificationObservedAt: 0,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     // A display preference, not a per-repo filter: like `view` above, it
     // persists across repo switches and "Clear filters" (SH-43's council
@@ -3082,6 +3093,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // (higher-ticket) reply from applying either.
           boardFetchFloor = ticket;
           state.data = parsed;
+          state.verificationObservedAt = Date.now();
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
           // Per-repo-vocabulary filter values (SH-155) can only be
@@ -4913,6 +4925,75 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var story = lane.querySelector(".engine-lane-story");
       lane.title = lane.querySelector(".engine-lane-index").textContent.replace("L", "Lane ")
         + ": " + (story ? story.textContent : "") + " · " + node.textContent;
+    });
+  }
+
+  function formatVerificationDuration(seconds) {
+    seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (seconds < 60) return seconds + "s";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+    return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds / 60) % 60) + "m";
+  }
+
+  function liveVerificationSeconds(seconds) {
+    var observedAt = state.verificationObservedAt || Date.now();
+    var sinceSnapshot = Math.max(0, Math.floor((Date.now() - observedAt) / 1000));
+    return Math.max(0, Math.floor(Number(seconds) || 0)) + sinceSnapshot;
+  }
+
+  /** Human-readable verification state shared by the visible chip and the
+   * card's accessible name. Continuous time is deliberately not a live
+   * region: the existing one-second footer tick updates it without forcing
+   * an announcement every second (SH-549). */
+  function verificationDescription(verification) {
+    if (!verification) return "";
+    if (verification.status === "queued") {
+      var queued = ["Queued"];
+      if (verification.wait_seconds !== undefined && verification.wait_seconds !== null) {
+        queued.push(formatVerificationDuration(liveVerificationSeconds(verification.wait_seconds)));
+      }
+      queued.push("position " + verification.position);
+      return queued.join(" · ");
+    }
+    if (verification.status !== "running") return "";
+    if (!verification.current_step && !verification.tests) return "Verifying · starting…";
+
+    var running = [
+      "Verifying",
+      formatVerificationDuration(liveVerificationSeconds(verification.elapsed_seconds)) + " total"
+    ];
+    if (verification.current_step) {
+      running.push(
+        String(verification.current_step.label).replace(/[-_]+/g, " ") + " " +
+        formatVerificationDuration(liveVerificationSeconds(verification.current_step.elapsed_seconds))
+      );
+    }
+    if (verification.tests && verification.tests.total > 0) {
+      var completed = verification.tests.completed;
+      var total = verification.tests.total;
+      running.push(
+        completed + "/" + total + " tests (" + ((completed / total) * 100).toFixed(1) + "%)"
+      );
+    }
+    return running.join(" · ");
+  }
+
+  function updateVerificationElapsedLabels() {
+    if (pressHeld) return;
+    document.querySelectorAll(".verification-chip[data-story-id]").forEach(function(node) {
+      var view = findStory(node.dataset.storyId);
+      if (!view || !view.verification) return;
+      var description = verificationDescription(view.verification);
+      node.textContent = description;
+      var card = node.closest(".card");
+      if (!card) return;
+      card.setAttribute(
+        "aria-label",
+        card.dataset.baseAriaLabel + (description ? " — " + description : "")
+      );
+      // Keep populateCard()'s output fingerprint aligned with this deliberate
+      // text mutation so an unrelated render does not rebuild the subtree.
+      card.dataset.rendered = card.innerHTML;
     });
   }
 
@@ -8108,10 +8189,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `ariaText` is what makes "blocked by SH-308" (or "no reason
     // recorded") announced along with the rest of the card, not just shown
     // to a sighted mouse user on hover.
-    card.setAttribute(
-      "aria-label",
-      st.id + ": " + st.title + (flagDesc ? " — " + flagDesc.ariaText : "")
-    );
+    var baseAriaLabel = st.id + ": " + st.title + (flagDesc ? " — " + flagDesc.ariaText : "");
+    var verification = (v.display_state || st.state) === "verifying" ? v.verification : null;
+    var verificationDesc = verificationDescription(verification);
+    card.dataset.baseAriaLabel = baseAriaLabel;
+    card.setAttribute("aria-label", baseAriaLabel + (verificationDesc ? " — " + verificationDesc : ""));
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
     // SH-203's cleared-blocker dwell -- called here, above the guard below,
@@ -8157,6 +8239,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ], { fill: "currentColor", stroke: "none" })]);
     next.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
     next.appendChild(el("div", { class: "card-title" }, [st.title]));
+    if (verificationDesc) {
+      next.appendChild(el("span", {
+        class: "verification-chip verification-chip-" + verification.status,
+        dataset: { storyId: st.id },
+        "aria-hidden": "true"
+      }, [verificationDesc]));
+    }
 
     var metaRow = el("div", { class: "card-meta" }, []);
     if ((st.labels || []).length) {
@@ -10729,6 +10818,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.repoId = id;
     state.screen = "repo";
     state.data = null;
+    state.verificationObservedAt = 0;
     // Beside `state.data`, and for the same reason: this project has not
     // answered *this* opening of it. Without the reset, a project whose last
     // visit ended in a failed fetch would open into a named error rather than
@@ -13100,6 +13190,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function updateFooter() {
     updateEngineElapsedLabels();
+    updateVerificationElapsedLabels();
     var at = activePollState().at;
     if (!at) return;
     var ago = Math.round((Date.now() - at) / 1000);

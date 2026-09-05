@@ -2118,6 +2118,91 @@ pub fn parent_pid() -> Option<u32> {
         .and_then(|raw| raw.trim().parse().ok())
 }
 
+/// The opaque start token paired with [`parent_pid`], when one was supplied.
+///
+/// Empty retains the legacy PID-only contract. Shell harnesses cannot obtain a
+/// precise, locale-independent token portably, so they deliberately export an
+/// empty value while Rust harnesses supply a native token.
+pub fn parent_start_time() -> Option<String> {
+    std::env::var("STORYHOOK_PARENT_START_TIME")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+}
+
+/// An opaque token that identifies the current incarnation of `pid`.
+///
+/// The representation is platform-qualified so callers can store and compare
+/// it, but cannot accidentally interpret values from different process APIs as
+/// equivalent.
+pub fn process_start_time(pid: u32) -> Option<String> {
+    platform_process_start_time(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_process_start_time(pid: u32) -> Option<String> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let written = unsafe {
+        // SAFETY: `info` points to `size` writable bytes and is read only when
+        // `proc_pidinfo` reports that it filled the complete structure.
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            libc::c_int::try_from(size).ok()?,
+        )
+    };
+    if usize::try_from(written).ok()? != size {
+        return None;
+    }
+    let info = unsafe {
+        // SAFETY: the exact structure size was returned above.
+        info.assume_init()
+    };
+    Some(format!(
+        "macos:{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn platform_process_start_time(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_linux_process_start_time(&stat).map(|ticks| format!("linux:{ticks}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn platform_process_start_time(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_process_start_time(stat: &str) -> Option<&str> {
+    // `comm` is parenthesized and may itself contain spaces or `)`, so fields
+    // are counted only after its final closing parenthesis. The first token
+    // there is field 3 (`state`); starttime is field 22.
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)
+}
+
+/// Whether the process named by `pid` is the incarnation named by `start_time`.
+///
+/// A nonempty token opts into the stronger identity contract and fails closed
+/// when the native process query fails. Missing or empty tokens preserve the
+/// existing PID-only behavior for older and shell-only harnesses.
+#[must_use]
+pub fn process_identity_is_live(pid: u32, start_time: Option<&str>) -> bool {
+    if !pid_is_live(pid) {
+        return false;
+    }
+    let Some(expected) = start_time.map(str::trim).filter(|token| !token.is_empty()) else {
+        return true;
+    };
+    process_start_time(pid).is_some_and(|actual| actual == expected)
+}
+
 /// Whether `pid` is still a live process.
 #[cfg(unix)]
 pub fn pid_is_live(pid: u32) -> bool {
@@ -2152,6 +2237,30 @@ mod tests {
             .prefix("storyhook-lifecycle-")
             .tempdir_in("/private/tmp")
             .expect("a scratch directory")
+    }
+
+    #[test]
+    fn process_identity_requires_a_matching_start_token_when_supplied() {
+        let pid = std::process::id();
+        let token = process_start_time(pid).expect("this platform exposes process start time");
+        assert!(process_identity_is_live(pid, Some(&token)));
+        assert!(!process_identity_is_live(pid, Some("not-this-process")));
+    }
+
+    #[test]
+    fn absent_or_empty_start_tokens_retain_pid_only_compatibility() {
+        let pid = std::process::id();
+        assert!(process_identity_is_live(pid, None));
+        assert!(process_identity_is_live(pid, Some("")));
+        assert!(process_identity_is_live(pid, Some("   ")));
+    }
+
+    #[test]
+    fn linux_stat_start_time_is_parsed_after_a_comm_containing_parentheses() {
+        let mut suffix = vec!["S"; 20];
+        suffix[19] = "8675309";
+        let stat = format!("42 (a tricky ) process) {}", suffix.join(" "));
+        assert_eq!(parse_linux_process_start_time(&stat), Some("8675309"));
     }
 
     /// What [`super::super::serve::bind_listeners`] returns on a machine with

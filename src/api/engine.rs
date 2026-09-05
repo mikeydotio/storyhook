@@ -6,6 +6,7 @@
 //! the fixed store dispatchers while waiting for that child would reproduce
 //! the deadlock [`crate::api::dispatch`] exists to avoid.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,13 +24,14 @@ use crate::api::rpc::token_ok;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::daemon::http1::{Header, Method};
+use crate::daemon::lifecycle::{CurrentRequest, InFlight};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::output::render_error;
 use crate::service::Ctx;
 use crate::service::engine::{
-    DispatchOutcome, DispatchRequest, Dispatcher, EngineService, RunView, ShellDispatcher,
-    StartRequest, UnclaimRequest,
+    DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher, EngineService,
+    MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -89,7 +91,13 @@ impl EngineController {
         EngineService::new(&ctx, &NoopDispatcher).status(run.as_ref())
     }
 
-    fn action(&self, project: &str, action: EngineAction, body: &str) -> Result<RunView, AppError> {
+    fn action(
+        &self,
+        project: &str,
+        action: EngineAction,
+        body: &str,
+        inflight: &InFlight,
+    ) -> Result<RunView, AppError> {
         match action {
             EngineAction::Stop => {
                 let request: StopBody = parse_body(body, "engine stop")?;
@@ -98,27 +106,40 @@ impl EngineController {
                     return EngineService::new(&ctx, &NoopDispatcher).stop(&request.run, false);
                 }
 
-                let current = EngineService::new(&ctx, &NoopDispatcher)
-                    .status(Some(&request.run))?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        AppError::NotFound(format!("engine run `{}` not found", request.run))
-                    })?;
-                let needs_helper = current.lanes.iter().any(|lane| {
-                    !matches!(
-                        lane.state,
-                        EngineLaneState::Idle | EngineLaneState::Quarantined
-                    )
-                });
-                if !needs_helper {
-                    return EngineService::new(&ctx, &NoopDispatcher).stop(&request.run, true);
-                }
+                with_immediate_stop_inflight(
+                    inflight,
+                    &self.env,
+                    project,
+                    &request.run,
+                    ctx.cwd(),
+                    || {
+                        let current = EngineService::new(&ctx, &NoopDispatcher)
+                            .status(Some(&request.run))?
+                            .into_iter()
+                            .next()
+                            .ok_or_else(|| {
+                                AppError::NotFound(format!(
+                                    "engine run `{}` not found",
+                                    request.run
+                                ))
+                            })?;
+                        let needs_helper = current.lanes.iter().any(|lane| {
+                            !matches!(
+                                lane.state,
+                                EngineLaneState::Idle | EngineLaneState::Quarantined
+                            )
+                        });
+                        if !needs_helper {
+                            return EngineService::new(&ctx, &NoopDispatcher)
+                                .stop(&request.run, true);
+                        }
 
-                let script =
-                    resolve_dispatch_script(current.run.agent.into()).map_err(AppError::Storage)?;
-                let dispatcher = ShellDispatcher::new(script, self.env.clone());
-                EngineService::new(&ctx, &dispatcher).stop(&request.run, true)
+                        let script = resolve_dispatch_script(current.run.agent.into())
+                            .map_err(AppError::Storage)?;
+                        let dispatcher = ShellDispatcher::new(script, self.env.clone());
+                        EngineService::new(&ctx, &dispatcher).stop(&request.run, true)
+                    },
+                )
             }
             EngineAction::Pause | EngineAction::Resume | EngineAction::Ack => {
                 let request: ActionBody = parse_body(body, action.label())?;
@@ -133,6 +154,27 @@ impl EngineController {
             }
         }
     }
+}
+
+fn with_immediate_stop_inflight<T>(
+    inflight: &InFlight,
+    env: &Environment,
+    project: &str,
+    run: &str,
+    cwd: &Path,
+    stop: impl FnOnce() -> T,
+) -> T {
+    let entry = inflight.enter();
+    entry.name(CurrentRequest {
+        request_id: format!("engine-stop:{project}:{run}"),
+        command: "engine-stop".to_string(),
+        project: Some(project.to_string()),
+        pid: std::process::id(),
+        started_at: env.now(),
+        served_deadline_secs: (DISPATCH_TIMEOUT * (MAX_ENGINE_LANES + 1)).as_secs(),
+        cwd: cwd.to_path_buf(),
+    });
+    stop()
 }
 
 /// Whether this path belongs to the engine interceptor, independent of method.
@@ -153,6 +195,7 @@ pub(crate) fn intercept(
     trusted_hosts: &TrustedHosts,
     token: &str,
     controller: &Arc<EngineController>,
+    inflight: &InFlight,
     bus: &ChangeBus,
     tokens: &TokenRegistry,
     cookie_name: &str,
@@ -214,7 +257,7 @@ pub(crate) fn intercept(
             if !content_type_is_json(headers) {
                 return Some(text_reply(415, "Content-Type must be application/json"));
             }
-            match controller.action(project, action, body) {
+            match controller.action(project, action, body, inflight) {
                 Ok(run) => success_reply(200, RunEnvelope::new(run)),
                 Err(error) => error_reply(&error),
             }
@@ -489,6 +532,11 @@ impl Dispatcher for NoopDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::lifecycle::{self, InFlight};
+    use crate::service::Clock;
+    use crate::service::engine::{DISPATCH_TIMEOUT, MAX_ENGINE_LANES};
+    use std::sync::mpsc::channel;
+    use std::thread;
 
     fn headers(pairs: &[(&str, &str)]) -> Vec<Header> {
         pairs
@@ -542,7 +590,9 @@ mod tests {
         // returns a plain path and crosses that boundary safely, which is why
         // five other `src/` files already use it and none uses `TestEnv`.
         let home = storyhook_test_support::scratch_dir();
-        let controller = Arc::new(EngineController::open(&Environment::at(home.path())).unwrap());
+        let env = Environment::at(home.path());
+        let controller = Arc::new(EngineController::open(&env).unwrap());
+        let inflight = InFlight::new(env);
         let now = Instant::now();
         let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = intercept(
@@ -554,6 +604,7 @@ mod tests {
             &TrustedHosts::default(),
             "token",
             &controller,
+            &inflight,
             &ChangeBus::new(),
             &tokens,
             "storyhook_test",
@@ -571,6 +622,7 @@ mod tests {
             &TrustedHosts::default(),
             "token",
             &controller,
+            &inflight,
             &ChangeBus::new(),
             &tokens,
             "storyhook_test",
@@ -593,6 +645,64 @@ mod tests {
         assert_eq!(
             subscription.recv(std::time::Duration::ZERO),
             Some(Change::Project("p".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_immediate_engine_stop_is_in_flight_until_cleanup_finishes() {
+        const STARTED_AT: &str = "2026-01-01T00:00:00Z";
+
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path()).clock(Clock::Fixed(STARTED_AT.to_string()));
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(env.clone());
+        let checkout = home.path().join("checkout");
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+
+        thread::scope(|scope| {
+            let worker_inflight = &inflight;
+            let worker_env = &env;
+            let worker_checkout = &checkout;
+            let worker = scope.spawn(move || {
+                with_immediate_stop_inflight(
+                    worker_inflight,
+                    worker_env,
+                    "fixture",
+                    "run-1",
+                    worker_checkout,
+                    || {
+                        entered_tx.send(()).unwrap();
+                        release_rx
+                            .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                            .expect("the test must release engine cleanup");
+                    },
+                )
+            });
+
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("engine cleanup must start");
+            let active = lifecycle::read_inflight(&env);
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].request_id, "engine-stop:fixture:run-1");
+            assert_eq!(active[0].command, "engine-stop");
+            assert_eq!(active[0].project.as_deref(), Some("fixture"));
+            assert_eq!(active[0].pid, std::process::id());
+            assert_eq!(active[0].cwd, checkout);
+            assert_eq!(active[0].started_at, STARTED_AT);
+            assert_eq!(
+                active[0].served_deadline_secs,
+                (DISPATCH_TIMEOUT * (MAX_ENGINE_LANES + 1)).as_secs()
+            );
+
+            release_tx.send(()).expect("releasing engine cleanup");
+            worker.join().expect("engine stop must not panic");
+        });
+
+        assert!(
+            lifecycle::read_inflight(&env).is_empty(),
+            "engine stop ownership must retract after cleanup"
         );
     }
 }
