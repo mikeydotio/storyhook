@@ -1235,6 +1235,16 @@ Standing rules for every wave:
   SH-94) so a failure carries what the process it was about actually said. Design of record:
   `docs/spec/test-tiers.md`'s "A fixture may not wait on a corpse for ever" section; the
   council's verdict is on the story (`story show SH-528`, never its own directory — SH-363).
+- **A feature-gated instruction must be refused by a build that cannot honor it** (SH-534).
+  `STORYHOOK_FAULT` and `STORYHOOK_TEST_PANIC` were read only inside
+  `fault-injection` code, so an installed build silently accepted both while doing nothing.
+  `fault_injection_guard` now refuses either at the first statement in `main`, before Git
+  environment scrubbing, credential removal, argument dispatch or any external side effect.
+  Presence is the request, even for an empty or non-UTF-8 value. The decision takes the
+  feature capability as a plain input so unit tests reach both branches; production passes
+  `env::is_test_build()`, which remains the one exact sentinel. Cargo test cannot execute the
+  featureless binary branch, so a source wiring fence pins the call order and manual builds
+  toggle the feature for end-to-end validation. Design of record: `docs/spec/test-tiers.md`.
 - **An unopenable tracker is a last resort, and the installed set is a projection of a
   release** (SH-530). Storyhook's local installation is not one thing — the CLI, the
   daemon, the Claude/Codex plugin and the store schema each had their own path from a
