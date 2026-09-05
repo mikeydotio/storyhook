@@ -9045,3 +9045,38 @@ fn web_serve_root_html_closes_the_create_modal_when_its_target_vanishes() {
          would retain live controls aimed at a vanished project (SH-442). Found: {branch}"
     );
 }
+
+/// SH-554: story detail belongs to the content workspace rather than to the
+/// backdrop-based overlay registry. The browser specs prove the geometry and
+/// interaction; this fast source fence makes the ownership boundary explicit.
+#[test]
+fn story_detail_is_a_non_modal_workspace_peer() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let script = script(&html);
+    let open = function_body(script, "openDrawer");
+    let close = function_body(script, "closeDrawer");
+
+    assert!(
+        html.contains(r#"id="repo-workspace""#) && html.contains(r#"id="workspace-content""#),
+        "story detail needs a content-region wrapper so the board/list pane and detail pane can own adjacent layout tracks"
+    );
+    assert!(
+        !html.contains(r#"id="drawer-backdrop""#)
+            && !open.contains("showBackdrop")
+            && !open.contains("activateOverlay")
+            && !close.contains("hideBackdrop")
+            && !close.contains("releaseOverlay"),
+        "story detail still participates in the modal overlay system instead of remaining an interactive workspace peer"
+    );
+    assert!(
+        html.contains(r#"<aside class="drawer" id="drawer" tabindex="-1" aria-label="Story details" aria-hidden="true" inert>"#),
+        "the closed detail peer must be a named complementary landmark that is inert until opened"
+    );
+    assert!(
+        html.contains(r#"aria-label="Close story details""#),
+        "the panel's icon-only X needs a stable accessible name"
+    );
+}
