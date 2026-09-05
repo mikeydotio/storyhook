@@ -55,6 +55,7 @@
 #   DISPOSITION  root <tail>      a path beneath the environment root
 #                literal <value>  a fixed value
 #                ownpid -         the pid that owns the spawned daemons
+#                ownstart -       empty; selects PID-only shell compatibility
 #                clear -          removed; there is no harmless value
 #
 # One list, read by both functions below, in `test_environment.rs`'s own order
@@ -69,6 +70,7 @@ STORYHOOK_DATA_DIR any root home/.local/share/storyhook
 STORYHOOK_STORE_PATH any root home/.local/share/storyhook/store.db
 STORYHOOK_DAEMON_ADDR any literal 127.0.0.1:0
 STORYHOOK_PARENT_PID any ownpid -
+STORYHOOK_PARENT_START_TIME any ownstart -
 STORYHOOK_GITHUB_TOKEN any clear -
 STORYHOOK_PROJECT any clear -
 STORYHOOK_ACTOR any clear -
@@ -155,6 +157,7 @@ _storyhook_isolate_value() {
     root) [ "$3" = "." ] && printf '%s' "$1" || printf '%s/%s' "$1" "$3" ;;
     literal) printf '%s' "$3" ;;
     ownpid) printf '%s' "$4" ;;
+    ownstart) ;;
     clear) ;;
     esac
 }
