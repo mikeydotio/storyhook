@@ -1071,6 +1071,17 @@ pub fn validate_event_for_append(event: &StoryEvent) -> Result<(), AppError> {
                     "invalid label `{label}`: a label cannot contain a comma — `,` separates labels, it cannot be part of one"
                 )));
             }
+            if label != &label.to_lowercase() {
+                return Err(AppError::Validation(format!(
+                    "invalid label `{label}`: labels must be lowercase"
+                )));
+            }
+        }
+        let normalized = normalize_labels(labels);
+        if labels != &normalized {
+            return Err(AppError::Validation(format!(
+                "invalid label set {labels:?}: labels must be lowercase, sorted, and unique"
+            )));
         }
     }
     Ok(())
@@ -1242,8 +1253,10 @@ pub fn validate_type_slug(slug: &str) -> Result<(), AppError> {
 /// (SH-164 — a comma-bearing label is not malformed data, it is an
 /// unreachable one).
 ///
-/// Splits every raw value on `,`, trims whitespace, drops anything left
-/// empty, and returns the deduplicated, sorted result. Idempotent by
+/// Splits every raw value on `,`, trims whitespace, lowercases with Unicode
+/// semantics, drops anything left empty, and returns the deduplicated, sorted
+/// result. Lowercasing happens before insertion into the set, so spellings
+/// that differ only by case have one identity. Idempotent by
 /// construction: normalizing an already-normalized set changes nothing, which
 /// is what lets a caller normalize the *union* of a story's existing labels
 /// with new input (as `set_labels` does) without a second pass mattering.
@@ -1258,7 +1271,7 @@ where
             value
                 .as_ref()
                 .split(',')
-                .map(|s| s.trim().to_string())
+                .map(|s| s.trim().to_lowercase())
                 .collect::<Vec<_>>()
         })
         .filter(|s| !s.is_empty())
@@ -4224,8 +4237,16 @@ mod tests {
     #[test]
     fn normalize_labels_splits_trims_dedups_and_sorts() {
         assert_eq!(
-            normalize_labels(["web,sse", " backend ,api", "api"]),
+            normalize_labels(["Web,SSE", " Backend ,API", "api"]),
             vec!["api", "backend", "sse", "web"]
+        );
+    }
+
+    #[test]
+    fn normalize_labels_lowercases_unicode_before_deduplicating() {
+        assert_eq!(
+            normalize_labels(["CAFÉ", "café", "ÄPPLE"]),
+            ["café", "äpple"]
         );
     }
 
@@ -4264,6 +4285,16 @@ mod tests {
                 "`{bad}` should have been rejected"
             );
         }
+    }
+
+    #[test]
+    fn validate_event_for_append_rejects_noncanonical_case() {
+        let event = StoryEvent::StoryLabelsSet {
+            at: "2026-01-01T00:00:00Z".to_string(),
+            labels: vec!["Web".to_string()],
+        };
+        let error = validate_event_for_append(&event).unwrap_err();
+        assert!(error.to_string().contains("lowercase"), "{error}");
     }
 
     #[test]

@@ -23,7 +23,7 @@ fn add_labels() {
         .success();
 
     story(dir.path())
-        .args(["label", "SH-1", "bug,backend"])
+        .args(["label", "SH-1", "Bug,BACKEND"])
         .assert()
         .success()
         .stdout(predicate::str::contains("labels: backend, bug"));
@@ -96,7 +96,7 @@ fn list_filters_by_label() {
         .success();
 
     let output = story(dir.path())
-        .args(["list", "--label", "bug"])
+        .args(["list", "--label", "BUG"])
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
