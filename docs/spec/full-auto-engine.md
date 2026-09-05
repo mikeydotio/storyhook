@@ -1880,8 +1880,12 @@ must use that lease and accept success only after the helper echoes it and
 proves that no exact-name story window remains on the leased tmux server. A
 legacy lane without a lease is retained with an explicit error instead of
 inventing cleanup identity from mutable checkout or provider settings. A
-partially failed stop-now can be retried. Quarantined lanes are already
-evidence and are cleared without unclaiming or deleting that evidence.
+fresh dispatching lane is not legacy: stop-now first makes the run draining,
+waits within the dispatch helper's existing bound for its validated lease, and
+then performs the same exact cleanup. A reconcile already inside one dispatch
+rechecks the run before claiming another lane. A partially failed stop-now can
+be retried. Quarantined lanes are already evidence and are cleared without
+unclaiming or deleting that evidence.
 
 ### SH-467 — a singular operational CLI
 

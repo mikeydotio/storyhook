@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use wait_timeout::ChildExt;
@@ -37,6 +37,10 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How often stop-now re-reads a lane whose dispatch helper still owns the
+/// exact cleanup lease it is about to publish.
+const DISPATCH_SETTLE_POLL: Duration = Duration::from_millis(20);
 
 /// The design record models lane count as a `u8`. Keep the service boundary
 /// faithful even though SQLite stores the value in an INTEGER column.
@@ -1269,6 +1273,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             if occupied + n >= ENGINE_LANE_BUDGET {
                 break;
             }
+            // Stop-now may set the run to draining while this reconcile is
+            // blocked inside the preceding dispatch helper. Do not claim the
+            // next lane from the stale running view captured above.
+            if !self.run_accepts_claims(slug, run_id)? {
+                break;
+            }
             let filters = ReadyQueueFilters {
                 phase: None,
                 epic: scope_epic.as_deref(),
@@ -1369,6 +1379,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         Ok(hard_stops)
     }
 
+    fn run_accepts_claims(&self, slug: &str, run_id: &RunId) -> Result<bool, AppError> {
+        Ok(self
+            .ctx
+            .store()
+            .read(|tx| Ok(run_for_project(tx, slug, run_id)?.state == EngineRunState::Running))?)
+    }
+
     /// Ends a run whose lanes are all idle.
     ///
     /// **A `Running` run does not auto-finish while a `no-auto` story still
@@ -1442,7 +1459,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let transition_at = self.ctx.now();
-        let (slug, lanes) = self.ctx.store().write(|tx| {
+        let slug = self.ctx.store().write(|tx| {
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
             require_state(
@@ -1454,7 +1471,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     EngineRunState::Draining,
                 ],
             )?;
-            let lanes = tx.engine_lanes(run_id)?;
             run.state = EngineRunState::Draining;
             if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
                 run.stop_reason = Some(OPERATOR_STOPPED_NOW.to_string());
@@ -1462,45 +1478,59 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
             run.updated_at = transition_at.clone();
             tx.update_engine_run(&run)?;
-            Ok((slug, lanes))
+            Ok(slug)
         })?;
 
-        for lane in lanes
-            .into_iter()
-            .filter(|lane| lane.state != EngineLaneState::Idle)
-        {
-            if lane.state == EngineLaneState::Quarantined {
-                self.clear_quarantined_lane(&lane)?;
-                continue;
-            }
-            let story = lane.story_id.clone().expect("filtered occupied lane");
-            let cleanup_lease = lane.cleanup_lease.clone().ok_or_else(|| {
-                AppError::Storage(format!(
-                    "engine run `{run_id}` cannot immediately stop lane {} story `{story}`: no cleanup lease was recorded for this legacy lane",
-                    lane.lane_index
-                ))
-            })?;
-            let outcome = self
-                .dispatcher
-                .unclaim(UnclaimRequest {
-                    project: slug.clone(),
-                    story: story.clone(),
-                    cleanup_lease,
-                })
-                .map_err(|error| {
-                    error.with_context(&format!(
-                        "engine run `{run_id}` could not immediately stop lane {} story `{story}`",
+        let dispatch_deadline = Instant::now() + DISPATCH_TIMEOUT;
+        loop {
+            let lanes = self.stop_lanes_after_dispatch(run_id, dispatch_deadline)?;
+            for lane in lanes
+                .into_iter()
+                .filter(|lane| lane.state != EngineLaneState::Idle)
+            {
+                if lane.state == EngineLaneState::Quarantined {
+                    self.clear_quarantined_lane(&lane)?;
+                    continue;
+                }
+                let story = lane.story_id.clone().expect("filtered occupied lane");
+                let cleanup_lease = lane.cleanup_lease.clone().ok_or_else(|| {
+                    AppError::Storage(format!(
+                        "engine run `{run_id}` cannot immediately stop lane {} story `{story}`: no cleanup lease was recorded for this legacy lane",
                         lane.lane_index
                     ))
                 })?;
-            if outcome.state == DispatchOutcomeState::Refused {
-                return Err(AppError::Validation(format!(
-                    "engine run `{run_id}` could not immediately stop lane {} story `{story}`: {}",
-                    lane.lane_index,
-                    helper_diagnosis(&outcome.payload)
-                )));
+                let outcome = self
+                    .dispatcher
+                    .unclaim(UnclaimRequest {
+                        project: slug.clone(),
+                        story: story.clone(),
+                        cleanup_lease,
+                    })
+                    .map_err(|error| {
+                        error.with_context(&format!(
+                            "engine run `{run_id}` could not immediately stop lane {} story `{story}`",
+                            lane.lane_index
+                        ))
+                    })?;
+                if outcome.state == DispatchOutcomeState::Refused {
+                    return Err(AppError::Validation(format!(
+                        "engine run `{run_id}` could not immediately stop lane {} story `{story}`: {}",
+                        lane.lane_index,
+                        helper_diagnosis(&outcome.payload)
+                    )));
+                }
+                self.release_lane(&lane, &outcome.payload)?;
             }
-            self.release_lane(&lane, &outcome.payload)?;
+
+            let all_idle = self.ctx.store().read(|tx| {
+                Ok(tx
+                    .engine_lanes(run_id)?
+                    .iter()
+                    .all(|lane| lane.state == EngineLaneState::Idle))
+            })?;
+            if all_idle {
+                break;
+            }
         }
 
         let finished_at = self.ctx.now();
@@ -1517,6 +1547,30 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             tx.update_engine_run(&run)
         })?;
         self.one_view(run_id)
+    }
+
+    fn stop_lanes_after_dispatch(
+        &self,
+        run_id: &RunId,
+        deadline: Instant,
+    ) -> Result<Vec<EngineLaneRecord>, AppError> {
+        loop {
+            let lanes = self.ctx.store().read(|tx| tx.engine_lanes(run_id))?;
+            let Some(dispatching) = lanes.iter().find(|lane| {
+                lane.state == EngineLaneState::Dispatching && lane.cleanup_lease.is_none()
+            }) else {
+                return Ok(lanes);
+            };
+            if Instant::now() >= deadline {
+                return Err(AppError::Storage(format!(
+                    "engine run `{run_id}` could not immediately stop lane {} story `{}`: dispatch did not publish its cleanup lease within {}s",
+                    dispatching.lane_index,
+                    dispatching.story_id.as_deref().unwrap_or("unknown"),
+                    DISPATCH_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(DISPATCH_SETTLE_POLL);
+        }
     }
 
     fn release_lane(
