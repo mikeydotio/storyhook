@@ -613,6 +613,57 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
 }
 
 #[test]
+fn speculative_run_recovers_a_poller_whose_private_head_is_unavailable() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let private_objects = scratch_dir();
+    let source_objects = repo.common_dir().join("objects");
+    let private_commit = git_with_objects(
+        &poller,
+        private_objects.path(),
+        &source_objects,
+        &[
+            "commit-tree",
+            &repo.tree_of(&base),
+            "-p",
+            &base,
+            "-m",
+            "stranded",
+        ],
+    );
+    assert_ok(&private_commit, "creating a private stranded commit");
+    let private_commit = stdout(&private_commit);
+    let checkout_private = git_with_objects(
+        &poller,
+        private_objects.path(),
+        &source_objects,
+        &["checkout", "-q", "--detach", &private_commit],
+    );
+    assert_ok(&checkout_private, "stranding the poller on private objects");
+    drop(private_objects);
+    let broken = run(&poller, "git", &["status", "--short"]);
+    assert!(!broken.status.success(), "fixture HEAD must be unavailable");
+    assert!(stderr(&broken).contains("bad object"));
+
+    let recovered = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &["git", "cat-file", "-e", "HEAD^{commit}"],
+    );
+
+    assert_ok(&recovered, "running after a forced verifier termination");
+    assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+}
+
+#[test]
 fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
     let repo = MergeRepo::new();
     let fork = repo.rev_parse("main");

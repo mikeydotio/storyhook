@@ -6,14 +6,13 @@
 //! tests a seam that never needs a worktree, tmux server, or agent process.
 
 use std::ffi::OsString;
+#[cfg(test)]
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 use regex::Regex;
-use wait_timeout::ChildExt;
 
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO,
@@ -23,6 +22,9 @@ use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
+#[cfg(test)]
+use crate::process::read_capture;
+use crate::process::{CaptureError, Captured, run_captured};
 use crate::store::ids::GlobalSeq;
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -36,7 +38,7 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// This is the dashboard dispatch bound moved to the shared seam: the script's
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The design record models lane count as a `u8`. Keep the service boundary
 /// faithful even though SQLite stores the value in an INTEGER column.
@@ -337,9 +339,6 @@ pub fn classify(
 /// budget bounds a wedged server without inventing another patience value.
 const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 
-/// Bounds diagnostics from a faulty helper or tmux client.
-const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
-
 const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
     "STORY_PROMPT",
     "STORY_AUTO_PROMPT",
@@ -552,7 +551,7 @@ impl Dispatcher for ShellDispatcher {
                     "tmux refused to kill window `{window}`{suffix}"
                 )))
             }
-            Err(CaptureError::Timeout) => Err(AppError::Storage(format!(
+            Err(CaptureError::Timeout(_)) => Err(AppError::Storage(format!(
                 "tmux did not answer while killing window `{window}` within {}s",
                 TMUX_TIMEOUT.as_secs()
             ))),
@@ -1854,7 +1853,7 @@ pub(crate) fn run_shell_dispatch(
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the dispatch process: {detail}"))
         }
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
         )),
@@ -1902,7 +1901,7 @@ fn run_shell_unclaim(
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the unclaim helper: {detail}"))
         }
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
         )),
@@ -1996,7 +1995,7 @@ pub(crate) fn run_shell_capabilities(
         CaptureError::Wait(detail) => AppError::Storage(format!(
             "could not wait for the capabilities helper: {detail}"
         )),
-        CaptureError::Timeout => AppError::Storage(format!(
+        CaptureError::Timeout(_) => AppError::Storage(format!(
             "capabilities did not finish within {}s and was terminated",
             CAPABILITIES_TIMEOUT.as_secs()
         )),
@@ -2082,80 +2081,6 @@ pub(crate) fn prompt_override_violation(
         .into_iter()
         .find(|(_, value)| value.is_some_and(charter_inert_violation))
         .map(|(name, _)| name)
-}
-
-struct Captured {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-enum CaptureError {
-    Stage(std::io::Error),
-    Spawn(std::io::Error),
-    Wait(std::io::Error),
-    Timeout,
-}
-
-impl CaptureError {
-    fn detail(&self) -> String {
-        match self {
-            Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
-            Self::Timeout => "the process timed out".to_string(),
-        }
-    }
-}
-
-fn run_captured(mut command: Command, timeout: Duration) -> Result<Captured, CaptureError> {
-    let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
-    let stderr_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
-    let child_stdout = stdout_file.try_clone().map_err(CaptureError::Stage)?;
-    let child_stderr = stderr_file.try_clone().map_err(CaptureError::Stage)?;
-    command
-        .stdin(Stdio::null())
-        .stdout(child_stdout)
-        .stderr(child_stderr);
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command.spawn().map_err(CaptureError::Spawn)?;
-    let pid = child.id();
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Timeout);
-        }
-        Err(error) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Wait(error));
-        }
-    };
-    Ok(Captured {
-        status,
-        stdout: read_capture(stdout_file),
-        stderr: read_capture(stderr_file),
-    })
-}
-
-fn kill_process_group(pid: u32) {
-    #[cfg(unix)]
-    // SAFETY: this is the process group created for the child immediately
-    // above; it has not been reaped and therefore cannot have been recycled.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
-    #[cfg(not(unix))]
-    let _ = pid;
-}
-
-fn read_capture(mut file: File) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    if file.seek(SeekFrom::Start(0)).is_ok() {
-        let _ = file.take(MAX_CAPTURE_BYTES).read_to_end(&mut bytes);
-    }
-    bytes
 }
 
 fn pid_is_live(pid: i32) -> bool {
@@ -2358,7 +2283,7 @@ mod tests {
         command.args(["-c", "sleep 30"]);
         assert!(matches!(
             run_captured(command, Duration::from_millis(20)),
-            Err(CaptureError::Timeout)
+            Err(CaptureError::Timeout(_))
         ));
     }
 
