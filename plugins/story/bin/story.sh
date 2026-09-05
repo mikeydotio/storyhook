@@ -214,11 +214,12 @@ codex_capability_json() {
   # behavior untouched.
   jq -n '{
     models: [
+      {id:"gpt-6-astra",   label:"GPT-6 Astra"},
       {id:"gpt-5.6-sol",   label:"GPT-5.6 Sol"},
       {id:"gpt-5.6-terra", label:"GPT-5.6 Terra"},
       {id:"gpt-5.6-luna",  label:"GPT-5.6 Luna"}
     ],
-    efforts: [{id:"none"},{id:"low"},{id:"medium"},{id:"high"},{id:"xhigh"},{id:"max"}],
+    efforts: [{id:"none"},{id:"low"},{id:"medium"},{id:"high"},{id:"xhigh"},{id:"max"},{id:"ultra"}],
     # No "standard" entry: speed is a plain toggle with no wire-level
     # "explicit standard" distinct from omitting --speed entirely, so the
     # one selectable alternative to the placeholder "Default" a caller

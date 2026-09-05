@@ -34,7 +34,7 @@ hook_command() {
 run_codex_hook() {
   local event="$1" payload="$2" command
   command=$(hook_command "$event")
-  (cd "$repo" && printf '%s' "$payload" | env -u CLAUDE_PLUGIN_ROOT \
+  (cd "$repo" && printf '%s' "$payload" | env -u CLAUDE_PLUGIN_ROOT -u STORYHOOK_DISPATCH \
     PLUGIN_ROOT="$PLUGIN_ROOT" PATH="$FAKE_BIN:$PATH" bash -c "$command")
 }
 
@@ -65,7 +65,7 @@ assert_contains "$(cat "$STORY_HOOK_LOG")" "--deadline 13 handoff --since 4h" \
 
 # Claude's compatibility variable remains a valid fallback for the same root.
 command=$(hook_command SessionStart)
-out=$(cd "$repo" && printf '%s' "$session_payload" | env -u PLUGIN_ROOT \
+out=$(cd "$repo" && printf '%s' "$session_payload" | env -u PLUGIN_ROOT -u STORYHOOK_DISPATCH \
   CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="$FAKE_BIN:$PATH" bash -c "$command")
 assert_eq "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "SessionStart" \
   "Claude root fallback: same manifest command works"
