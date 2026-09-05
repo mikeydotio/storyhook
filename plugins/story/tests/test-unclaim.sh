@@ -40,6 +40,8 @@ assert_eq "$(jqf "$out" .restored_to)" "todo" "happy: names where it landed"
 assert_eq "$(jqf "$out" .window)" "open" "happy: the window was someone else's"
 assert_eq "$(jqf "$out" .closed_window)" "true" "happy: and it was closed"
 assert_eq "$(state_of "$hp")" "todo" "happy: the REAL story really moved"
+assert_contains "$(comments_of "$hp")" "Unclaimed from" \
+  "happy: a direct unclaim records the release by default"
 grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "happy: tmux kill-window did not target the resolved window"
 
@@ -87,6 +89,8 @@ assert_eq "$(jqf "$out" .ok)" "true" "self: still ok — the release is the verb
 assert_eq "$(jqf "$out" .window)" "self" "self: the window is classified as the caller's own"
 assert_eq "$(jqf "$out" .closed_window)" "false" "self: it was NOT closed"
 assert_eq "$(state_of "$sf")" "todo" "self: the release really happened"
+assert_contains "$(comments_of "$sf")" "Unclaimed from" \
+  "self: the default release comment survives skipped window cleanup"
 assert_contains "$(jqf "$out" .display)" "left open" "self: the skip is named, never silent"
 assert_eq "$(kill_count)" "$kills_before" \
   "self: no kill-window call was made at all"

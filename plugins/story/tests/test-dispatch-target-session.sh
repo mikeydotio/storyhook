@@ -44,4 +44,9 @@ grep -q -- '-t editor-room:' "$FAKE_TMUX_STATE/new_window_args.log" \
 
 [ -d "$repo/.claude/worktrees/$id" ] || fail_test "target-session: worktree directory missing"
 
+comment=$(cd "$repo" && story show "$id" --json \
+  | jq -r '.story.story.comments[-1].text')
+assert_eq "$comment" "Dispatching to tmux window editor-room:$id." \
+  "target-session: transactional comment names the explicit target, not the caller"
+
 finish

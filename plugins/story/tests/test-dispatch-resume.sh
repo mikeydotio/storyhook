@@ -69,6 +69,12 @@ submitted=$(cat "$FAKE_TMUX_STATE/submitted" 2>/dev/null || printf '')
 assert_contains "$submitted" "resuming work already started" "prompt: names resumed work"
 assert_contains "$submitted" "previous agent" "prompt: names prior-agent uncertainty"
 assert_contains "$submitted" "Implement the approved work" "prompt: ordinary charter remains"
+resume_comment=$(cd "$repo_wt" && story show "$id_wt" --json \
+  | jq -r '.story.story.comments[-1].text')
+repo_wt_real=$(cd "$repo_wt" && pwd -P)
+assert_eq "$resume_comment" \
+  "Dispatched to tmux window story-session:$id_wt, worktree $repo_wt_real/.claude/worktrees/$id_wt, branch worktree-$id_wt." \
+  "worktree: claim-reuse records the resumed resources after handoff"
 
 # A later handoff failure rolls back only this attempt's resources. The dirty
 # worktree and branch inherited above remain evidence even though the newly

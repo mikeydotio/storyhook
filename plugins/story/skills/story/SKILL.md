@@ -185,5 +185,8 @@ and block it for manual recovery.
   be combined with the helper-only `dispatch --next` mode.
 - `do <id> --resume` preserves valid existing work, rebuilds only missing resources, and
   replaces an existing story-pane occupant only after that explicit permission.
+- A fresh named dispatch records its intended tmux window in the claim transaction. A
+  `dispatch --next`, forced, or resumed handoff records the tmux window, worktree, and
+  branch afterward. Rollback records the correcting unclaim; dispatch has no quiet mode.
 - Storyhook stories are not GitHub issues. Do not invent issue-label or `Closes #N`
   conventions; use story ids and Storyhook relationships.
