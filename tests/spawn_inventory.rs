@@ -90,10 +90,12 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
-    // Centralized verification waits for one bash orchestration command and
-    // reads its one JSON result. Repository test output goes to a regular log
-    // file inside verify-pr.sh, so test descendants hold no output pipe.
-    ("src/daemon/verification.rs", "\"bash\"", Kind::Reads),
+    // Centralized verification waits for bounded bash orchestration commands.
+    // JSON and diagnostics go to regular temporary files, repository tests
+    // write their own log, and every timeout kills the whole process group.
+    // Descendants therefore hold no output pipe and cannot outlive the
+    // daemon's wall-clock boundary.
+    ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
     // `.output()`, which reads the child's stdout to EOF. `git` reads files,
