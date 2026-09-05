@@ -80,11 +80,15 @@ fn checkout() -> &'static Path {
 /// A repository with `main` at one commit, ready to grow diverging branches.
 struct MergeRepo {
     dir: TempDir,
+    private_tmp: TempDir,
 }
 
 impl MergeRepo {
     fn new() -> Self {
-        let repo = Self { dir: scratch_dir() };
+        let repo = Self {
+            dir: scratch_dir(),
+            private_tmp: scratch_dir(),
+        };
 
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "t@t"]);
@@ -238,6 +242,7 @@ impl MergeRepo {
             .env("STORYHOOK_PROJECT", "live-project")
             .env("GH_TOKEN", "github-secret")
             .env("GITHUB_TOKEN", "github-fallback-secret")
+            .env("TMPDIR", self.private_tmp.path())
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -272,6 +277,7 @@ impl MergeRepo {
                 &marker.display().to_string(),
             ])
             .current_dir(self.path())
+            .env("TMPDIR", self.private_tmp.path())
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -318,6 +324,7 @@ impl MergeRepo {
                 &release.display().to_string(),
             ])
             .current_dir(self.path())
+            .env("TMPDIR", self.private_tmp.path())
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -327,11 +334,14 @@ impl MergeRepo {
     }
 
     fn merge_object_artifacts(&self) -> Vec<PathBuf> {
-        let root = self.common_dir().join("storyhook");
-        let Ok(entries) = fs::read_dir(root) else {
-            return Vec::new();
-        };
-        let mut paths = entries
+        let roots = [
+            self.common_dir().join("storyhook"),
+            self.private_tmp.path().to_path_buf(),
+        ];
+        let mut paths = roots
+            .into_iter()
+            .filter_map(|root| fs::read_dir(root).ok())
+            .flatten()
             .map(|entry| entry.expect("reading merge state").path())
             .filter(|path| {
                 path.file_name()
@@ -695,6 +705,38 @@ fn speculative_run_accepts_the_symbolic_base_ref_used_by_the_verifier() {
     assert_ok(&outcome, "speculative run from the verifier base ref");
     assert_eq!(stdout(&outcome), expected_tree);
     assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+}
+
+#[test]
+fn speculative_run_keeps_private_git_administration_outside_the_source_repository() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &["git", "rev-parse", "--absolute-git-dir"],
+    );
+
+    assert_ok(&outcome, "reporting the speculative Git directory");
+    let private_git = PathBuf::from(stdout(&outcome));
+    assert!(
+        private_git.starts_with(repo.private_tmp.path()),
+        "the speculative Git directory must use the caller's isolated temporary root, got {}",
+        private_git.display()
+    );
+    assert!(
+        !private_git.starts_with(repo.path()),
+        "Cargo fingerprints the source repository recursively, so private Git administration must not live beneath it: {}",
+        private_git.display()
+    );
     assert!(repo.merge_object_artifacts().is_empty());
 }
 
