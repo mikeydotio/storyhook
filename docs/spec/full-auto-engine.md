@@ -2072,3 +2072,19 @@ dispatch rollback names any surviving marker, worktree, or branch instead of
 claiming that rollback completed. Successful partial mutations stay reported
 as such, so retry remains safe and diagnostics never erase what already
 happened.
+
+### SH-569 — lane membership on stories
+
+The dashboard derives each occupied story's lane from the existing live engine
+run response; `/data` and the server API gain no duplicate field. Board cards
+and List-view rows both show `Full Auto: Lane N`, with the zero-based wire index
+converted to the same one-based numbering as the project-header lane strip.
+The chip is operational state, not a label: it uses its own purple palette and
+sits outside label containers.
+
+`running`, `paused`, and `draining` runs all keep the chip while a lane still
+names the story. Pause stops new allocation but does not stop occupied work;
+drain likewise waits for occupied work to finish. A successful engine refresh
+repaints the current board or list through SH-401's press gate, and each
+renderer's output-derived fingerprint notices lane assignment and release, so
+the chip appears and clears without a page reload.
