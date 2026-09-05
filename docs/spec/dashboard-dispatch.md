@@ -531,6 +531,23 @@ plugin registry; Codex asks `codex plugin list --json` for the authoritative ena
 among stale cached versions. The development-checkout fallback remains the shared
 `plugins/story/bin/story.sh`, and the optional flag does not change dispatch protocol 1.
 
+## As built — SH-571 (autonomous Codex hook binding)
+
+**Resolving a helper does not prove Codex loaded that helper's hooks.** Codex has no
+session-scoped equivalent of Claude's `--plugin-dir`: hook trust can allow configured hooks
+to run, but it does not select or bind an enabled plugin version. A development helper could
+therefore pass screen readiness while Codex had no Storyhook hooks, receive the autonomous
+charter in Plan mode, call `request_user_input`, and wait forever before plan approval.
+
+The shared SessionStart hook now derives its canonical plugin root from its own file path and
+adds it to the protocol-2 dispatch sentinel. Auto and Full Auto Codex readiness requires the
+sentinel's `plugin_root` to exactly equal the canonical root that owns the running helper.
+No sentinel, a protocol-1 or malformed sentinel, and a different root all refuse and roll back
+before the plan watcher or prompt is delivered. Attended Codex remains screen-gated because a
+person is present; Claude retains its existing sentinel-and-pane gate without requiring root
+identity. The `request_user_input` denial remains defense in depth after this fail-closed
+handoff boundary.
+
 ## As built — SH-304 (the notification contract: routing by outcome)
 
 **SH-232's rule was right about the danger and wrong about the axis.** It sent every
