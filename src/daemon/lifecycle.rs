@@ -596,14 +596,17 @@ fn open_pidfile(env: &Environment) -> Result<File, AppError> {
         .map_err(|e| AppError::Storage(format!("failed to open the daemon pidfile: {e}")))
 }
 
-/// Whether a daemon currently holds the pidfile lock.
+/// Whether a daemon may currently hold the pidfile lock.
 ///
 /// The replacement for `is_process_alive`, and strictly better than it: a lock
 /// is held by a *process*, so a recycled pid cannot impersonate one, and a
-/// daemon that has exited releases it whether or not it got to clean up.
+/// daemon that has exited releases it whether or not it got to clean up. A
+/// pidfile-open failure is conservatively live: inability to inspect the lock
+/// is not proof that it is free, and a false negative could start a second
+/// daemon or misclassify an orderly exit as a crash.
 pub fn is_live(env: &Environment) -> bool {
     let Ok(file) = open_pidfile(env) else {
-        return false;
+        return true;
     };
     match file.try_lock_exclusive() {
         // Nobody held it, so nobody is running. Release what we just took.
@@ -2428,6 +2431,20 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         assert!(!is_live(&env));
+    }
+
+    #[test]
+    fn a_pidfile_open_failure_is_not_misreported_as_no_daemon() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let state_parent = dir.path().join(".local/state");
+        std::fs::create_dir_all(&state_parent).unwrap();
+        std::fs::write(state_parent.join("storyhook"), "not a directory").unwrap();
+
+        assert!(
+            is_live(&env),
+            "inability to inspect the lock is unknown, not proof that no daemon holds it"
+        );
     }
 
     /// Liveness is the held lock, so it must answer true exactly while a daemon

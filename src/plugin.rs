@@ -346,7 +346,8 @@ fn remove_claude_plugin() -> Result<(), AppError> {
         return Ok(());
     }
     let text = combined_output(&out);
-    if text.to_lowercase().contains("not installed") {
+    let lower = text.to_lowercase();
+    if lower.contains("not installed") || lower.contains("not found in installed plugins") {
         return Ok(());
     }
     Err(AppError::Storage(format!(
