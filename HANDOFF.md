@@ -1,38 +1,35 @@
-# SH-204 Handoff
+# SH-569 Handoff
 
 ## Delivered
 
-- All label producers and selectors use one Unicode-aware lowercase
-  canonicalizer; case variants are one label identity.
-- Schema migration 30 appends compensating `StoryLabelsSet` events for every
-  affected open or closed story and rebuilds its label read model.
-- The drawer and create modal share one chip combobox. Comma, Enter, and field
-  exit commit; suggestions and removals persist; failed additions remain
-  available for retry.
-- CLI help, README guidance, and plugin reference document the invariant.
+- Board cards and List-view rows derive `Full Auto: Lane N` from the current
+  live engine run; no server or `/data` field was added.
+- Running, paused, and draining runs retain chips while lanes are occupied.
+- Engine refreshes repaint through SH-401's view press gate; output-derived
+  fingerprints make lane assignment and clearing live without a reload.
+- Purple light/dark tokens distinguish lane state from neutral and reserved
+  label chips; accessible names carry the same lane description.
+- The Full Auto engine specification records the delivered contract.
 
 ## Preserved state
 
-- Branch: `worktree-SH-204`.
-- Storage/API commit: `b6a87191` (`fix(labels): canonicalize labels as lowercase`).
-- Dashboard commit: `6d7b3def` (`fix(dashboard): unify label combobox behavior`).
-- Store schema is version 30; upstream migration 29 remains unchanged.
-- Reconciliation merges `origin/main` at `e00733a9` without rewriting the
-  published SH-204 history.
-- SH-555 repair and the installed StoryHook 2.4.0 verifier clear the earlier
-  infrastructure block.
+- Branch: `worktree-SH-569`.
+- Feature commit: `7879a7b8f` (`feat(dashboard): show Full Auto lane chips`).
+- Base: `origin/main` at `31c7be615`; no integration merge was needed.
+- Sibling SH-567 and SH-568 PRs were still awaiting centralized verification
+  and were not copied into this branch.
 
 ## Focused verification
 
-- After reconciliation, domain, service, migration, label CLI/query, integrity,
-  doctor, web endpoint, help, README, and generated-roadmap checks passed.
-- Clippy with warnings denied and formatting checks passed.
-- New label-editor E2E: 2 passed in Chromium and 2 in WebKit.
-- Directly impacted existing label E2E: 9 passed in Chromium.
-- Main's overlapping verification-status E2E: 2 passed in Chromium.
+- `e2e/specs/engine.spec.ts`: 64 passed across Chromium, WebKit, mobile
+  Chromium, and mobile WebKit, including the real-daemon Full Auto path.
+- `tests/web_test.rs`: 219 passed.
+- `tests/dashboard_reserved_labels.rs`: 4 passed.
+- `cargo fmt --check` and `git diff --check` passed.
 
 ## Submission boundary
 
-Push the reconciliation merge to existing PR #636, then move SH-204 to
-`verifying` as the absolute final action. The centralized verifier owns the
-full suite, merge, completion, and cleanup.
+Push both focused commits, open and link one SH-569 PR, comment its URL and
+verification results, then move SH-569 to `verifying` as the absolute final
+action. The centralized verifier owns the full suite, merge, completion, and
+worktree cleanup.
