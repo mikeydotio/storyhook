@@ -1,30 +1,24 @@
-# SH-558 Handoff
+# SH-559 Handoff
 
-## Audit result
+## Delivered
 
-- Audited the 41 stories that were TODO when SH-558 planning finished.
-- Closed duplicate attachment stories SH-379 through SH-385 in favor of
-  canonical SH-387 through SH-393.
-- Closed browser-flake stories SH-349, SH-375, SH-378, and SH-395 as obviated
-  by SH-501's later diagnosis.
-- Closed SH-518 as obviated by SH-523 and SH-544.
-- Retained 28 actionable TODO stories without comments, preserving their age.
-- Left SH-559 untouched because another session claimed it after the snapshot.
-- Added `human-only` to SH-327 and `no-auto` to SH-553.
+- SH-552's private per-worktree Git administration remains the production fix.
+- The blocked-gate regression now proves fetch and explicit pull from ordinary
+  worktrees, plus GC, fsck, repack, worktree prune, and bisect.
+- The test-tier design record distinguishes SH-552 prevention from SH-555
+  repair of legacy or stranded verifier administration.
+- No production script or public interface changed.
 
-## Repository record
+## Verification scope
 
-- Updated the project Mini-roadmap in both currently mirrored locations.
-- No public API, schema, CLI behavior, or production logic changed.
-- Story comments and relationships are the durable audit record.
+- `cargo test --test merge_gate`
+- `cargo clippy --test merge_gate -- -D warnings`
+- `cargo fmt --all -- --check`
+- Exact generated-AGENTS scope-rubric contract.
 
 ## Submission contract
 
-- Branch: `worktree-SH-558`.
-- Tracker JSON assertions passed; `story doctor` reported zero integrity
-  findings and only pre-existing operational/history advisories.
-- `cargo fmt --check`, the focused scope-rubric pin, all 19 service-system
-  tests, and all 12 scaffold tests passed. The scaffold test required its
-  expected local-socket sandbox escalation.
-- One linked PR remains open for centralized verification.
-- The verifier owns the full suite, merge, completion, and cleanup.
+- Branch: `worktree-SH-559`.
+- SH-555 exclusively owns repair of the live legacy verifier registration.
+- The one linked PR must remain open for the centralized verifier.
+- The verifier owns the full suite, merge, completion, and worktree cleanup.
