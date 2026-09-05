@@ -3,8 +3,8 @@
 #
 # The hook is the whole of decision D6 in docs/spec/full-auto-engine.md: a lane
 # nobody is watching gets its plan approved and its questions refused at exact
-# provider events. Claude's PermissionRequest event triggers a bounded watcher
-# of only its own plan-review pane; there is no global/continuous pane monitor.
+# provider boundaries. Dispatch arms Claude's exact-pane watcher before prompt
+# submission because Claude 2.1.261 no longer emits PermissionRequest here.
 #
 # Every case fires the command `hooks.json` actually ships, resolved through the
 # provider root variables an installed plugin resolves, the way
@@ -44,17 +44,6 @@ fire() {
     PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$command")
 }
 
-fire_permission() {
-  local payload="$1" command
-  command=$(hook_command PermissionRequest ExitPlanMode)
-  if [ -z "$command" ] || [ "$command" = null ]; then
-    fail_test "full-auto: hooks.json declares no PermissionRequest matcher 'ExitPlanMode'"
-    return 0
-  fi
-  (cd "$repo" && printf '%s' "$payload" | env -u CLAUDE_PLUGIN_ROOT \
-    PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$command")
-}
-
 claude_payload() {
   printf '{"session_id":"lane-1","transcript_path":"/dev/null","cwd":"%s",' "$repo"
   printf '"permission_mode":"plan","hook_event_name":"PreToolUse","tool_name":"%s",' "$1"
@@ -68,12 +57,6 @@ codex_payload() {
   printf '"cwd":"%s","model":"gpt-5-codex","permission_mode":"auto",' "$repo"
   printf '"hook_event_name":"PreToolUse","tool_name":"request_user_input",'
   printf '"tool_use_id":"call_1","tool_input":{"questions":[{"question":"which?"}]}}'
-}
-
-permission_payload() {
-  printf '{"session_id":"lane-1","transcript_path":"/dev/null","cwd":"%s",' "$repo"
-  printf '"permission_mode":"plan","hook_event_name":"PermissionRequest",'
-  printf '"tool_name":"%s","tool_input":%s}' "$1" "$2"
 }
 
 decision_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecision // "none"'; }
@@ -92,16 +75,23 @@ case "$(reason_of "$out")" in
   *) fail_test "ExitPlanMode: the approval reason does not name the lane's story" ;;
 esac
 
-# Claude Code 2.1.251 has two approval boundaries: PreToolUse authorizes the
-# ExitPlanMode tool, then PermissionRequest presents the separate plan-review
-# pane. The latter returns no provider decision; it starts a bounded watcher
-# that presses Return only when the exact default-selected Auto option is on
-# the hook's own pane.
+# Claude Code 2.1.261 still presents a separate plan-review pane but no longer
+# emits PermissionRequest for it. Dispatch starts this watcher against the
+# original live pane and it presses Return only for the exact selected option.
 TMUX_FIXTURE=$(mktemp -d /tmp/story-test-fullauto-tmux.XXXXXX)
 _TMP_REPOS+=("$TMUX_FIXTURE")
 cat >"$TMUX_FIXTURE/tmux" <<'MOCKTMUX'
 #!/usr/bin/env bash
 case "${1:-}" in
+  display-message)
+    if [ "${FULL_AUTO_TMUX_DIE_BEFORE_SEND:-}" = 1 ]; then
+      count=$(cat "$FULL_AUTO_TMUX_IDENTITY_COUNT" 2>/dev/null || printf '0')
+      count=$((count + 1))
+      printf '%s' "$count" >"$FULL_AUTO_TMUX_IDENTITY_COUNT"
+      [ "$count" -eq 1 ] || FULL_AUTO_TMUX_PANE_DEAD=1
+    fi
+    printf '%s\n' "${FULL_AUTO_TMUX_PANE_PID:-777}:${FULL_AUTO_TMUX_PANE_DEAD:-0}"
+    ;;
   run-shell)
     bash -c "${*: -1}"
     ;;
@@ -124,26 +114,34 @@ chmod +x "$TMUX_FIXTURE/tmux"
 export FULL_AUTO_TMUX_LOG="$TMUX_FIXTURE/send-keys.log"
 : >"$FULL_AUTO_TMUX_LOG"
 
-out=$(PATH="$TMUX_FIXTURE:$PATH" TMUX_PANE=%4242 \
-  fire_permission "$(permission_payload ExitPlanMode '{"plan":"do the thing"}')")
-assert_eq "$out" "{}" "PermissionRequest: returns an empty provider directive"
-for _ in $(seq 1 40); do
-  [ -s "$FULL_AUTO_TMUX_LOG" ] && break
-  sleep 0.05
-done
+PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
-  "PermissionRequest: accepts the exact Auto plan pane with Return"
+  "Claude watcher: accepts the exact Auto plan pane with Return"
 
 # A changed prompt must fail closed: one bounded probe, no input. Likewise an
 # invalid pane id cannot become a tmux target.
 : >"$FULL_AUTO_TMUX_LOG"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_SCREEN=changed \
-  bash "$HOOK" --approve-claude-plan %4242 1
+  bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
-  "PermissionRequest: changed UI text receives no input"
-PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan 'not-a-pane' 1
+  "Claude watcher: changed UI text receives no input"
+PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan 'not-a-pane' 777 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
-  "PermissionRequest: an invalid pane id receives no input"
+  "Claude watcher: an invalid pane id receives no input"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PANE_PID=778 \
+  bash "$HOOK" --approve-claude-plan %4242 777 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "Claude watcher: a respawned pane receives no input"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PANE_DEAD=1 \
+  bash "$HOOK" --approve-claude-plan %4242 777 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "Claude watcher: a retained dead pane receives no input"
+export FULL_AUTO_TMUX_IDENTITY_COUNT="$TMUX_FIXTURE/identity-count"
+: >"$FULL_AUTO_TMUX_IDENTITY_COUNT"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_DIE_BEFORE_SEND=1 \
+  bash "$HOOK" --approve-claude-plan %4242 777 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "Claude watcher: a pane that dies after capture receives no input"
 
 # Codex has no pre-dialog hook event. Dispatch starts the sibling pane-lifetime
 # watcher after confirming Plan mode; the same exact-match rule permits one
@@ -260,7 +258,7 @@ rm -f "$repo/.storyhook.toml"
 # well as in tests/hook_budgets.rs because this suite is the one a shell-only
 # change runs.
 for event_matcher in PreToolUse:ExitPlanMode PreToolUse:AskUserQuestion \
-                     PreToolUse:request_user_input PermissionRequest:ExitPlanMode; do
+                     PreToolUse:request_user_input; do
   event="${event_matcher%%:*}"
   matcher="${event_matcher#*:}"
   budget=$(jq -r --arg m "$matcher" \

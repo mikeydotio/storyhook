@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::env::Environment;
 use storyhook::service::engine::{
     DispatchOutcome, DispatchOutcomeState, DispatchRequest, Dispatcher, ShellDispatcher,
@@ -24,6 +25,21 @@ fn unclaim_request() -> UnclaimRequest {
     UnclaimRequest {
         project: "alpha".to_string(),
         story: "ALPHA-7".to_string(),
+        cleanup_lease: cleanup_lease(),
+    }
+}
+
+fn cleanup_lease() -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "alpha".to_string(),
+        story_id: "ALPHA-7".to_string(),
+        repository_path: PathBuf::from("/repos/original"),
+        worktree_path: PathBuf::from("/repos/original/.codex/worktrees/ALPHA-7"),
+        branch: "worktree-ALPHA-7".to_string(),
+        tmux: TmuxCleanupTarget {
+            socket_path: PathBuf::from("/tmp/tmux-original/default"),
+        },
     }
 }
 
@@ -35,7 +51,7 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","future":{"nested":true}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH""#,
+        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","future":{"nested":true},"cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
@@ -74,6 +90,25 @@ fn shell_dispatcher_relays_a_nonzero_refusal_instead_of_reclassifying_it_as_fail
 }
 
 #[test]
+fn shell_dispatcher_rejects_success_without_a_cleanup_lease() {
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        "printf '%s\\n' '{\"ok\":true,\"window_name\":\"ALPHA-7\"}'",
+    );
+
+    let error = ShellDispatcher::new(&script, Environment::at(home))
+        .dispatch(request())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("omitted cleanup_lease"), "{error}");
+}
+
+#[test]
 fn shell_dispatcher_rejects_success_json_from_a_failed_process() {
     let root = scratch_dir();
     let home = root.path().join("home");
@@ -101,7 +136,7 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","store":"%s","closed_window":true,"worktree_status":"dirty"}\n' "$*" "$STORYHOOK_STORE_PATH""#,
+        r#"printf '{"ok":true,"argv":"%s","store":"%s","closed_window":true,"worktree_status":"dirty","lease_env":%s,"cleanup":{"lease":%s,"postconditions":{"tmux_story_windows_absent":true}}}\n' "$*" "$STORYHOOK_STORE_PATH" "$STORYHOOK_REAP_LEASE_V1" "$STORYHOOK_REAP_LEASE_V1""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
@@ -115,6 +150,10 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     assert_eq!(outcome.payload["store"], expected_store);
     assert_eq!(outcome.payload["closed_window"], true);
     assert_eq!(outcome.payload["worktree_status"], "dirty");
+    assert_eq!(
+        serde_json::from_value::<StoryCleanupLease>(outcome.payload["lease_env"].clone()).unwrap(),
+        cleanup_lease()
+    );
 }
 
 #[test]

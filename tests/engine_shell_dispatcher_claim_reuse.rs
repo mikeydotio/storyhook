@@ -13,7 +13,7 @@ fn write_claim_guard_fixture(path: &Path) {
         r#"
 for argument in "$@"; do
   if [ "$argument" = "--force" ]; then
-    printf '{"ok":true,"reused_claim":true,"argv":"%s"}\n' "$*"
+    printf '{"ok":true,"reused_claim":true,"argv":"%s","cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*"
     exit 0
   fi
 done

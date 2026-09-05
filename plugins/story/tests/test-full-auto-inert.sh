@@ -57,15 +57,6 @@ run() {
     bash -c "$command")
 }
 
-run_permission() {
-  local command
-  command=$(hook_command ExitPlanMode PermissionRequest)
-  [ -n "$command" ] && [ "$command" != null ] \
-    || fail_test "full-auto-inert: hooks.json declares no PermissionRequest matcher 'ExitPlanMode'"
-  (cd "$repo" && printf '{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"do it"}}' \
-    | env -u CLAUDE_PLUGIN_ROOT PLUGIN_ROOT="$PLUGIN_ROOT" TMUX_PANE=%4242 bash -c "$command")
-}
-
 TOOLS="ExitPlanMode:ExitPlanMode AskUserQuestion:AskUserQuestion request_user_input:request_user_input"
 
 # --- unset: the marker is absent, as it is in every session but a lane -------
@@ -77,10 +68,9 @@ for pair in $TOOLS; do
   assert_eq "$status" "0" "inert/unset: $tool exits 0"
   assert_eq "$out" "{}" "inert/unset: $tool emits an empty directive"
 done
-assert_eq "$(PATH="$INERT_TMUX:$PATH" run_permission)" "{}" \
-  "inert/unset: PermissionRequest emits an empty directive and types nothing"
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
-  "inert/unset: PermissionRequest never contacts tmux"
+  "inert/unset: the Claude watcher never contacts tmux"
 PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/unset: the Codex watcher never contacts tmux"
@@ -98,10 +88,9 @@ for pair in $TOOLS; do
   assert_eq "$status" "0" "inert/empty: $tool exits 0"
   assert_eq "$out" "{}" "inert/empty: $tool emits an empty directive"
 done
-assert_eq "$(PATH="$INERT_TMUX:$PATH" run_permission)" "{}" \
-  "inert/empty: PermissionRequest emits an empty directive and types nothing"
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
-  "inert/empty: PermissionRequest never contacts tmux"
+  "inert/empty: the Claude watcher never contacts tmux"
 PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/empty: the Codex watcher never contacts tmux"
@@ -173,8 +162,8 @@ unset STORYHOOK_AUTO
 # passes every assertion above and is useless. These are the load-bearing spans.
 [ -f "$HOOK" ] || fail_test "full-auto-inert: $HOOK does not exist"
 source_text=$(cat "$HOOK" 2>/dev/null || true)
-for needle in ExitPlanMode PermissionRequest AskUserQuestion request_user_input \
-              approve-codex-plan 'Implement this plan?' \
+for needle in ExitPlanMode AskUserQuestion request_user_input \
+              approve-claude-plan approve-codex-plan 'Ready to code?' 'Implement this plan?' \
               '"allow"' '"deny"' STORYHOOK_AUTO STORYHOOK_FULL_AUTO council-vote; do
   case "$source_text" in
     *"$needle"*) ;;
@@ -191,10 +180,5 @@ for matcher in ExitPlanMode AskUserQuestion request_user_input; do
     *) fail_test "full-auto-inert: hooks.json's PreToolUse '$matcher' entry no longer runs full-auto.sh" ;;
   esac
 done
-command=$(hook_command ExitPlanMode PermissionRequest)
-case "$command" in
-  *hooks/full-auto.sh*) ;;
-  *) fail_test "full-auto-inert: hooks.json's PermissionRequest ExitPlanMode entry no longer runs full-auto.sh" ;;
-esac
 
 finish
