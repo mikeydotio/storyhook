@@ -209,18 +209,16 @@ fn ahead_counts(ordered: &[VerificationCandidate], index: usize) -> (usize, usiz
     (higher, equal_older)
 }
 
-/// The journal's own most recent timestamp, read straight from its raw
-/// text without a full fold — the publisher's staleness signal needs only
-/// this, not the whole tree.
-fn last_event_at(journal_text: &str) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Timestamped {
-        at: Option<String>,
-    }
-    journal_text
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str::<Timestamped>(line.trim()).ok()?.at)
+/// Seconds since any producer last changed the journal. File modification is
+/// the activity signal because every appended event changes it, including
+/// `case` lines that intentionally carry no embedded timestamp (SH-549).
+fn seconds_since_journal_activity(path: &std::path::Path, now: &str) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let modified = chrono::DateTime::<chrono::Utc>::from(modified);
+    let now = chrono::DateTime::parse_from_rfc3339(now)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    u64::try_from((now - modified).num_seconds()).ok()
 }
 
 /// Runs one publish attempt across every story presently in `verifying`.
@@ -247,15 +245,12 @@ pub fn publish_once(
         .no_hooks(true);
         let body = if matches!(&status, VerificationStatus::Running { .. }) {
             let journal = journal_path(env, candidate);
-            let text = std::fs::read_to_string(&journal).unwrap_or_default();
             let progress = matching_progress(env, candidate).unwrap_or_default();
             let elapsed_seconds = active
                 .as_ref()
                 .filter(|held| owns(candidate, held))
                 .and_then(|held| elapsed_secs(&held.started_at, now));
-            let seconds_since_last_event = last_event_at(&text)
-                .as_deref()
-                .and_then(|at| elapsed_secs(at, now));
+            let seconds_since_last_event = seconds_since_journal_activity(&journal, now);
             gate_progress::render(
                 &VerificationProgressView::Running {
                     progress: &progress,
@@ -326,6 +321,31 @@ pub(crate) fn poll_verification_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_untimestamped_case_uses_journal_file_activity_for_staleness() {
+        let root = tempfile::Builder::new()
+            .prefix("storyhook-journal-activity-")
+            .tempdir()
+            .unwrap();
+        let journal = root.path().join("attempt.ndjson");
+        std::fs::write(
+            &journal,
+            "{\"kind\":\"item\",\"path\":\"suite\",\"status\":\"running\",\"at\":\"2020-01-01T00:00:00Z\"}\n\
+             {\"kind\":\"case\",\"path\":\"suite\",\"outcome\":\"pass\"}\n",
+        )
+        .unwrap();
+        let modified = std::fs::metadata(&journal).unwrap().modified().unwrap();
+        let now = (chrono::DateTime::<chrono::Utc>::from(modified)
+            + chrono::Duration::seconds(240))
+        .to_rfc3339();
+
+        assert_eq!(
+            seconds_since_journal_activity(&journal, &now),
+            Some(240),
+            "the old embedded item timestamp must not make a fresh case append look stale"
+        );
+    }
 
     #[test]
     fn the_backoff_stretches_through_the_ladder_while_silent_and_resets_on_any_move() {
