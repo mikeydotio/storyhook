@@ -3615,3 +3615,137 @@ fn migration_twenty_nine_adds_a_nullable_cleanup_lease_without_rewriting_lanes()
         .unwrap();
     assert_eq!(story_id, "SH-1", "the occupied lane survives unchanged");
 }
+
+// ---------------------------------------------------------------------------
+// Migration 30: labels have one lowercase identity (SH-204)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_thirty_normalizes_every_story_with_real_events() {
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::domain::{Priority, StoryEvent, TypeDef, fold_story};
+    use storyhook::service::project::default_states;
+    use storyhook::store::rebuild::diff_read_model;
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..29]).unwrap();
+
+    let project = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "lowercase-labels".into(),
+                slug: "lowercase-labels".into(),
+                name: "Lowercase labels".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(project, &default_states())?;
+            tx.put_types(
+                project,
+                &[TypeDef {
+                    slug: "normal".into(),
+                    description: None,
+                    emoji: None,
+                }],
+            )?;
+            let states = tx.state_map(project)?;
+
+            for (title, labels, closed) in [
+                ("open", vec!["Web", "WEB", "CAFÉ"], false),
+                ("closed", vec!["ÄPPLE", "API,SSE"], true),
+                ("control", vec!["already", "canonical"], false),
+                ("label-free control", vec![], false),
+            ] {
+                let story_no = tx.allocate_story_no(project)?;
+                let mut events = vec![
+                    StoryEvent::StoryCreated {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        title: title.into(),
+                        state: "todo".into(),
+                    },
+                    StoryEvent::StoryPrioritySet {
+                        at: "2026-01-01T00:01:00Z".into(),
+                        priority: Priority::Low,
+                    },
+                    StoryEvent::StoryTypeSet {
+                        at: "2026-01-01T00:02:00Z".into(),
+                        story_type: "normal".into(),
+                    },
+                    StoryEvent::StoryLabelsSet {
+                        at: "2026-01-01T00:03:00Z".into(),
+                        labels: labels.into_iter().map(str::to_string).collect(),
+                    },
+                ];
+                if closed {
+                    events.extend([
+                        StoryEvent::StoryStateChanged {
+                            at: "2026-01-01T00:04:00Z".into(),
+                            state: "done".into(),
+                        },
+                        StoryEvent::StoryClosedAndArchived {
+                            at: "2026-01-01T00:04:00Z".into(),
+                            state: "done".into(),
+                        },
+                    ]);
+                }
+                let head = tx.append_events(
+                    project,
+                    story_no,
+                    ExpectedSeq::Exact(EventSeq::ZERO),
+                    &events,
+                    &Provenance::unrecorded(),
+                )?;
+                let snapshot = fold_story(&story_no.to_id("SH"), &events, &states)?;
+                tx.put_story(project, &snapshot, head)?;
+            }
+            Ok(project)
+        })
+        .unwrap();
+
+    let before_counter = project_counter(store.path(), project);
+    let control_before = store
+        .read(|tx| tx.story(project, StoryNo::new(3)))
+        .unwrap()
+        .unwrap();
+    let label_free_before = store
+        .read(|tx| tx.story(project, StoryNo::new(4)))
+        .unwrap()
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    let rows = store
+        .read(|tx| tx.stories(project, &storyhook::store::StoryQuery::all()))
+        .unwrap();
+    assert_eq!(rows[0].snapshot.labels, ["café", "web"]);
+    assert_eq!(rows[1].snapshot.labels, ["api", "sse", "äpple"]);
+    assert_eq!(rows[1].snapshot.superstate.as_str(), "CLOSED");
+    assert_eq!(rows[2], control_before, "canonical rows stay byte-stable");
+    assert_eq!(
+        rows[3], label_free_before,
+        "an omitted empty-label field stays byte-stable"
+    );
+    assert_eq!(project_counter(store.path(), project), before_counter + 2);
+
+    for story_no in [StoryNo::new(1), StoryNo::new(2)] {
+        let events = store.read(|tx| tx.events_for(project, story_no)).unwrap();
+        assert!(
+            events.iter().any(|event| matches!(
+                event.known(),
+                Some(StoryEvent::StoryLabelsSet { labels, .. })
+                    if labels.iter().any(|label| label.chars().any(char::is_uppercase))
+                        || labels.iter().any(|label| label.contains(','))
+            )),
+            "the historical spelling must survive"
+        );
+        assert!(matches!(
+            events.last().and_then(|event| event.known()),
+            Some(StoryEvent::StoryLabelsSet { labels, .. })
+                if labels.iter().all(|label| label == &label.to_lowercase())
+                    && labels.iter().all(|label| !label.contains(','))
+        ));
+    }
+    assert!(diff_read_model(&store, project).unwrap().is_clean());
+}

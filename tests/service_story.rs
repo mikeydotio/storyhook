@@ -221,11 +221,29 @@ fn new_story_labels_are_sorted_and_deduplicated() {
     let story = StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: "labels".into(),
-            labels: Some(vec!["z".into(), "a".into(), "z".into()]),
+            labels: Some(vec!["Z".into(), "a".into(), "z".into()]),
             ..NewStoryInput::default()
         })
         .expect("creating with labels");
     assert_eq!(story.labels, ["a", "z"]);
+}
+
+#[test]
+fn every_label_edit_canonicalizes_case_before_addressing_the_set() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "label identity");
+
+    let after = service
+        .set_labels(&story.id, &["Web".into(), "CAFÉ".into()], &[])
+        .expect("adding mixed-case labels");
+    assert_eq!(after.labels, ["café", "web"]);
+
+    let after = service
+        .set_labels(&story.id, &[], &["WEB".into()])
+        .expect("removing through a mixed-case spelling");
+    assert_eq!(after.labels, ["café"]);
 }
 
 #[test]

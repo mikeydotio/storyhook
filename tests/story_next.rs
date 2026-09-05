@@ -427,8 +427,8 @@ fn next_exclude_label_matches_list_label_case_and_csv_semantics() {
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
-        stdout.contains("SH-1"),
-        "matching stays case-sensitive: {stdout}"
+        !stdout.contains("SH-1"),
+        "mixed-case writes and selectors have one lowercase identity: {stdout}"
     );
     assert!(
         !stdout.contains("SH-2"),

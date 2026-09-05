@@ -212,10 +212,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify Codex Astra support plus verifier metadata and ownership
-  recovery after the speculative-run repairs (SH-561, SH-555, SH-556).
-- Next: cut and install the pending minor release once verification is stable
-  (SH-553).
+- Current: verify SH-204's lowercase label identity and shared label editor
+  through the repaired, installed centralized verifier.
+- Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work

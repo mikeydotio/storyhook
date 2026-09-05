@@ -1030,9 +1030,10 @@ fn story_issues(
                 .carrying(FindingData::Type { slug: slug.clone() }),
             );
         }
-        // A label written before SH-164's write-path guard existed — a
+        // A label written before the canonical write-path guard existed — a
         // comma-bearing one (unsplittable and unaddressable by
-        // `story unlabel`/`list --label`) or a blank/untrimmed one.
+        // `story unlabel`/`list --label`), a blank/untrimmed one, or a
+        // pre-SH-204 mixed-case spelling.
         // `--fix` repairs this on an open story; on a closed one it stays a
         // finding, the same as any other issue a closed story's history
         // cannot be appended to fix — and `--fix` names the story to reopen
@@ -1042,7 +1043,7 @@ fn story_issues(
                 Finding::new(
                     FindingCode::MalformedLabels,
                     format!(
-                        "{}: malformed labels {:?} — a label cannot contain a comma or be blank",
+                        "{}: malformed labels {:?} — labels must be lowercase, nonblank, and comma-delimited",
                         story.id, story.labels
                     ),
                 )
