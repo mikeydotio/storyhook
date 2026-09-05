@@ -212,11 +212,12 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of exact, durable non-verification cleanup
-  receipts for SH-539, while reconciling Full Auto lane accounting so
-  `verifying` is an intentional handoff rather than a stall.
-- Next: expose queue health and verification diagnostics in engine/dashboard
-  surfaces.
+- Current: verify authoritative active-versus-queued status chips for stories
+  handed to centralized verification.
+- Next: ensure newly-verifying stories do not interrupt a story already under
+  test (SH-556).
+- Later: expose queue health and gate diagnostics across engine/dashboard
+  surfaces, beyond individual story cards.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.
 "#,

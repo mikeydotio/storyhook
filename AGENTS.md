@@ -191,6 +191,9 @@ project it is looking at.
 
 - Current: verify authoritative active-versus-queued status chips for stories
   handed to centralized verification.
-- Next: expose queue health and gate diagnostics beyond individual story cards.
+- Next: ensure newly-verifying stories do not interrupt a story already under
+  test (SH-556).
+- Later: expose queue health and gate diagnostics across engine/dashboard
+  surfaces, beyond individual story cards.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.

@@ -1631,17 +1631,17 @@ rule that a council's own working directory does not survive worktree
 teardown) settled two questions this section states as decided rather than
 open:
 
-- **The verifier's own process boundary is untouched.**
-  `ShellVerificationActuator::verify`'s `Command::output()` call and its
-  JSON-on-stdout contract are exactly as SH-521 left them. Executing
-  `verify-pr.sh` itself as a tmux pane's foreground process was considered
-  and rejected: it would require reconstructing
+- **SH-545 left the verifier's own process boundary untouched.**
+  At that point, `ShellVerificationActuator::verify`'s `Command::output()`
+  call and its JSON-on-stdout contract were exactly as SH-521 left them;
+  SH-547 subsequently bounded that process boundary as recorded below.
+  Executing `verify-pr.sh` itself as a tmux pane's foreground process was
+  considered and rejected: it would require reconstructing
   `apply_verification_allowlist`'s sanitized environment through a single
   tmux shell-command string — the exact quoting-hazard shape SH-493's
   `/Users/Ada Lovelace` incident already cost this project once — and would
-  invent a new completion/timeout policy on the correctness-critical merge
-  path where none exists today (a separate, filed gap: `story show
-  SH-547`).
+  invent a new completion/timeout policy inside the observability change.
+  That separate policy work was filed as SH-547.
 - **The mirror is a fixed session on tmux's *default* server, never a
   candidate's own dispatch socket.** `VerificationCandidate.cleanup_lease`
   carries the exact tmux socket a story was dispatched on
@@ -1680,6 +1680,41 @@ switch (`STORYHOOK_VERIFIER_MIRROR=0`) ships in
 variable that stops a storyhook process reaching a developer's own real
 state, so every isolating harness gets it for free the same way it already
 gets the rest of that table.
+
+### SH-547 — bounded centralized verification
+
+The one daemon verification worker no longer lends one repository an
+unbounded wall clock. `ShellVerificationActuator::verify` gives
+`verify-pr.sh` 1,746 seconds: twice the 873-second `make test` runtime already
+measured under this machine's ordinary concurrent workload. The second whole
+gate window covers machine-lock waiting plus the GitHub, fetch, preflight and
+landing phases around the gate; it is a derivation from observed cost, not a
+bare opinion about how fast verification should be.
+
+The subprocess owns a fresh process group and writes stdout/stderr to bounded
+temporary files. At the deadline the actuator sends `SIGTERM` to the entire
+group, then grants the same 30-second interval used by the infrastructure
+recovery wake. That lets `merge-watch.sh`'s existing signal trap restore the
+persistent verifier worktree and remove its private-object lease. A survivor
+after that grace receives `SIGKILL`; the outcome is an infrastructure failure,
+never a red classification of submitted code, and the existing recovery wake
+retries it.
+
+Forced termination cannot permanently poison the verifier worktree. A real-Git
+regression strands that worktree on a commit whose private object directory is
+then removed, reproducing `fatal: bad object HEAD`; the unchanged next
+`--speculative-run` checkout moves directly onto its new private merge commit
+and its existing cleanup restores the supplied base. An unconditional reset
+was therefore rejected after the test passed without one: it discarded state
+but added no recovery behavior.
+
+The same audit found that the worker's agent-notification and leased-reap
+helpers still used unbounded output pipes. They now use the shared file-backed
+runner with the engine's existing 180-second dispatch-helper deadline and
+immediate whole-group termination. These are short control operations, not a
+release gate, so reusing that boundary avoids a second opinion about helper
+patience. A stalled remediation or cleanup attempt now returns its contextual
+error to the existing awaiting/retry paths instead of wedging the worker.
 
 ### SH-466 — restart reconciliation
 
