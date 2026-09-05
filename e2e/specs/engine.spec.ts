@@ -146,6 +146,27 @@ function engineStoryLane(page: Page, story: string) {
   return page.locator(".engine-lane-story").filter({ hasText: story });
 }
 
+async function expectCoarseEngineTargets(page: Page, selector: string): Promise<void> {
+  const undersized = await page.locator(selector).evaluateAll((nodes) => {
+    if (!matchMedia("(pointer: coarse)").matches) return [];
+    const minimum = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    );
+    return nodes.flatMap((node) => {
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return [];
+      // SH-420's float32 representation bound: a target at exactly the
+      // minimum must not fail because its two endpoints rounded differently.
+      const widthError = (Math.abs(rect.left) + Math.abs(rect.right)) * 2 ** -24;
+      const heightError = (Math.abs(rect.top) + Math.abs(rect.bottom)) * 2 ** -24;
+      return rect.width + widthError < minimum || rect.height + heightError < minimum
+        ? [`${node.tagName.toLowerCase()}.${node.className}: ${rect.width}x${rect.height}`]
+        : [];
+    });
+  });
+  expect(undersized).toEqual([]);
+}
+
 async function installTestEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class TestEventSource {
@@ -598,6 +619,232 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
 });
 
+test("running and paused controls guard and reconcile pause and resume", async ({ page }) => {
+  let current = run("alpha", "AA-CONTROL");
+  let pausePosts = 0;
+  let resumePosts = 0;
+  let pauseBody: unknown = null;
+  let resumeBody: unknown = null;
+  let releasePause!: () => void;
+  let releaseResume!: () => void;
+  const pauseGate = new Promise<void>((resolve) => {
+    releasePause = resolve;
+  });
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    pausePosts++;
+    pauseBody = route.request().postDataJSON();
+    await pauseGate;
+    current.state = "paused";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine/resume", async (route) => {
+    resumePosts++;
+    resumeBody = route.request().postDataJSON();
+    await resumeGate;
+    current.state = "running";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [current]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const pause = page.locator(".engine-pause-btn");
+  await expect(pause).toHaveText("Pause new claims");
+  await expect(page.locator(".engine-resume-btn")).toHaveCount(0);
+  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+
+  await page.evaluate(() => {
+    const button = document.querySelector(".engine-pause-btn") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => pausePosts).toBe(1);
+  expect(pauseBody).toEqual({ run: current.id });
+  await expect(pause).toBeDisabled();
+  await expect(pause).toHaveText("Pausing…");
+
+  releasePause();
+  const resume = page.locator(".engine-resume-btn");
+  await expect(resume).toHaveText("Resume");
+  await expect(page.locator(".engine-pause-btn")).toHaveCount(0);
+  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+
+  await page.evaluate(() => {
+    const button = document.querySelector(".engine-resume-btn") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => resumePosts).toBe(1);
+  expect(resumeBody).toEqual({ run: current.id });
+  await expect(resume).toBeDisabled();
+  await expect(resume).toHaveText("Resuming…");
+
+  releaseResume();
+  await expect(page.locator(".engine-pause-btn")).toHaveText("Pause new claims");
+});
+
+test("Stop offers guarded Drain and Stop now with exact consequences", async ({ page }) => {
+  let current = run("alpha", "AA-STOP");
+  let stopPosts = 0;
+  const bodies: unknown[] = [];
+  let releaseDrain!: () => void;
+  let releaseNow!: () => void;
+  const drainGate = new Promise<void>((resolve) => {
+    releaseDrain = resolve;
+  });
+  const nowGate = new Promise<void>((resolve) => {
+    releaseNow = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/stop", async (route) => {
+    stopPosts++;
+    const body = route.request().postDataJSON() as { now: boolean };
+    bodies.push(body);
+    if (body.now) {
+      await nowGate;
+      current.state = "finished";
+      current.stop_reason = "operator-stopped-now";
+    } else {
+      await drainGate;
+      current.state = "draining";
+      current.stop_reason = "operator-stopped";
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [current]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const stop = page.locator(".engine-stop-btn");
+  await stop.click();
+  const modal = page.locator("#engine-stop-modal");
+  await expect(modal).toHaveClass(/open/);
+  await expect(modal).toContainText(
+    "Occupied lanes finish, no new stories are claimed, and Run Full Auto returns after the last lane lands.",
+  );
+  await expect(modal).toContainText(
+    "Active claims are released and their windows are closed. Branches and worktrees are preserved.",
+  );
+  await expect(page.locator("#engine-stop-cancel")).toBeFocused();
+  await page.locator("#engine-stop-cancel").click();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+
+  await stop.click();
+  await page.keyboard.press("Escape");
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+  await stop.click();
+  await page.locator("#engine-stop-modal-backdrop").click({ position: { x: 1, y: 1 } });
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+
+  await stop.click();
+  await expectCoarseEngineTargets(page, "#engine-stop-modal button");
+  await page.evaluate(() => {
+    const button = document.querySelector("#engine-stop-drain") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => stopPosts).toBe(1);
+  expect(bodies[0]).toEqual({ run: current.id, now: false });
+  await expect(page.locator("#engine-stop-drain")).toBeDisabled();
+  await expect(page.locator("#engine-stop-drain")).toHaveText("Draining…");
+  await expect(page.locator("#engine-stop-now")).toBeDisabled();
+  await expect(page.locator("#engine-stop-cancel")).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveClass(/open/);
+
+  releaseDrain();
+  await expect(modal).not.toHaveClass(/open/);
+  const drainingStop = page.locator(".engine-stop-btn");
+  await expect(page.locator(".engine-pause-btn, .engine-resume-btn")).toHaveCount(0);
+  await expect(drainingStop).toHaveText("Stop (draining)");
+  await expect(drainingStop).toBeFocused();
+  await expectCoarseEngineTargets(page, ".engine-live button");
+
+  await drainingStop.click();
+  await expect(page.locator("#engine-stop-drain")).toBeDisabled();
+  await expect(page.locator("#engine-stop-drain")).toHaveText("Already draining");
+  await expect(page.locator("#engine-stop-now")).toBeEnabled();
+  await page.evaluate(() => {
+    const button = document.querySelector("#engine-stop-now") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => stopPosts).toBe(2);
+  expect(bodies[1]).toEqual({ run: current.id, now: true });
+  await expect(page.locator("#engine-stop-now")).toBeDisabled();
+  await expect(page.locator("#engine-stop-now")).toHaveText("Stopping…");
+
+  releaseNow();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
+});
+
+test("a timed-out lifecycle mutation is reported as ambiguous and reconciled", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "webkit",
+    "WebKit never fires XMLHttpRequest.ontimeout on a request held by Playwright route interception -- measured, deterministic (SH-347)",
+  );
+  const timeoutMs = 300;
+  let current = run("alpha", "AA-TIMEOUT");
+  let gets = 0;
+  let routeDone!: () => void;
+  const done = new Promise<void>((resolve) => {
+    routeDone = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    current.state = "paused";
+    await new Promise((resolve) => setTimeout(resolve, timeoutMs + 500));
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ result: "ok", run: current }),
+      });
+    } finally {
+      routeDone();
+    }
+  });
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto(`/?mutationTimeoutMs=${timeoutMs}`);
+  await openProject(page, "Alpha Project");
+  const before = gets;
+  await page.locator(".engine-pause-btn").click();
+
+  const notice = page.locator("#toast-stack .toast.error");
+  await expect(notice).toContainText("may or may not have gone through");
+  await expect(notice).not.toContainText("request timed out");
+  await expect.poll(() => gets).toBeGreaterThan(before);
+  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
+  await done;
+});
+
 test("changing the lane count preserves the launch button's physical click", async ({
   page,
 }) => {
@@ -933,4 +1180,58 @@ test("an engine repaint waits until a held press can dispatch its click", async 
     )
     .toBe(1);
   await expect(engineStoryLane(page, "AA-PUSH")).toHaveText("AA-PUSH");
+});
+
+test("a live-control repaint waits until a held Pause press dispatches", async ({ page }) => {
+  await installTestEventSource(page);
+  const current = run("alpha", "AA-HELD-PAUSE");
+  let project = "";
+  let gets = 0;
+  let pausePosts = 0;
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    pausePosts++;
+    current.state = "paused";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    const segments = new URL(route.request().url()).pathname.split("/");
+    project = decodeURIComponent(segments[3]);
+    if (gets > 1) current.lanes[1].state = "dispatching";
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const pause = page.locator(".engine-pause-btn");
+  await expect(pause).toBeEnabled();
+  const box = await pause.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.evaluate((repo) => {
+    const source = (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource;
+    source.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __storyhookPressGate: { deferred: string[] } })
+          .__storyhookPressGate.deferred.includes("engine"),
+      ),
+    )
+    .toBe(true);
+  await expect(pause).toBeAttached();
+
+  await page.mouse.up();
+  await expect.poll(() => pausePosts).toBe(1);
+  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
 });
