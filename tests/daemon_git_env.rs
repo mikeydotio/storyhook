@@ -271,7 +271,7 @@ fn a_daemon_spawned_directly_with_git_dir_set_does_not_read_that_repository() {
         .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let _daemon = ChildGuard::new(serve.spawn().expect("spawning a daemon directly"));
+    let _daemon = ChildGuard::spawn(&mut serve).expect("spawning a daemon directly");
     await_daemon(&env);
 
     env.story(here.path())

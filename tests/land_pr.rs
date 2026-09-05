@@ -29,9 +29,10 @@
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
 
 fn checkout() -> &'static Path {
@@ -187,8 +188,9 @@ impl LandRepo {
             .expect("running unlocked certification core")
     }
 
-    fn hold_merge_lock(&self, seconds: &str) -> Child {
-        command(
+    fn hold_merge_lock(&self, seconds: u64) -> ChildGuard {
+        let seconds = seconds.to_string();
+        let mut holder = command(
             self.path(),
             "bash",
             &[
@@ -196,16 +198,16 @@ impl LandRepo {
                 "merge",
                 "--",
                 "sleep",
-                seconds,
+                &seconds,
             ],
-        )
-        .env("STORYHOOK_LOCK_DIR", self.lock_root())
-        .env_remove("STORYHOOK_MACHINE_LOCKS")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawning merge-lock holder")
+        );
+        holder
+            .env("STORYHOOK_LOCK_DIR", self.lock_root())
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ChildGuard::spawn(&mut holder).expect("spawning merge-lock holder")
     }
 }
 
@@ -441,7 +443,8 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
     let witness = repo.path().join("merged");
     let helper = repo.helper("witness.sh", "#!/bin/sh\nprintf ran > \"$1\"\n");
 
-    let mut holder = repo.hold_merge_lock("2");
+    const HOLD_SECS: u64 = 2;
+    let mut holder = repo.hold_merge_lock(HOLD_SECS);
     wait_for(&repo.lock_root().join("merge.lock").join("pid"));
     let out = repo.run_core(
         &base,
@@ -451,7 +454,9 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
             &witness.display().to_string(),
         ],
     );
-    holder.wait().expect("reaping merge-lock holder");
+    holder.wait_within(Duration::from_secs(HOLD_SECS * 2), || {
+        "the merge-lock holder did not exit after its sleep".to_string()
+    });
 
     assert_ok(&out, "the queued landing command");
     assert!(witness.exists());

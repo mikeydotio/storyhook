@@ -61,9 +61,10 @@
 //! file from decaying back into the last one. It breaks the mechanism —
 //! `story project unlink origin` — and requires the answer to disappear.
 
-use std::process::Stdio;
-
-use storyhook_test_support::{Project, SecondCheckout, TestEnv, assert_selection_is_not_inherited};
+use storyhook_test_support::{
+    ChildGuard, Project, STORY_COMMAND_DEADLINE, SecondCheckout, TestEnv,
+    assert_selection_is_not_inherited,
+};
 
 /// One repository with a registered origin, and a second checkout of it
 /// carrying two linked worktrees.
@@ -94,23 +95,27 @@ fn two_worktrees_of_one_repo_mint_colliding_ids() {
     // Both processes must be *spawned* before either is waited on, or the
     // second one reads a counter the first has already advanced and the race
     // this test exists to lose never happens.
-    let a = env
-        .raw_story(second.worktree_path("a"))
-        .args(["new", "Minted in worktree a", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawning `story new` in worktree a");
-    let b = env
-        .raw_story(second.worktree_path("b"))
-        .args(["new", "Minted in worktree b", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawning `story new` in worktree b");
+    let mut a_command = env.raw_story(second.worktree_path("a"));
+    a_command.args(["new", "Minted in worktree a", "--json"]);
+    let mut a =
+        ChildGuard::spawn_with_output(&mut a_command).expect("spawning `story new` in worktree a");
+    let mut b_command = env.raw_story(second.worktree_path("b"));
+    b_command.args(["new", "Minted in worktree b", "--json"]);
+    let mut b =
+        ChildGuard::spawn_with_output(&mut b_command).expect("spawning `story new` in worktree b");
 
-    let id_a = minted_id(a.wait_with_output().expect("waiting on worktree a"), "a");
-    let id_b = minted_id(b.wait_with_output().expect("waiting on worktree b"), "b");
+    let id_a = minted_id(
+        a.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "`story new` in worktree a did not finish".to_string()
+        }),
+        "a",
+    );
+    let id_b = minted_id(
+        b.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "`story new` in worktree b did not finish".to_string()
+        }),
+        "b",
+    );
 
     assert_ne!(
         id_a, id_b,
