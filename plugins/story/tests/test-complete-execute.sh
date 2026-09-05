@@ -87,6 +87,25 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/kill_window_probe.log")" "exists" \
   "window: the worktree still existed at the moment the window was killed"
 [ -d "$repo/.claude/worktrees/$wwn" ] && fail_test "window: worktree still on disk afterward"
 
+# --- a tmux refusal blocks worktree deletion and makes completion fail loud -
+kf=$(new_story "$repo" "Window refuses during complete")
+wkf=$(mk_dispatched "$repo" "$kf")
+status=0
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
+     FAKE_TMUX_FAIL_KILL_WINDOW=1 \
+     bash "$SCRIPT" complete execute "$kf" 2>&1) || status=$?
+[ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
+assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_eq "$(jqf "$out" '.removed.window')" "false" \
+  "kill-failure: window is not reported closed"
+assert_contains "$(jqf "$out" '.failed|join(" ")')" "window:$wkf(unverifiable)" \
+  "kill-failure: the failed postcondition is explicit"
+[ -d "$repo/.claude/worktrees/$wkf" ] \
+  || fail_test "kill-failure: worktree was deleted under the surviving window"
+assert_eq "$(cd "$repo" && story show "$kf" --json | jq -r '.story.story.superstate')" "CLOSED" \
+  "kill-failure: the completed story move remains observable"
+
 # --- SH-308: a `self` window -- the one the caller is asking FROM -- is
 # NEVER closed, worktree removal or not. `reap` owns that case. ---
 sf=$(new_story "$repo" "Self window survives")

@@ -302,6 +302,30 @@ pub const MIGRATIONS: &[Migration] = &[
         // rebuild, no referenced table touched, no event appended.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 27,
+        name: "engine_lane_pane_id",
+        sql: include_str!("schema/0027_engine_lane_pane_id.sql"),
+        // One nullable column added in place to operational state. Existing
+        // lanes fall back to an exact session-qualified window target.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 28,
+        name: "engine_recent_quarantines",
+        sql: include_str!("schema/0028_engine_recent_quarantines.sql"),
+        // One validated JSON column added in place to operational state. The
+        // empty default preserves every existing run without inference.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 29,
+        name: "engine_lane_cleanup_lease",
+        sql: include_str!("schema/0029_engine_lane_cleanup_lease.sql"),
+        // One nullable operational column added in place. Existing live lanes
+        // remain readable but carry no authority for exact cleanup.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

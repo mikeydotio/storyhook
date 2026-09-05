@@ -166,10 +166,27 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
     /// header says why that must degrade to silence rather than an error on
     /// failure. A sentinel-write failure (a read-only worktree, a full disk, a
     /// `.claude` that is a file rather than a directory) is a DIFFERENT
-    /// failure with nothing to say to the model, so it is swallowed here
-    /// rather than composed into that same error path — the two must fail
-    /// independently, or a full disk would blank out real project state that
-    /// loaded correctly.
+    /// failure with nothing to say to the model, so it never becomes this
+    /// function's own `Result` — composing it into `context()`'s error path
+    /// would mean a full disk blanking out real project state that loaded
+    /// correctly.
+    ///
+    /// # Why it is not swallowed either (SH-544)
+    ///
+    /// Not returning an error is not the same as discarding one. This runs
+    /// inside `Invocation::SessionStart`'s handler, which for a real dispatch
+    /// executes on the daemon's own worker thread (SH-114: the daemon is the
+    /// only door to the store) — so a warning logged here lands in
+    /// `daemon.log`, an operational surface nobody but an investigator reads,
+    /// never in the model's context and never in the hook script's own
+    /// discarded stderr (`session-start.sh`'s `2>/dev/null` only discards the
+    /// short-lived *client* process, a different process from the daemon).
+    /// Before this, a write failure here was invisible even to a human
+    /// investigator: `story.sh dispatch`'s own readiness gate polls for this
+    /// exact file, so a silently-failed write here reads at the caller as
+    /// "SessionStart hook missing or disabled" (`wait_ready_sentinel`'s
+    /// `no-sentinel` reason) — the CLI's own diagnosis pointing at the wrong
+    /// layer entirely, with nothing anywhere naming the real cause.
     pub fn publish_sentinel(&self) {
         let sentinel = DispatchSentinel {
             protocol_version: SENTINEL_PROTOCOL_VERSION,
@@ -177,8 +194,25 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             story_id: story_id_from_cwd(self.ctx.cwd()),
             written_at: self.ctx.now(),
         };
-        let _ = write_sentinel(self.ctx.cwd(), &sentinel);
+        if let Err(error) = write_sentinel(self.ctx.cwd(), &sentinel) {
+            eprintln!("{}", sentinel_write_failure_warning(self.ctx.cwd(), &error));
+        }
     }
+}
+
+/// The `daemon.log` line [`SessionService::publish_sentinel`] emits when its
+/// own write fails — a pure function so the message is testable without a
+/// filesystem or a subprocess, matching the `crate::daemon::agent::warning`
+/// pattern `src/daemon/lifecycle.rs`'s own `eprintln!` call sites already
+/// use for daemon-observable diagnostics.
+fn sentinel_write_failure_warning(cwd: &std::path::Path, error: &AppError) -> String {
+    format!(
+        "warning: SessionStart could not publish its dispatch sentinel at {}/.claude/\
+         dispatch-sentinel.json: {error} — a `story.sh dispatch` readiness gate polling \
+         this path will time out with `no-sentinel` even though this SessionStart itself \
+         is proceeding normally",
+        cwd.display()
+    )
 }
 
 /// Pulls `session_id` out of a raw SessionStart hook payload. `None` on
@@ -561,5 +595,29 @@ mod tests {
     #[test]
     fn story_id_is_none_when_cwd_has_no_final_component() {
         assert_eq!(story_id_from_cwd(std::path::Path::new("/")), None);
+    }
+
+    #[test]
+    fn the_sentinel_write_failure_warning_names_the_path_the_error_and_the_consequence() {
+        let error = AppError::Storage("disk full".to_string());
+        let warning = sentinel_write_failure_warning(std::path::Path::new("/repo/SH-231"), &error);
+        assert!(
+            warning.contains("/repo/SH-231/.claude/dispatch-sentinel.json"),
+            "should name the exact path a readiness gate polls for: {warning}"
+        );
+        assert!(
+            warning.contains("disk full"),
+            "should carry the underlying error, not just say something failed: {warning}"
+        );
+        assert!(
+            warning.contains("no-sentinel"),
+            "should name the observable symptom (SH-544) so a daemon.log reader can \
+             connect this line to a `pane-not-ready` refusal: {warning}"
+        );
+        assert!(
+            warning.starts_with("warning:"),
+            "should match this codebase's own daemon-observable warning idiom \
+             (src/daemon/lifecycle.rs): {warning}"
+        );
     }
 }

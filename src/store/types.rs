@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::provenance::Provenance;
-use crate::domain::{Priority, StoryEvent, StorySnapshot, SuperState};
+use crate::domain::{Priority, StoryCleanupLease, StoryEvent, StorySnapshot, SuperState};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 
@@ -217,6 +217,8 @@ pub struct EngineRunRecord {
     pub state: EngineRunState,
     /// Consecutive hard stops seen by the breaker.
     pub consecutive_hard_stops: u32,
+    /// The current consecutive series' three most recent hard stops.
+    pub recent_quarantines: Vec<EngineQuarantineRecord>,
     /// Machine-readable or human-readable stop classification.
     pub stop_reason: Option<String>,
     /// When the current halt/drain notification was acknowledged.
@@ -225,6 +227,27 @@ pub struct EngineRunRecord {
     pub created_at: String,
     /// RFC3339 last-update timestamp supplied by the caller.
     pub updated_at: String,
+}
+
+/// One durable hard-stop diagnosis retained on its Full Auto run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EngineQuarantineRecord {
+    /// Zero-based lane that encountered the hard stop.
+    pub lane_index: u32,
+    /// Story held by the lane when it stopped, if known.
+    pub story_id: Option<String>,
+    /// Stable hard-stop classification.
+    pub kind: String,
+    /// Provider or engine diagnosis accompanying the classification.
+    pub detail: Option<String>,
+    /// Exact tmux pane id, if dispatch supplied one.
+    pub pane_id: Option<String>,
+    /// Human-readable tmux window name.
+    pub window_name: Option<String>,
+    /// Preserved worktree path.
+    pub worktree_path: Option<String>,
+    /// RFC3339 time at which reconciliation observed the hard stop.
+    pub observed_at: String,
 }
 
 /// One row of durable Full Auto lane state.
@@ -238,10 +261,17 @@ pub struct EngineLaneRecord {
     pub state: EngineLaneState,
     /// Claimed story id, absent exactly while idle.
     pub story_id: Option<String>,
+    /// Exact tmux pane id returned by dispatch, such as `%112`.
+    ///
+    /// Older live lanes may not have one; reconciliation then uses the
+    /// project session plus [`Self::window_name`] as an exact fallback.
+    pub pane_id: Option<String>,
     /// The tmux window identity returned by dispatch.
     pub window_name: Option<String>,
     /// The lane's preserved worktree path.
     pub worktree_path: Option<String>,
+    /// Exact creation-time resource identity for non-verification cleanup.
+    pub cleanup_lease: Option<StoryCleanupLease>,
     /// When dispatch began.
     pub dispatched_at: Option<String>,
     /// Most recent observation time — when the reconciler last *looked*.

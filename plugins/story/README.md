@@ -23,16 +23,10 @@ The former plugin target `claude-code` remains accepted for install and uninstal
 deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
 `codex`.
 
-Codex development installs register the repository marketplace and then add the plugin,
-using the following Codex commands internally:
-
-```bash
-codex plugin marketplace add /absolute/path/to/storyhook
-codex plugin add story@storyhook
-```
-
-Running only those two low-level commands skips the launcher/rule lifecycle; use
-`story plugin install codex` for the complete supported installation.
+The `story` binary embeds this complete marketplace, materializes it under its versioned data
+directory, and registers that release projection with the selected provider. Running the
+provider's low-level marketplace commands instead loses that release pin and skips Codex's
+launcher/rule lifecycle; use `story plugin install codex` for the supported installation.
 
 The Codex manifest declares the shared skills and intentionally has no explicit `hooks`
 field because the current validator rejects it. Current installed-plugin discovery loads
@@ -248,10 +242,10 @@ Worth knowing before changing anything here:
   `/story complete <id>` from the main checkout.
 - **`--auto` retains Plan mode but requires no person at the prompt.** Every
   autonomous tmux child receives `STORYHOOK_AUTO=<story-id>`. The packaged
-  hook allows Claude's plan exit, then its `PermissionRequest(ExitPlanMode)`
-  handler sends Return only when the exact, selected Auto review option is
-  visible in that child's pane. Codex has a sibling exact-pane watcher, armed
-  after Plan mode is confirmed, that sends Return to “Yes, implement this plan.”
+  hook allows Claude's plan exit; dispatch arms provider-specific exact-pane
+  watchers before prompt submission. Claude's sends Return only when the exact,
+  selected Auto review option is visible in the original live child pane.
+  Codex's sends Return to “Yes, implement this plan.”
   The hook denies either provider's question tool; Codex uses `--approve-for-me`
   for later tool approvals. Claude's
   post-plan default is `acceptEdits`, while Codex keeps workspace-write automatic

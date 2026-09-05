@@ -1521,7 +1521,7 @@ fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
-pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 3;
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 4;
 
 /// Locates `plugins/story/bin/story.sh`, in order:
 ///
@@ -1532,8 +1532,9 @@ pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 3;
 ///    since the marketplace installs to a version-scoped cache directory
 ///    that is not otherwise discoverable.
 /// 3. A dev checkout's own copy, via [`crate::plugin::dev_repo_root`] — the
-///    same lookup `story plugin install` uses to prefer a local checkout
-///    over the published one.
+///    explicit fallback for an uninstalled development build. `story plugin
+///    install` never uses this path; it registers the marketplace embedded in
+///    the binary.
 ///
 /// Deliberately does not check that `bash`, `jq`, `git` or `tmux` are on
 /// PATH: those are the *script's* dependencies, and its own `set -euo
@@ -3044,7 +3045,7 @@ mod tests {
     /// `check_dispatch_protocol` now requires, so these tests keep
     /// exercising resolution order rather than tripping the protocol check
     /// that has its own tests, below.
-    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=3\n";
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=4\n";
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {
@@ -3211,8 +3212,8 @@ mod tests {
     #[test]
     fn declared_dispatch_protocol_reads_a_line_start_assignment() {
         let (_guard, path) =
-            script_with_content("#!/usr/bin/env bash\nDISPATCH_PROTOCOL=3\nset -euo pipefail\n");
-        assert_eq!(declared_dispatch_protocol(&path), 3);
+            script_with_content("#!/usr/bin/env bash\nDISPATCH_PROTOCOL=4\nset -euo pipefail\n");
+        assert_eq!(declared_dispatch_protocol(&path), 4);
     }
 
     #[test]

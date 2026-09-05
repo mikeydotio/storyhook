@@ -117,6 +117,46 @@ assert_eq "$(jqf "$out" .window)" "open" "invisible-window: found and reported a
 assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually closed"
 [ "$(kill_count)" -gt "$kills_before" ] || fail_test "invisible-window: no kill-window call was made"
 
+# --- a tmux refusal is a failed cleanup, never a successful release report --
+kf=$(new_story "$repo" "Window refuses to close")
+claim_it "$kf"
+status=0
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$kf")" \
+     FAKE_TMUX_FAIL_KILL_WINDOW=1 \
+     bash "$SCRIPT" --project "$slug" unclaim "$kf" 2>&1) || status=$?
+[ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
+assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_eq "$(jqf "$out" .closed_window)" "false" "kill-failure: window is not reported closed"
+assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
+  "kill-failure: the failed postcondition is explicit"
+assert_eq "$(state_of "$kf")" "todo" "kill-failure: the completed release remains observable"
+
+# --- leased cleanup ignores mutable checkout/provider paths ----------------
+# Stop-now owns only claim release plus tmux cleanup. Its creation-time lease
+# is therefore sufficient from outside every checkout, even when the paths in
+# the lease no longer describe the daemon's current provider configuration.
+lu=$(new_story "$repo" "Leased outside checkout")
+claim_it "$lu"
+socket="$FAKE_TMUX_STATE/original.sock"
+touch "$socket"
+printf '@77\t%s\n' "$lu" >"$FAKE_TMUX_STATE/windows"
+lease=$(jq -nc --arg project "$slug" --arg story "$lu" --arg socket "$socket" '
+  {version:1,project_slug:$project,story_id:$story,
+   repository_path:"/provider/checkout/that/no/longer/exists",
+   worktree_path:"/provider/worktree/that/no/longer/exists",
+   branch:("worktree-"+$story),tmux:{socket_path:$socket}}')
+out=$(cd /tmp \
+  && STORYHOOK_REAP_LEASE_V1="$lease" \
+     bash "$SCRIPT" --project "$slug" unclaim "$lu" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "leased-drift: ok"
+assert_eq "$(jqf "$out" '.cleanup.postconditions.tmux_story_windows_absent')" "true" \
+  "leased-drift: exact absence is proved"
+assert_eq "$(jqf "$out" '.cleanup.lease.repository_path')" \
+  "/provider/checkout/that/no/longer/exists" \
+  "leased-drift: receipt echoes creation-time identity rather than re-deriving it"
+assert_eq "$(state_of "$lu")" "todo" "leased-drift: release used the selected store, not a checkout"
+
 # --- the comment flags reach the CLI verbatim -------------------------------
 cm=$(new_story "$repo" "With a reason")
 claim_it "$cm"

@@ -167,7 +167,7 @@ ureq = { version = "3", features = ["json"] }
 keyring-core = { version = "1", optional = true }
 
 # Two platform stores, not three: this crate ships prebuilt binaries only for
-# macOS and Linux (`.github/workflows/release.yml`'s matrix, `install.sh`).
+# macOS and Linux (`scripts/release-targets.sh`, `install.sh`).
 # A `cfg(target_os = "windows")` table naming `windows-native-keyring-store`
 # used to sit here — activated by default, compiled by nothing, so whether it
 # even built was unknown. `libc` is an unconditional dependency here and

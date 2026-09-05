@@ -161,6 +161,13 @@ fn the_shell_cannot_walk_around_the_structured_editors() {
         format!("cp /tmp/x {}", target.display()),
         format!("rm -f {}", target.display()),
         format!("echo hi > {}", target.display()),
+        format!(
+            "sed -n 1p {} && rm -f {}",
+            target.display(),
+            target.display()
+        ),
+        format!("mystery-reader {}", target.display()),
+        format!("rg --pre 'rm -f /tmp/unrelated' x {}", target.display()),
     ] {
         let payload = serde_json::json!({
             "tool_name": "Bash",
@@ -170,6 +177,36 @@ fn the_shell_cannot_walk_around_the_structured_editors() {
         assert!(
             refusal(&ask(&data, &payload)).is_some(),
             "a shell command reaching an installed path must be refused: {command}"
+        );
+    }
+}
+
+#[test]
+fn read_only_shell_inspection_of_an_installed_file_is_untouched() {
+    let (_dir, data, claude) = managed_home();
+    let target = claude.join("story/2.2.0/skills/story/SKILL.md");
+    for command in [
+        format!("sed -n '1,240p' {}", target.display()),
+        format!("rg -n '^' {}", target.display()),
+        format!("cat {}", target.display()),
+        format!("head -20 {}", target.display()),
+        format!("tail -20 {}", target.display()),
+        format!("grep -n Storyhook {}", target.display()),
+        format!("cat {} | head -20", target.display()),
+        format!(
+            "sed -n '1,20p' {} && story show SH-550 --json",
+            target.display()
+        ),
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": command },
+        })
+        .to_string();
+        assert_eq!(
+            ask(&data, &payload),
+            "{}",
+            "a command proven to only read the installed artifact must be allowed: {command}"
         );
     }
 }
