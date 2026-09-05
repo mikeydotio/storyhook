@@ -1734,7 +1734,7 @@ fn a_fix_appends_exactly_where_its_findings_name_a_reachable_remedy() {
         report(&fixture),
         [
             "SH-6: unknown type `bug`",
-            "SH-7: malformed labels [\"web,sse\"] — a label cannot contain a comma or be blank",
+            "SH-7: malformed labels [\"web,sse\"] — labels must be lowercase, nonblank, and comma-delimited",
         ],
         "what is left must be exactly the findings with no reachable remedy"
     );

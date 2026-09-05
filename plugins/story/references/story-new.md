@@ -87,7 +87,8 @@ bash "<story-helper>" create \
 
 `<csv>` means comma-separated: `--label backend,api` files two labels,
 `backend` and `api`. Comma is always the label delimiter — a single label can
-never contain one.
+never contain one. Labels are stored lowercase, so case variants name the same
+label.
 
 **Read `story help priority-rubric` before choosing a level.** Priority is
 `story next`'s sort key, so it decides what the next session picks up. Omitted

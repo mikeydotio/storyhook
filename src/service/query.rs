@@ -1404,12 +1404,9 @@ fn execution_queue(
 
 /// The label CSV grammar shared by `story list --label` and
 /// `story next --exclude-label`: split commas, trim whitespace, drop empty
-/// entries, preserve case, and treat unknown names as ordinary values.
+/// entries, canonicalize case, and treat unknown names as ordinary values.
 fn label_csv_values(csv: &str) -> Vec<String> {
-    csv.split(',')
-        .map(|raw| raw.trim().to_string())
-        .filter(|label| !label.is_empty())
-        .collect()
+    domain::normalize_labels([csv])
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.
