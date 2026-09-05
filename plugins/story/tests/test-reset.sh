@@ -53,6 +53,24 @@ assert_eq "$(state_of "$hp")" "todo" "happy: the REAL story really moved"
 wt_exists "$whp" && fail_test "happy: worktree still on disk"
 br_exists "$whp" && fail_test "happy: branch still in git"
 
+# --- a tmux refusal makes the partial teardown fail loud -------------------
+kf=$(new_story "$repo" "Reset window refuses")
+wkf=$(mk_dispatched "$repo" "$kf")
+claim_it "$kf"
+status=0
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
+     FAKE_TMUX_FAIL_KILL_WINDOW=1 \
+     bash "$SCRIPT" --project "$slug" reset "$kf" 2>&1) || status=$?
+[ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
+assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_eq "$(jqf "$out" .closed_window)" "false" "kill-failure: window is not reported closed"
+assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
+  "kill-failure: the failed postcondition is explicit"
+assert_eq "$(state_of "$kf")" "todo" "kill-failure: the completed release remains observable"
+wt_exists "$wkf" && fail_test "kill-failure: successful Git cleanup was falsely rolled back"
+br_exists "$wkf" && fail_test "kill-failure: successful branch cleanup was falsely rolled back"
+
 # --- REFUSAL: a dirty worktree, and --force overrides ----------------------
 dy=$(new_story "$repo" "Dirty")
 wdy=$(mk_dispatched "$repo" "$dy")

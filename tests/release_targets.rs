@@ -1,25 +1,16 @@
-//! The release build's invariants, as far as a native gate can hold them.
+//! The supported release targets and the local assembly path (SH-540).
 //!
-//! `make test` is a macOS build. It never evaluates a
-//! `cfg(target_os = "linux")` dependency and never runs the release workflow,
-//! so the Linux target went two releases without compiling and nothing said
-//! so until `v2.1.0`'s tag was already pushed and unmovable (SH-259). The
-//! compile itself still belongs to CI — there is no Linux toolchain here to
-//! borrow. What belongs *here* is the pair of facts that made that failure
-//! possible and survivable-in-silence, because both are plain files this gate
-//! can read on any platform:
-//!
-//! 1. the Linux keyring dependency selected no `secret-service` runtime, so
-//!    the crate it pulls refused to compile at all; and
-//! 2. the build matrix let one broken target cancel the three that worked, so
-//!    the release produced nothing rather than three quarters of something.
-//!
-//! Neither of these is the real cross-target build, and neither pretends to
-//! be — `.github/workflows/release.yml` carries a `workflow_dispatch` trigger
-//! now so that build can be run on demand without minting a tag. These tests
-//! are the part of it that costs nothing and runs every time.
+//! `make test` is a macOS build, so it cannot compile Linux-only code. The
+//! release command closes that gap locally with `cross`, packages all four
+//! supported targets, verifies them, and uploads one draft. These tests pin
+//! the repository-level contracts around that expensive path without running
+//! a real release or reaching GitHub.
 
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use storyhook_test_support::scratch_dir_named;
 
 /// The repository root, which is this package's manifest directory: the root
 /// package and the workspace root are the same crate here (see `Cargo.toml`'s
@@ -28,8 +19,7 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Reads a repository file, failing with the path rather than with `None` —
-/// a missing manifest or workflow is a finding, not a reason to skip.
+/// Reads a repository file, failing with the path rather than with `None`.
 fn read(relative: &str) -> String {
     let path: PathBuf = repo_root().join(relative);
     std::fs::read_to_string(&path)
@@ -129,337 +119,439 @@ fn the_linux_secret_service_runtime_needs_no_system_library() {
 }
 
 // ---------------------------------------------------------------------------
-// The workflow: what one broken target costs
+// SH-540: releases are assembled locally, never by a tag-triggered Action
 // ---------------------------------------------------------------------------
 
-/// `.github/workflows/release.yml`, parsed.
-fn release_workflow() -> serde_yml::Value {
-    serde_yml::from_str(&read(".github/workflows/release.yml"))
-        .expect("release.yml must be valid YAML")
-}
-
-/// The workflow's trigger mapping. YAML 1.1 read a bare `on` as the boolean
-/// `true` and some parsers still do, so both spellings are accepted — the
-/// point of the lookup is the triggers, not the quoting.
-fn triggers(workflow: &serde_yml::Value) -> &serde_yml::Value {
-    workflow
-        .get("on")
-        .or_else(|| workflow.get(serde_yml::Value::Bool(true)))
-        .expect("release.yml must declare its triggers")
-}
-
-/// GitHub Actions defaults a matrix to `fail-fast: true`, which cancels every
-/// sibling job the moment one fails. That is a reasonable default for a test
-/// matrix and the wrong one for a release matrix: when the Linux build broke,
-/// it took both macOS artifacts and the aarch64 Linux one with it, and the
-/// `release` job then skipped for want of anything to upload. A broken
-/// platform should cost that platform.
 #[test]
-fn one_broken_target_does_not_cancel_the_others() {
-    let workflow = release_workflow();
-    let fail_fast = workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("build"))
-        .and_then(|build| build.get("strategy"))
-        .and_then(|strategy| strategy.get("fail-fast"));
-
-    assert_eq!(
-        fail_fast.and_then(serde_yml::Value::as_bool),
-        Some(false),
-        "release.yml's build matrix must set `fail-fast: false`, or one \
-         target's failure cancels the artifacts of every target that works \
-         (SH-259)"
-    );
-}
-
-/// The feedback loop the tag-only trigger left open: these targets were built
-/// exactly once per release, after the tag was pushed and could no longer be
-/// moved. A `workflow_dispatch` trigger makes the same cross-target build
-/// runnable on demand. This is a build of the deploy artifact, not a test
-/// suite, so it stays on the right side of the project rule that Actions are
-/// for deploys.
-#[test]
-fn the_cross_target_build_can_run_without_minting_a_tag() {
-    let workflow = release_workflow();
-    let triggers = triggers(&workflow);
-    assert!(
-        triggers.get("workflow_dispatch").is_some(),
-        "release.yml must be dispatchable, or a shipped target can go \
-         unbuilt from one release to the next with nothing able to say so \
-         (SH-259)"
-    );
-    assert!(
-        triggers.get("push").is_some(),
-        "release.yml must still build on a version tag"
-    );
-}
-
-/// A dispatched run has no tag to release, so publishing has to be conditional
-/// on one — otherwise adding the trigger above turns every manual build into a
-/// failed or, worse, a spurious release.
-#[test]
-fn a_dispatched_run_builds_but_does_not_publish() {
-    let workflow = release_workflow();
-    let guard = workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("release"))
-        .and_then(|release| release.get("if"))
-        .and_then(serde_yml::Value::as_str)
-        .unwrap_or_default();
-
-    assert!(
-        guard.contains("refs/tags/"),
-        "the `release` job must be guarded on a tag ref, or a \
-         `workflow_dispatch` build tries to publish a release it has no tag \
-         for; found `if: {guard}`"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// The release body: rendered from the changelog, never generated alone
-// ---------------------------------------------------------------------------
-
-/// The job that renders the release body, found by the script it runs rather
-/// than by name — a renamed job should keep the invariant, not retire it.
-///
-/// Returns the job's name alongside it, because the publishing job has to
-/// depend on it and the dependency is spelled by name.
-fn body_rendering_job(workflow: &serde_yml::Value) -> (String, serde_yml::Value) {
-    let jobs = workflow
-        .get("jobs")
-        .and_then(serde_yml::Value::as_mapping)
-        .expect("release.yml must declare jobs");
-
-    let mut found: Vec<(String, serde_yml::Value)> = jobs
-        .iter()
-        .filter(|(_, job)| {
-            serde_yml::to_string(job)
-                .unwrap_or_default()
-                .contains("render-release-body.sh")
-        })
-        .map(|(name, job)| (name.as_str().unwrap_or_default().to_string(), job.clone()))
-        .collect();
-
-    assert_eq!(
-        found.len(),
-        1,
-        "exactly one job in release.yml must render the release body; found \
-         {:?}",
-        found.iter().map(|(name, _)| name).collect::<Vec<_>>()
-    );
-    found.pop().expect("the single rendering job")
-}
-
-/// The `Create release` step, found by the action it uses.
-fn create_release_step(workflow: &serde_yml::Value) -> serde_yml::Value {
-    workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("release"))
-        .and_then(|release| release.get("steps"))
-        .and_then(serde_yml::Value::as_sequence)
-        .expect("the release job must declare steps")
-        .iter()
-        .find(|step| {
-            step.get("uses")
-                .and_then(serde_yml::Value::as_str)
-                .is_some_and(|uses| uses.contains("action-gh-release"))
-        })
-        .expect("the release job must publish with action-gh-release")
-        .clone()
-}
-
-/// GitHub generates release notes from the newest **tag**, published or not.
-/// `v2.1.0` was tagged and never published, so the notes generated for the
-/// next release describe `v2.1.0...v2.1.1` — six pull requests — while a user
-/// upgrading from the newest *release* receives seven hundred and forty-three
-/// commits. Generated notes are an appendix here, never the whole body.
-#[test]
-fn the_release_body_comes_from_the_repository_not_only_from_generated_notes() {
-    let workflow = release_workflow();
-    let with = create_release_step(&workflow)
-        .get("with")
-        .cloned()
-        .expect("the publishing step must configure the release");
-
-    let body_path = with
-        .get("body_path")
-        .and_then(serde_yml::Value::as_str)
-        .unwrap_or_default();
-
-    assert!(
-        !body_path.trim().is_empty(),
-        "release.yml must supply `body_path`, or every release publishes \
-         GitHub's generated notes alone — which measure from the newest tag \
-         rather than the newest release, and silently hide everything an \
-         unpublished tag swallowed (SH-262)"
-    );
-}
-
-/// Publishing depends on the body existing. Without the dependency the
-/// rendering job could fail and the release would publish anyway, with the
-/// fallback body this whole mechanism exists to prevent.
-#[test]
-fn publishing_depends_on_the_body_having_been_rendered() {
-    let workflow = release_workflow();
-    let (name, _) = body_rendering_job(&workflow);
-
-    let needs = workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("release"))
-        .and_then(|release| release.get("needs"))
-        .expect("the release job must declare what it needs");
-
-    let needed: Vec<&str> = match needs {
-        serde_yml::Value::String(one) => vec![one.as_str()],
-        serde_yml::Value::Sequence(many) => {
-            many.iter().filter_map(serde_yml::Value::as_str).collect()
+fn no_github_workflow_runs_for_version_tags() {
+    for path in tracked_files(&repo_root(), ".github/workflows/*") {
+        if !path.is_file() {
+            continue;
         }
-        other => panic!("unexpected `needs` shape: {other:?}"),
-    };
-
-    assert!(
-        needed.contains(&name.as_str()),
-        "the release job must need `{name}`, or a failed render publishes \
-         generated-only notes instead of failing the release (SH-262); found \
-         needs: {needed:?}"
-    );
-}
-
-/// The rendering runs on a dispatched build too, which is the only place its
-/// failure is cheap. `release.yml:  the publishing job` is gated on a tag, and
-/// tags are never moved here — so a body that cannot be rendered on a tag push
-/// mints a second permanently dangling tag. The dispatch rehearsal that already
-/// proves the four targets build now proves the body renders as well.
-#[test]
-fn the_body_is_rendered_on_a_dispatched_run_too() {
-    let workflow = release_workflow();
-    let (name, job) = body_rendering_job(&workflow);
-
-    let guard = job
-        .get("if")
-        .and_then(serde_yml::Value::as_str)
-        .unwrap_or_default();
-
-    assert!(
-        !guard.contains("refs/tags/"),
-        "`{name}` is gated on a tag ref, so the body is first rendered when \
-         the tag can no longer be moved; it must run on a dispatched build as \
-         well (SH-262). Found `if: {guard}`"
-    );
-}
-
-/// The rendered body is not a release asset. The publishing step globs a
-/// directory of build artifacts, and the body must not be downloaded into it —
-/// `install.sh` and `story update` fetch assets by name, and a stray markdown
-/// file beside them is at best noise on the release page.
-#[test]
-fn the_rendered_body_is_not_published_as_an_asset() {
-    let workflow = release_workflow();
-    let with = create_release_step(&workflow)
-        .get("with")
-        .cloned()
-        .expect("the publishing step must configure the release");
-
-    let files = with
-        .get("files")
-        .and_then(serde_yml::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let body_path = with
-        .get("body_path")
-        .and_then(serde_yml::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-
-    let asset_directory = files.rsplit_once('/').map(|(head, _)| head).unwrap_or("");
-    let body_directory = body_path
-        .rsplit_once('/')
-        .map(|(head, _)| head)
-        .unwrap_or("");
-
-    assert_ne!(
-        asset_directory, body_directory,
-        "the release body (`{body_path}`) lands in the directory the \
-         publishing step uploads as assets (`{files}`), so it would be \
-         attached to the release"
-    );
-}
-
-/// The span is measured from a published *release*, which is what `install.sh`
-/// and `story update` resolve — never from a tag. Measuring from a tag is the
-/// original defect wearing the new mechanism's clothes: an unpublished tag
-/// silently shortens the span to nothing anyone can install.
-#[test]
-fn the_body_measures_from_a_published_release_rather_than_a_tag() {
-    let workflow = release_workflow();
-    let (name, job) = body_rendering_job(&workflow);
-    let step = serde_yml::to_string(&job).unwrap_or_default();
-
-    assert!(
-        step.contains("releases"),
-        "`{name}` must ask the releases API which version it is measuring \
-         from (SH-262)"
-    );
-    for tag_derived in ["git describe", "git tag"] {
+        let source = std::fs::read_to_string(&path).expect("workflow is readable");
+        let workflow: serde_yml::Value =
+            serde_yml::from_str(&source).expect("tracked workflow must be valid YAML");
+        let triggers = workflow
+            .get("on")
+            .or_else(|| workflow.get(serde_yml::Value::Bool(true)));
+        let tag_push = triggers
+            .and_then(|on| on.get("push"))
+            .and_then(|push| push.get("tags"));
         assert!(
-            !step.contains(tag_derived),
-            "`{name}` derives the span with `{tag_derived}`, which counts \
-             from the newest tag — published or not — and that is the defect \
-             `body_path` exists to fix (SH-262)"
+            tag_push.is_none(),
+            "{} runs on tag pushes; releases must be assembled locally (SH-540)",
+            path.display()
         );
     }
 }
 
-/// The renderer itself is tracked and runnable. A `body_path` pointing at a
-/// file nothing produces — or at one the runner may not execute — fails the
-/// release after the tag is unmovable.
 #[test]
-fn the_renderer_is_tracked_where_the_workflow_expects_it() {
-    let renderer = repo_root().join("scripts/render-release-body.sh");
+fn release_sh_assembles_locally_and_never_delegates_to_actions() {
+    let source = read("scripts/release.sh");
+    assert!(source.contains("scripts/build-release-assets.sh --check"));
+    assert!(source.contains("scripts/build-release-assets.sh"));
+    assert!(source.contains("gh release create"));
+    for required in [
+        "--verify-tag",
+        "--draft",
+        "--generate-notes",
+        "--notes-file",
+    ] {
+        assert!(
+            source.contains(required),
+            "release creation is missing {required}"
+        );
+    }
+    for forbidden in ["gh run", "gh workflow", "release.yml"] {
+        assert!(
+            !source.contains(forbidden),
+            "release.sh still delegates through GitHub Actions with `{forbidden}`"
+        );
+    }
+
+    let check = source
+        .find("scripts/build-release-assets.sh --check")
+        .unwrap();
+    let branch = source.find("git switch -c").unwrap();
     assert!(
-        renderer.is_file(),
-        "release.yml renders the body with scripts/render-release-body.sh, \
-         which is not in the tree"
+        check < branch,
+        "toolchain preflight must precede version mutation"
+    );
+    let build = source.rfind("scripts/build-release-assets.sh").unwrap();
+    let tag = source.find("git tag -a").unwrap();
+    assert!(
+        build < tag,
+        "all artifacts must be verified before the tag is minted"
+    );
+}
+
+fn write_executable(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("writing command shim");
+    let mut permissions = path.metadata().unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+fn release_tool_shims() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let fixture = scratch_dir_named("local-release");
+    let bin = fixture.path().join("bin");
+    let target = fixture.path().join("target");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    write_executable(&bin.join("uname"), "#!/bin/bash\necho Darwin\n");
+    write_executable(
+        &bin.join("docker"),
+        "#!/bin/bash\n[ \"$1\" = info ] || exit 2\nexit 0\n",
+    );
+    let builder = r#"#!/bin/bash
+set -eu
+echo "$(basename "$0") $*" >> "$RELEASE_TEST_LOG"
+target=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--target" ]; then target="$argument"; fi
+  previous="$argument"
+done
+if [ -n "${RELEASE_FAIL_TARGET:-}" ] && [ "$target" = "$RELEASE_FAIL_TARGET" ]; then
+  exit 42
+fi
+if [ -n "$target" ]; then
+  mkdir -p "$CARGO_TARGET_DIR/$target/release"
+  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/$target/release/story"
+  chmod +x "$CARGO_TARGET_DIR/$target/release/story"
+fi
+if [ "$(basename "$0")" = rustup ] && [ "${1:-}" = target ]; then
+  printf 'x86_64-apple-darwin\naarch64-apple-darwin\n'
+fi
+if [ "$(basename "$0")" = rustup ] && [ "${3:-}" = rustc ]; then
+  echo 'rustc 1.test'
+fi
+"#;
+    write_executable(&bin.join("rustup"), builder);
+    write_executable(&bin.join("cross"), builder);
+    write_executable(
+        &bin.join("file"),
+        r#"#!/bin/bash
+path="${@: -1}"
+case "$path" in
+  *x86_64-unknown-linux-gnu*) echo 'ELF 64-bit LSB executable, x86-64' ;;
+  *aarch64-unknown-linux-gnu*) echo 'ELF 64-bit LSB executable, ARM aarch64' ;;
+  *x86_64-apple-darwin*) echo 'Mach-O 64-bit executable x86_64' ;;
+  *aarch64-apple-darwin*) echo 'Mach-O 64-bit executable arm64' ;;
+  *) echo 'ASCII text' ;;
+esac
+"#,
+    );
+    write_executable(
+        &bin.join("tar"),
+        r#"#!/bin/bash
+if [ "${RELEASE_CORRUPT_ARCHIVE:-0}" = 1 ] && [ "${1:-}" = -tzf ]; then
+  printf 'story\nextra\n'
+  exit 0
+fi
+exec /usr/bin/tar "$@"
+"#,
     );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = renderer
-            .metadata()
-            .expect("the renderer's metadata")
-            .permissions()
-            .mode();
-        assert_ne!(
-            mode & 0o111,
-            0,
-            "the workflow runs scripts/render-release-body.sh directly, so it \
-             has to carry the executable bit; found mode {mode:o}"
-        );
+    (fixture, bin, target)
+}
+
+fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Output) {
+    let (fixture, bin, target) = release_tool_shims();
+    let output_dir = fixture.path().join("assets");
+    let log = fixture.path().join("commands.log");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::new("/bin/bash");
+    command
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .args(["--version", "v9.9.9", "--output-dir"])
+        .arg(&output_dir)
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", target)
+        .env("RELEASE_TEST_LOG", log);
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let result = command.output().expect("running local release builder");
+    (fixture, output_dir, result)
+}
+
+#[test]
+fn local_builder_creates_and_checksums_all_four_archives() {
+    let (fixture, output_dir, result) = run_asset_builder(&[]);
+    assert!(
+        result.status.success(),
+        "builder failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let log = std::fs::read_to_string(fixture.path().join("commands.log")).unwrap();
+    for target in release_targets() {
+        assert!(log.contains(&format!("--locked --release --target {target}")));
+        if target.contains("linux") {
+            assert!(log.contains(&format!(
+                "cross +stable build --locked --release --target {target}"
+            )));
+        } else {
+            assert!(log.contains(&format!(
+                "rustup run stable cargo build --locked --release --target {target}"
+            )));
+        }
+        let archive = output_dir.join(format!("story-{target}.tar.gz"));
+        assert!(archive.is_file(), "missing {}", archive.display());
+        let listing = Command::new("tar")
+            .args(["-tzf"])
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&listing.stdout).trim(), "story");
+    }
+
+    let checksums = std::fs::read_to_string(output_dir.join("SHA256SUMS")).unwrap();
+    assert_eq!(checksums.lines().count(), 4);
+    let verified = Command::new("shasum")
+        .args(["-a", "256", "-c", "SHA256SUMS"])
+        .current_dir(&output_dir)
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "checksum verification failed: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+}
+
+#[test]
+fn failed_target_removes_stale_assets_and_writes_no_complete_manifest() {
+    let (fixture, bin, target) = release_tool_shims();
+    let output_dir = fixture.path().join("assets");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    for target in release_targets() {
+        std::fs::write(output_dir.join(format!("story-{target}.tar.gz")), "stale").unwrap();
+    }
+    std::fs::write(output_dir.join("SHA256SUMS"), "stale").unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .args(["--version", "v9.9.9", "--output-dir"])
+        .arg(&output_dir)
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", target)
+        .env("RELEASE_TEST_LOG", fixture.path().join("commands.log"))
+        .env("RELEASE_FAIL_TARGET", "x86_64-unknown-linux-gnu")
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(42));
+    assert!(!output_dir.join("SHA256SUMS").exists());
+    for target in release_targets() {
+        assert!(!output_dir.join(format!("story-{target}.tar.gz")).exists());
     }
 }
 
+#[test]
+fn malformed_archive_is_refused_before_its_digest_is_accepted() {
+    let (_fixture, output_dir, result) = run_asset_builder(&[("RELEASE_CORRUPT_ARCHIVE", "1")]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("exactly one top-level story"));
+    assert!(!output_dir.join("SHA256SUMS").exists());
+}
+
+#[test]
+fn builder_refuses_before_work_when_release_tools_are_missing() {
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .arg("--check")
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("rustup is required"));
+}
+
+fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
+    let fixture = scratch_dir_named("release-publish");
+    let root = fixture.path();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::copy(
+        repo_root().join("scripts/release.sh"),
+        root.join("scripts/release.sh"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repo_root().join("scripts/release-targets.sh"),
+        root.join("scripts/release-targets.sh"),
+    )
+    .unwrap();
+    std::fs::write(root.join("VERSION"), "v9.9.9\n").unwrap();
+    write_executable(&root.join("bin/claude"), "#!/bin/bash\nexit 0\n");
+    write_executable(
+        &root.join("bin/gh"),
+        r#"#!/bin/bash
+set -eu
+if [ "$1 $2" = "auth status" ]; then exit 0; fi
+if [ "$1" = api ]; then
+  endpoint=""
+  for argument in "$@"; do
+    case "$argument" in repos/*) endpoint="$argument" ;; esac
+  done
+  case "$endpoint" in
+    *'/assets?'*)
+      for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+        if [ "${RELEASE_SCENARIO:-ok}" = missing ] && [ "$target" = aarch64-apple-darwin ]; then continue; fi
+        digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        if [ "${RELEASE_SCENARIO:-ok}" = bad-digest ] && [ "$target" = x86_64-unknown-linux-gnu ]; then digest="missing"; fi
+        printf 'story-%s.tar.gz\t%s\n' "$target" "$digest"
+      done
+      ;;
+    *)
+      printf '101\ttrue\n'
+      if [ "${RELEASE_SCENARIO:-ok}" = duplicate ]; then printf '102\ttrue\n'; fi
+      ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "release edit" ]; then echo edit >> "$RELEASE_TEST_LOG"; exit 0; fi
+if [ "$1 $2" = "release view" ]; then echo v9.9.9; exit 0; fi
+exit 2
+"#,
+    );
+
+    for args in [
+        ["init", "-q", "-b", "main"].as_slice(),
+        ["config", "user.email", "release@test"].as_slice(),
+        ["config", "user.name", "release-test"].as_slice(),
+        ["add", "-A"].as_slice(),
+        ["commit", "-qm", "fixture"].as_slice(),
+    ] {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let log = root.join("publish.log");
+    (fixture, log)
+}
+
+fn publish_with_scenario(scenario: &str) -> (Output, String) {
+    let (fixture, log) = publish_fixture();
+    let path = format!(
+        "{}:{}",
+        fixture.path().join("bin").display(),
+        std::env::var("PATH").unwrap()
+    );
+    let result = Command::new("/bin/bash")
+        .current_dir(fixture.path())
+        .arg(fixture.path().join("scripts/release.sh"))
+        .args(["--publish", "v9.9.9", "--yes"])
+        .env("PATH", path)
+        .env("RELEASE_SCENARIO", scenario)
+        .env("RELEASE_TEST_LOG", &log)
+        .output()
+        .unwrap();
+    let calls = std::fs::read_to_string(log).unwrap_or_default();
+    (result, calls)
+}
+
+#[test]
+fn publish_refuses_ambiguous_same_tag_releases() {
+    let (result, calls) = publish_with_scenario("duplicate");
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("ambiguous same-tag"));
+    assert!(calls.is_empty(), "an ambiguous release was published");
+}
+
+#[test]
+fn publish_refuses_a_non_version_before_calling_github() {
+    let (fixture, log) = publish_fixture();
+    let path = format!(
+        "{}:{}",
+        fixture.path().join("bin").display(),
+        std::env::var("PATH").unwrap()
+    );
+    let result = Command::new("/bin/bash")
+        .current_dir(fixture.path())
+        .arg(fixture.path().join("scripts/release.sh"))
+        .args(["--publish", "v9.9.9\") | .[]", "--yes"])
+        .env("PATH", path)
+        .env("RELEASE_TEST_LOG", &log)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("vMAJOR.MINOR.PATCH"));
+    assert!(!log.exists(), "invalid input reached GitHub");
+}
+
+#[test]
+fn publish_refuses_missing_assets_and_bad_digests() {
+    for (scenario, expected) in [("missing", "matching assets"), ("bad-digest", "SHA-256")] {
+        let (result, calls) = publish_with_scenario(scenario);
+        assert!(
+            !result.status.success(),
+            "{scenario} unexpectedly published"
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains(expected));
+        assert!(calls.is_empty(), "{scenario} was published");
+    }
+}
+
+#[test]
+fn publish_edits_the_only_complete_digest_verified_draft() {
+    let (result, calls) = publish_with_scenario("ok");
+    assert!(
+        result.status.success(),
+        "valid draft refused: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(calls, "edit\n");
+}
+
 // ---------------------------------------------------------------------------
-// The two files agree
+// The target definition is the source of truth
 // ---------------------------------------------------------------------------
 
-/// The release matrix's target triples, e.g. `x86_64-unknown-linux-gnu`.
-///
-/// Shared by every test in this section that needs "what does the release
-/// actually build" — the manifest invariants below are only worth holding
-/// for platforms this list names.
-fn release_matrix_targets(workflow: &serde_yml::Value) -> Vec<&str> {
-    workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("build"))
-        .and_then(|build| build.get("strategy"))
-        .and_then(|strategy| strategy.get("matrix"))
-        .and_then(|matrix| matrix.get("include"))
-        .and_then(serde_yml::Value::as_sequence)
-        .expect("release.yml's build matrix must list its targets")
-        .iter()
-        .filter_map(|entry| entry.get("target").and_then(serde_yml::Value::as_str))
+/// Target triples exported by the shared shell definition.
+fn release_targets() -> Vec<String> {
+    let output = std::process::Command::new("bash")
+        .current_dir(repo_root())
+        .args([
+            "-c",
+            "source scripts/release-targets.sh; printf '%s\\n' \"${RELEASE_TARGETS[@]}\"",
+        ])
+        .output()
+        .expect("reading the release target definition");
+    assert!(
+        output.status.success(),
+        "release-targets.sh must be valid Bash: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("release targets are UTF-8")
+        .lines()
+        .map(str::to_owned)
         .collect()
+}
+
+#[test]
+fn release_targets_are_exactly_the_four_installer_platforms() {
+    assert_eq!(
+        release_targets(),
+        [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ]
+    );
 }
 
 /// Every tracked file matching `pathspec`, found by `git ls-files` rather
@@ -503,9 +595,9 @@ fn tracked_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 ///
 /// Deliberately narrower than "every `cfg(...)`": a table gated on
 /// `cfg(unix)` or a bare target triple names no single OS, so it says
-/// nothing this function can check against the matrix's per-OS targets. That
+/// nothing this function can check against the release set's per-OS targets. That
 /// gap is real and is not what this test closes — it closes the gap SH-260
-/// found, which is a `target_os` literal naming a platform the matrix does
+/// found, which is a `target_os` literal naming a platform the release does
 /// not build.
 fn target_os_dependency_tables(manifest_path: &std::path::Path) -> Vec<(String, String)> {
     let manifest: toml::Value = std::fs::read_to_string(manifest_path)
@@ -545,13 +637,13 @@ fn target_os_dependency_tables(manifest_path: &std::path::Path) -> Vec<(String, 
     found
 }
 
-/// Maps a `target_os` literal to the substring the release matrix would
+/// Maps a `target_os` literal to the substring a release target would
 /// spell it with, e.g. `"linux"` -> the targets ending
 /// `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`.
 ///
 /// Explicit and closed on purpose: an OS this function has not been taught
 /// panics rather than silently passing, because "no dependency table names
-/// an OS the matrix doesn't build" is a claim this function can only make
+/// an OS the release doesn't build" is a claim this function can only make
 /// about OSes it knows how to look for.
 fn matrix_substring_for(target_os: &str) -> &'static str {
     match target_os {
@@ -559,7 +651,7 @@ fn matrix_substring_for(target_os: &str) -> &'static str {
         "linux" => "-unknown-linux-",
         "windows" => "-pc-windows-",
         other => panic!(
-            "target_os \"{other}\" has no known release-matrix triple shape — \
+            "target_os \"{other}\" has no known release-target triple shape — \
              teach `matrix_substring_for` what a target for it looks like \
              before this test can vouch for it"
         ),
@@ -570,14 +662,14 @@ fn matrix_substring_for(target_os: &str) -> &'static str {
 /// failed at the time (SH-259's own Linux fix landed before this test could
 /// be written against a clean tree): every `cfg(target_os = ...)`
 /// dependency table, in every tracked manifest, corresponds to a target the
-/// release matrix actually builds. SH-260 found the instance this was
+/// local release actually builds. SH-260 found the instance this was
 /// generalized from — `windows-native-keyring-store`, gated on Windows and
 /// activated by the default `github-sync` feature, for a platform nothing
 /// here builds, tests, or ships.
 ///
 /// If a platform's dependency table is later added deliberately (Windows
-/// joining the release matrix, say), this test starts passing for it without
-/// modification — the matrix, not this file, is what changes to add support.
+/// joining the release set, say), this test starts passing for it without
+/// modification — the shared target definition changes to add support.
 /// If a table is removed instead, as SH-260 did, there is nothing left for
 /// this test to check for that OS and it is silent about it, which is
 /// correct: an absent claim needs no verification.
@@ -593,8 +685,7 @@ fn every_platform_gated_dependency_table_targets_a_built_platform() {
          `git ls-files -- '*Cargo.toml'` proved nothing"
     );
 
-    let workflow = release_workflow();
-    let matrix_targets = release_matrix_targets(&workflow);
+    let matrix_targets = release_targets();
 
     for manifest_path in &manifests {
         for (cfg, target_os) in target_os_dependency_tables(manifest_path) {
@@ -605,9 +696,9 @@ fn every_platform_gated_dependency_table_targets_a_built_platform() {
                     .iter()
                     .any(|target| target.contains(substring)),
                 "{}'s `[target.'{cfg}'.dependencies]` names target_os \
-                 \"{target_os}\", but no target in release.yml's build \
-                 matrix matches (matrix targets: {matrix_targets:?}). Either \
-                 add {target_os} to the matrix and prove the dependency by \
+                 \"{target_os}\", but no local release target matches \
+                 (release targets: {matrix_targets:?}). Either add {target_os} \
+                 to the target definition and prove the dependency by \
                  building it, or drop the dependency for a platform this \
                  project does not ship (SH-260).",
                 relative.display()
@@ -713,16 +804,16 @@ fn the_source_arm_pattern_matches_what_it_claims_to() {
 
 /// The general invariant SH-276 built from the one SH-260 shipped for
 /// dependency tables: every `target_os` a tracked source file's `cfg` arms
-/// name corresponds to a target the release matrix actually builds.
+/// name corresponds to a target the local release actually builds.
 /// SH-260's manifest scan could not see `src/clipboard.rs`'s and
 /// `src/web.rs`'s Windows arms — hardcoded argv, no Cargo dependency, so
 /// nothing about them appeared in a manifest. This is the same rule,
 /// applied to the artifact type that hid them.
 ///
-/// As with the manifest scan, this is matrix-derived rather than a
+/// As with the manifest scan, this is target-derived rather than a
 /// Windows-specific block: it goes green for a new platform the day that
-/// platform's target joins `release.yml`'s matrix, with no edit here. No
-/// allowlist — a real hit gets fixed or the matrix grows to justify it, the
+/// platform's target joins `release-targets.sh`, with no edit here. No
+/// allowlist — a real hit gets fixed or the target set grows to justify it, the
 /// same policy `dead_public_surface.rs` states outright ("extend the scan
 /// rather than special-casing the name").
 #[test]
@@ -734,8 +825,7 @@ fn every_platform_gated_source_arm_targets_a_built_platform() {
          this scan's one exclusion excludes nothing"
     );
 
-    let workflow = release_workflow();
-    let matrix_targets = release_matrix_targets(&workflow);
+    let matrix_targets = release_targets();
 
     let mut hits = 0;
     for source_path in tracked_files(&root, "*.rs") {
@@ -757,9 +847,9 @@ fn every_platform_gated_source_arm_targets_a_built_platform() {
                     .iter()
                     .any(|target| target.contains(substring)),
                 "{relative}:{line} names target_os \"{target_os}\" in a `cfg` \
-                 arm, but no target in release.yml's build matrix matches \
-                 (matrix targets: {matrix_targets:?}). Either add {target_os} \
-                 to the matrix and prove the arm by building it, or delete \
+                 arm, but no local release target matches (release targets: \
+                 {matrix_targets:?}). Either add {target_os} to the target \
+                 definition and prove the arm by building it, or delete \
                  the arm for a platform this project does not ship (SH-276)."
             );
         }

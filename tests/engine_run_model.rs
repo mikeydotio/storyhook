@@ -11,7 +11,7 @@ use std::sync::{Arc, Barrier};
 
 use rusqlite::{Connection, params};
 use store_support::{create_story, new_store, raw, seed_project};
-use storyhook::domain::TypeDef;
+use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
     DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW, StartRequest,
@@ -53,6 +53,7 @@ fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
         pane_id: None,
         window_name: None,
         worktree_path: None,
+        cleanup_lease: None,
         dispatched_at: None,
         last_observed_at: "2026-08-29T20:00:00Z".into(),
         last_progress_seq: None,
@@ -147,13 +148,17 @@ fn migration_27_preserves_live_lanes_without_inventing_a_pane_id() {
     assert_eq!(report.from_version, 26);
     assert_eq!(report.to_version, 27);
     assert_eq!(report.applied, ["engine_lane_pane_id"]);
-    let lane = store
-        .read(|tx| tx.engine_lanes("run-before-pane-ids"))
-        .unwrap()
-        .pop()
+    let conn = raw(&store);
+    let (window_name, pane_id): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT window_name, pane_id FROM engine_lanes \
+             WHERE run_id = 'run-before-pane-ids' AND lane_index = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .unwrap();
-    assert_eq!(lane.window_name.as_deref(), Some("AL-7"));
-    assert_eq!(lane.pane_id, None);
+    assert_eq!(window_name.as_deref(), Some("AL-7"));
+    assert_eq!(pane_id, None);
 }
 
 #[test]
@@ -262,6 +267,11 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     working.story_id = Some("AL-7".into());
     working.pane_id = Some("%112".into());
     working.window_name = Some("story-SH-462-lane-1".into());
+    working.worktree_path = Some("/repos/original/.codex/worktrees/AL-7".into());
+    working.cleanup_lease = Some(cleanup_lease(
+        "AL-7",
+        Path::new("/repos/original/.codex/worktrees/AL-7"),
+    ));
     store
         .write(|tx| {
             tx.update_engine_run(&updated)?;
@@ -537,6 +547,20 @@ fn ok_unclaim() -> DispatchOutcome {
     }))
 }
 
+fn cleanup_lease(story: &str, worktree: &Path) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story.into(),
+        repository_path: "/repos/original".into(),
+        worktree_path: worktree.into(),
+        branch: format!("worktree-{story}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: "/tmp/tmux-original/default".into(),
+        },
+    }
+}
+
 fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str, worktree: &str) {
     let mut lane = fixture
         .store()
@@ -549,6 +573,7 @@ fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str, workt
     lane.story_id = Some(story.to_string());
     lane.window_name = Some(format!("story-{story}"));
     lane.worktree_path = Some(worktree.to_string());
+    lane.cleanup_lease = Some(cleanup_lease(story, Path::new(worktree)));
     lane.dispatched_at = Some(FIXTURE_NOW.to_string());
     fixture
         .store()
@@ -816,17 +841,49 @@ fn immediate_stop_is_helper_backed_preserves_work_and_retries_partial_failure() 
             DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
                 project: "fixture".into(),
                 story: "SH-10".into(),
+                cleanup_lease: cleanup_lease("SH-10", &first_worktree),
             }),
             DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
                 project: "fixture".into(),
                 story: "SH-11".into(),
+                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
             }),
             DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
                 project: "fixture".into(),
                 story: "SH-11".into(),
+                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
             }),
         ]
     );
+}
+
+#[test]
+fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = service.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, "SH-13", "/preserved/SH-13");
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run.id))
+        .unwrap()
+        .pop()
+        .unwrap();
+    lane.cleanup_lease = None;
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+
+    let error = service.stop(&run.id, true).unwrap_err().to_string();
+
+    assert!(error.contains("no cleanup lease"), "{error}");
+    let retained = service.status(Some(&run.id)).unwrap().pop().unwrap();
+    assert_eq!(retained.run.state, EngineRunState::Draining);
+    assert_eq!(retained.lanes[0].state, EngineLaneState::Working);
+    assert!(fake.calls().is_empty());
 }
 
 #[test]

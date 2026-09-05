@@ -71,6 +71,8 @@ assert_contains "$commands" "-e STORYHOOK_AUTO=$id" \
   "auto: tmux child receives the autonomous hook marker"
 assert_contains "$commands" "-e STORYHOOK_FULL_AUTO=" \
   "auto: engine marker is explicitly empty"
+assert_contains "$commands" "--approve-claude-plan <pane> <pane-pid>" \
+  "auto: Claude exact-pane plan approval is armed"
 prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
@@ -271,7 +273,24 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
   "-e STORYHOOK_AUTO=$id" "real auto dispatch: marker reaches tmux new-window"
 assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
   "-e STORYHOOK_FULL_AUTO=" "real auto dispatch: engine marker is contained"
-[ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
-  || fail_test "real Claude auto dispatch: armed Codex's pane watcher"
+assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
+  "STORYHOOK_AUTO=$id" "real Claude auto: watcher carries the story marker"
+assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
+  "--approve-claude-plan %1" "real Claude auto: watcher targets the confirmed pane"
+
+repo_fail=$(mk_story_repo AF)
+id_fail=$(new_story "$repo_fail" "Claude auto watcher failure")
+export FAKE_TMUX_STATE
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-auto-tmux.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+  STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker FAKE_TMUX_FAIL_RUN_SHELL=1 \
+  bash "$SCRIPT" dispatch "$id_fail" --auto 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "Claude auto watcher failure: refused"
+assert_eq "$(jqf "$out" .reason)" "plan-approval-unarmed" \
+  "Claude auto watcher failure: reason"
+assert_eq "$(cd "$repo_fail" && story show "$id_fail" --json | jq -r '.story.story.state')" \
+  "todo" "Claude auto watcher failure: claim rolled back"
 
 finish

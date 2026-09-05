@@ -1196,13 +1196,16 @@ const REAL_STORE_OWNER: &str = "crates/storyhook-test-support/src/real_store.rs"
 /// Whether `text` re-derives "not temporary" from the checkout the way the
 /// four sites [`REAL_STORE_OWNER`] replaced did: `CARGO_TARGET_TMPDIR`
 /// directly, or `CARGO_MANIFEST_DIR` joined with a literal `"target"`
-/// segment. Both were silently wrong whenever the checkout itself was
-/// temp-rooted — the failure `creating_a_project_at_a_throwaway_path_in_a_
-/// real_store_is_refused` reported as `left: 201, right: 201`, naming neither
-/// the store nor the cause.
+/// segment in the same statement or scope fragment. Both were silently wrong
+/// whenever the checkout itself was temp-rooted — the failure `creating_a_
+/// project_at_a_throwaway_path_in_a_real_store_is_refused` reported as
+/// `left: 201, right: 201`, naming neither the store nor the cause.
 fn re_infers_a_real_store_from_the_checkout(text: &str) -> bool {
-    text.contains("env!(\"CARGO_TARGET_TMPDIR\")")
-        || (text.contains("CARGO_MANIFEST_DIR") && text.contains(".join(\"target\")"))
+    let code = without_comments(text);
+    code.contains("env!(\"CARGO_TARGET_TMPDIR\")")
+        || code.split([';', '{', '}']).any(|fragment| {
+            fragment.contains("CARGO_MANIFEST_DIR") && fragment.contains(".join(\"target\")")
+        })
 }
 
 /// The pattern above matches the two shapes SH-258 actually found, and does
@@ -1224,6 +1227,21 @@ fn the_real_store_regression_pattern_matches_what_it_claims_to() {
     assert!(!re_infers_a_real_store_from_the_checkout(
         "Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"src\")"
     ));
+}
+
+#[test]
+fn unrelated_real_store_root_and_target_fixture_are_not_combined() {
+    let text = r#"
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn fixture_target(root: &Path) -> PathBuf {
+    root.join("target")
+}
+"#;
+
+    assert!(!re_infers_a_real_store_from_the_checkout(text));
 }
 
 /// Every tracked Rust file except [`REAL_STORE_OWNER`] itself must ask
