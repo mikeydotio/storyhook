@@ -768,6 +768,11 @@ fn project_data_json<S: Store>(
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
+            let highest_story_number = tx
+                .project(project)?
+                .ok_or_else(|| AppError::Storage(format!("project {project} does not exist")))?
+                .next_story_no
+                - 1;
             let active = verification_activity.active();
             let verification = status_snapshot(
                 &crate::service::verification::ordered_candidates(tx)?,
@@ -823,6 +828,7 @@ fn project_data_json<S: Store>(
                 "ready_ids": data.ready_ids,
                 "blocked_ids": data.blocked_ids,
                 "next_ids": data.next_ids,
+                "highest_story_number": highest_story_number,
                 "meta": meta_json(tx, project, &data)?,
             });
             to_json(&response)
