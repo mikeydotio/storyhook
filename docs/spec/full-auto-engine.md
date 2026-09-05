@@ -50,7 +50,7 @@ being picked.
 | D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. Below the threshold, durable evidence moves to the story and run while the lane returns to service. | One hard story never strands a run; a broken tree halts within three attempts, with the whole triggering series retained even when one lane produced it sequentially. |
 | D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
-| D13 | **Halt, drain and lane-failure fire an event hook and raise a dashboard banner that persists until acknowledged.** | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a banner you cannot is the pair that survives a missed notification. |
+| D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
 | D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
 
 ## Assumptions recorded rather than asked
@@ -390,7 +390,7 @@ One pass, per live run:
    blocker is not a story — SH-398's rule is about blockers that *are* stories.
 4. **Breaker.** Append the hard stop to the run's bounded recent series. Three
    consecutive hard stops → `state = halted`, `stop_reason = BreakerTripped`,
-   fire the hook, raise the banner. A completion zeroes the streak and series.
+   fire the hook, raise the persistent modal alert. A completion zeroes the streak and series.
 5. **Release** quarantined lanes only when the run remains running in a steady
    pass, or is draining. Halted, paused, and restart-pass lanes retain evidence.
 6. **Fill** idle lanes while the run is `running` and the machine lane budget
@@ -398,7 +398,7 @@ One pass, per live run:
    A refusal is accounted immediately and ends that fill attempt; it cannot
    prove the queue drained until the next wake.
 7. **Terminate.** Nothing claimable and every lane idle → `finished`,
-   `stop_reason = QueueDrained`, hook + banner.
+   `stop_reason = QueueDrained`, hook + persistent modal alert.
 
 `paused` is what `pause` produces: no new claims, existing lanes run to their
 natural end, and `resume` returns the run to `running`. `draining` is the
@@ -709,7 +709,9 @@ Answered off the store thread where a dispatch is spawned, per
 - **Project header**: a Full Auto control with a lanes stepper. Live runs show
   state, lane count, and the current story per lane with elapsed time.
 - **Epic drawer**: "Run Full Auto on this epic", scoping a run to the subtree.
-- **Banner**: on halt or drain, a banner persists until acknowledged (D13).
+- **Modal alert**: on halt or drain, a non-dismissable modal persists until
+  acknowledged; a live run can instead be immediately abandoned and then
+  acknowledged. Multiple alerts appear newest first, one at a time (D13).
 - **Labels**: `no-auto` and `human-only` render with an orange tint everywhere
   labels render — card, drawer, list.
 
@@ -763,7 +765,7 @@ directions.
 | `tests/land_pr.rs` | certification happens inside the lock and before the merge; a refusal blocks the merge |
 | `plugins/story/tests/test-full-auto-hook.sh` | hook decisions against real payloads |
 | `plugins/story/tests/test-full-auto-inert.sh` | the hook is inert with the marker unset |
-| `e2e/specs/engine.spec.ts` | header control, lanes stepper, live lane panel, banner + ack |
+| `e2e/specs/engine.spec.ts` | header control, lanes stepper, live lane panel, queued modal + acknowledge/abandon |
 | `src/service/gate_progress.rs` (unit tests) | the SH-524 journal fold and render: attempt generation, current step, exact totals, truncated lines, unknown kinds, derived parent status, and the stale-gate header |
 | `src/daemon/verification_progress.rs` (unit tests) | `PublishBackoff`'s exact 1→2→5→10 minute ladder, reset-on-any-move, and file-activity staleness for untimestamped case records |
 | `tests/verification_queue.rs` | active ownership during the blocking actuator call and outcome writes; priority overtaking; release on result/error/unwind; generation isolation; running/queued `/data`; live checklist and queue comments |
@@ -796,7 +798,7 @@ mock. `ShellDispatcher` is exercised by the shell suite against the real script.
 | W5 | Codex hook-surface spike; the `PreToolUse` full-auto hook; lane launch posture | — |
 | W6 | Store migration, `EngineService`, the `Dispatcher` seam, the reconcile loop, breaker, restart reconciliation | W3 |
 | W7 | CLI verbs, HTTP API, `story dispatch <epic> --auto` entry point | W6 |
-| W8 | Web UI: header control, lane panel, banner + ack, epic drawer control | W7 |
+| W8 | Web UI: header control, lane panel, persistent modal + operator actions, epic drawer control | W7 |
 | W9 | Engine event hooks, docs, the e2e leg | W8 |
 
 W1–W5 are independent of each other and can run in parallel; W6 is the join.
@@ -828,7 +830,7 @@ order, so `ready_order` hands them out in a workable sequence at equal priority.
 | W7 | SH-468 | HTTP `/api/repos/{project}/engine` |
 | W7 | SH-469 | `story dispatch <epic> --auto` |
 | W8 | SH-470 | Dashboard header + epic drawer control |
-| W8 | SH-471 | Persistent halt/drain banner |
+| W8 | SH-471 | Persistent halt/drain alert |
 | W9 | SH-472 | Engine event hooks |
 | W9 | SH-473 | Browser leg, operator docs, the As-built record |
 
@@ -1465,7 +1467,7 @@ sort mirrors the dashboard's own `lastEngineQuarantines`
 (`src/web_dashboard.html`): most-recently-observed first, lane index as the
 tiebreak for a simultaneous observation. Each line's format
 (`quarantine_reason_line`) mirrors `buildEngineQuarantineItem`'s own
-`detail !== story` check, so the hook payload and the dashboard banner never
+`detail !== story` check, so the hook payload and the dashboard alert never
 disagree about when to show the extra detail.
 
 **Two gaps found during this story's own research, neither fixed here:**
@@ -2008,10 +2010,12 @@ between down and up.
 
 ### SH-471 — durable operator outcomes
 
-Runs with a recorded stop reason remain visible as persistent banners until
-each run is acknowledged. Banners are ordered newest first, carry run id, stop
-reason, hard-stop streak, and the last three quarantine records, and survive
-reloads.
+Runs with a recorded stop reason remain visible in a persistent modal until
+each run is acknowledged. Alerts are ordered newest first and shown one at a
+time; each carries run id, state, stop reason, hard-stop streak, and the last
+three quarantine records, and survives reloads. Escape and backdrop presses
+cannot dismiss the modal. A live run additionally offers immediate Abandon,
+which stops in-flight lane work before acknowledging the same alert.
 Acknowledgement uses the normal mutation ticket and removes only the selected
 run's notice; it is not coupled to the timed notice stack.
 
@@ -2033,7 +2037,7 @@ The browser harness gives every Playwright project invocation its own seed,
 daemon, and fake-tmux state. A dedicated engine fixture drives the production
 dashboard, HTTP controller, daemon reconciler, `ShellDispatcher`, and real
 StoryHook helper in chromium, WebKit, and both mobile projects: start with two
-lanes, observe the claimed story, stop now, observe the durable banner, and
+lanes, observe the claimed story, stop now, observe the durable modal, and
 acknowledge it. Mocked engine cases remain for deterministic races and error
 surfaces; they do not substitute for this flow.
 
