@@ -954,6 +954,86 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
   await cleanUp(page, title);
 });
 
+/** Sets the two browser attention signals independently, then emits one
+ * transition through the production listener when requested. Headless browsers
+ * cannot put a page behind another desktop application, and keeping the two
+ * values independent is what proves either event order is safe. */
+async function setDocumentAttention(
+  page: Page,
+  hidden: boolean,
+  focused: boolean,
+  event?: "blur" | "focus" | "visibilitychange",
+): Promise<void> {
+  await page.evaluate(
+    ({ hidden, focused, event }) => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        get: () => hidden,
+      });
+      Object.defineProperty(document, "hasFocus", {
+        configurable: true,
+        value: () => focused,
+      });
+      if (event === "visibilitychange") document.dispatchEvent(new Event(event));
+      else if (event) window.dispatchEvent(new Event(event));
+    },
+    { hidden, focused, event },
+  );
+}
+
+test("a browser window without focus neither starts nor burns a notice clock", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const title = "SH-325 — unfocused window holds the clock";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    // Headless browsers cannot be put behind another desktop application, so
+    // drive the browser's own focus contract directly. Setting the state
+    // before the notice arrives is load-bearing: the blur event may have
+    // happened hours earlier, and a listener added with the notice cannot
+    // observe an event that has already passed.
+    await setDocumentAttention(page, false, false);
+    await dispatchStory(page);
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    // Neither signal may resume the clock alone. Browsers may deliver focus
+    // and visibility changes in either order, so every resume path must read
+    // both current states rather than trusting the event that called it.
+    await setDocumentAttention(page, true, true, "focus");
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    await setDocumentAttention(page, false, false, "visibilitychange");
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    // Once both predicates agree that the dashboard is visible and focused,
+    // the full clock starts. A later blur pauses it, and focus restores only
+    // the remainder rather than granting a fresh lifetime.
+    await setDocumentAttention(page, false, true, "focus");
+    const BURNED_MS = 1000;
+    await page.clock.runFor(BURNED_MS);
+    await expect(toast).toBeVisible();
+
+    await setDocumentAttention(page, false, false, "blur");
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    await setDocumentAttention(page, false, true, "focus");
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS - BURNED_MS);
+  });
+
+  await cleanUp(page, title);
+});
+
 // ============================================================
 // SH-326 — the same focus policy, on the dispatch-history surface
 // ============================================================
