@@ -103,8 +103,8 @@ pub(super) fn create_engine_run(
             "INSERT INTO engine_runs \
                  (id, project_slug, scope_kind, scope_story_id, lanes, agent, state, \
                   consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at, \
-                  recent_quarantines_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                  recent_quarantines_json, model, effort, speed) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 run.id,
                 run.project_slug,
@@ -119,6 +119,9 @@ pub(super) fn create_engine_run(
                 run.created_at,
                 run.updated_at,
                 serde_json::to_string(&run.recent_quarantines)?,
+                run.model,
+                run.effort,
+                run.speed.map(|speed| speed.as_str()),
             ],
         ),
         "creating an engine run",

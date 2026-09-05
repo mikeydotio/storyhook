@@ -23,8 +23,8 @@ use storyhook::store::ids::StoryNo;
 use storyhook::store::migrate;
 use storyhook::store::{
     Access, EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord,
-    EngineRunRecord, EngineRunState, EngineScope, MigrationReport, NewProject, ReadOps,
-    SqliteStore, Store, StoreError, WriteOps, WriteWithSnapshot, diff_read_model,
+    EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, MigrationReport, NewProject,
+    ReadOps, SqliteStore, Store, StoreError, WriteOps, WriteWithSnapshot, diff_read_model,
 };
 use storyhook_test_support::{
     DispatcherCall, DispatcherStep, FIXTURE_NOW, FakeDispatcher, ServiceFixture, scratch_dir,
@@ -37,6 +37,9 @@ fn run(id: &str, project_slug: &str, state: EngineRunState) -> EngineRunRecord {
         scope: EngineScope::Project,
         lanes: 2,
         agent: EngineAgent::Codex,
+        model: None,
+        effort: None,
+        speed: None,
         state,
         consecutive_hard_stops: 0,
         recent_quarantines: Vec::new(),
@@ -45,6 +48,37 @@ fn run(id: &str, project_slug: &str, state: EngineRunState) -> EngineRunRecord {
         created_at: "2026-08-29T20:00:00Z".into(),
         updated_at: "2026-08-29T20:00:00Z".into(),
     }
+}
+
+#[test]
+fn migration_31_adds_nullable_run_configuration_without_inventing_defaults() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..30]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    insert_raw_run(
+        &raw(&store),
+        "run-before-options",
+        "project",
+        None,
+        1,
+        EngineAgent::Codex.as_str(),
+        EngineRunState::Running.as_str(),
+    )
+    .unwrap();
+
+    let report = store.migrate_with(&migrate::MIGRATIONS[..31]).unwrap();
+
+    assert_eq!(report.from_version, 30);
+    assert_eq!(report.to_version, 31);
+    assert_eq!(report.applied, ["engine_run_options"]);
+    let stored = store
+        .read(|tx| tx.engine_run("run-before-options"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.model, None);
+    assert_eq!(stored.effort, None);
+    assert_eq!(stored.speed, None);
 }
 
 fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
@@ -187,14 +221,14 @@ fn migration_28_preserves_existing_runs_with_empty_quarantine_history() {
     assert_eq!(report.from_version, 27);
     assert_eq!(report.to_version, 28);
     assert_eq!(report.applied, ["engine_recent_quarantines"]);
-    assert!(
-        store
-            .read(|tx| tx.engine_run("run-before-history"))
-            .unwrap()
-            .unwrap()
-            .recent_quarantines
-            .is_empty()
-    );
+    let history: String = raw(&store)
+        .query_row(
+            "SELECT recent_quarantines_json FROM engine_runs WHERE id = 'run-before-history'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(history, "[]");
 }
 
 #[test]
@@ -205,7 +239,10 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
 
     let mut first = run("run-a", "alpha", EngineRunState::Finished);
     first.created_at = "2026-08-29T19:00:00Z".into();
-    let second = run("run-b", "alpha", EngineRunState::Running);
+    let mut second = run("run-b", "alpha", EngineRunState::Running);
+    second.model = Some("gpt-5.3-codex".into());
+    second.effort = Some("high".into());
+    second.speed = Some(EngineSpeed::Fast);
     let beta = run("run-c", "beta", EngineRunState::Paused);
     store
         .write(|tx| {
@@ -250,6 +287,9 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     updated.scope = EngineScope::Epic("AL-1".into());
     updated.lanes = 99;
     updated.agent = EngineAgent::Claude;
+    updated.model = Some("claude-opus-4-6".into());
+    updated.effort = Some("max".into());
+    updated.speed = Some(EngineSpeed::Standard);
     updated.state = EngineRunState::Halted;
     updated.consecutive_hard_stops = 3;
     updated.recent_quarantines.push(EngineQuarantineRecord {
@@ -287,6 +327,9 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     assert_eq!(stored.scope, EngineScope::Project);
     assert_eq!(stored.lanes, 2);
     assert_eq!(stored.agent, EngineAgent::Codex);
+    assert_eq!(stored.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(stored.effort.as_deref(), Some("high"));
+    assert_eq!(stored.speed, Some(EngineSpeed::Fast));
     assert_eq!(stored.state, EngineRunState::Halted);
     assert_eq!(stored.consecutive_hard_stops, 3);
     assert_eq!(stored.recent_quarantines, updated.recent_quarantines);
@@ -354,6 +397,28 @@ fn every_run_check_is_enforced() {
     );
     insert_raw_run(
         &conn,
+        "speed-check",
+        "project",
+        None,
+        1,
+        EngineAgent::Codex.as_str(),
+        EngineRunState::Finished.as_str(),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE engine_runs SET speed = ?1 WHERE id = 'speed-check'",
+        [EngineSpeed::Fast.as_str()],
+    )
+    .unwrap();
+    rejected(
+        conn.execute(
+            "UPDATE engine_runs SET speed = 'turbo' WHERE id = 'speed-check'",
+            [],
+        ),
+        "speed vocabulary",
+    );
+    insert_raw_run(
+        &conn,
         "history-check",
         "project",
         None,
@@ -376,6 +441,46 @@ fn every_run_check_is_enforced() {
             [],
         ),
         "recent quarantine history is bounded by the breaker",
+    );
+}
+
+#[test]
+fn invalid_stored_dispatch_tokens_fail_loudly_on_read() {
+    let (_dir, store) = new_store();
+    seed_project(&store, "alpha", "AL");
+    store
+        .write(|tx| tx.create_engine_run(&run("corrupt-options", "alpha", EngineRunState::Running)))
+        .unwrap();
+
+    raw(&store)
+        .execute(
+            "UPDATE engine_runs SET model = 'gpt;unsafe' WHERE id = 'corrupt-options'",
+            [],
+        )
+        .unwrap();
+    let model_error = store
+        .read(|tx| tx.engine_run("corrupt-options"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        model_error.contains("engine_runs.model holds invalid value"),
+        "{model_error}"
+    );
+
+    raw(&store)
+        .execute(
+            "UPDATE engine_runs SET model = NULL, effort = 'high effort' \
+             WHERE id = 'corrupt-options'",
+            [],
+        )
+        .unwrap();
+    let effort_error = store
+        .read(|tx| tx.engine_run("corrupt-options"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        effort_error.contains("engine_runs.effort holds invalid value"),
+        "{effort_error}"
     );
 }
 
@@ -539,6 +644,9 @@ fn start_request(lanes: u32) -> StartRequest {
         scope: EngineScope::Project,
         lanes,
         agent: EngineAgent::Codex,
+        model: None,
+        effort: None,
+        speed: None,
     }
 }
 
@@ -631,6 +739,9 @@ fn engine_service_starts_project_and_epic_runs_with_atomic_idle_lanes() {
             scope: EngineScope::Epic(epic.id.clone()),
             lanes: 1,
             agent: EngineAgent::Claude,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap();
     assert_eq!(epic_run.scope, EngineScope::Epic(epic.id));
@@ -648,6 +759,30 @@ fn engine_service_start_refusals_name_their_causes() {
     let zero = service.start(start_request(0)).unwrap_err().to_string();
     assert!(zero.contains("between 1 and 255 lanes"), "{zero}");
 
+    let unsafe_model = service
+        .start(StartRequest {
+            model: Some("gpt;unsafe".into()),
+            ..start_request(1)
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unsafe_model.contains("invalid engine model"),
+        "{unsafe_model}"
+    );
+
+    let unsafe_effort = service
+        .start(StartRequest {
+            effort: Some("high effort".into()),
+            ..start_request(1)
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unsafe_effort.contains("invalid engine effort"),
+        "{unsafe_effort}"
+    );
+
     let ordinary = StoryService::new(&ctx)
         .create(&NewStoryInput {
             title: "ordinary".into(),
@@ -659,6 +794,9 @@ fn engine_service_start_refusals_name_their_causes() {
             scope: EngineScope::Epic(ordinary.id.clone()),
             lanes: 1,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap_err()
         .to_string();

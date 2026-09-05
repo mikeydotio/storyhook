@@ -335,6 +335,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // referenced table is rebuilt and historical events remain untouched.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 31,
+        name: "engine_run_options",
+        sql: include_str!("schema/0031_engine_run_options.sql"),
+        // Three nullable columns added in place to operational state. Existing
+        // runs retain the honest fact that no explicit selection was stored.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

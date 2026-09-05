@@ -151,6 +151,9 @@ pub struct EngineRunView {
     pub id: String,
     pub scope: EngineScopeView,
     pub agent: EngineAgent,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub speed: Option<crate::store::EngineSpeed>,
     pub state: EngineRunState,
     pub lane_count: u32,
     pub consecutive_hard_stops: u32,
@@ -206,6 +209,9 @@ impl EngineRunView {
             id: view.run.id,
             scope,
             agent: view.run.agent,
+            model: view.run.model,
+            effort: view.run.effort,
+            speed: view.run.speed,
             state: view.run.state,
             lane_count: view.run.lanes,
             consecutive_hard_stops: view.run.consecutive_hard_stops,
@@ -1511,11 +1517,15 @@ fn render_engine_run(run: &EngineRunView) -> String {
         .as_deref()
         .map_or_else(|| run.scope.kind.clone(), |epic| format!("epic {epic}"));
     let mut body = format!(
-        "run: {}\nscope: {}\nstate: {}\nagent: {}\nlanes: {}\nconsecutive hard stops: {}\n",
+        "run: {}\nscope: {}\nstate: {}\nagent: {}\nmodel: {}\neffort: {}\nspeed: {}\nlanes: {}\nconsecutive hard stops: {}\n",
         run.id,
         scope,
         run.state.as_str(),
         run.agent.as_str(),
+        run.model.as_deref().unwrap_or("default"),
+        run.effort.as_deref().unwrap_or("default"),
+        run.speed
+            .map_or("default", crate::store::EngineSpeed::as_str),
         run.lane_count,
         run.consecutive_hard_stops
     );

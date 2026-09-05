@@ -91,6 +91,9 @@ fn started_run(fixture: &ServiceFixture, lanes: u32) -> String {
             scope: EngineScope::Project,
             lanes,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap()
         .id
@@ -169,6 +172,9 @@ fn second_project_run(fixture: &ServiceFixture, slug: &str, prefix: &str) -> Str
             scope: EngineScope::Project,
             lanes: 1,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap()
         .id;

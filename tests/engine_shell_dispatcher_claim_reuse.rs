@@ -37,6 +37,9 @@ fn full_auto_shell_dispatcher_signals_reuse_of_the_engine_owned_claim() {
             project: "alpha".to_string(),
             story: "ALPHA-7".to_string(),
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap();
 
