@@ -17,11 +17,11 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 
 use serde_json::{Value, json};
 use storyhook::daemon::lifecycle;
-use storyhook_test_support::TestEnv;
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv};
 
 /// Stops whatever daemon `env` is running, even if the test panics first —
 /// the same reasoning `tests/daemon_lifecycle.rs`'s own guard gives: a
@@ -38,7 +38,7 @@ impl Drop for DaemonGuard<'_> {
 /// A live `story mcp` child process, with a JSON-RPC request/reply helper
 /// over its piped stdin/stdout.
 struct McpSession {
-    child: Child,
+    child: ChildGuard,
     stdin: ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
     next_id: i64,
@@ -51,9 +51,9 @@ impl McpSession {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd.spawn().expect("spawning `story mcp`");
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        let mut child = ChildGuard::spawn(&mut cmd).expect("spawning `story mcp`");
+        let stdin = child.take_stdin().expect("piped stdin");
+        let stdout = BufReader::new(child.take_stdout().expect("piped stdout"));
         Self {
             child,
             stdin,
@@ -76,7 +76,9 @@ impl McpSession {
             .read_line(&mut line)
             .expect("reading story mcp's stdout");
         if read == 0 {
-            let status = self.child.wait().ok();
+            let status = self.child.wait_within(STORY_COMMAND_DEADLINE, || {
+                "story mcp closed stdout but did not exit".to_string()
+            });
             panic!("story mcp closed stdout with no reply (exited: {status:?})");
         }
         serde_json::from_str(line.trim())
@@ -102,8 +104,7 @@ impl Drop for McpSession {
         // the guarantee. Nothing else here reaps a detached process (this
         // one is not detached; it is this test's own child), but an
         // un-`wait`ed child is a zombie until someone does.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.kill_and_reap();
     }
 }
 
