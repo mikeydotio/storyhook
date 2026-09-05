@@ -1918,9 +1918,14 @@ inventing cleanup identity from mutable checkout or provider settings. A
 fresh dispatching lane is not legacy: stop-now first makes the run draining,
 waits within the dispatch helper's existing bound for its validated lease, and
 then performs the same exact cleanup. A reconcile already inside one dispatch
-rechecks the run before claiming another lane. A partially failed stop-now can
-be retried. Quarantined lanes are already evidence and are cleared without
-unclaiming or deleting that evidence.
+checks that the run is still `running` in the same write transaction that
+selects and claims the next story **and** marks its lane `dispatching`. Stop
+transitioning the run to `draining` therefore linearizes before any later
+claim, while a claim that linearizes first is already visible to stop as an
+occupied lane; neither a separate preflight read nor a later lane write can
+authorize work after stop. A partially failed stop-now can be retried.
+Quarantined lanes are already evidence and are cleared without unclaiming or
+deleting that evidence.
 
 ### SH-467 — a singular operational CLI
 
