@@ -867,7 +867,7 @@ the other, which is SH-365's two-mechanism shape; `tests/gate_lock.rs`'s own
 header records that before the guard existed this exact mutation was not red at
 all.
 
-## A fixture may not wait on a corpse for ever (SH-528)
+## A fixture may not wait on a corpse for ever (SH-528, SH-535)
 
 `tests/fault_injection.rs::an_armed_daemon_dies_by_sigkill_rather_than_by_its_own_abort`
 wedged a `bash scripts/run-rust-battery.sh core` run for **ten hours and
@@ -953,28 +953,34 @@ Two alternatives were rejected **on mechanism, not on taste**:
   id, which is byte-identical for the able and the unable build of one tree.
   SH-406's own two-builds-one-version defect, reopened on the feature axis.
 
-**2. No `ChildGuard` wait is unbounded** — `ChildGuard::wait()` is **deleted**
-and replaced by `wait_within(deadline, || message)`, which kills and reaps
-before panicking so a failure cannot leak the very process it is about (SH-493).
-The compiler is the fence: a caller must state what it is waiting for and how
-long that may honestly take. It found all seven call sites on the first build.
+**2. Every tracked integration-test child is guarded, and every cooperative
+wait is bounded** — `ChildGuard::spawn` and `spawn_with_output` are the only
+process-spawn doors in tracked `tests/**`. A derived source scan rejects a
+direct zero-argument process spawn after stripping Rust comments. The fence is
+lexical rather than type-based because local `Child` values are commonly
+inferred; scanning for a type name would certify exactly the unguarded code it
+needs to catch (SH-535).
 
-The scope is stated at its true width and no wider: **"no `ChildGuard` wait is
-unbounded"**, never "no unbounded wait on a child". Roughly thirty direct
-`std::process::Child::wait()`/`wait_with_output()` sites in `tests/**` never
-touch `ChildGuard` and are outside this fence; migrating them onto `ChildGuard`
-is filed, and is what would make a derived scan honest later — the residual
-fact only becomes *lexical* once the type is universal, and until then a text
-scan cannot separate `barrier.wait()`, the already-bounded `Pty::wait()` and the
-eight `kill(); wait()` reaps from the genuine hazard without a hand-kept
-allowlist, which is the shape SH-136/SH-198/SH-258/SH-260/SH-360 record failing
-this project five times.
+`ChildGuard::wait()` remains deleted. Callers use `wait_within(deadline, ||
+message)` or `wait_with_output_within`, both of which close stdin as
+`Child::wait` does, poll for exit, and kill and reap before reporting a timeout.
+The shared story-command deadline outlives `SPAWN_LOCK_DEADLINE +
+SERVED_DEADLINE` by one `SPAWN_DEADLINE`, so the command's own diagnosis wins
+the race. Script fixtures derive their budgets from the poll or hold interval
+they are proving.
 
-Two waits stay unbounded on purpose and say so in their own docs:
-`ChildGuard::Drop`'s and `wait_within`'s own timeout path, both of which follow
-an uncatchable `SIGKILL` — what they wait for is the kernel, not the child's
-cooperation — and the first of which runs during unwind, where a panic would
-replace the failure already being reported (SH-142).
+Captured stdout and stderr are drained concurrently from spawn. Waiting for a
+child before reading can deadlock once either pipe fills; reading only after
+the direct child exits can also block forever when a descendant inherited the
+write end. The child and both drains therefore share one absolute deadline. A
+reader blocked on a retained descendant pipe is detached on failure because
+the test process cannot interrupt its read syscall.
+
+Only kill-then-reap waits remain deliberately unbounded:
+`ChildGuard::kill_and_reap`, the timeout path, and `Drop`. Each follows an
+uncatchable `SIGKILL`, so it waits on the kernel rather than on the child's
+cooperation; `Drop` also runs during unwind, where a second panic would replace
+the failure already being reported (SH-142).
 
 A `try_wait` poll loop rather than the `wait-timeout` crate, which is already a
 `storyhook` dependency and is the right tool in production: it installs a
@@ -1086,7 +1092,6 @@ cost in each worktree.
 - **Nothing bounds a *holder* of the `gate` lock.** Whatever wedges, the machine
   wedges. SH-524's per-case progress journal is the fact-based signal a
   no-progress watchdog would need, so it can stay inside SH-394 — SH-536.
-- **~30 non-`ChildGuard` child waits in `tests/**`** — SH-535.
 
 ### Production refuses fault instructions it cannot honor (SH-534)
 
