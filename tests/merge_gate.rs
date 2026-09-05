@@ -274,6 +274,41 @@ impl MergeRepo {
         ChildGuard::spawn(&mut command).expect("spawning the speculative-run signal probe")
     }
 
+    fn spawn_blocked_speculative_run(
+        &self,
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        ready: &Path,
+        release: &Path,
+    ) -> ChildGuard {
+        let mut command = Command::new("bash");
+        command
+            .arg(checkout().join("scripts/merge-watch.sh"))
+            .args([
+                "--speculative-run",
+                expected_tree,
+                base,
+                head,
+                &poller.display().to_string(),
+                "--",
+                "bash",
+                "-c",
+                "git rev-parse HEAD HEAD^{tree} > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done",
+                "merge-watch-concurrency-probe",
+                &ready.display().to_string(),
+                &release.display().to_string(),
+            ])
+            .current_dir(self.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+        ChildGuard::spawn(&mut command).expect("spawning the blocked speculative run")
+    }
+
     fn merge_object_artifacts(&self) -> Vec<PathBuf> {
         let root = self.common_dir().join("storyhook");
         let Ok(entries) = fs::read_dir(root) else {
@@ -609,6 +644,64 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
     );
     assert_eq!(failure.status.code(), Some(42));
     assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+}
+
+#[test]
+fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let coordination = scratch_dir();
+    let ready = coordination.path().join("ready");
+    let release = coordination.path().join("release");
+
+    let mut child =
+        repo.spawn_blocked_speculative_run(&expected_tree, &base, &head, &poller, &ready, &release);
+    wait_for(&ready);
+
+    let private_identities = fs::read_to_string(&ready).expect("reading gate identities");
+    let shared_head = repo.git(&["rev-parse", "worktrees/poller/HEAD^{commit}"]);
+    let ref_walk = repo.git(&["rev-list", "--all", "--objects"]);
+    let fetch = repo.git(&["fetch", "-q", "."]);
+
+    fs::write(&release, "release\n").expect("releasing the speculative gate");
+    let status = child.wait_within(Duration::from_secs(5), || {
+        "the speculative gate did not exit after release".to_owned()
+    });
+
+    assert!(
+        status.success(),
+        "the released speculative gate should succeed: {status}"
+    );
+    assert_ok(&shared_head, "resolving the shared verifier HEAD");
+    assert_eq!(stdout(&shared_head), base);
+    assert_ok(&ref_walk, "walking every ordinary shared ref");
+    assert_ok(&fetch, "fetching while the speculative gate is blocked");
+
+    let identities = private_identities.lines().collect::<Vec<_>>();
+    assert_eq!(identities.len(), 2, "gate identities were {identities:?}");
+    assert_eq!(identities[1], expected_tree);
+    assert!(
+        !repo
+            .git(&["cat-file", "-e", &format!("{}^{{commit}}", identities[0])])
+            .status
+            .success(),
+        "the speculative commit must remain private"
+    );
+    assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert_eq!(run(&poller, "git", &["status", "--porcelain"]).stdout, b"");
     assert!(repo.merge_object_artifacts().is_empty());
 }
 
