@@ -1218,19 +1218,20 @@ Standing rules for every wave:
   and its message puts the literal into the incapable binary, so the scan certifies it as
   capable (SH-263, SH-364); `story --version` cannot answer either, since SH-406 makes it the
   tracked-tree oid, identical for both builds of one tree. `ChildGuard::wait()` is **deleted**
-  rather than deprecated, so the compiler is the fence and a caller must state what it waits
-  for and for how long; the scope is stated at its true width — *"no `ChildGuard` wait is
-  unbounded"*, never *"no unbounded wait on a child"* — with ~30 raw `Child` waits filed
-  (SH-535), because until they are migrated the residual fact is not yet **lexical**, and a
-  text scan cannot separate `barrier.wait()`, the bounded `Pty::wait()` and the `kill(); wait()`
-  reaps from the real hazard without the hand-kept allowlist this project has paid for five
-  times. That is the general rule the council settled: **the type system when the fact is
-  structural, a derived scan when it is lexical** — SH-365 versus SH-198/SH-360/SH-364/SH-493.
-  Every deadline derives from the bound it disproves *and is deliberately larger than it*, so
-  the mechanism underneath reports itself first and names its own cause; a harness that wins
-  that race trades a real diagnosis for an anonymous timeout. Two waits stay unbounded on
-  purpose and say so: `ChildGuard::Drop`'s and `wait_within`'s own timeout path, both
-  following an uncatchable `SIGKILL`, so what they wait on is the kernel. And the armed
+  rather than deprecated, so a caller must state what it waits for and for how long. SH-535
+  closes the remaining width: every tracked integration-test process is born through
+  `ChildGuard::spawn` or `spawn_with_output`, and a derived scan rejects a direct
+  zero-argument process spawn. The scan names the operation rather than the `Child` type,
+  because inferred locals make the latter silently incomplete; this is the council's rule —
+  **the type system when the fact is structural, a derived scan when it is lexical** (SH-365
+  versus SH-198/SH-360/SH-364/SH-493). Captured stdout and stderr drain concurrently from
+  spawn, and child exit plus both pipes share one absolute deadline, so neither a full pipe
+  nor a descendant retaining its write end can strand the suite. Every deadline derives from
+  the bound it disproves *and is deliberately larger than it*, so the mechanism underneath
+  reports itself first and names its own cause; a harness that wins that race trades a real
+  diagnosis for an anonymous timeout. Only kill-then-reap waits stay unbounded on purpose and
+  say so: `ChildGuard::kill_and_reap`, the timeout path and `Drop`, all following an
+  uncatchable `SIGKILL`, so what they wait on is the kernel. And the armed
   daemon's stderr, previously sent to `Stdio::null()`, now goes to a **file** (never a pipe —
   SH-94) so a failure carries what the process it was about actually said. Design of record:
   `docs/spec/test-tiers.md`'s "A fixture may not wait on a corpse for ever" section; the

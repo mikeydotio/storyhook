@@ -189,9 +189,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of exact, durable non-verification cleanup
-  receipts for SH-539, while reconciling Full Auto lane accounting so
-  `verifying` is an intentional handoff rather than a stall.
+- Current: central verification of SH-535's universal test-child fence and
+  SH-539's exact, durable non-verification cleanup receipts, while reconciling
+  Full Auto lane accounting so `verifying` is an intentional handoff.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
