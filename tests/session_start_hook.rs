@@ -10,7 +10,7 @@
 /// using the actual `story` binary and the actual shell script.
 use assert_cmd::Command;
 use std::process;
-use storyhook_test_support::{TestEnv, scratch_dir};
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
 /// Get the absolute path to the hook script from the project root.
 fn hook_script() -> std::path::PathBuf {
@@ -62,16 +62,15 @@ fn run_hook_with_stdin(stdin_json: &str) -> (String, i32) {
     // `apply` also puts the binary under test at the front of `$PATH`, which is
     // what the hand-built `CARGO_BIN_EXE_story` prepend this replaces was for.
     TestEnv::shared().apply(&mut command);
-    let output = command
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                stdin.write_all(stdin_json.as_bytes()).ok();
-            }
-            child.wait_with_output()
-        })
-        .expect("failed to run hook script");
+    let mut child = ChildGuard::spawn_with_output(&mut command)
+        .expect("failed to spawn session-start hook script");
+    use std::io::Write;
+    if let Some(stdin) = child.stdin() {
+        stdin.write_all(stdin_json.as_bytes()).ok();
+    }
+    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "the session-start hook did not finish".to_string()
+    });
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let code = output.status.code().unwrap_or(-1);
     (stdout, code)

@@ -69,8 +69,8 @@ pub use pty::{EXPECT_TIMEOUT, Pty, Watchdog, watchdog};
 pub use real_store::{REAL_ROOT_VAR, non_temporary_dir};
 pub use scratch::{scratch_dir, scratch_dir_named, scratch_root};
 pub use server::{
-    ChildGuard, DaemonGuard, TestServer, http_status_line, port_of, reserve_port, run_bounded,
-    serve, try_serve_on, wait_for_addr, wait_for_server,
+    ChildGuard, DaemonGuard, STORY_COMMAND_DEADLINE, TestServer, http_status_line, port_of,
+    reserve_port, run_bounded, serve, try_serve_on, wait_for_addr, wait_for_server,
 };
 pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
 pub use source_scan::without_rust_comments;

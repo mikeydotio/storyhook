@@ -144,7 +144,7 @@ impl Fixture {
     /// `spawn_child` (`src/daemon/lifecycle.rs`) builds for a real daemon.
     fn spawn_matching_shim(&self) -> ChildGuard {
         let path = self.path().join("target/debug/story");
-        ChildGuard::new(spawn_matching(&path, &self.live_store()))
+        spawn_matching(&path, &self.live_store())
     }
 
     /// A store file that exists, so a shim holding it reads as a live daemon
@@ -265,8 +265,9 @@ fn write_executable(path: &Path, body: &str) {
 /// checkout-anchored pattern is entitled to reason about, and what every case
 /// about that pattern wants. A store that is **gone** is the abandoned class,
 /// which is collected in every phase by whoever finds it.
-fn spawn_matching(exe: &Path, store: &Path) -> std::process::Child {
-    Command::new(exe)
+fn spawn_matching(exe: &Path, store: &Path) -> ChildGuard {
+    let mut command = Command::new(exe);
+    command
         .args([
             "--store-path",
             &store.display().to_string(),
@@ -277,8 +278,8 @@ fn spawn_matching(exe: &Path, store: &Path) -> std::process::Child {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    ChildGuard::spawn(&mut command)
         .unwrap_or_else(|e| panic!("fixture: spawning {}: {e}", exe.display()))
 }
 
@@ -620,7 +621,8 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // requirement is met by construction instead: ONE worker, spawned once,
     // that outlives the whole scenario. It cannot gap, because nothing about
     // it depends on a loop keeping up.
-    let guarantor = Command::new(&worker)
+    let mut guarantor_command = Command::new(&worker);
+    guarantor_command
         .args([
             "--store-path",
             &fixture.live_store().display().to_string(),
@@ -635,10 +637,9 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
         )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("fixture: spawning the continuous worker");
-    let _guarantor = ChildGuard::new(guarantor);
+        .stderr(Stdio::null());
+    let _guarantor =
+        ChildGuard::spawn(&mut guarantor_command).expect("fixture: spawning the continuous worker");
 
     // Requirement two: **something matching is alive again within the 0.5s
     // the script settles for after SIGKILL** — the one true race here, and
@@ -672,19 +673,19 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
             fixture.live_store().display()
         ),
     );
-    let mut supervisor_child = Command::new(&supervisor)
+    let mut supervisor_command = Command::new(&supervisor);
+    supervisor_command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("fixture: spawning the supervisor");
+        .stderr(Stdio::null());
+    let mut supervisor_child =
+        ChildGuard::spawn(&mut supervisor_command).expect("fixture: spawning the supervisor");
     std::thread::sleep(std::time::Duration::from_millis(600));
 
     let out = fixture.run(&["postlude"]);
     let err = stderr(&out);
 
-    let _ = supervisor_child.kill();
-    let _ = supervisor_child.wait();
+    supervisor_child.kill_and_reap();
 
     assert!(
         !out.status.success(),
@@ -851,8 +852,8 @@ fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
     // literal layout `tests/plugin_install.rs::Harness::new(true)` builds.
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.missing_store());
-    let pid = child.id();
-    let _guard = ChildGuard::new(child);
+    let pid = child.pid();
+    let _guard = child;
     wait_until_old_enough();
 
     let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);
@@ -887,7 +888,7 @@ fn collecting_an_abandoned_daemon_never_fails_the_phase() {
     let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.missing_store());
-    let _guard = ChildGuard::new(child);
+    let _guard = child;
     wait_until_old_enough();
 
     for phase in ["preflight", "postlude", "check"] {
@@ -912,8 +913,8 @@ fn a_daemon_whose_store_still_exists_is_left_alone() {
     let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.live_store());
-    let pid = child.id();
-    let _guard = ChildGuard::new(child);
+    let pid = child.pid();
+    let _guard = child;
     wait_until_old_enough();
 
     let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);
@@ -945,8 +946,8 @@ fn a_daemon_too_young_to_have_opened_its_store_is_left_alone() {
     let fixture = Fixture::new();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.missing_store());
-    let pid = child.id();
-    let _guard = ChildGuard::new(child);
+    let pid = child.pid();
+    let _guard = child;
     // No wait: the assertion has to happen inside the age floor, which is also
     // what keeps a concurrent sibling's orphan check off this shim.
 
@@ -985,8 +986,8 @@ fn a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone() {
 
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &spaced);
-    let pid = child.id();
-    let _guard = ChildGuard::new(child);
+    let pid = child.pid();
+    let _guard = child;
     wait_until_old_enough();
 
     let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);

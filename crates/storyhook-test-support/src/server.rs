@@ -6,10 +6,10 @@
 //! requests out of a stale registry — 78 of 139 tests down, with nothing in the
 //! output pointing anywhere near the cause.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -233,14 +233,70 @@ impl Drop for DaemonGuard {
 /// `waitpid(WNOHANG)` calls rather than a spin.
 const REAP_POLL: Duration = Duration::from_millis(25);
 
-/// Kills a child process on drop, so a server a test started can never
-/// outlive it.
-pub struct ChildGuard(std::process::Child);
+/// A harness deadline that deliberately outlives an ordinary `story` client.
+///
+/// A client may spend [`storyhook::daemon::lifecycle::SPAWN_LOCK_DEADLINE`]
+/// acquiring the daemon spawn lock and then
+/// [`storyhook::daemon::lifecycle::SERVED_DEADLINE`] waiting for its command.
+/// One [`storyhook::daemon::lifecycle::SPAWN_DEADLINE`] is margin for the
+/// parent process to start and report that inner failure before the harness
+/// replaces it with a less-specific timeout (SH-394, SH-535).
+pub const STORY_COMMAND_DEADLINE: Duration = Duration::from_secs(
+    storyhook::daemon::lifecycle::SPAWN_LOCK_DEADLINE.as_secs()
+        + storyhook::daemon::lifecycle::SERVED_DEADLINE.as_secs()
+        + storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs(),
+);
+
+/// A captured pipe being drained from the instant its child is spawned.
+struct OutputDrain {
+    stdout: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    stderr: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+}
+
+/// Kills and reaps a child process on drop, so a process a test started can
+/// never outlive it.
+pub struct ChildGuard {
+    child: Child,
+    output: Option<OutputDrain>,
+}
 
 impl ChildGuard {
     /// Takes ownership of `child`.
-    pub fn new(child: std::process::Child) -> Self {
-        ChildGuard(child)
+    pub fn new(child: Child) -> Self {
+        Self {
+            child,
+            output: None,
+        }
+    }
+
+    /// Spawns `command` and immediately takes ownership of its child.
+    ///
+    /// Tracked integration tests use this door instead of [`Command::spawn`],
+    /// so every spawned process is guarded even when a test panics before it
+    /// reaches its intended wait.
+    pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        command.spawn().map(Self::new)
+    }
+
+    /// Spawns `command` with stdout and stderr captured and drained at once.
+    ///
+    /// Draining from spawn, rather than only once a caller starts waiting,
+    /// prevents a verbose child from filling a pipe and blocking before a
+    /// concurrent fixture has finished spawning its peers.
+    pub fn spawn_with_output(command: &mut Command) -> std::io::Result<Self> {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().expect("stdout was configured as piped");
+        let stderr = child.stderr.take().expect("stderr was configured as piped");
+        Ok(Self {
+            child,
+            output: Some(OutputDrain {
+                stdout: drain(stdout),
+                stderr: drain(stderr),
+            }),
+        })
     }
 
     /// The child's process id.
@@ -248,7 +304,25 @@ impl ChildGuard {
     /// The identity a crash test compares against: "a daemon died" is not the
     /// claim, "the daemon this test armed died" is.
     pub fn pid(&self) -> u32 {
-        self.0.id()
+        self.child.id()
+    }
+
+    /// The child's piped stdin, when the caller only needs to write briefly.
+    pub fn stdin(&mut self) -> Option<&mut ChildStdin> {
+        self.child.stdin.as_mut()
+    }
+
+    /// Takes the child's piped stdin for a long-lived interactive session.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
+    }
+
+    /// Takes the child's piped stdout for a long-lived interactive session.
+    ///
+    /// Returns `None` for a child created by [`Self::spawn_with_output`], whose
+    /// output is already being drained for [`Self::wait_with_output_within`].
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
     }
 
     /// Waits for the child to exit and reports how it died, giving up at
@@ -290,11 +364,11 @@ impl ChildGuard {
     /// caller may gather expensive evidence (a log tail, a liveness probe)
     /// that is only meaningful at the moment the bound fires, and pays nothing
     /// for it on the happy path.
-    pub fn wait_within(
-        &mut self,
-        deadline: Duration,
-        what: impl FnOnce() -> String,
-    ) -> std::process::ExitStatus {
+    pub fn wait_within(&mut self, deadline: Duration, what: impl FnOnce() -> String) -> ExitStatus {
+        // `Child::wait` closes stdin before blocking. `try_wait` does not, so
+        // the bounded equivalent must do it explicitly or a child waiting for
+        // EOF can deadlock with its parent.
+        drop(self.child.stdin.take());
         let give_up_at = Instant::now() + deadline;
         loop {
             if let Some(status) = self.try_wait() {
@@ -302,8 +376,7 @@ impl ChildGuard {
             }
             if Instant::now() >= give_up_at {
                 let pid = self.pid();
-                let _ = self.0.kill();
-                let _ = self.0.wait();
+                self.kill_and_reap();
                 panic!(
                     "{}\n\nThe child (pid {pid}) was still running after {deadline:?}, and has \
                      been killed so this failure does not also leak it.",
@@ -314,15 +387,115 @@ impl ChildGuard {
         }
     }
 
+    /// Waits for the child and its captured pipes within one deadline.
+    ///
+    /// The pipe drains begin in [`Self::spawn_with_output`]. A descendant may
+    /// inherit a write end and keep it open after the direct child exits, so
+    /// collecting each drain is separately bounded by the same absolute
+    /// deadline. A blocked reader is deliberately detached on failure; it is
+    /// in a syscall this process cannot interrupt and ends with the test binary.
+    pub fn wait_with_output_within(
+        &mut self,
+        deadline: Duration,
+        what: impl FnOnce() -> String,
+    ) -> Output {
+        let give_up_at = Instant::now() + deadline;
+        let mut what = Some(what);
+        let status = self.wait_until(give_up_at).unwrap_or_else(|| {
+            let pid = self.pid();
+            self.kill_and_reap();
+            panic!(
+                "{}\n\nThe child (pid {pid}) was still running after {deadline:?}, and has \
+                 been killed so this failure does not also leak it.",
+                what.take().expect("diagnostic is used once")()
+            )
+        });
+        let output = self
+            .output
+            .take()
+            .expect("wait_with_output_within requires ChildGuard::spawn_with_output");
+        let stdout = receive_drain(output.stdout, give_up_at).unwrap_or_else(|reason| {
+            panic!(
+                "{}\n\nThe child (pid {}) exited, but its stdout {reason} before \
+                 {deadline:?}; a descendant may still hold the pipe open.",
+                what.take().expect("diagnostic is used once")(),
+                self.pid()
+            )
+        });
+        let stderr = receive_drain(output.stderr, give_up_at).unwrap_or_else(|reason| {
+            panic!(
+                "{}\n\nThe child (pid {}) exited, but its stderr {reason} before \
+                 {deadline:?}; a descendant may still hold the pipe open.",
+                what.take().expect("diagnostic is used once")(),
+                self.pid()
+            )
+        });
+        Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
     /// How the child died, or `None` while it is still running.
     ///
     /// For the tests that have several children and cannot know which will
     /// finish first — where blocking on one in turn would deadlock on whichever
     /// is waiting for something the caller has not done yet.
-    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
-        self.0
+    pub fn try_wait(&mut self) -> Option<ExitStatus> {
+        self.child
             .try_wait()
             .expect("asking after a child this test started")
+    }
+
+    /// Sends the uncatchable kill signal and reaps the child.
+    ///
+    /// This is the only deliberately unbounded public reap: after `kill`, the
+    /// wait is on the kernel rather than on the child's cooperation.
+    pub fn kill_and_reap(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    /// Polls until `give_up_at`, closing stdin first as [`Child::wait`] does.
+    fn wait_until(&mut self, give_up_at: Instant) -> Option<ExitStatus> {
+        drop(self.child.stdin.take());
+        loop {
+            if let Some(status) = self.try_wait() {
+                return Some(status);
+            }
+            if Instant::now() >= give_up_at {
+                return None;
+            }
+            std::thread::sleep(REAP_POLL);
+        }
+    }
+}
+
+/// Drains one child pipe without making its owner wait to begin reading.
+fn drain(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+/// Receives a completed pipe drain before the shared absolute deadline.
+fn receive_drain(
+    drain: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    give_up_at: Instant,
+) -> Result<Vec<u8>, String> {
+    let remaining = give_up_at.saturating_duration_since(Instant::now());
+    match drain.recv_timeout(remaining) {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(error)) => Err(format!("failed while being read: {error}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err("did not close".to_string()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("reader stopped without returning output".to_string())
+        }
     }
 }
 
@@ -339,8 +512,7 @@ impl Drop for ChildGuard {
     /// preceded by a kill: use [`ChildGuard::wait_within`], which exists
     /// because that copy is exactly what wedged the gate for ten hours.
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        self.kill_and_reap();
     }
 }
 
@@ -710,6 +882,86 @@ mod tests {
         let out = run_bounded(cmd, "printf ok", Duration::from_secs(5));
         assert_eq!(out.stdout, b"ok");
         assert_eq!(out.status.code(), Some(3));
+    }
+
+    #[test]
+    fn child_guard_collects_output_larger_than_a_pipe_without_deadlocking() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "head -c 1048576 /dev/zero; printf problem >&2; exit 3",
+        ]);
+        let mut child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning noisy child");
+
+        let out = child.wait_with_output_within(Duration::from_secs(5), || {
+            "the noisy child did not finish".to_string()
+        });
+
+        assert_eq!(out.stdout.len(), 1_048_576);
+        assert_eq!(out.stderr, b"problem");
+        assert_eq!(out.status.code(), Some(3));
+    }
+
+    #[test]
+    fn child_guard_closes_stdin_before_its_bounded_wait() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]).stdin(Stdio::piped());
+        let mut child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning cat");
+        child
+            .stdin()
+            .expect("cat stdin was piped")
+            .write_all(b"done")
+            .expect("writing cat stdin");
+
+        let out = child.wait_with_output_within(Duration::from_secs(5), || {
+            "cat did not observe stdin closing".to_string()
+        });
+
+        assert_eq!(out.stdout, b"done");
+    }
+
+    #[test]
+    fn child_guard_kills_a_child_that_exceeds_its_deadline() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("5");
+        let mut child = ChildGuard::spawn(&mut cmd).expect("spawning sleep");
+        let deadline = Duration::from_millis(300);
+        let give_up_ceiling = deadline * 7;
+
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.wait_within(deadline, || "sleep did not finish".to_string())
+        }));
+
+        assert!(result.is_err(), "an overlong child must fail its wait");
+        assert!(
+            started.elapsed() < give_up_ceiling,
+            "the guard waited out the child instead of enforcing {deadline:?}"
+        );
+        assert!(
+            child.try_wait().is_some(),
+            "the timeout must reap the child before it reports"
+        );
+    }
+
+    #[test]
+    fn child_guard_bounds_a_pipe_held_by_a_descendant_after_the_child_exits() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 5 & printf done"]);
+        let mut child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning pipe holder");
+        let deadline = Duration::from_millis(300);
+        let give_up_ceiling = deadline * 7;
+
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.wait_with_output_within(deadline, || "the descendant retained a pipe".to_string())
+        }));
+
+        assert!(result.is_err(), "a retained pipe must fail its wait");
+        assert!(
+            started.elapsed() < give_up_ceiling,
+            "the guard waited for the descendant instead of enforcing {deadline:?}"
+        );
     }
 
     /// SH-142: `DaemonGuard`'s `Drop` used to call `.output()` directly, which
