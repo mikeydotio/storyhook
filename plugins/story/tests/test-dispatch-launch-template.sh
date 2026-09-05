@@ -98,10 +98,15 @@ assert_contains "$disp" 'with `codex --no-alt-screen -c check_for_update_on_star
   "codex attended default: unchanged from today"
 case "$disp" in *"-m "*) fail_test "codex attended default: unexpected -m flag" ;; esac
 
-disp=$(dispatch_and_capture CDB --agent=codex --model=gpt-5.6-terra --effort=low)
+disp=$(dispatch_and_capture CDB --agent=codex --model=gpt-6-astra --effort=ultra)
+assert_contains "$disp" \
+  'codex --no-alt-screen -c check_for_update_on_startup=false -m gpt-6-astra -c model_reasoning_effort="ultra"' \
+  "codex attended Astra+ultra: composed flatly"
+
+disp=$(dispatch_and_capture CDT --agent=codex --model=gpt-5.6-terra --effort=low)
 assert_contains "$disp" \
   'codex --no-alt-screen -c check_for_update_on_startup=false -m gpt-5.6-terra -c model_reasoning_effort="low"' \
-  "codex attended model+effort: composed flatly"
+  "codex attended GPT-5.6+low: existing composition preserved"
 
 disp=$(dispatch_and_capture CDC --agent=codex --speed=fast)
 assert_contains "$disp" 'codex --no-alt-screen -c check_for_update_on_startup=false -c service_tier="priority"' \
