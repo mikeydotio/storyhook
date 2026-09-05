@@ -313,9 +313,8 @@ test("the delete-confirmation modal's id field is at least 16px", async ({
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  // deleteStory() assumes a clean starting state; the drawer Cancel left
-  // open would otherwise block its own card click behind #drawer-backdrop
-  // (same reasoning as delete-story.spec.ts's own Cancel test).
+  // SH-554: on a phone the peer panel owns the full content width, so its
+  // compressed board card is intentionally not a reachable cleanup route.
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await deleteStory(page, title);
