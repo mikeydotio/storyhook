@@ -3,6 +3,7 @@
 //! the test's HOME, so these tests exercise command construction and failure
 //! handling without touching a developer's Codex or Claude configuration.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -179,6 +180,12 @@ impl Harness {
         self.home.join(".codex/rules/storyhook.rules")
     }
 
+    fn release_marketplace(&self) -> PathBuf {
+        self.home
+            .join("data/storyhook/plugins")
+            .join(env!("CARGO_PKG_VERSION"))
+    }
+
     fn set_codex_plugin_version(&self, version: &str) {
         fs::write(self.home.join("codex-plugin-version"), version)
             .expect("writing fake Codex plugin version");
@@ -231,6 +238,58 @@ fn combined(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn regular_files(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, bool)> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, (Vec<u8>, bool)>) {
+        let mut entries: Vec<_> = fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", directory.display()))
+            .map(|entry| entry.expect("reading marketplace entry"))
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).expect("reading marketplace metadata");
+            if metadata.is_dir() {
+                visit(root, &path, files);
+            } else {
+                assert!(
+                    metadata.is_file(),
+                    "unexpected payload entry: {}",
+                    path.display()
+                );
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    (
+                        fs::read(&path).expect("reading marketplace file"),
+                        metadata.permissions().mode() & 0o111 != 0,
+                    ),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+fn expected_marketplace() -> BTreeMap<PathBuf, (Vec<u8>, bool)> {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut expected = BTreeMap::new();
+    for relative in [
+        Path::new(".agents/plugins/marketplace.json"),
+        Path::new(".claude-plugin/marketplace.json"),
+    ] {
+        expected.insert(
+            relative.to_path_buf(),
+            (fs::read(repository.join(relative)).unwrap(), false),
+        );
+    }
+    for (relative, value) in regular_files(&repository.join("plugins/story")) {
+        expected.insert(Path::new("plugins/story").join(relative), value);
+    }
+    expected
 }
 
 #[test]
@@ -291,8 +350,12 @@ fn a_missing_codex_executable_is_actionable() {
         "{message}"
     );
     assert!(
-        message.contains("codex plugin add story@storyhook"),
+        message.contains("retry `story plugin install codex`"),
         "{message}"
+    );
+    assert!(
+        !harness.release_marketplace().exists(),
+        "provider preflight must happen before materialization"
     );
 }
 
@@ -321,23 +384,44 @@ fn marketplace_and_plugin_failures_stop_at_the_exact_failed_step() {
 }
 
 #[test]
-fn codex_install_is_idempotent_and_reports_the_marketplace_state() {
+fn registration_cleanup_failures_stop_before_the_release_source_is_added() {
     let harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
-    harness.set_codex_mode("already");
+    harness.set_codex_mode("remove-fail");
+
+    let output = harness.run(&["plugin", "install", "codex"]);
+
+    assert!(!output.status.success());
+    assert!(combined(&output).contains("unrelated remove failure"));
+    let log = harness.codex_log();
+    assert!(!log.contains("plugin marketplace remove"), "{log}");
+    assert!(!log.contains("plugin marketplace add"), "{log}");
+}
+
+#[test]
+fn codex_install_is_idempotent_and_replaces_the_owned_registration() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
     for _ in 0..2 {
         let output = harness.run(&["plugin", "install", "codex"]);
         assert!(output.status.success(), "{}", combined(&output));
-        assert!(combined(&output).contains("already registered"));
+        assert!(combined(&output).contains("registered"));
     }
-    assert_eq!(
-        harness
-            .codex_log()
-            .lines()
-            .filter(|line| *line == "plugin add story@storyhook --json")
-            .count(),
-        2
-    );
+    for invocation in [
+        "plugin remove story@storyhook --json",
+        "plugin marketplace remove storyhook --json",
+        "plugin add story@storyhook --json",
+    ] {
+        assert_eq!(
+            harness
+                .codex_log()
+                .lines()
+                .filter(|line| *line == invocation)
+                .count(),
+            2,
+            "each install must repeat `{invocation}`"
+        );
+    }
     let launcher = fs::read_to_string(harness.codex_launcher()).unwrap();
     assert_eq!(
         launcher
@@ -461,31 +545,71 @@ fn stable_codex_bridge_refuses_other_providers_and_missing_plugins() {
 }
 
 #[test]
-fn source_selection_uses_the_checkout_locally_and_github_when_packaged() {
-    let local = Harness::new(false);
-    local.install_fake("codex", FAKE_CODEX);
-    let output = local.run(&["plugin", "install", "codex"]);
-    assert!(output.status.success(), "{}", combined(&output));
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
-    assert!(
-        local
-            .codex_log()
-            .contains(&format!("plugin marketplace add {} --json", repo.display())),
-        "{}",
-        local.codex_log()
-    );
-
+fn packaged_binary_materializes_and_registers_its_exact_embedded_marketplace() {
     let packaged = Harness::new(true);
     packaged.install_fake("codex", FAKE_CODEX);
     let output = packaged.run(&["plugin", "install", "codex"]);
     assert!(output.status.success(), "{}", combined(&output));
+    let release = packaged.release_marketplace();
     assert!(
-        packaged
-            .codex_log()
-            .contains("plugin marketplace add mikeydotio/storyhook --json"),
+        packaged.codex_log().contains(&format!(
+            "plugin marketplace add {} --json",
+            release.display()
+        )),
         "{}",
         packaged.codex_log()
     );
+    assert_eq!(
+        regular_files(&release),
+        expected_marketplace(),
+        "the installed release projection must be the complete build-time marketplace"
+    );
+    let managed = fs::read_to_string(packaged.home.join("data/storyhook/managed-paths"))
+        .expect("the installer records its managed paths");
+    assert!(
+        managed.contains(&release.parent().unwrap().display().to_string()),
+        "{managed}"
+    );
+}
+
+#[test]
+fn reinstall_repairs_a_corrupt_same_version_projection() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let first = harness.run(&["plugin", "install", "codex"]);
+    assert!(first.status.success(), "{}", combined(&first));
+
+    let damaged = harness
+        .release_marketplace()
+        .join("plugins/story/bin/story.sh");
+    fs::write(&damaged, "corrupt\n").unwrap();
+    fs::set_permissions(&damaged, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let second = harness.run(&["plugin", "install", "codex"]);
+    assert!(second.status.success(), "{}", combined(&second));
+    assert_eq!(
+        regular_files(&harness.release_marketplace()),
+        expected_marketplace()
+    );
+}
+
+#[test]
+fn codex_migrates_the_owned_registration_before_adding_the_release_source() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let output = harness.run(&["plugin", "install", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+
+    let log = harness.codex_log();
+    let remove_plugin = log.find("plugin remove story@storyhook --json").unwrap();
+    let remove_marketplace = log
+        .find("plugin marketplace remove storyhook --json")
+        .unwrap();
+    let add_marketplace = log.find("plugin marketplace add ").unwrap();
+    let add_plugin = log.find("plugin add story@storyhook --json").unwrap();
+    assert!(remove_plugin < remove_marketplace);
+    assert!(remove_marketplace < add_marketplace);
+    assert!(add_marketplace < add_plugin);
 }
 
 #[test]
@@ -592,7 +716,15 @@ fn claude_command_sequence_and_success_guidance_use_the_canonical_target() {
     let output = harness.run(&["plugin", "install", "claude"]);
     assert!(output.status.success(), "{}", combined(&output));
     let log = fs::read_to_string(harness.home.join("claude-invocations")).unwrap();
-    assert!(log.contains("plugin marketplace add"), "{log}");
+    assert!(log.contains("plugin uninstall story@storyhook"), "{log}");
+    assert!(log.contains("plugin marketplace remove storyhook"), "{log}");
+    assert!(
+        log.contains(&format!(
+            "plugin marketplace add {} --scope user",
+            harness.release_marketplace().display()
+        )),
+        "{log}"
+    );
     assert!(
         log.contains("plugin install story@storyhook --scope user"),
         "{log}"

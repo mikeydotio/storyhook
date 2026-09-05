@@ -90,10 +90,10 @@ pub use rebuild::{
 pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
-    EngineRunRecord, EngineRunState, EngineScope, FeedEvent, LinkSource, MigrationReport,
-    NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent,
-    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
-    UnknownEventDiagnostic, partition_known,
+    EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope, FeedEvent, LinkSource,
+    MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
+    PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow,
+    StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from

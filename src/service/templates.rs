@@ -212,11 +212,13 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: reconcile Full Auto lane accounting so `verifying` is an intentional
-  handoff, not a stall or dead-window failure.
+- Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
+  through the centralized verifier, and reconcile Full Auto lane accounting so
+  `verifying` is an intentional handoff rather than a stall.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: harden provider UI automation against future approval-contract drift.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.
 "#,
         done_state = done_state,
         prefix = prefix,
