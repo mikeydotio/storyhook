@@ -11,7 +11,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use storyhook_test_support::{TestEnv, git, scratch_dir, without_rust_comments};
+use storyhook_test_support::{
+    TestEnv, daemon_containment, git, scratch_dir, without_rust_comments,
+};
 
 const RUST_CHILD: &str = "SH572_RUST_FIXTURE_CHILD";
 const ENVIRONMENT_CHILD: &str = "SH572_GIT_ENVIRONMENT_CHILD";
@@ -272,6 +274,7 @@ fn rust_and_shell_fixture_git_build_the_same_child_environment() {
             &shell_output.display().to_string(),
         ])
         .env_clear()
+        .envs(daemon_containment())
         .envs(&rust_environment)
         .env("GIT_DIR", "/smuggled/shell/git-dir")
         .env("GIT_AUTHOR_NAME", "smuggled author");
