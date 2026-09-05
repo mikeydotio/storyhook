@@ -1,38 +1,38 @@
-# SH-204 Handoff
+# SH-567 Handoff
 
 ## Delivered
 
-- All label producers and selectors use one Unicode-aware lowercase
-  canonicalizer; case variants are one label identity.
-- Schema migration 30 appends compensating `StoryLabelsSet` events for every
-  affected open or closed story and rebuilds its label read model.
-- The drawer and create modal share one chip combobox. Comma, Enter, and field
-  exit commit; suggestions and removals persist; failed additions remain
-  available for retry.
-- CLI help, README guidance, and plugin reference document the invariant.
+- Running Full Auto runs expose guarded Pause and Stop controls; paused runs
+  expose Resume and Stop; draining runs retain Stop-now escalation.
+- The accessible stop modal explains Drain and Stop-now consequences, locks
+  duplicate submissions, and restores focus to the logical live control.
+- Pending action labels join the engine fingerprint, and ambiguous transport
+  failures report uncertainty before reconciling through a fresh status GET.
+- The engine specification records the dashboard's as-built lifecycle contract.
+
+## Decisions
+
+- Draining disables the redundant Drain choice but keeps Stop now available as
+  an explicit escalation path.
+- The stop flow uses the dashboard's shared overlay stack, starts on Cancel,
+  and returns focus to Stop or Run Full Auto after state changes.
+- Existing global focus-visible styling is sufficient; no SH-567-specific
+  focus CSS was added.
 
 ## Preserved state
 
-- Branch: `worktree-SH-204`.
-- Storage/API commit: `b6a87191` (`fix(labels): canonicalize labels as lowercase`).
-- Dashboard commit: `6d7b3def` (`fix(dashboard): unify label combobox behavior`).
-- Store schema is version 30; upstream migration 29 remains unchanged.
-- Reconciliation merges `origin/main` at `e00733a9` without rewriting the
-  published SH-204 history.
-- SH-555 repair and the installed StoryHook 2.4.0 verifier clear the earlier
-  infrastructure block.
+- Branch: `worktree-SH-567`.
+- StoryHook version: 2.4.0.
+- Server lifecycle endpoints were already complete and remain unchanged.
+- The feature commit and PR are linked from SH-567.
 
 ## Focused verification
 
-- After reconciliation, domain, service, migration, label CLI/query, integrity,
-  doctor, web endpoint, help, README, and generated-roadmap checks passed.
-- Clippy with warnings denied and formatting checks passed.
-- New label-editor E2E: 2 passed in Chromium and 2 in WebKit.
-- Directly impacted existing label E2E: 9 passed in Chromium.
-- Main's overlapping verification-status E2E: 2 passed in Chromium.
+- Engine E2E: 19 Chromium, 18 WebKit plus 1 documented skip, 19 mobile
+  Chromium, and 18 mobile WebKit plus 1 documented skip passed.
+- Web template, dashboard error-reporting, and focus-coverage tests: 239 passed.
 
 ## Submission boundary
 
-Push the reconciliation merge to existing PR #636, then move SH-204 to
-`verifying` as the absolute final action. The centralized verifier owns the
-full suite, merge, completion, and cleanup.
+The centralized verifier owns the full suite, merge, completion, and worktree
+cleanup after SH-567 moves to `verifying`.

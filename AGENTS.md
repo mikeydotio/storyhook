@@ -189,8 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-204's lowercase label identity and shared label editor
-  through the repaired, installed centralized verifier.
+- Current: verify SH-567's dashboard Pause, Resume, Drain, and Stop-now
+  controls through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
