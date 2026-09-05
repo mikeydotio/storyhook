@@ -189,9 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of SH-535's universal test-child fence while
-  bounding centralized verification subprocesses and preserving recovery of
-  the persistent verifier worktree after timeout.
+- Current: bound centralized verification subprocesses and preserve recovery
+  of the persistent verifier worktree after timeout.
 - Next: make verification ownership durable and priority-preemptible so a
   queued high-priority candidate is never hidden behind stale ownership.
 - Later: expose queue health and verification diagnostics in engine/dashboard
