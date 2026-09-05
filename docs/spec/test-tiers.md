@@ -193,6 +193,10 @@ administration remains detached at the ordinary base commit. For the gate only,
 `merge-watch.sh` atomically points the verifier's `.git` file at lease-local
 per-worktree administration whose `commondir` still reaches shared receipts;
 its synthetic `HEAD`, index, and objects therefore remain private together.
+The verifier supplies a fetched ref such as `refs/remotes/origin/main`, but a
+private detached `HEAD` records the exact commit resolved from that ref, never
+the unprefixed ref text (SH-556). This keeps the temporary administration a
+valid Git repository while the later preflight still detects ref drift.
 The gate process receives the private objects as an alternate, while ordinary
 sibling Git processes continue to resolve every shared worktree ref without
 special environment.

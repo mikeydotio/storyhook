@@ -14,6 +14,9 @@
   valid immediate stops now publish `engine-stop:<project>:<run>` until lane
   termination, unclaim, and final run-state recording finish.
 - Ordinary engine controls and invalid stop requests remain outside the ledger.
+- Returned verification exposed an invalid private-poller `HEAD`: production
+  passed a base ref while tests covered only object IDs. The gate now resolves
+  that ref to an exact commit before writing its detached private `HEAD`.
 
 ## Verification scope
 
@@ -21,6 +24,8 @@
 - Verification queue ownership, all outcomes, write-error, and unwind cases.
 - Existing graceful drain and stale-entry lifecycle cases.
 - Immediate engine-stop ownership metadata, lifetime, and cleanup regression.
+- Real-Git symbolic-base private-poller regression and complete merge-gate
+  target.
 - AGENTS/template synchronization, targeted Clippy, formatting, diff check.
 
 ## Submission contract
