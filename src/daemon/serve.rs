@@ -170,6 +170,10 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
+    /// The exact verification generation currently owned by the serialized
+    /// verifier (SH-549). Shared with the progress publisher and REST board;
+    /// queue ordering alone cannot answer this once priorities change.
+    verification_activity: crate::daemon::verification::VerificationActivity,
     /// Engine controls are answered on per-connection workers, never the
     /// fixed store-dispatch pool. This controller owns the persistent store
     /// handle those `'static` workers require.
@@ -262,6 +266,7 @@ where
     // its own reason, so a write that landed before this daemon started is
     // history, never news.
     let watcher = crate::daemon::watch::ChangeWatcher::new(store);
+    let verification_activity = crate::daemon::verification::VerificationActivity::new();
     let serving = Serving {
         store,
         env: env.clone(),
@@ -276,6 +281,7 @@ where
             started_at: env.now(),
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
+        verification_activity: verification_activity.clone(),
         engine: Arc::new(crate::api::engine::EngineController::open(env)?),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
@@ -342,19 +348,22 @@ where
             let stop = Arc::clone(&stop);
             let env = env.clone();
             let bus = bus.clone();
+            let activity = verification_activity.clone();
             scope.spawn(move || {
-                crate::daemon::verification::poll_verification(store, &env, &bus, &stop)
+                crate::daemon::verification::poll_verification(store, &env, &bus, &stop, &activity)
             });
         }
         {
-            // SH-524: the verification progress publisher. No shared state
-            // with the verifier thread above — it independently re-derives
-            // which candidate is active from the same store-backed queue
-            // (`verification_progress`'s own module doc explains why).
+            // SH-549: queue rank can change while a lower-priority candidate
+            // is already running, so the publisher shares exact ownership
+            // with the verifier rather than inferring it from queue position.
             let stop = Arc::clone(&stop);
             let env = env.clone();
+            let activity = verification_activity.clone();
             scope.spawn(move || {
-                crate::daemon::verification_progress::poll_verification_progress(store, &env, &stop)
+                crate::daemon::verification_progress::poll_verification_progress(
+                    store, &env, &stop, &activity,
+                )
             });
         }
         // The Full Auto engine trigger (SH-466): a restart sweep once, then
@@ -1502,9 +1511,10 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         .trusted_hosts
         .read()
         .unwrap_or_else(PoisonError::into_inner);
-    let routed = rest::route(
+    let routed = rest::route_with_activity(
         serving.store,
         &serving.env,
+        &serving.verification_activity,
         &job.method,
         &job.path,
         &job.headers,

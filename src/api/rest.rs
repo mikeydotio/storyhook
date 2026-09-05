@@ -28,6 +28,8 @@
 use std::path::PathBuf;
 
 use crate::daemon::http1::{Header, Method};
+use crate::daemon::verification::VerificationActivity;
+use crate::daemon::verification_progress::status_snapshot;
 
 use crate::api::http::{
     Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
@@ -225,6 +227,31 @@ pub fn route<S: Store>(
     body: &str,
     trusted_hosts: &TrustedHosts,
 ) -> Routed {
+    route_with_activity(
+        store,
+        env,
+        &VerificationActivity::new(),
+        method,
+        path,
+        headers,
+        body,
+        trusted_hosts,
+    )
+}
+
+/// [`route`] with the daemon's live verifier-ownership registry. Kept as a
+/// separate entry point so direct router tests remain process-independent
+/// while the serving daemon can expose authoritative active status (SH-549).
+pub fn route_with_activity<S: Store>(
+    store: &S,
+    env: &Environment,
+    verification_activity: &VerificationActivity,
+    method: &Method,
+    path: &str,
+    headers: &[Header],
+    body: &str,
+    trusted_hosts: &TrustedHosts,
+) -> Routed {
     match classify(&path_segments(path), method) {
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => Routed::quiet(match repos_json(store, env) {
@@ -261,7 +288,14 @@ pub fn route<S: Store>(
                 let ctx = Ctx::new(store, project, root, env.clone())
                     .no_hooks(hookless)
                     .with_provenance(route_provenance(&route));
-                let reply = route_project(&ctx, route, headers, body, trusted_hosts);
+                let reply = route_project(
+                    &ctx,
+                    verification_activity,
+                    route,
+                    headers,
+                    body,
+                    trusted_hosts,
+                );
                 Routed::changing(method, reply, Changed::Project(id.to_string()))
             }
             Ok(None) => Routed::quiet(text_reply(404, "Not found")),
@@ -291,13 +325,14 @@ pub fn route<S: Store>(
 /// without an answer here.
 fn route_project<S: Store>(
     ctx: &Ctx<'_, S>,
+    verification_activity: &VerificationActivity,
     route: ProjectRoute<'_>,
     headers: &[Header],
     body: &str,
     trusted_hosts: &TrustedHosts,
 ) -> Reply {
     match route {
-        ProjectRoute::Data => match project_data_json(ctx) {
+        ProjectRoute::Data => match project_data_json(ctx, verification_activity) {
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
@@ -698,13 +733,23 @@ fn route_delete_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &st
 
 /// Everything the board renders from, in one request: the rollup, every story
 /// with its readiness flags, and the project's configuration vocabulary.
-fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
+fn project_data_json<S: Store>(
+    ctx: &Ctx<'_, S>,
+    verification_activity: &VerificationActivity,
+) -> Result<String, AppError> {
     let now = ctx.now();
     let project = ctx.project();
     ctx.store().read(|tx| {
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
+            let active = verification_activity.snapshot();
+            let verification = status_snapshot(
+                &crate::service::verification::ordered_candidates(tx)?,
+                active.as_ref(),
+                ctx.env(),
+                &now,
+            );
 
             // Drafts (SH-175) are excluded from `stories`: the board is a curated
             // "what's actionable" view,
@@ -729,6 +774,16 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
                             "is_blocked".to_string(),
                             serde_json::Value::Bool(data.blocked_ids.contains(&view.story.id)),
                         );
+                        if let Some((_, _, status)) =
+                            verification.iter().find(|(status_project, status_id, _)| {
+                                *status_project == project && status_id == &view.story.id
+                            })
+                        {
+                            map.insert(
+                                "verification".to_string(),
+                                serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
                     }
                     val
                 })
