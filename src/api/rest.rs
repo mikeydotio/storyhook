@@ -768,7 +768,7 @@ fn project_data_json<S: Store>(
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
-            let active = verification_activity.snapshot();
+            let active = verification_activity.active();
             let verification = status_snapshot(
                 &crate::service::verification::ordered_candidates(tx)?,
                 active.as_ref(),
