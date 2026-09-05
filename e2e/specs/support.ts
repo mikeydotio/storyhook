@@ -373,8 +373,8 @@ export async function dispatchStory(
  * Runs `locator`'s own click handler with no user gesture, for the specs whose
  * subject is what a navigation does to an overlay that is already open.
  *
- * Since SH-299 every overlay marks the background `inert`, so a control behind
- * an open drawer, modal or popover can be neither clicked (the backdrop takes
+ * Since SH-299 every modal overlay marks the background `inert`, so a control
+ * behind an open modal or popover can be neither clicked (the backdrop takes
  * the click and dismisses the overlay instead) nor focused-and-pressed (an
  * inert element is not a focusable area). Closing that second route is the
  * entire point of that story: the dashboard used to be modal for the mouse and
@@ -384,11 +384,10 @@ export async function dispatchStory(
  * own headers — they reached for the keyboard precisely because the backdrop
  * blocked the mouse. The states they arrange are still reachable without a
  * gesture: `fetchReposOnce()` calls `goHome()` on its own when the open
- * project is deleted by another client, and a deep-linked drawer can land on a
- * screen the user has already navigated to. What those tests pin is what
- * `goHome()`, `goStatuses()` and `selectRepo()` do to an open overlay however
- * they are entered, and that is worth pinning whether or not a hand can still
- * enter them.
+ * project is deleted by another client. What those tests pin is what `goHome()`,
+ * `goStatuses()` and `selectRepo()` do to an open overlay however they are
+ * entered, and that is worth pinning whether or not a hand can still enter
+ * them.
  *
  * `dispatchEvent("click")` delivers a synthetic event straight to the element,
  * so it skips hit-testing and inertness while still running the production

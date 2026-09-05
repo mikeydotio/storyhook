@@ -95,16 +95,10 @@ async function openStory(page: Page, card: Locator): Promise<string> {
   return id;
 }
 
-/**
- * Closes the drawer and waits for the backdrop to finish re-hiding itself --
- * `closeDrawer()` only sets its `hidden` attribute 180ms later (a CSS fade),
- * and an un-hidden backdrop still intercepts a tap aimed at a board card
- * behind it even at opacity 0.
- */
+/** Closes the detail panel before the next test action. */
 async function closeDrawerAndWait(page: Page): Promise<void> {
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-  await expect(page.locator("#drawer-backdrop")).toBeHidden();
 }
 
 /** Every PATCH `/story/<id>` this test's route interception has observed. */
