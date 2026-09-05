@@ -162,6 +162,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -281,13 +282,22 @@ compose_launch_tpl() {
   esac
 }
 
+# posix_quote_word <value> -- render exactly one POSIX shell word. StoryHook's
+# plugin root is passed through a tmux command string, so valid whitespace and
+# apostrophes must not split or terminate the --plugin-dir argument.
+posix_quote_word() {
+  local value="$1"
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "$value"
+}
+
 # Claude's `--settings` flag is not repeatable. A fast selection MERGES
 # `fastMode:true` into whatever settings object the mode already carries
 # (auto's `{"permissions":{"defaultMode":"acceptEdits"}}`) rather than
 # appending a second --settings flag, which the CLI would not accept.
 compose_claude_launch_tpl() {
   local mode="$1" model="${2:-opusplan}" effort="$3" speed="$4"
-  local cmd="claude --permission-mode plan --model $model"
+  local cmd="claude --plugin-dir $(posix_quote_word "$STORY_PLUGIN_ROOT") --permission-mode plan --model $model"
   [ -z "$effort" ] || cmd="$cmd --effort $effort"
   local settings=""
   [ "$mode" = "base" ] || settings='{"permissions":{"defaultMode":"acceptEdits"}}'
