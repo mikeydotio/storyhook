@@ -128,7 +128,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 
     let statuses = status_snapshot(
         &ordered,
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -150,7 +150,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
     drop(guard);
     let statuses = status_snapshot(
         &ordered,
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -257,7 +257,7 @@ fn a_different_verifying_generation_cannot_inherit_active_ownership() {
 
     let statuses = status_snapshot(
         &[new_candidate],
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -293,7 +293,7 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 
     let statuses = status_snapshot(
         &[candidate],
-        activity.snapshot().as_ref(),
+        activity.active().as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -319,7 +319,7 @@ impl ActivityObservingActuator {
     fn assert_owned(&self, candidate: &VerificationCandidate) {
         let active = self
             .activity
-            .snapshot()
+            .active()
             .expect("ownership must be visible while verification is active");
         assert_eq!(active.project, candidate.project);
         assert_eq!(active.story_id, candidate.story_id);
@@ -355,7 +355,7 @@ impl VerificationActuator for ActivityObservingActuator {
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
         assert_eq!(
-            self.activity.snapshot(),
+            self.activity.active(),
             None,
             "process-local ownership must end before post-merge cleanup"
         );
@@ -434,7 +434,7 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
             actuator.observed_story.lock().unwrap().as_deref(),
             Some(id.as_str())
         );
-        assert_eq!(activity.snapshot(), None);
+        assert_eq!(activity.active(), None);
         assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 
         if expected == TickResult::RetryLater {
@@ -442,7 +442,7 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
             assert!(matches!(
                 status_snapshot(
                     &ordered,
-                    activity.snapshot().as_ref(),
+                    activity.active().as_ref(),
                     fixture.env(),
                     FIXTURE_NOW
                 )[0]
@@ -483,7 +483,7 @@ fn ownership_is_cleared_during_unwind() {
         actuator.observed_story.lock().unwrap().as_deref(),
         Some("SH-1")
     );
-    assert_eq!(activity.snapshot(), None);
+    assert_eq!(activity.active(), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -521,7 +521,7 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
     .expect_err("the injected outcome write must fail");
 
     assert!(error.to_string().contains("outcome recording interrupted"));
-    assert_eq!(activity.snapshot(), None);
+    assert_eq!(activity.active(), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
