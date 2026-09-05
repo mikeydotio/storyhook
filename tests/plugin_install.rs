@@ -27,19 +27,28 @@ fi
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; then
   [ "$mode" = "marketplace-fail" ] && { echo 'marketplace exploded' >&2; exit 17; }
   already=false
-  [ "$mode" = "already" ] && already=true
-  printf '{"marketplaceName":"storyhook","installedRoot":"%s","alreadyAdded":%s}\n' "$4" "$already"
+  if [ -f "$HOME/codex-marketplace-version" ]; then
+    already=true
+  else
+    basename "$4" > "$HOME/codex-marketplace-version"
+    printf '%s\n' "$4" > "$HOME/codex-marketplace-source"
+  fi
+  IFS= read -r root < "$HOME/codex-marketplace-source"
+  printf '{"marketplaceName":"storyhook","installedRoot":"%s","alreadyAdded":%s}\n' "$root" "$already"
   exit 0
 fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = add ]; then
   [ "$mode" = "plugin-fail" ] && { echo 'plugin exploded' >&2; exit 18; }
-  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"0.6.0","installedPath":"%s/cache/storyhook/story/0.6.0","authPolicy":"ON_INSTALL"}\n' "$HOME"
+  IFS= read -r version < "$HOME/codex-marketplace-version"
+  printf '%s\n' "$version" > "$HOME/codex-installed-version"
+  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installedPath":"%s/.codex/plugins/cache/storyhook/story/%s","authPolicy":"ON_INSTALL"}\n' "$version" "$HOME" "$version"
   exit 0
 fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = list ]; then
   version=0.6.0
+  if [ -f "$HOME/codex-installed-version" ]; then IFS= read -r version < "$HOME/codex-installed-version"; fi
   if [ -f "$HOME/codex-plugin-version" ]; then IFS= read -r version < "$HOME/codex-plugin-version"; fi
   printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":true}]}\n' "$version"
   exit 0
@@ -53,6 +62,7 @@ fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = remove ]; then
   [ "$mode" = "remove-fail" ] && { echo 'unrelated remove failure' >&2; exit 19; }
+  rm -f "$HOME/codex-installed-version"
   printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook"}\n'
   exit 0
 fi
@@ -63,6 +73,7 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ];
     echo 'Error: marketplace `storyhook` is not configured or installed' >&2
     exit 1
   fi
+  rm -f "$HOME/codex-marketplace-version" "$HOME/codex-marketplace-source"
   printf '{"marketplaceName":"storyhook","installedRoot":null}\n'
   exit 0
 fi
@@ -191,6 +202,28 @@ impl Harness {
             .expect("writing fake Codex plugin version");
     }
 
+    fn seed_codex_install(&self, version: &str, marketplace_source: &str) {
+        fs::write(self.home.join("codex-marketplace-version"), version)
+            .expect("seeding fake Codex marketplace version");
+        fs::write(
+            self.home.join("codex-marketplace-source"),
+            marketplace_source,
+        )
+        .expect("seeding fake Codex marketplace source");
+        fs::write(self.home.join("codex-installed-version"), version)
+            .expect("seeding fake Codex plugin version");
+    }
+
+    fn codex_marketplace_source(&self) -> String {
+        fs::read_to_string(self.home.join("codex-marketplace-source"))
+            .expect("reading fake Codex marketplace source")
+    }
+
+    fn codex_installed_version(&self) -> String {
+        fs::read_to_string(self.home.join("codex-installed-version"))
+            .expect("reading fake Codex plugin version")
+    }
+
     fn install_fake_plugin_helper(&self, version: &str, body: &str) -> PathBuf {
         let root = self
             .home
@@ -200,6 +233,7 @@ impl Harness {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::write(root.join(".codex-plugin/plugin.json"), "{}\n").unwrap();
         fs::write(root.join("bin/story.sh"), body).unwrap();
+        self.set_codex_plugin_version(version);
         root
     }
 
@@ -519,7 +553,6 @@ fn stable_launcher_follows_codex_plugin_version_changes_without_rule_edits() {
     assert_eq!(String::from_utf8_lossy(&old.stdout), "old\n");
 
     harness.install_fake_plugin_helper("0.7.0", "#!/bin/sh\necho new\n");
-    harness.set_codex_plugin_version("0.7.0");
     let new = harness.run_launcher(&["context"]);
     assert!(new.status.success(), "{}", combined(&new));
     assert_eq!(String::from_utf8_lossy(&new.stdout), "new\n");
@@ -594,9 +627,11 @@ fn reinstall_repairs_a_corrupt_same_version_projection() {
 }
 
 #[test]
-fn codex_migrates_the_owned_registration_before_adding_the_release_source() {
+fn codex_replaces_a_stale_git_snapshot_with_the_current_release() {
     let harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
+    harness.seed_codex_install("2.2.1-beta.3", "mikeydotio/storyhook");
+
     let output = harness.run(&["plugin", "install", "codex"]);
     assert!(output.status.success(), "{}", combined(&output));
 
@@ -610,6 +645,21 @@ fn codex_migrates_the_owned_registration_before_adding_the_release_source() {
     assert!(remove_plugin < remove_marketplace);
     assert!(remove_marketplace < add_marketplace);
     assert!(add_marketplace < add_plugin);
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    assert_eq!(harness.codex_installed_version().trim(), current_version);
+    assert_eq!(
+        Path::new(harness.codex_marketplace_source().trim()),
+        harness.release_marketplace()
+    );
+    let message = combined(&output);
+    assert!(
+        message.contains(&format!(
+            "/.codex/plugins/cache/storyhook/story/{current_version}"
+        )),
+        "{message}"
+    );
+    assert!(!message.contains("2.2.1-beta.3"), "{message}");
 }
 
 #[test]
