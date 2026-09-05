@@ -34,6 +34,8 @@ dispatch_and_capture() {
       && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+        FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
+        FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
         bash "$SCRIPT" dispatch "$id" "$@" 2>&1
   )
   [ "$(jqf "$out" .ok)" = "true" ] || fail_test "$prefix: dispatch itself failed: $out"
@@ -43,31 +45,33 @@ dispatch_and_capture() {
 # --- Claude, attended -------------------------------------------------------
 
 disp=$(dispatch_and_capture CLA)
-assert_contains "$disp" 'with `claude --permission-mode plan --model opusplan`' \
-  "claude attended default: unchanged from today"
+assert_contains "$disp" \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan\`" \
+  "claude attended default: binds StoryHook's plugin"
 case "$disp" in *--settings*) fail_test "claude attended default: unexpected --settings" ;; esac
 
 disp=$(dispatch_and_capture CLB --model=haiku --effort=max)
-assert_contains "$disp" 'with `claude --permission-mode plan --model haiku --effort max`' \
+assert_contains "$disp" \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model haiku --effort max\`" \
   "claude attended model+effort: composed in order"
 case "$disp" in *--settings*) fail_test "claude attended model+effort: unexpected --settings" ;; esac
 
 disp=$(dispatch_and_capture CLC --speed=fast)
 assert_contains "$disp" \
-  'with `claude --permission-mode plan --model opusplan --settings '"'"'{"fastMode":true}'"'"'`' \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"fastMode\":true}'\`" \
   "claude attended fast-only: settings holds only fastMode"
 
 disp=$(dispatch_and_capture CLD --model=sonnet --effort=low --speed=fast)
 assert_contains "$disp" \
-  'with `claude --permission-mode plan --model sonnet --effort low --settings '"'"'{"fastMode":true}'"'"'`' \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model sonnet --effort low --settings '{\"fastMode\":true}'\`" \
   "claude attended all-selectors: full composition"
 
 # --- Claude, --auto: the --settings MERGE case ------------------------------
 
 disp=$(dispatch_and_capture CLE --auto)
 assert_contains "$disp" \
-  'claude --permission-mode plan --model opusplan --settings '"'"'{"permissions":{"defaultMode":"acceptEdits"}}'"'" \
-  "claude auto default: unchanged from today"
+  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "claude auto default: binds StoryHook's plugin"
 
 disp=$(dispatch_and_capture CLF --auto --speed=fast)
 assert_contains "$disp" \
