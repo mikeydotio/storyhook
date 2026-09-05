@@ -38,7 +38,7 @@ stub_story "$STUB_DIR"
 run_hook() {
   (
     cd "$STUB_DIR" \
-      && PATH="$STUB_DIR:$PATH" env "$@" bash "$HOOK" <<<'{"cwd":"'"$STUB_DIR"'"}' >/dev/null
+      && PATH="$STUB_DIR:$PATH" env -u STORYHOOK_DISPATCH "$@" bash "$HOOK" <<<'{"cwd":"'"$STUB_DIR"'"}' >/dev/null
   )
 }
 
