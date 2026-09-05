@@ -189,10 +189,12 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of SH-535's universal test-child fence and
-  SH-539's exact, durable non-verification cleanup receipts, while reconciling
-  Full Auto lane accounting so `verifying` is an intentional handoff.
-- Next: expose queue health and verification diagnostics in engine/dashboard
+- Current: central verification of SH-535's universal test-child fence while
+  bounding centralized verification subprocesses and preserving recovery of
+  the persistent verifier worktree after timeout.
+- Next: make verification ownership durable and priority-preemptible so a
+  queued high-priority candidate is never hidden behind stale ownership.
+- Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.
