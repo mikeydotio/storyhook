@@ -144,22 +144,6 @@ fn time_to_reach_the_lock() -> Duration {
     Duration::from_secs(lock_poll_secs() * 2)
 }
 
-/// Blocks until `path` exists, or panics. The ceiling derives from the lock's
-/// own poll period rather than being a bare literal (SH-394).
-fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while Instant::now() < deadline {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "{} never appeared within the allowed poll cycles",
-        path.display()
-    );
-}
-
 /// Blocks until `path` no longer exists, or panics.
 fn wait_for_gone(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
@@ -197,15 +181,41 @@ fn pid_running(pid: u32) -> bool {
     !state.is_empty() && !state.starts_with('Z')
 }
 
-/// The pid the fake `cargo` recorded for itself. It `exec`s its sleep, so the
-/// pid it printed before that is the pid of the process actually running — a
-/// shell that merely started one would leave a child this test could not name.
-fn fake_cargo_pid(pidfile: &Path) -> u32 {
-    std::fs::read_to_string(pidfile)
-        .expect("reading the fake cargo's pid")
-        .trim()
-        .parse()
-        .expect("the fake cargo's pid must parse")
+/// Waits for `pidfile` to contain the positive pid its writer is publishing.
+/// Existence alone is weaker: shell redirection creates the file before
+/// `printf` writes its bytes.
+fn wait_for_pid(pidfile: &Path) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
+    while Instant::now() < deadline {
+        if let Some(pid) = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+        {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "{} never published a positive pid within the allowed poll cycles",
+        pidfile.display()
+    );
+}
+
+#[test]
+fn an_existing_empty_pidfile_is_not_ready_until_its_pid_is_published() {
+    let fixture = scratch_dir();
+    let pidfile = fixture.path().join("delayed.pid");
+    std::fs::write(&pidfile, "").expect("creating the not-yet-published pidfile");
+
+    let writer_path = pidfile.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(lock_poll_secs()));
+        std::fs::write(writer_path, "4242\n").expect("publishing the delayed pid");
+    });
+
+    assert_eq!(wait_for_pid(&pidfile), 4242);
+    writer.join().expect("joining the delayed pid writer");
 }
 
 fn stderr(out: &Output) -> String {
@@ -434,15 +444,12 @@ impl Fixture {
             .stderr(Stdio::null());
         let child = cmd.spawn().expect("spawning a gate holder");
         let runner = Runner(Some(child));
-        wait_for(&self.lock("gate").join("pid"));
+        wait_for_pid(&self.lock("gate").join("pid"));
         runner
     }
 
-    fn holder_pid(&self) -> String {
-        std::fs::read_to_string(self.lock("gate").join("pid"))
-            .expect("reading the gate lock's recorded pid")
-            .trim()
-            .to_string()
+    fn holder_pid(&self) -> u32 {
+        wait_for_pid(&self.lock("gate").join("pid"))
     }
 }
 
@@ -500,16 +507,14 @@ fn a_running_suite_is_itself_the_recorded_holder_of_the_gate_lock() {
     ));
 
     let mut runner = fixture.spawn(&["--only-no-doc", "slowleg"]);
-    wait_for(&fixture.lock("gate").join("pid"));
 
     assert_eq!(
         fixture.holder_pid(),
-        runner.pid().to_string(),
+        runner.pid(),
         "the gate lock must be recorded to the run that took it, not to some intermediate process -- a holder nobody can identify is a wedge nobody can clear"
     );
 
-    wait_for(&pidfile);
-    let cargo_pid = fake_cargo_pid(&pidfile);
+    let cargo_pid = wait_for_pid(&pidfile);
     signal(runner.pid(), "TERM");
     runner.collect();
     assert!(
@@ -532,9 +537,8 @@ fn an_interrupted_run_releases_the_gate_lock() {
     ));
 
     let mut runner = fixture.spawn(&["--only-no-doc", "slowleg"]);
-    wait_for(&fixture.lock("gate").join("pid"));
-    wait_for(&pidfile);
-    let cargo_pid = fake_cargo_pid(&pidfile);
+    wait_for_pid(&fixture.lock("gate").join("pid"));
+    let cargo_pid = wait_for_pid(&pidfile);
 
     signal(runner.pid(), "TERM");
     runner.collect();
