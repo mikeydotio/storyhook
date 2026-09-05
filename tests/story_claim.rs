@@ -14,7 +14,9 @@
 //! `storyhook::claim_comment::default_comment`, which needs no tmux at all.
 
 use predicates::prelude::*;
-use storyhook_test_support::{Project, TestEnv, scratch_dir_named};
+use storyhook_test_support::{
+    ChildGuard, Project, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir_named,
+};
 
 /// A project with a claimable state and nothing else assumed.
 fn project() -> Project<'static> {
@@ -738,8 +740,6 @@ fn a_dry_run_of_next_with_nothing_ready_reports_no_ready_stories() {
 /// either overwrites the first's claim or is refused.
 #[test]
 fn concurrent_claimants_are_handed_distinct_stories() {
-    use std::process::Stdio;
-
     let project = project();
     const READY: usize = 8;
     let seeded: std::collections::BTreeSet<String> = (0..READY)
@@ -752,21 +752,22 @@ fn concurrent_claimants_are_handed_distinct_stories() {
     const ATTEMPTS: usize = READY + 2;
     let children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            env.raw_story(project.path())
+            let mut command = env.raw_story(project.path());
+            command
                 .args(["claim", "--next", "--json"])
                 .env_remove("TMUX")
-                .env_remove("TMUX_PANE")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .env_remove("TMUX_PANE");
+            ChildGuard::spawn_with_output(&mut command)
                 .expect("failed to spawn concurrent `story claim --next`")
         })
         .collect();
 
     let mut claimed: Vec<String> = Vec::new();
     let mut empty_answers = 0usize;
-    for child in children {
-        let output = child.wait_with_output().unwrap();
+    for mut child in children {
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a concurrent `story claim --next` did not finish".to_string()
+        });
         assert!(
             output.status.success(),
             "every concurrent claim must succeed — a claim losing a race \
@@ -811,8 +812,6 @@ fn concurrent_claimants_are_handed_distinct_stories() {
 /// claim.
 #[test]
 fn concurrent_claimants_of_one_id_yield_exactly_one_winner() {
-    use std::process::Stdio;
-
     let project = project();
     let id = project.new_story("The contended one");
 
@@ -820,21 +819,22 @@ fn concurrent_claimants_of_one_id_yield_exactly_one_winner() {
     const ATTEMPTS: usize = 6;
     let children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            env.raw_story(project.path())
+            let mut command = env.raw_story(project.path());
+            command
                 .args(["claim", &id, "--json"])
                 .env_remove("TMUX")
-                .env_remove("TMUX_PANE")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .env_remove("TMUX_PANE");
+            ChildGuard::spawn_with_output(&mut command)
                 .expect("failed to spawn concurrent `story claim <id>`")
         })
         .collect();
 
     let mut winners = 0usize;
     let mut conflicts = 0usize;
-    for child in children {
-        let output = child.wait_with_output().unwrap();
+    for mut child in children {
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a concurrent `story claim <id>` did not finish".to_string()
+        });
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         match value["result"].as_str() {

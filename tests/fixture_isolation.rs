@@ -1,4 +1,5 @@
-//! No test file reaches the `story` binary outside the shared harness.
+//! No test file reaches the `story` binary or spawns a child outside the
+//! shared harness.
 //!
 //! For most of this repository's life, forty-three test files reached it
 //! directly — `assert_cmd::Command::cargo_bin("story")`, with no `.env()` at
@@ -32,6 +33,13 @@
 //! resolves this build's own binary and asserts it is not an installed one. The
 //! thing being fenced out is reaching the binary while inheriting an
 //! environment nobody chose.
+//!
+//! SH-535 adds the process-lifetime half of the same rule. A type-based scan
+//! for `std::process::Child` misses inferred locals, so the fence rejects the
+//! operation that creates the hazard: a direct zero-argument `Command` spawn.
+//! `ChildGuard::spawn` and `ChildGuard::spawn_with_output` are the exclusive
+//! doors, making panic cleanup and a bounded wait available from the instant a
+//! test creates a child.
 
 use std::path::Path;
 
@@ -50,6 +58,12 @@ use std::path::Path;
 /// being written and fails on the commit that adds it.
 fn marker() -> String {
     format!("cargo_bin(\"{}\")", "story")
+}
+
+/// The zero-argument process-spawn marker, assembled at run time so this scan
+/// does not flag its own source.
+fn process_spawn_marker() -> String {
+    format!(".{}()", "spawn")
 }
 
 /// Every tracked `tests/*.rs`, with its text.
@@ -98,6 +112,23 @@ fn no_test_file_reaches_the_binary_outside_the_harness() {
     );
 }
 
+#[test]
+fn no_test_process_is_spawned_outside_child_guard() {
+    let marker = process_spawn_marker();
+    let offenders: Vec<String> = tracked_test_files()
+        .into_iter()
+        .filter(|(_, text)| storyhook_test_support::without_rust_comments(text).contains(&marker))
+        .map(|(relative, _)| relative)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{offenders:?} spawn a process without immediately giving ownership to \
+         `ChildGuard`. Use `ChildGuard::spawn` or \
+         `ChildGuard::spawn_with_output`; then use its bounded wait, unless the \
+         test deliberately kills and reaps the child first."
+    );
+}
+
 /// The scan finds files, and the marker it looks for is one that exists.
 ///
 /// Two controls, because the test above passes vacuously in two different ways:
@@ -123,6 +154,13 @@ fn the_scan_can_see_a_violation() {
     // …and it is not matching everything either.
     let innocent = "let cmd = TestEnv::shared().story(dir.path());";
     assert!(!innocent.contains(&marker()));
+
+    let process_marker = process_spawn_marker();
+    let planted = format!("let child = command{};", process_marker);
+    assert!(
+        planted.contains(&process_marker),
+        "the process marker no longer matches the operation it is meant to find"
+    );
 }
 
 /// The door this rule points offenders at is real and is used.
@@ -141,6 +179,18 @@ fn the_sanctioned_door_is_the_one_in_use() {
         deliberate.len() >= 3,
         "`story_binary()` is what a test that needs the raw binary should use, \
          and only {deliberate:?} do. Either the door moved or this rule is \
+         pointing at nothing."
+    );
+
+    let guarded: Vec<String> = tracked_test_files()
+        .into_iter()
+        .filter(|(_, text)| text.contains("ChildGuard::spawn"))
+        .map(|(relative, _)| relative)
+        .collect();
+    assert!(
+        guarded.len() >= 10,
+        "`ChildGuard::spawn` is the only sanctioned process-spawn door, and \
+         only {guarded:?} use it. Either the door moved or this rule is \
          pointing at nothing."
     );
 }
