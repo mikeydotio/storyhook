@@ -242,10 +242,10 @@ Worth knowing before changing anything here:
   `/story complete <id>` from the main checkout.
 - **`--auto` retains Plan mode but requires no person at the prompt.** Every
   autonomous tmux child receives `STORYHOOK_AUTO=<story-id>`. The packaged
-  hook allows Claude's plan exit, then its `PermissionRequest(ExitPlanMode)`
-  handler sends Return only when the exact, selected Auto review option is
-  visible in that child's pane. Codex has a sibling exact-pane watcher, armed
-  after Plan mode is confirmed, that sends Return to “Yes, implement this plan.”
+  hook allows Claude's plan exit; dispatch arms provider-specific exact-pane
+  watchers before prompt submission. Claude's sends Return only when the exact,
+  selected Auto review option is visible in the original live child pane.
+  Codex's sends Return to “Yes, implement this plan.”
   The hook denies either provider's question tool; Codex uses `--approve-for-me`
   for later tool approvals. Claude's
   post-plan default is `acceptEdits`, while Codex keeps workspace-write automatic

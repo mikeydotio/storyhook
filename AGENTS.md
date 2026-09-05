@@ -190,7 +190,9 @@ project it is looking at.
 ## Mini-roadmap
 
 - Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
-  through the centralized verifier.
+  through the centralized verifier, and reconcile Full Auto lane accounting so
+  `verifying` is an intentional handoff rather than a stall.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.
