@@ -388,7 +388,9 @@ fn panic_record(env: &Environment, info: &std::panic::PanicHookInfo<'_>) -> Pani
 ///
 /// The same idiom `STORYHOOK_FAULT` already established for
 /// [`crate::store::fault`]: an env var read only in a build carrying live
-/// crash points, so it cannot exist in anything a user runs. Called from
+/// crash points. A build without them refuses `STORYHOOK_TEST_PANIC` at startup
+/// through [`crate::fault_injection_guard`] instead of silently dropping it.
+/// Called from
 /// [`crate::daemon::serve::serve`], after the portfile is published and after
 /// startup recovery ([`crate::daemon::lifecycle::InFlight::harvest_stale`])
 /// has run — panicking any earlier would leave nothing for the *next* daemon

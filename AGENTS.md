@@ -189,9 +189,11 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-204's lowercase label identity, compensating migration,
-  and shared create/drawer label editor through the centralized verifier.
-- Next: expose queue health and verification diagnostics in engine/dashboard
+- Current: verify SH-204's lowercase label identity and shared label editor
+  while bounded verification subprocess and worktree recovery settle.
+- Next: make verification ownership durable and priority-preemptible so a
+  queued high-priority candidate is never hidden behind stale ownership.
+- Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.

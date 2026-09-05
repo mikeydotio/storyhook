@@ -231,6 +231,8 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
    `vh` line first that browser gets no height at all, not just the old
    (imperfect but working) behavior. */
 .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.repo-workspace { flex: 1; min-width: 0; min-height: 0; display: flex; overflow: hidden; }
+.workspace-content { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* ---- Topbar ---- */
 .topbar {
@@ -842,15 +844,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .backdrop.open { opacity: 1; }
 .drawer {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(30rem, 100vw);
-  background: var(--bg-raised); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
-  transform: translateX(100%); transition: transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
-  z-index: 41; display: flex; flex-direction: column; overflow: hidden;
+  flex: 0 0 auto; width: 0; max-width: 100%; min-height: 0;
+  background: var(--bg-raised); border-left: 0 solid var(--border);
+  transform: translateX(100%);
+  transition: width 0.2s cubic-bezier(0.2, 0.9, 0.3, 1), transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1), border-width 0.2s;
+  display: flex; flex-direction: column; overflow: hidden;
 }
-.drawer.open { transform: translateX(0); }
+.drawer.open { width: min(30rem, 100%); border-left-width: 1px; transform: translateX(0); }
 .drawer-header { display: flex; align-items: center; gap: 0.625rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .drawer-id { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; color: var(--fg-muted); white-space: nowrap; }
-.drawer-close { margin-left: auto; }
+.drawer-close { margin-left: auto; min-width: var(--tap-min); justify-content: center; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; }
 .drawer-title {
   font-size: var(--control-font-lg); font-weight: 700; line-height: 1.3; width: 100%; border: 1px solid transparent;
@@ -1116,7 +1119,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    `position: fixed`, not `.fdd-panel`'s `absolute` -- this is anchored to
    the cursor (or the invoking card, for a keyboard-raised menu), not to a
    fixed button, so it needs its own positioning rather than that class's.
-   z-index 50: above the drawer (41), below every modal (51), since the
+   z-index 50: above the app workspace, below every modal (51), since the
    delete modal a menu item can open must be able to cover it. */
 .ctxmenu {
   position: fixed; min-width: 12rem; max-height: 20rem; overflow-y: auto;
@@ -1461,7 +1464,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      landmark navigation, so hiding this visually loses nothing a phone
      reader needs. 252px for the pair was the single largest reason brand
      and .view-toggle couldn't share a row (see topbar's own comment). */
-  .drawer { width: 100vw; }
   /* SH-235: 18rem (288px) is nearly the entire screen on the narrowest
      supported phones (320-350px) -- 320px leaves only a 32px (10%) sliver
      of the next column, not enough to read as "more content this way"
@@ -1544,6 +1546,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     </div>
   </div>
 
+  <div class="repo-workspace" id="repo-workspace">
+  <div class="workspace-content" id="workspace-content">
   <section class="engine-banner-region" id="engine-banner-region" aria-label="Full Auto alerts" aria-live="polite" hidden></section>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
@@ -1578,6 +1582,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <p class="empty" id="empty-msg" hidden>No stories match the current filters.</p>
 
   <div class="footer" id="footer">Updated just now</div>
+  </div>
+
+  <aside class="drawer" id="drawer" tabindex="-1" aria-label="Story details" aria-hidden="true" inert>
+    <div class="drawer-header">
+      <span id="drawer-type-badge"></span>
+      <span class="drawer-id" id="drawer-id"></span>
+      <button type="button" class="btn btn-ghost drawer-close" id="drawer-close" aria-label="Close story details"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+    <div class="drawer-footer" id="drawer-footer"></div>
+    <span class="sr-only" id="description-view-kbd-hint">Press Enter to edit the description.</span>
+  </aside>
+  </div>
 </div>
 
 <!-- Every `.backdrop` names the surface it dims in `data-overlay`, and that
@@ -1586,18 +1603,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      existing rather than by being remembered. `tests/web_test.rs` refuses to
      serve a backdrop that names no surface, or one whose surface is never
      handed to `activateOverlay()`/`releaseOverlay()`. -->
-<div class="backdrop" id="drawer-backdrop" data-overlay="drawer" hidden></div>
-<aside class="drawer" id="drawer" tabindex="-1" aria-hidden="true">
-  <div class="drawer-header">
-    <span id="drawer-type-badge"></span>
-    <span class="drawer-id" id="drawer-id"></span>
-    <button type="button" class="btn btn-ghost drawer-close" id="drawer-close">Close</button>
-  </div>
-  <div class="drawer-body" id="drawer-body"></div>
-  <div class="drawer-footer" id="drawer-footer"></div>
-  <span class="sr-only" id="description-view-kbd-hint">Press Enter to edit the description.</span>
-</aside>
-
 <div class="backdrop" id="modal-backdrop" data-overlay="create-modal" hidden></div>
 <div class="modal" id="create-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="create-modal-header">New story</div>
@@ -2619,9 +2624,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // ============================================================
 
   /** The open overlays, outermost first. A stack rather than a flag because
-   * they genuinely nest: the drawer's own footer opens the delete modal over
-   * it, and a 401 from anything at all opens the token modal over whatever
-   * asked. Only the last entry is interactive. */
+   * they genuinely nest: a 401 can open the token modal over whichever modal
+   * issued the request. Only the last entry is interactive. Story detail is
+   * a peer inside the app shell (SH-554), not an entry in this stack. */
   var overlayStack = [];
 
   /** What had focus when each open overlay took it, keyed by surface id, so
@@ -2643,30 +2648,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Marks everything but the topmost open overlay `inert`, which is what
    * makes an overlay modal for the KEYBOARD (SH-299).
    *
-   * `.backdrop` is `position: fixed; inset: 0`, so it has always made these
-   * surfaces modal for the mouse — and only for the mouse. The board, the
-   * topbar and the settings table behind an open drawer kept their place in
-   * the tab order and stayed activatable with Enter, so the dashboard was
-   * modal for one input device and non-modal for the other. That asymmetry
-   * is not merely an accessibility failure: it is the mechanism SH-290's
-   * defect rode in on, where the Statuses button under an open drawer could
-   * not be clicked and could be pressed.
+   * `.backdrop` is `position: fixed; inset: 0`, so it made every registered
+   * surface modal for the mouse before SH-299 made the same promise to a
+   * keyboard. SH-554 deliberately removes story detail from that registry:
+   * the panel has no backdrop and the board remains interactive beside it.
    *
    * **Every *closed* overlay is inert too, and that is not belt-and-braces.**
-   * `.modal` closes to `opacity: 0; pointer-events: none` and `.drawer` to
-   * `transform: translateX(100%)`; neither takes anything out of the tab
-   * order, so six shut dialogs' inputs and buttons sat in the tab sequence —
-   * behind the open one, and in front of the board when nothing was open at
-   * all. Inerting by "is not the active overlay" rather than by "is the app
-   * shell" answers both with one rule, and is why this runs at boot as well
-   * as on every open and close.
+   * `.modal` closes to `opacity: 0; pointer-events: none`, which does not take
+   * its controls out of the tab order. Inerting by "is not the active
+   * overlay" rather than by "is the app shell" keeps every shut dialog out
+   * of the sequence, and is why this runs at boot as well as on every open
+   * and close. The closed detail peer owns its own `inert` attribute.
    *
    * **The rule for what is covered is "whatever the backdrop covers", and
    * nothing wider.** `#toast-stack` and `#dispatch-history` are `z-index: 60`
    * against the backdrop's 40 — they render *over* an open overlay by an
-   * older, deliberate decision, so the backdrop never dimmed them and a mouse
-   * has always been able to reach the dispatch history's Dismiss buttons with
-   * a drawer open. They are therefore already symmetric, which is the whole
+   * older, deliberate decision, so the backdrop never dims them and a mouse
+   * can reach the dispatch history's Dismiss buttons with a modal open. They
+   * are therefore already symmetric, which is the whole
    * property this function exists to restore; inerting them would not fix an
    * asymmetry, it would create a new behaviour (unreachable by either device)
    * and silence both notice surfaces' own live regions (`#toast-stack`,
@@ -2738,13 +2737,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `initialFocusId` names the surface's one obvious first control where it
    * has one (a title field, a reason field); the surface itself is the
    * fallback, which is what lets a screen reader read a dialog with no such
-   * control — the drawer, the drafts list — from its top rather than
+   * control — the drafts list, for example — from its top rather than
    * resuming wherever the now-inert background left off. Every surface
    * carries `tabindex="-1"` so that fallback can land.
    *
-   * Idempotent by design: `openDrawer()` is reachable from a relation button
-   * *inside* an already-open drawer, and a second push would strand the
-   * first entry and lose the real return-focus target. */
+   * Idempotent by design: a repeated modal open must not strand the first
+   * entry and lose the real return-focus target. */
   function activateOverlay(surfaceId, initialFocusId) {
     if (overlayStack.indexOf(surfaceId) !== -1) return;
     overlayReturnFocus[surfaceId] = document.activeElement;
@@ -2758,8 +2756,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *
    * A no-op when `surfaceId` is not open, which is load-bearing rather than
    * defensive. The shared Escape handler calls every `close*` function on
-   * every press; `renderScreen()` calls `closeDrawer()` on every non-repo
-   * render; `updateDraftsButton()` calls `closeDraftsModal()` on every
+   * every press, and `updateDraftsButton()` calls `closeDraftsModal()` on every
    * navigation including the one at boot (SH-284). Without the guard each of
    * those would yank focus away from wherever the user actually is. */
   function releaseOverlay(surfaceId) {
@@ -2814,9 +2811,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * of one — imperceptible, and preserved as found: SH-302 is about a write
    * nobody cancelled, not about how long a fade runs. */
   var BACKDROP_FADE_MS = 150;
-
-  /** The drawer's, which is the full 0.18s. Also preserved as found. */
-  var DRAWER_BACKDROP_FADE_MS = 180;
 
   /** The one hide scheduled against each backdrop and not yet fired, keyed by
    * backdrop element id. At most one, because both functions below drop the
@@ -3418,7 +3412,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // narrower wording is the honest one: there is nowhere to put a notice that is
   // over nothing. Below the chrome band the right-hand strip is board cards,
   // which are click, keyboard and drag-and-drop targets. So the invariant is
-  // **the dock never overlaps the app's chrome band or the drawer's header and
+  // **the dock never overlaps the app's chrome band or the detail panel's header and
   // footer bands** — plus a footprint over content that is bounded, scrollable
   // and dismissible.
 
@@ -3431,14 +3425,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * outside all registered containers, and no test catches that — only
    * noticing does.
    *
-   * `.drawer-header` and `#drawer-footer` are measured whether or not the drawer
-   * is open. `.drawer` translates in X only, so their vertical extent is
-   * identical either way; measuring them unconditionally costs a few pixels of
-   * dock height permanently and removes a whole class of bug — a dock that has
-   * to be re-measured on open, re-measured on close, and is wrong for the 200ms
-   * the drawer spends in between. */
+   * `.drawer-header` and `#drawer-footer` contribute only while the panel is
+   * open. Its clipped, zero-width closed track still gives both children an
+   * intrinsic height, so counting them then would reserve notice space for a
+   * panel the reader cannot see. */
   var NOTICE_BAND_TOP = [".topbar", "#filter-bar", "#engine-banner-region", ".drawer-header"];
   var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
+
+  /** A detail-panel band contributes only while that peer is visible. Its
+   * closed children still have intrinsic height inside the panel's zero-width
+   * clipped track; measuring that height would reserve notice space for a
+   * panel the reader cannot see. */
+  function noticeBandIsVisible(node) {
+    var panel = node.closest("#drawer");
+    return !panel || panel.classList.contains("open");
+  }
 
   /** Publishes one band edge, skipping the write when the value has not moved.
    *
@@ -3472,11 +3473,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var bottom = 0;
     NOTICE_BAND_TOP.forEach(function(selector) {
       var node = document.querySelector(selector);
-      if (node) top = Math.max(top, node.getBoundingClientRect().bottom);
+      if (node && noticeBandIsVisible(node)) top = Math.max(top, node.getBoundingClientRect().bottom);
     });
     NOTICE_BAND_BOTTOM.forEach(function(selector) {
       var node = document.querySelector(selector);
-      if (node) bottom = Math.max(bottom, node.getBoundingClientRect().height);
+      if (node && noticeBandIsVisible(node)) bottom = Math.max(bottom, node.getBoundingClientRect().height);
     });
     setNoticeBand("--notice-band-top", Math.ceil(top));
     setNoticeBand("--notice-band-bottom", Math.ceil(bottom));
@@ -9652,6 +9653,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return (detail && detail.story) || (summary && summary.story) || null;
   }
 
+  /** The element that invoked the currently open detail panel. The panel is
+   * a non-modal peer, so this focus bookkeeping is deliberately independent
+   * of the overlay stack used by true dialogs. */
+  var drawerReturnFocus = null;
+
   /** Opens the drawer for `id`. Assumes `state.screen === "repo"` -- every
    * caller is either DOM the board only renders on that screen (a card, a
    * relation button, a list row) or `consumeDeepLinkStory()`, the one
@@ -9661,15 +9667,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * same state fact is only a second thing to keep true, not a second
    * safeguard. */
   function openDrawer(id) {
+    var wasOpen = state.drawerId !== null;
+    var invoker = document.activeElement;
+    // A board/list activation retargets this peer and becomes its new return
+    // point. A relation inside the panel is replaced by the render it starts,
+    // so keep the stable external return point for that route.
+    if (!wasOpen || (invoker !== document.body && !$("drawer").contains(invoker))) {
+      drawerReturnFocus = invoker;
+    }
     state.drawerId = id;
     state.drawerDetail = null;
     // Scratch belonging to whichever story's form was last on screen.
     clearPendingRelation();
+    $("drawer").removeAttribute("inert");
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
-    showBackdrop("drawer-backdrop");
-    activateOverlay("drawer");
     renderDrawer();
+    if (!wasOpen) $("drawer").focus();
+    measureNoticeBands();
     syncUrl();
     api("GET", apiBase() + "/story/" + encodeURIComponent(id))
       .then(function(resp) {
@@ -9681,18 +9696,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function closeDrawer() {
+    var wasOpen = state.drawerId !== null;
     state.drawerId = null;
     state.drawerDetail = null;
     clearPendingRelation();
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
-    // This used to re-check `state.drawerId` when the timer fired — the one
-    // such guard in the file that was sound, since `openDrawer()` sets that
-    // variable synchronously. Dropped rather than kept: `showBackdrop()`
-    // cancels the timer outright, so a second way of saying the same thing
-    // is only a second thing to keep true (SH-302).
-    hideBackdrop("drawer-backdrop", DRAWER_BACKDROP_FADE_MS);
-    releaseOverlay("drawer");
+    $("drawer").setAttribute("inert", "");
+    if (wasOpen) restoreOverlayFocus(drawerReturnFocus);
+    drawerReturnFocus = null;
+    measureNoticeBands();
     syncUrl();
   }
 
@@ -13101,7 +13114,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function bindShell() {
     bindPressGate();
     // Before anything is bound, and before anything is open: this is what
-    // takes the seven *closed* overlays out of the tab order they have
+    // takes the eight *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
     applyOverlayModality();
     bindTypedKeys(document, trapOverlayTab);
@@ -13173,7 +13186,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // default action, which `preventDefault()` does from either phase, and
     // nothing in the dock stops propagation on the way up.
     $("notice-dock").addEventListener("keydown", refuseAutoRepeatActivation);
-    $("drawer-backdrop").addEventListener("click", closeDrawer);
     bindTypedKeys(document, function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
