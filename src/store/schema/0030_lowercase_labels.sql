@@ -24,6 +24,9 @@ WITH candidates AS (
             json_extract(story.snapshot, '$.labels')
         ) AS labels
       FROM stories story
+     -- Empty labels are omitted from StorySnapshot JSON. They are already
+     -- canonical and must not pass SQL NULL to the strict Rust normalizer.
+     WHERE json_type(story.snapshot, '$.labels') IS NOT NULL
 ), changed AS (
     SELECT *
       FROM candidates

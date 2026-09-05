@@ -3656,6 +3656,7 @@ fn migration_thirty_normalizes_every_story_with_real_events() {
                 ("open", vec!["Web", "WEB", "CAFÉ"], false),
                 ("closed", vec!["ÄPPLE", "API,SSE"], true),
                 ("control", vec!["already", "canonical"], false),
+                ("label-free control", vec![], false),
             ] {
                 let story_no = tx.allocate_story_no(project)?;
                 let mut events = vec![
@@ -3708,6 +3709,10 @@ fn migration_thirty_normalizes_every_story_with_real_events() {
         .read(|tx| tx.story(project, StoryNo::new(3)))
         .unwrap()
         .unwrap();
+    let label_free_before = store
+        .read(|tx| tx.story(project, StoryNo::new(4)))
+        .unwrap()
+        .unwrap();
 
     store.migrate().unwrap();
 
@@ -3718,6 +3723,10 @@ fn migration_thirty_normalizes_every_story_with_real_events() {
     assert_eq!(rows[1].snapshot.labels, ["api", "sse", "äpple"]);
     assert_eq!(rows[1].snapshot.superstate.as_str(), "CLOSED");
     assert_eq!(rows[2], control_before, "canonical rows stay byte-stable");
+    assert_eq!(
+        rows[3], label_free_before,
+        "an omitted empty-label field stays byte-stable"
+    );
     assert_eq!(project_counter(store.path(), project), before_counter + 2);
 
     for story_no in [StoryNo::new(1), StoryNo::new(2)] {
