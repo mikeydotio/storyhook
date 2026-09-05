@@ -189,8 +189,7 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-204's lowercase label identity and shared label editor
-  through the repaired, installed centralized verifier.
+- Current: verify SH-571's exact-hook binding for autonomous Codex dispatch.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
