@@ -117,8 +117,8 @@ pub fn resolve_on_path(path: Option<&OsStr>, name: &str) -> Option<InstalledStor
 
 /// Whether `path` is a regular file with at least one executable bit set.
 ///
-/// Unix-only permission bits, unconditionally: every target in the release
-/// matrix (`.github/workflows/release.yml`) is a Unix target, so this needs no
+/// Unix-only permission bits, unconditionally: every target in
+/// `scripts/release-targets.sh` is a Unix target, so this needs no
 /// `cfg(target_os = "windows")` arm naming a platform nothing here builds for
 /// (the class SH-260/SH-276 removed).
 #[cfg(unix)]

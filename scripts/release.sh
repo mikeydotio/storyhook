@@ -9,13 +9,11 @@
 #   ./scripts/release.sh --publish       # ship the draft you have been dogfooding
 #   ./scripts/release.sh --local-only    # just rebuild and reinstall what is checked out
 #
-# --bump bumps VERSION on a release branch, opens a PR (main is protected
-# org-wide, so nothing reaches it any other way), merges with a merge commit,
-# tags `main` and pushes the tag. Pushing a `v*` tag triggers
-# `.github/workflows/release.yml`, which builds all four targets and assembles
-# a **draft** release. This script waits for that build, verifies every
-# platform asset actually reached the draft, and then installs the new version
-# locally — so what you dogfood is the artifact that would ship.
+# --bump bumps VERSION on a release branch, opens and merges a PR, builds and
+# verifies all four release archives on this machine, tags the release commit,
+# and uploads exactly one **draft** release. The tag itself triggers nothing.
+# The script verifies GitHub's digest for every uploaded asset before it
+# installs the new version locally, so what you dogfood is what would ship.
 #
 # Nothing is public at that point, and that is the design. `install.sh` and
 # `story update` both resolve `/releases/latest`, which GitHub defines as the
@@ -54,16 +52,10 @@ set -euo pipefail
 
 REPO="mikeydotio/storyhook"
 PLUGIN_DIR="plugins/story"
-
-# The four artifacts `release.yml`'s matrix builds. Named here so the
-# post-publish check can insist on all of them rather than trusting that a
-# green workflow means a complete release.
-ARTIFACTS=(
-  "story-x86_64-unknown-linux-gnu.tar.gz"
-  "story-aarch64-unknown-linux-gnu.tar.gz"
-  "story-x86_64-apple-darwin.tar.gz"
-  "story-aarch64-apple-darwin.tar.gz"
-)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/release-targets.sh
+source "$SCRIPT_DIR/release-targets.sh"
+ARTIFACTS=("${RELEASE_ARTIFACTS[@]}")
 
 local_only=0
 bump=""
@@ -98,6 +90,20 @@ run() {
     return 0
   fi
   "$@"
+}
+
+# Every release matching a tag, including drafts. Listing rather than using
+# `gh release view <tag>` is load-bearing: GitHub can contain two same-tag
+# drafts (SH-540), and the tag endpoint chooses one instead of exposing the
+# ambiguity that must stop publishing.
+releases_for_tag() {
+  gh api --paginate "repos/$REPO/releases?per_page=100" \
+    --jq ".[] | select(.tag_name == \"$1\") | [.id, .draft] | @tsv"
+}
+
+release_assets() {
+  gh api --paginate "repos/$REPO/releases/$1/assets?per_page=100" \
+    --jq '.[] | [.name, .digest] | @tsv'
 }
 
 confirm() {
@@ -174,8 +180,8 @@ Usage:
   scripts/release.sh --local-only [options]                 # reinstall only
 
 Options:
-  --bump LEVEL      major | minor | patch. Cuts the version: PR, merge, tag,
-                    CI builds a DRAFT release, then installs it locally.
+  --bump LEVEL      major | minor | patch. Cuts the version, assembles all
+                    targets locally, uploads a DRAFT, then installs it.
   --publish [VER]   Publish an already-assembled draft (default: VERSION).
                     Refuses unless all four platform assets are attached.
   --local-only      Rebuild and reinstall the checked-out tree. Nothing is
@@ -191,6 +197,9 @@ Options:
 Environment:
   STORYHOOK_RELEASE_ALLOW_WORKTREE=1   Permit running from a linked worktree.
   INSTALL_DIR                          Passed through to `make install`.
+
+Public release requirements:
+  rustup stable with both Darwin targets, cross, and a running Docker engine.
 EOF
 }
 
@@ -232,13 +241,13 @@ fi
 
 # Three verbs, and exactly one of them per invocation.
 #
-#   --bump      cut a version: PR, merge, tag, and let CI assemble a DRAFT
+#   --bump      cut a version: PR, merge, local build, tag, and DRAFT upload
 #   --publish   ship a draft that already exists
 #   --local-only  rebuild and reinstall what is checked out
 #
 # --bump and --publish are deliberately separate because that separation is
-# the whole point: a tag push proves the build on four platforms and attaches
-# every asset, and only then is shipping a decision worth making.
+# the whole point: local assembly proves all four platforms and attaches every
+# asset, and only then is shipping a decision worth making.
 if [ "$do_publish" = 1 ] && { [ "$local_only" = 1 ] || [ -n "$bump" ]; }; then
   die "--publish is its own step. Run it after --bump, once you have decided to ship."
 fi
@@ -312,35 +321,51 @@ if [ "$do_publish" = 1 ]; then
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run \`gh auth login\`."
 
   target="${publish:-$current_version}"
+  release_version_is_valid "$target" \
+    || die "--publish version must be vMAJOR.MINOR.PATCH, got \`$target\`"
   step "Publishing $target"
 
-  state="$(gh release view "$target" --repo "$REPO" --json isDraft,isPrerelease 2>/dev/null)" \
-    || die "no release $target exists. Push its tag first (\`--bump\` does), and let the workflow assemble it."
+  releases="$(releases_for_tag "$target")" \
+    || die "could not list GitHub releases for $target"
+  release_count="$(printf '%s\n' "$releases" | sed '/^$/d' | wc -l | tr -d ' ')"
+  [ "$release_count" -gt 0 ] \
+    || die "no release $target exists. Run \`--bump\` to assemble its draft locally."
+  [ "$release_count" -eq 1 ] \
+    || die "$release_count releases exist for $target. Refusing to choose between ambiguous same-tag releases."
+  IFS=$'\t' read -r release_id is_draft <<EOF
+$releases
+EOF
 
-  case "$state" in
-    *'"isDraft":false'*)
+  case "$is_draft" in
+    false)
       info "$target is already published."
       note "nothing to do; /releases/latest already resolves it unless a newer one exists"
       exit 0 ;;
   esac
+  [ "$is_draft" = "true" ] || die "release $target returned an unknown draft state: $is_draft"
 
   # A draft is only worth shipping if it is COMPLETE. This is the check that
   # v2.1.0 never got: its build died on one target, so the release it would
   # have published was missing an asset that `install.sh` resolves by name.
   step "Verifying every platform asset is attached before shipping"
-  missing=0
+  assets="$(release_assets "$release_id")" \
+    || die "could not list assets for the $target draft"
+  invalid=0
   for artifact in "${ARTIFACTS[@]}"; do
-    if gh release view "$target" --repo "$REPO" --json assets \
-        --jq '.assets[].name' 2>/dev/null | grep -qx "$artifact"; then
-      info "ok       $artifact"
+    digests="$(printf '%s\n' "$assets" | awk -F '\t' -v name="$artifact" '$1 == name { print $2 }')"
+    matches="$(printf '%s\n' "$digests" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [ "$matches" -ne 1 ]; then
+      printf '    %sinvalid  %s (%s matching assets)%s\n' "$red" "$artifact" "$matches" "$reset"
+      invalid=$((invalid + 1))
+    elif ! printf '%s\n' "$digests" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+      printf '    %sinvalid  %s (missing SHA-256 metadata)%s\n' "$red" "$artifact" "$reset"
+      invalid=$((invalid + 1))
     else
-      printf '    %smissing  %s%s\n' "$red" "$artifact" "$reset"
-      missing=$((missing + 1))
+      info "ok       $artifact $digests"
     fi
   done
-  [ "$missing" -eq 0 ] \
-    || die "$missing asset(s) missing from the $target draft. Publishing it would 404 for those platforms.
-    Re-run the build (\`gh workflow run release.yml --ref $target\`) rather than shipping this."
+  [ "$invalid" -eq 0 ] \
+    || die "$invalid required asset(s) are missing, duplicated, or lack a GitHub SHA-256 digest. Refusing to publish."
 
   confirm "Publish $target? This is the moment it becomes visible to install.sh and \`story update\`."
   run gh release edit "$target" --repo "$REPO" --draft=false
@@ -367,6 +392,10 @@ if [ "$local_only" = 0 ]; then
   git fetch --quiet origin main
   [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] \
     || die "local main and origin/main disagree. Pull (or push your merges) first."
+
+  # This check is intentionally before semver creates a branch or commit. The
+  # actual binaries are built after the bumped tree lands on main.
+  scripts/build-release-assets.sh --check
 fi
 
 # ---------------------------------------------------------------------------
@@ -387,6 +416,8 @@ if [ -z "$SEMVER_CLI" ]; then
     SEMVER_CLI="$(command -v semver)"
   else
     # Newest cached plugin version wins; `sort -V` so 3.7.4 beats 2.39.1.
+    # Every matched basename is a semver directory.
+    # shellcheck disable=SC2012
     SEMVER_CLI="$(ls -d "$HOME"/.claude/plugins/cache/agentics/semver/*/bin/semver-cli 2>/dev/null \
       | sort -V | tail -1)"
   fi
@@ -458,10 +489,12 @@ EOF
     die "tag $next_version already exists on origin. Tags are never moved here."
   fi
 
-  # `render-release-body.sh` requires a changelog section for the version, and
-  # the workflow runs it BEFORE publishing — a body that cannot be rendered on
-  # a tag push leaves a permanently dangling tag. Check it here, where failing
-  # is free.
+  existing_releases="$(releases_for_tag "$next_version")" \
+    || die "could not check whether a release already exists for $next_version"
+  [ -z "$existing_releases" ] \
+    || die "a release already exists for $next_version. Refusing to create another same-tag draft."
+
+  # `render-release-body.sh` requires a changelog section for the version.
   if [ -f scripts/render-release-body.sh ] && [ "$dry_run" = 0 ]; then
     if ! scripts/render-release-body.sh --version "$next_version" --repo "$REPO" >/dev/null 2>&1; then
       warn "no changelog section for $next_version yet."
@@ -494,8 +527,7 @@ if [ "$local_only" = 1 ]; then
     confirm "Bump $current_version by $bump without publishing?"
     # --skip-tag: a tag is a claim about a published release. Minting one for a
     # build that never leaves this machine would put a tag in the repository
-    # that no GitHub release corresponds to, which is the dangling-tag state
-    # release.yml's own notes step exists to avoid.
+    # that no GitHub release corresponds to.
     run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
 
     # Verify the bump actually landed, rather than trusting the exit status.
@@ -534,9 +566,9 @@ release_branch="release/$next_version"
 
 step "Public release: $current_version -> $next_version"
 info "branch       $release_branch"
-info "tag          $next_version (pushed to origin, which triggers release.yml)"
+info "tag          $next_version (pushed only after local assembly passes)"
 info "assets       ${#ARTIFACTS[@]} platform tarballs, all required"
-confirm "Cut and PUBLISH $next_version to GitHub?"
+confirm "Cut and assemble a DRAFT for $next_version on GitHub?"
 
 step "Bumping the version on a release branch"
 # Never on main directly: the org's `protect-main` ruleset forbids it, and the
@@ -554,8 +586,8 @@ if [ "$dry_run" = 0 ]; then
   [ "$actual" = "$next_version" ] \
     || die "semver produced $actual but this script planned $next_version. Refusing to continue."
 
-  # Now that the changelog section exists, the body must render — the workflow
-  # will run exactly this and a failure there strands a tag.
+  # Now that the changelog section exists, the body must render before either
+  # the local build or the tag can make the release observable.
   scripts/render-release-body.sh --version "$next_version" --repo "$REPO" >/dev/null \
     || die "the release body will not render for $next_version. Fix CHANGELOG.md before tagging."
   note "release body renders"
@@ -577,7 +609,7 @@ run gh pr create \
   --title "chore: release $next_version" \
   --body "Version bump and changelog for \`$next_version\`.
 
-Merging this lands the bump on \`main\`; the tag is pushed afterwards by \`scripts/release.sh\`, which is what triggers the release workflow."
+Merging this lands the bump on \`main\`; \`scripts/release.sh\` then assembles and verifies every release asset locally before it pushes the tag."
 
 step "Merging (merge commit — the only method this org allows)"
 run gh pr merge --merge --delete-branch
@@ -592,8 +624,20 @@ if [ "$dry_run" = 0 ]; then
     || die "main says $landed after the merge, expected $next_version. Not tagging."
 fi
 
+artifact_dir="$repo_root/target/release-assets/$next_version"
+step "Building and verifying all release assets locally"
+if [ "$dry_run" = 1 ]; then
+  run scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir"
+  run scripts/render-release-body.sh --version "$next_version" --repo "$REPO"
+else
+  scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir"
+  scripts/render-release-body.sh --version "$next_version" --repo "$REPO" \
+    > "$artifact_dir/release-body.md"
+  [ -s "$artifact_dir/release-body.md" ] || die "the rendered release body is empty"
+fi
+
 step "Tagging and pushing $next_version"
-note "pushing the tag is what starts .github/workflows/release.yml"
+note "tag pushes trigger no GitHub Actions workflow"
 
 # SH-494: the tag goes on the commit that MODIFIED VERSION, never on whatever
 # HEAD happens to be. At this point HEAD is the merge commit `gh pr merge`
@@ -621,38 +665,46 @@ fi
 run git tag -a "$next_version" -m "$next_version" "$release_commit"
 run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$next_version"
 
-# ---------------------------------------------------------------------------
-# Verify the release actually published — completely
-# ---------------------------------------------------------------------------
+asset_paths=()
+for artifact in "${ARTIFACTS[@]}"; do
+  asset_paths+=("$artifact_dir/$artifact")
+done
+step "Creating one verified draft"
+run gh release create "$next_version" "${asset_paths[@]}" \
+  --repo "$REPO" \
+  --verify-tag \
+  --draft \
+  --generate-notes \
+  --notes-file "$artifact_dir/release-body.md"
 
 if [ "$dry_run" = 1 ]; then
   step "Dry run complete"
   exit 0
 fi
 
-step "Waiting for the build to assemble the draft"
-info "watching the run triggered by $next_version"
-sleep 10
-if ! gh run watch --exit-status "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"; then
-  die "the build failed, so no draft was assembled for $next_version.
-    The tag exists and nothing was published — which is the safe half of this
-    failure. Fix the build and re-run: gh workflow run release.yml --ref $next_version"
-fi
+# ---------------------------------------------------------------------------
+# Verify exactly one draft and its uploaded bytes
+# ---------------------------------------------------------------------------
 
-step "Verifying every platform asset reached the draft"
-missing=0
+releases="$(releases_for_tag "$next_version")" \
+  || die "the draft was created but could not be read back"
+release_count="$(printf '%s\n' "$releases" | sed '/^$/d' | wc -l | tr -d ' ')"
+[ "$release_count" -eq 1 ] \
+  || die "expected one release for $next_version after creation, found $release_count"
+IFS=$'\t' read -r release_id is_draft <<EOF
+$releases
+EOF
+[ "$is_draft" = "true" ] || die "$next_version was not created as a draft"
+
+assets="$(release_assets "$release_id")" \
+  || die "the draft was created but its assets could not be read back"
 for artifact in "${ARTIFACTS[@]}"; do
-  if gh release view "$next_version" --repo "$REPO" --json assets \
-      --jq '.assets[].name' 2>/dev/null | grep -qx "$artifact"; then
-    info "ok       $artifact"
-  else
-    printf '    %smissing  %s%s\n' "$red" "$artifact" "$reset"
-    missing=$((missing + 1))
-  fi
+  expected="$(awk -v name="$artifact" '$2 == name { print $1 }' "$artifact_dir/SHA256SUMS")"
+  actual="$(printf '%s\n' "$assets" | awk -F '\t' -v name="$artifact" '$1 == name { print $2 }')"
+  [ "$actual" = "sha256:$expected" ] \
+    || die "$artifact digest mismatch: local sha256:$expected, GitHub ${actual:-missing}"
+  info "verified $artifact $actual"
 done
-
-[ "$missing" -eq 0 ] \
-  || die "$missing asset(s) missing from the $next_version draft. Do not publish it — re-run the build first."
 
 # Install the version just cut, so the thing being dogfooded is the thing that
 # would ship. Skipped with --no-install for a version cut on one machine and
