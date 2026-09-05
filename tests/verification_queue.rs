@@ -207,10 +207,12 @@ fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
         fixture.store(),
         fixture.env(),
         &activity,
-        &Method::Get,
-        &path,
-        &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
-        "",
+        rest::RouteRequest::new(
+            &Method::Get,
+            &path,
+            &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+            "",
+        ),
         &TrustedHosts::default(),
     );
     assert_eq!(routed.reply.status, 200);
