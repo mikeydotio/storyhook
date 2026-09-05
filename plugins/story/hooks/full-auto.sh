@@ -95,27 +95,65 @@ approve_claude_plan() {
 # dispatch starts this watcher only after it has confirmed Codex Plan mode and
 # only for an autonomous child. The pane lifetime is the bound: long plans are
 # supported, a dead/replaced pane ends the watcher, and exact option text gates
-# the single Return. The optional attempt limit exists for deterministic tests;
-# production passes zero (no artificial wall-clock deadline).
+# each of at most three Returns. A Return is acknowledged only when a settled
+# capture shows that the dialog left the original process. The optional poll
+# limit exists for deterministic tests; production passes zero (no artificial
+# wall-clock deadline).
 approve_codex_plan() {
-  local pane="${1:-}" limit="${2:-0}" attempt=0 screen=""
+  local pane="${1:-}" expected_pid="${2:-}" limit="${3:-0}"
+  local poll_attempt=0 observation_failures=0 send_attempts=0
+  local awaiting_transition=0 screen="" identity=""
 
   [ -n "${STORYHOOK_AUTO:-}${STORYHOOK_FULL_AUTO:-}" ] || return 0
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 0
+  [[ "$expected_pid" =~ ^[1-9][0-9]*$ ]] || return 0
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
   command -v tmux >/dev/null 2>&1 || return 0
 
   while :; do
-    screen=$(tmux capture-pane -p -t "$pane" 2>/dev/null) || return 0
-    if [[ "$screen" == *"Implement this plan?"* \
-       && "$screen" == *"› 1. Yes, implement this plan"* \
-       && "$screen" == *"2. Yes, clear context and implement"* \
-       && "$screen" == *"3. No, stay in Plan mode"* ]]; then
-      tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
-      return 0
+    if ! identity=$(tmux display-message -p -t "$pane" \
+      '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
     fi
-    attempt=$((attempt + 1))
-    [ "$limit" -eq 0 ] || [ "$attempt" -lt "$limit" ] || return 0
+    [[ "$identity" =~ ^[1-9][0-9]*:[01]$ ]] || return 0
+    [ "$identity" = "$expected_pid:0" ] || return 0
+    if ! screen=$(tmux capture-pane -p -t "$pane" 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
+    fi
+    if ! [[ "$screen" == *"Implement this plan?"* \
+        && "$screen" == *"› 1. Yes, implement this plan"* \
+        && "$screen" == *"2. Yes, clear context and implement"* \
+        && "$screen" == *"3. No, stay in Plan mode"* ]]; then
+      [ "$awaiting_transition" -eq 0 ] || return 0
+      observation_failures=0
+      poll_attempt=$((poll_attempt + 1))
+      [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0
+      sleep 1
+      continue
+    fi
+
+    [ "$send_attempts" -lt 3 ] || return 0
+
+    if ! identity=$(tmux display-message -p -t "$pane" \
+      '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
+    fi
+    [[ "$identity" =~ ^[1-9][0-9]*:[01]$ ]] || return 0
+    [ "$identity" = "$expected_pid:0" ] || return 0
+    observation_failures=0
+
+    send_attempts=$((send_attempts + 1))
+    tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
+    awaiting_transition=1
     sleep 1
   done
 }
@@ -125,7 +163,7 @@ if [ "${1:-}" = "--approve-claude-plan" ]; then
   exit 0
 fi
 if [ "${1:-}" = "--approve-codex-plan" ]; then
-  approve_codex_plan "${2:-}" "${3:-0}"
+  approve_codex_plan "${2:-}" "${3:-}" "${4:-0}"
   exit 0
 fi
 

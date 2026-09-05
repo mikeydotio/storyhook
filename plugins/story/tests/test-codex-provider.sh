@@ -155,7 +155,7 @@ assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
   "dry auto: Tab submission"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
-  "--approve-codex-plan <pane>" \
+  "--approve-codex-plan <pane> <pane-pid>" \
   "dry auto: exact-pane plan approval is armed"
 assert_contains "$(jqf "$out" .prompt)" \
   "story comment $id_auto your-exact-approved-plan’ the first implementation step" \
@@ -180,7 +180,8 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_FULL_AUTO=" "real auto: watcher contains the engine marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-codex-plan %1" "real auto: watcher targets the confirmed pane"
+  "--approve-codex-plan %1 $(cat "$FAKE_TMUX_STATE/pane_pid")" \
+  "real auto: watcher targets the confirmed pane and original PID"
 
 fresh_tmux
 repo_auto_fail=$(mk_story_repo CDF)

@@ -995,7 +995,7 @@ schedule_plan_approval() {
   printf -v full_auto_q '%q' "$full_auto_marker"
   case "$AGENT" in
     claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
-    codex) approval_args="--approve-codex-plan $pane_q" ;;
+    codex) approval_args="--approve-codex-plan $pane_q $pid_q" ;;
     *) return 1 ;;
   esac
   tmux run-shell -b -t "$pane" \
@@ -2024,7 +2024,7 @@ cmd_dispatch() {
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
               + (if $agent == "claude" then " --approve-claude-plan <pane> <pane-pid>"
-                 else " --approve-codex-plan <pane>" end))
+                 else " --approve-codex-plan <pane> <pane-pid>" end))
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
