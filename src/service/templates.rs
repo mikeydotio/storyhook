@@ -212,14 +212,14 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: repair invalid legacy verifier worktree metadata without sacrificing
-  persistent verifier caches (SH-555).
-- Next: make verification ownership durable and priority-preemptible so a
-  queued high-priority candidate is never hidden behind stale ownership.
-- Later: expose queue health and verification diagnostics in engine/dashboard
-  surfaces.
-- Later: harden provider UI automation against approval-contract drift and
-  remaining Full Auto recovery and cleanup ownership boundaries.
+- Current: finish verifier metadata and ownership recovery after the
+  speculative-run repairs (SH-555, SH-556).
+- Next: cut and install the pending minor release once verification is stable
+  (SH-553).
+- Later: separate the project-owned roadmap from generated agent instructions
+  (SH-557).
+- Later: resume the attachment epic's authenticated serving and upload work
+  (SH-315).
 "#,
         done_state = done_state,
         prefix = prefix,
