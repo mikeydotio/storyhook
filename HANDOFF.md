@@ -1,26 +1,33 @@
-# SH-539 Handoff
+# SH-204 Handoff
 
 ## Delivered
 
-- Dispatch protocol 4 returns its versioned creation-time cleanup lease.
-- Migration 29 persists that lease on each engine lane across daemon restart,
-  after main's pane-identity and quarantine-history migrations 27 and 28.
-- Stop-now uses only the persisted lease and requires an echoed exact-window
-  absence receipt; legacy unleased lanes remain occupied with a loud error.
-- `complete`, `unclaim`, and `reset` now return nonzero `ok:false` when attempted
-  tmux or Git cleanup cannot prove its postcondition.
-- Failed dispatch rollback reports surviving markers, worktrees, and branches.
+- All label producers and selectors use one Unicode-aware lowercase
+  canonicalizer; case variants are one label identity.
+- Schema migration 30 appends compensating `StoryLabelsSet` events for every
+  affected open or closed story and rebuilds its label read model.
+- The drawer and create modal share one chip combobox. Comma, Enter, and field
+  exit commit; suggestions and removals persist; failed additions remain
+  available for retry.
+- CLI help, README guidance, and plugin reference document the invariant.
 
-## Verification scope
+## Preserved state
 
-- Rust: engine run model, restart/reconcile, dispatcher, daemon/dispatch API,
-  plugin contract, schema migration/fixture.
-- Shell: dispatch lease output, dispatch rollback survivor, complete, unclaim,
-  and reset cleanup failures.
+- Branch: `worktree-SH-204`.
+- Storage/API commit: `b6a87191` (`fix(labels): canonicalize labels as lowercase`).
+- Dashboard commit: `6d7b3def` (`fix(dashboard): unify label combobox behavior`).
+- Store schema is version 30; upstream migration 29 remains unchanged.
 
-## Submission contract
+## Focused verification
 
-- Branch: `worktree-SH-539`.
-- Current `origin/main` is merged additively; published history is unchanged.
-- The one linked PR must remain open for the centralized verifier.
-- The verifier owns the full suite, merge, completion, and worktree cleanup.
+- Domain, service, migration, label CLI/query, integrity, help, and static
+  dashboard suites passed.
+- Clippy with warnings denied and formatting checks passed.
+- New label-editor E2E: 2 passed in Chromium and 2 in WebKit.
+- Directly impacted label E2E: 8 passed in Chromium.
+
+## Submission boundary
+
+Push one PR whose title and body name SH-204, link and comment it on the story,
+then move SH-204 to `verifying` as the absolute final action. The centralized
+verifier owns the full suite, merge, completion, and cleanup.
