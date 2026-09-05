@@ -982,6 +982,7 @@ fn accept_loop<S: Store>(
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let engine = Arc::clone(&serving.engine);
+    let inflight = Arc::clone(&serving.inflight);
     let handoff = Arc::clone(&serving.handoff);
     let tokens = Arc::clone(&serving.tokens);
 
@@ -1024,6 +1025,7 @@ fn accept_loop<S: Store>(
             &env,
             &dispatch_registry,
             &engine,
+            &inflight,
             &handoff,
             &tokens,
             &cookie_name,
@@ -1102,6 +1104,7 @@ fn worker(
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     engine: &Arc<crate::api::engine::EngineController>,
+    inflight: &Arc<crate::daemon::lifecycle::InFlight>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
     tokens: &Arc<crate::api::tokens::TokenRegistry>,
     cookie_name: &str,
@@ -1265,6 +1268,7 @@ fn worker(
         trusted_hosts,
         token,
         engine,
+        inflight,
         &bus,
         tokens,
         cookie_name,

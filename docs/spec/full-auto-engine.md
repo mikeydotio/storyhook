@@ -118,6 +118,18 @@ the store the same way any `story` caller does, and the engine reads the store.
 There is no lane-to-engine channel to go stale, and no agent assertion of
 completion to be wrong (D3).
 
+**Daemon-owned non-retryable work drains before graceful replacement
+(SH-556).** The centralized verifier and synchronous dashboard `stop --now`
+cleanup both enter the daemon's shared lifecycle registry before they mutate
+external state. Verification publishes
+`verify:<project>:<story>:<generation>` and stays owned through outcome and
+story-state recording. Immediate engine stop publishes
+`engine-stop:<project>:<run>` and stays owned through lane termination,
+unclaim, and final run-state recording. Ordinary engine controls and requests
+rejected during validation never enter the registry. Graceful replacement
+therefore waits for either operation; forced shutdown retains its existing
+stale-ledger recovery behavior.
+
 ## Type-system proposal
 
 ```mermaid
