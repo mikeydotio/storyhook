@@ -1203,11 +1203,9 @@ const REAL_STORE_OWNER: &str = "crates/storyhook-test-support/src/real_store.rs"
 fn re_infers_a_real_store_from_the_checkout(text: &str) -> bool {
     let code = without_comments(text);
     code.contains("env!(\"CARGO_TARGET_TMPDIR\")")
-        || code
-            .split(|character| matches!(character, ';' | '{' | '}'))
-            .any(|fragment| {
-                fragment.contains("CARGO_MANIFEST_DIR") && fragment.contains(".join(\"target\")")
-            })
+        || code.split([';', '{', '}']).any(|fragment| {
+            fragment.contains("CARGO_MANIFEST_DIR") && fragment.contains(".join(\"target\")")
+        })
 }
 
 /// The pattern above matches the two shapes SH-258 actually found, and does
