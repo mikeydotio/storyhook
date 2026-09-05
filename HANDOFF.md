@@ -1,38 +1,33 @@
-# SH-204 Handoff
+# SH-566 Handoff
 
 ## Delivered
 
-- All label producers and selectors use one Unicode-aware lowercase
-  canonicalizer; case variants are one label identity.
-- Schema migration 30 appends compensating `StoryLabelsSet` events for every
-  affected open or closed story and rebuilds its label read model.
-- The drawer and create modal share one chip combobox. Comma, Enter, and field
-  exit commit; suggestions and removals persist; failed additions remain
-  available for retry.
-- CLI help, README guidance, and plugin reference document the invariant.
+- Engine runs persist immutable agent, model, effort, and speed configuration.
+- Every initial and replacement lane dispatch reuses that configuration.
+- CLI, HTTP, human output, and JSON expose the fields with shared validation.
+- Project and epic starts use one Full Auto modal backed by dispatch
+  capabilities and provider preferences without changing attended Auto mode.
+- Live dashboard controls show the active configuration.
 
 ## Preserved state
 
-- Branch: `worktree-SH-204`.
-- Storage/API commit: `b6a87191` (`fix(labels): canonicalize labels as lowercase`).
-- Dashboard commit: `6d7b3def` (`fix(dashboard): unify label combobox behavior`).
-- Store schema is version 30; upstream migration 29 remains unchanged.
-- Reconciliation merges `origin/main` at `e00733a9` without rewriting the
-  published SH-204 history.
-- SH-555 repair and the installed StoryHook 2.4.0 verifier clear the earlier
-  infrastructure block.
+- Branch: `worktree-SH-566`.
+- Backend commit: `55605278` (`feat(engine): persist launch configuration`).
+- Dashboard commit: `d093d4d2` (`feat(dashboard): configure Full Auto launches`).
+- Store schema is version 31.
+- Explicit standard speed preserves the historical lane argv; fast emits its
+  provider override.
 
 ## Focused verification
 
-- After reconciliation, domain, service, migration, label CLI/query, integrity,
-  doctor, web endpoint, help, README, and generated-roadmap checks passed.
-- Clippy with warnings denied and formatting checks passed.
-- New label-editor E2E: 2 passed in Chromium and 2 in WebKit.
-- Directly impacted existing label E2E: 9 passed in Chromium.
-- Main's overlapping verification-status E2E: 2 passed in Chromium.
+- Focused engine model, dispatcher, reconcile, restart, shell-reuse, wire, CLI,
+  daemon, HTTP, and dashboard structural tests pass.
+- `specs/engine.spec.ts`: 15 pass in each of Chromium, WebKit, mobile
+  Chromium, and mobile WebKit.
+- Formatting and focused documentation tests must remain green before push.
 
 ## Submission boundary
 
-Push the reconciliation merge to existing PR #636, then move SH-204 to
-`verifying` as the absolute final action. The centralized verifier owns the
-full suite, merge, completion, and cleanup.
+Push one SH-566 PR, link it to the story, then move SH-566 to `verifying` as
+the absolute final action. The centralized verifier owns the full suite,
+merge, completion, and cleanup.
