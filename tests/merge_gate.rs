@@ -193,6 +193,22 @@ impl MergeRepo {
         container
     }
 
+    fn linked_worktree(&self, name: &str, base: &str) -> TempDir {
+        let container = scratch_dir();
+        let worktree = container.path().join(name);
+        let out = self.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            name,
+            &worktree.display().to_string(),
+            base,
+        ]);
+        assert_ok(&out, &format!("creating the {name} linked worktree"));
+        container
+    }
+
     fn speculative_run(
         &self,
         expected_tree: &str,
@@ -664,6 +680,8 @@ fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked()
     let expected_tree = stdout(&repo.preflight(&base, &head));
     let poller_container = repo.poller(&base);
     let poller = poller_container.path().join("poller");
+    let sibling_container = repo.linked_worktree("sibling", &base);
+    let sibling = sibling_container.path().join("sibling");
     let coordination = scratch_dir();
     let ready = coordination.path().join("ready");
     let release = coordination.path().join("release");
@@ -674,8 +692,31 @@ fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked()
 
     let private_identities = fs::read_to_string(&ready).expect("reading gate identities");
     let shared_head = repo.git(&["rev-parse", "worktrees/poller/HEAD^{commit}"]);
+    let sibling_shared_head = run(
+        &sibling,
+        "git",
+        &["rev-parse", "worktrees/poller/HEAD^{commit}"],
+    );
     let ref_walk = repo.git(&["rev-list", "--all", "--objects"]);
     let fetch = repo.git(&["fetch", "-q", "."]);
+    let pull_source = repo.path().display().to_string();
+    let pull = run(
+        &sibling,
+        "git",
+        &["pull", "-q", "--ff-only", &pull_source, "main"],
+    );
+    let gc = repo.git(&["gc"]);
+    let fsck = repo.git(&[
+        "fsck",
+        "--connectivity-only",
+        "--no-dangling",
+        "--no-progress",
+    ]);
+    let repack = repo.git(&["repack", "-a", "-d"]);
+    let worktree_prune = run(&sibling, "git", &["worktree", "prune"]);
+    let good = format!("{base}~1");
+    let bisect_start = run(&sibling, "git", &["bisect", "start", &base, &good]);
+    let bisect_reset = run(&sibling, "git", &["bisect", "reset"]);
 
     fs::write(&release, "release\n").expect("releasing the speculative gate");
     let status = child.wait_within(Duration::from_secs(5), || {
@@ -688,8 +729,35 @@ fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked()
     );
     assert_ok(&shared_head, "resolving the shared verifier HEAD");
     assert_eq!(stdout(&shared_head), base);
+    assert_ok(
+        &sibling_shared_head,
+        "resolving the shared verifier HEAD from another linked worktree",
+    );
+    assert_eq!(stdout(&sibling_shared_head), base);
     assert_ok(&ref_walk, "walking every ordinary shared ref");
     assert_ok(&fetch, "fetching while the speculative gate is blocked");
+    assert_ok(
+        &pull,
+        "pulling from another linked worktree while the speculative gate is blocked",
+    );
+    assert_ok(&gc, "running gc while the speculative gate is blocked");
+    assert_ok(
+        &fsck,
+        "running connectivity fsck while the speculative gate is blocked",
+    );
+    assert_ok(&repack, "repacking while the speculative gate is blocked");
+    assert_ok(
+        &worktree_prune,
+        "pruning worktrees while the speculative gate is blocked",
+    );
+    assert_ok(
+        &bisect_start,
+        "starting a bisect while the speculative gate is blocked",
+    );
+    assert_ok(
+        &bisect_reset,
+        "resetting a bisect while the speculative gate is blocked",
+    );
 
     let identities = private_identities.lines().collect::<Vec<_>>();
     assert_eq!(identities.len(), 2, "gate identities were {identities:?}");

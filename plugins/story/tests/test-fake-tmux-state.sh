@@ -37,10 +37,8 @@ source "$(dirname "$0")/lib.sh"
 FAKE_TMUX="$TESTS_DIR/fakes/tmux"
 LEGACY_SHARED_STATE=/tmp/issue-faketmux
 
-# The placeholder process new-window spawns is only ever compared by pid here,
-# never waited on, so give it the shortest lifetime that still outlives this
-# file and let it reap itself. Killing it by pid on the way out would be the
-# one thing in this file that could act on a pid that is no longer ours.
+# Keep the placeholder alive long enough to prove kill-window, rather than its
+# natural timeout, ends the pane process recorded by this fake.
 export FAKE_TMUX_PANE_LIFETIME=5
 
 pane_cwd="$(mktemp -d /tmp/story-test-tmux-cwd.XXXXXX)"
@@ -69,6 +67,23 @@ assert_eq "$(occupant)" "claude" \
   "a second fake-tmux user cannot rewrite this pane's occupant"
 assert_eq "$(pane_pid)" "$launched_pid" \
   "a second fake-tmux user cannot kill this pane's process"
+
+# --- kill-window ends the pane process ------------------------------------
+#
+# Real tmux tears down a window's panes. This fake's process model must do the
+# same: callers use kill-window as the ownership boundary before deleting the
+# fixture paths that a dispatched pane can still touch.
+kill -0 "$launched_pid" 2>/dev/null \
+  || fail_test "the pane placeholder exited before kill-window exercised it"
+"$FAKE_TMUX" kill-window -t @1 >/dev/null
+for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  kill -0 "$launched_pid" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$launched_pid" 2>/dev/null; then
+  fail_test "kill-window left pane placeholder $launched_pid alive"
+fi
+assert_eq "$(pane_pid)" "" "kill-window clears the dead pane's pid record"
 
 # --- the fake refuses to invent a state directory -------------------------
 #

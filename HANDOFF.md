@@ -9,6 +9,9 @@
 - Healthy marked worktrees remain persistent and retain build caches.
 - A real-Git regression reproduces missing private HEAD/reflog/index objects
   and proves repair, fetch connectivity, and healthy reuse.
+- Current main contributes SH-559's broader blocked-gate regression coverage:
+  fetch, pull, GC, fsck, repack, worktree prune, and bisect all remain safe
+  while a speculative verifier is blocked.
 - Central verification then exposed a load-sensitive daemon containment defect:
   the parent watcher treated a reusable PID as process identity.
 - Commit `97ab33a6d` pairs every Rust test-parent PID with a native start token
