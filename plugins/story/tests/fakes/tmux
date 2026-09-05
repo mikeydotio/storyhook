@@ -27,8 +27,9 @@
 #                        recorded instead — see below.
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
 #   list-windows      -> print the caller-seeded `$STATE/windows` inventory.
-#   kill-window       -> log its argv and remove the target window id from that
-#                        inventory, including every linked-session occurrence.
+#   kill-window       -> log its argv, terminate the recorded pane process, and
+#                        remove the target window id from that inventory,
+#                        including every linked-session occurrence.
 #   capture-pane      -> print pane content selected by $FAKE_TMUX_CAPTURE, then
 #                        append the current input-box row when non-empty (see
 #                        below). DEFAULT (knob unset) is the legacy
@@ -723,6 +724,15 @@ case "${1:-}" in
         || { rm -f "$windows_temp"; exit 1; }
       mv -f "$windows_temp" "$STATE/windows" || { rm -f "$windows_temp"; exit 1; }
     fi
+    # A real kill-window ends every pane in the target window. The fake models
+    # one pane, so terminate only the exact placeholder PID it recorded; do not
+    # leave a fixture-owned process alive past the window ownership boundary.
+    killed_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
+    case "$killed_pid" in
+      '' | *[!0-9]*) : ;;
+      *) kill -9 "$killed_pid" >/dev/null 2>&1 || true ;;
+    esac
+    rm -f "$STATE/pane_pid" 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_PANES:-}" >"$STATE/killed_window"
     ;;
   list-windows)
