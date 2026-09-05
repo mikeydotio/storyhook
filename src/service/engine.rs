@@ -1952,9 +1952,10 @@ fn cleanup_lease_from_payload(
         || lease.project_slug != project
         || lease.story_id != story
     {
-        return Err(AppError::Storage(format!(
+        return Err(AppError::Storage(
             "dispatch cleanup lease does not match protocol version, project, and story"
-        )));
+                .to_string(),
+        ));
     }
     Ok(lease)
 }
