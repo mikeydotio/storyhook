@@ -989,6 +989,17 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="dispatch-effort""#));
     assert!(body.contains(r#"id="dispatch-speed""#));
     assert!(body.contains(r#"id="dispatch-auto""#));
+    // SH-566: Full Auto has its own launch dialog but consumes the same
+    // provider catalog and preference store as attended Dispatch.
+    assert!(body.contains(r#"id="engine-modal""#));
+    assert!(body.contains(r#"id="engine-lanes""#));
+    assert!(body.contains(r#"id="engine-agent""#));
+    assert!(body.contains(r#"id="engine-model""#));
+    assert!(body.contains(r#"id="engine-effort""#));
+    assert!(body.contains(r#"id="engine-speed""#));
+    assert!(body.contains("saveDispatchProviderDefaults(agent, model, effort, speed)"));
+    assert!(body.contains("openEngineModal(st.id, e.currentTarget)"));
+    assert!(body.contains("openEngineModal(null, e.currentTarget)"));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
     assert!(body.contains(r#"id="projsel-btn""#));
