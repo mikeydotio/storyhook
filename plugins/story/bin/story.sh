@@ -138,7 +138,7 @@ set -euo pipefail
 # helper accepts the argv that daemon requires. Protocol 3 advances helper and
 # daemon together for the versioned cleanup-lease environment and receipt: an
 # older helper must never be mistaken for one that proves exact postconditions.
-DISPATCH_PROTOCOL=3
+DISPATCH_PROTOCOL=4
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -1095,14 +1095,38 @@ cleanup_dispatch_git() {
   # tmux generation before any later gate could fail.
   local private_git_dir
   private_git_dir=$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null || printf '')
-  [ -z "$private_git_dir" ] || rm -f "$private_git_dir/$CLEANUP_LEASE_MARKER"
+  local marker="" failure=""
+  DISPATCH_CLEANUP_NOTE="resources created by this attempt were rolled back and pre-existing work was preserved"
+  [ -z "$private_git_dir" ] || marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
+  if [ -n "$marker" ]; then
+    rm -f "$marker" 2>/dev/null || failure="could not remove cleanup marker $marker"
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] \
+      || failure="${failure:+$failure; }cleanup marker remains at $marker"
+  fi
   if [ "$worktree_created" = true ]; then
-    git worktree remove --force "$path" >/dev/null 2>&1 || true
+    git worktree remove --force "$path" >/dev/null 2>&1 \
+      || failure="${failure:+$failure; }git worktree remove refused for $path"
     git worktree prune >/dev/null 2>&1 || true
+    if registered_worktree_branch "$path" >/dev/null 2>&1 || [ -e "$path" ]; then
+      failure="${failure:+$failure; }worktree remains at $path"
+    fi
   fi
   if [ "$branch_created" = true ]; then
-    git branch -D "$branch" >/dev/null 2>&1 || true
+    git branch -D "$branch" >/dev/null 2>&1 \
+      || failure="${failure:+$failure; }could not delete branch $branch"
+    local_branch_exists "$branch" \
+      && failure="${failure:+$failure; }branch remains at $branch" \
+      || true
   fi
+  if [ -n "$failure" ]; then
+    DISPATCH_CLEANUP_NOTE="WARNING: dispatch cleanup is incomplete: $failure; inspect the preserved resources before retrying"
+    return 1
+  fi
+  return 0
+}
+
+dispatch_cleanup_note() {
+  printf '%s' "${DISPATCH_CLEANUP_NOTE:-resources created by this attempt were rolled back and pre-existing work was preserved}"
 }
 
 # write_cleanup_lease_marker <project> <story> <repository> <worktree>
@@ -1123,19 +1147,25 @@ write_cleanup_lease_marker() {
 
   marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
   temp=$(mktemp "$private_git_dir/.storyhook-cleanup-lease.XXXXXX") || return 1
-  if ! jq -n \
+  local lease_json
+  if ! lease_json=$(jq -n \
       --argjson version "$CLEANUP_LEASE_VERSION" \
       --arg project "$project" --arg story "$story" \
       --arg repository "$repository_real" --arg worktree "$worktree_real" \
       --arg branch "$branch" --arg socket "$socket_path" \
       '{version:$version, project_slug:$project, story_id:$story,
         repository_path:$repository, worktree_path:$worktree, branch:$branch,
-        tmux:{socket_path:$socket}}' >"$temp"; then
+        tmux:{socket_path:$socket}}'); then
+    rm -f "$temp"
+    return 1
+  fi
+  if ! printf '%s\n' "$lease_json" >"$temp"; then
     rm -f "$temp"
     return 1
   fi
   chmod 600 "$temp" 2>/dev/null || { rm -f "$temp"; return 1; }
   mv -f "$temp" "$marker" || { rm -f "$temp"; return 1; }
+  DISPATCH_CLEANUP_LEASE="$lease_json"
 }
 
 # missing_claim_state_vocabulary <claim-state> — confirm, never infer, that
@@ -2098,8 +2128,8 @@ cmd_dispatch() {
   if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
      && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
     if ! tmux new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
-      fail "failed to create tmux session \`$TARGET_SESSION\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "failed to create tmux session \`$TARGET_SESSION\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
     session_created=true
   fi
@@ -2169,8 +2199,8 @@ cmd_dispatch() {
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
          -e "STORYHOOK_DISPATCH=1" \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
-      fail "failed to respawn surviving tmux pane \`$pane\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
     tmux set-window-option -t "$pane" remain-on-exit on >/dev/null 2>&1 || true
     tmux set-window-option -t "$pane" automatic-rename off >/dev/null 2>&1 || true
@@ -2189,8 +2219,8 @@ cmd_dispatch() {
              set-window-option -t "$set_target" @storyhook-agent "$AGENT" \
            2>/dev/null || true)
     if [ -z "$pane" ]; then
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
-      fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "failed to open a new tmux window. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
@@ -2212,9 +2242,9 @@ cmd_dispatch() {
   # the project's mutable checkout registration.
   if ! write_cleanup_lease_marker \
       "$PROJECT_SLUG" "$id" "$dir" "$worktree_path" "$worktree_branch" "$pane"; then
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse "cleanup-lease-unavailable" \
-      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; created Git resources were rolled back and the diagnostic window was preserved."
+      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note). The diagnostic window was preserved."
   fi
 
   # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
@@ -2235,9 +2265,9 @@ cmd_dispatch() {
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
@@ -2256,9 +2286,9 @@ cmd_dispatch() {
   if ! ensure_provider_plan_mode "$pane"; then
     local mode_tail
     mode_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
             --argjson claimed "$reused_claim" \
@@ -2274,9 +2304,9 @@ cmd_dispatch() {
      && ! schedule_plan_approval "$pane" "$pane_pid" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with plan-approval-unarmed \
-      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
@@ -2300,9 +2330,9 @@ cmd_dispatch() {
       # Nothing reached the input box, so nothing was submitted (guaranteed by
       # send_prompt_confirmed: no Enter is sent before receipt is observed).
       # Safe to roll everything back, exactly as a failed window-open does.
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; resources created by this attempt were rolled back and pre-existing work was preserved.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
               --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
@@ -2379,6 +2409,7 @@ cmd_dispatch() {
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
+    --argjson cleanup_lease "$DISPATCH_CLEANUP_LEASE" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
     {
       ok: true,
@@ -2396,7 +2427,8 @@ cmd_dispatch() {
       claimed: true, gitignore: $gitignore,
       base_branch: $default, base_ref: ("origin/" + $default),
       base_oid: $base_oid, base_fresh: $base_fresh,
-      worktree_branch: $wtbranch, worktree_path: $wtpath
+      worktree_branch: $wtbranch, worktree_path: $wtpath,
+      cleanup_lease: $cleanup_lease
     }
     + (if $auto then {
         launch_source: $launch_source,
@@ -3361,10 +3393,9 @@ _story_worktree_status() {
   printf 'removable'
 }
 
-# _close_story_window <window-name> — best-effort tmux window close. Returns 0
-# if a window was found and killed, 1 if there was no such window (or no tmux
-# at all), which is never an error to any caller: a story whose window is
-# already gone is a story with one less thing to clean up.
+# _close_story_window <window-name> — close every matching window and prove
+# absence. Returns 0 when at least one was removed, 1 when already absent, and
+# 2 when a kill failed or the postcondition could not be established.
 #
 # pane_for_window / display-message / kill-window each swallow their own
 # errors, so the only question worth asking is whether a pane was found. The
@@ -3378,16 +3409,22 @@ _story_worktree_status() {
 # SH-360). What differs between the three verbs is WHEN they call it and
 # whether they are allowed to, never how the window is found.
 _close_story_window() {
-  local wname="$1" pane window
-  pane=$(pane_for_window "$wname") || pane=""
-  [ -n "$pane" ] || return 1
-  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-  if [ -n "$window" ]; then
-    tmux kill-window -t "$window" 2>/dev/null || true
-  else
-    tmux kill-window -t "$pane" 2>/dev/null || true
-  fi
-  return 0
+  local wname="$1" pane window found=false attempts=0
+  while :; do
+    pane=$(pane_for_window "$wname") || return 2
+    [ -n "$pane" ] || break
+    found=true
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 256 ] || return 2
+    window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+    if [ -n "$window" ]; then
+      tmux kill-window -t "$window" 2>/dev/null || return 2
+    else
+      tmux kill-window -t "$pane" 2>/dev/null || return 2
+    fi
+  done
+  [ "$found" = true ] && return 0
+  return 1
 }
 
 # _complete_prepare <id> — shared by plan and execute. Resolves the story,
@@ -3604,8 +3641,9 @@ cmd_complete_execute() {
   local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
   local closed=false close_note="" closed_window=false
 
-  # Close FIRST, and best-effort: a close failure is reported as a note, never
-  # ok:false — the cleanup below is still worth doing and still succeeded.
+  # Close the story FIRST. A state-transition failure remains a note because
+  # independent resource cleanup is still useful; every attempted resource
+  # cleanup below, however, must prove its postcondition before `ok:true`.
   if [ -n "$no_close" ]; then
     skipped+=("close:$id(--no-close)")
   elif [ "$CMP_NEEDS_CLOSE" != true ]; then
@@ -3655,15 +3693,17 @@ cmd_complete_execute() {
       if [ -n "$DRY_RUN" ]; then
         commands+=("tmux kill-window -t <window of $CMP_WNAME>")
       else
-        local window
-        window=$(tmux display-message -p -t "$CMP_WINDOW_PANE" '#{window_id}' 2>/dev/null || printf '')
-        if [ -n "$window" ]; then
-          tmux kill-window -t "$window" 2>/dev/null || true
+        if _close_story_window "$CMP_WNAME"; then
+          closed_window=true
         else
-          tmux kill-window -t "$CMP_WINDOW_PANE" 2>/dev/null || true
+          local window_rc=$?
+          if [ "$window_rc" -ne 1 ]; then
+            failed+=("window:$CMP_WNAME(unverifiable)")
+            wt_action="skip"
+          fi
         fi
       fi
-      closed_window=true
+      [ -z "$DRY_RUN" ] || closed_window=true
     elif [ "$CMP_WINDOW_STATUS" = "self" ]; then
       # Named explicitly, whether or not the worktree ends up touched: a
       # human standing in this window reading `display` is the one fact
@@ -3690,7 +3730,12 @@ cmd_complete_execute() {
           rm_args+=("$CMP_WT_PATH")
           if git "${rm_args[@]}" >/dev/null 2>&1; then
             git worktree prune >/dev/null 2>&1 || true
-            removed_wt+=("$CMP_WT_PATH")
+            if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 \
+               || [ -e "$CMP_WT_PATH" ]; then
+              failed+=("worktree:$CMP_WT_PATH(postcondition)")
+            else
+              removed_wt+=("$CMP_WT_PATH")
+            fi
           else
             failed+=("worktree:$CMP_WT_PATH")
           fi
@@ -3705,7 +3750,11 @@ cmd_complete_execute() {
           commands+=("git branch -d $CMP_WT_BRANCH")
           removed_bl+=("$CMP_WT_BRANCH")
         elif delete_merged_local_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
-          removed_bl+=("$CMP_WT_BRANCH")
+          if local_branch_exists "$CMP_WT_BRANCH"; then
+            failed+=("branch:$CMP_WT_BRANCH(postcondition)")
+          else
+            removed_bl+=("$CMP_WT_BRANCH")
+          fi
         else
           failed+=("branch:$CMP_WT_BRANCH(local)")
         fi ;;
@@ -3722,7 +3771,9 @@ cmd_complete_execute() {
   skip_json=$(printf '%s\n' "${skipped[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
   [ -n "$DRY_RUN" ] && cmds_json=$(printf '%s\n' "${commands[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
 
-  jq -n --arg id "$id" --argjson rwt "$rwt" --argjson rbl "$rbl" \
+  local complete_ok=true
+  [ "$(printf '%s' "$fail_json" | jq 'length')" -eq 0 ] || complete_ok=false
+  jq -n --argjson ok "$complete_ok" --arg id "$id" --argjson rwt "$rwt" --argjson rbl "$rbl" \
         --argjson failed "$fail_json" --argjson skipped "$skip_json" \
         --argjson cmds "$cmds_json" --argjson closed "$closed" \
         --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
@@ -3730,7 +3781,7 @@ cmd_complete_execute() {
         --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
         --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
     {
-      ok: true, id: $id, closed: $closed,
+      ok: $ok, id: $id, closed: $closed,
       removed: { worktrees: $rwt, branches: $rbl, window: $closed_window }
     }
     + (if $closed then {closed_as: $done_state} else {} end)
@@ -3749,6 +3800,7 @@ cmd_complete_execute() {
         + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
         + $note + $wtnote
       ) }'
+  [ "$complete_ok" = true ]
 }
 
 cmd_complete() {
@@ -3786,6 +3838,84 @@ leased_story_windows() {
     LEASE_TMUX_WINDOWS="${LEASE_TMUX_WINDOWS:+$LEASE_TMUX_WINDOWS$'\n'}$window_id"
   done <<< "$listing"
   return 0
+}
+
+# cmd_unclaim_leased <story-id> <lease-json> — release an engine-owned claim
+# and close only exact-name windows on the creation-time tmux server. A retry
+# after the state release already succeeded is valid: cleanup is independently
+# idempotent, while an ordinary unleased conflict keeps the safety refusal.
+cmd_unclaim_leased() {
+  local typed_id="$1" lease="$2"
+  if ! printf '%s' "$lease" | jq -e --argjson version "$CLEANUP_LEASE_VERSION" '
+      type == "object" and .version == $version
+      and (.project_slug | type == "string" and length > 0)
+      and (.story_id | type == "string" and length > 0)
+      and (.repository_path | type == "string" and startswith("/"))
+      and (.worktree_path | type == "string" and startswith("/"))
+      and (.branch | type == "string" and length > 0)
+      and (.tmux | type == "object")
+      and (.tmux.socket_path | type == "string" and startswith("/"))' >/dev/null 2>&1; then
+    refuse "invalid-cleanup-lease" "story.sh unclaim: the cleanup lease is malformed or uses an unsupported version."
+  fi
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  local lease_project lease_story
+  lease_project=$(printf '%s' "$lease" | jq -r '.project_slug')
+  lease_story=$(printf '%s' "$lease" | jq -r '.story_id')
+  [ "$lease_project" = "$PROJECT_SLUG" ] \
+    || refuse "cleanup-lease-project-mismatch" "story.sh unclaim: lease project `$lease_project` does not match selected project `$PROJECT_SLUG`."
+  [ "$typed_id" = "$lease_story" ] \
+    || refuse "cleanup-lease-story-mismatch" "story.sh unclaim: lease story `$lease_story` does not match requested story `$typed_id`."
+
+  _release_story unclaim "$lease_story"
+  local unclaimed=false conflict=""
+  case "$REL_RESULT" in
+    ok) unclaimed=true ;;
+    conflict) conflict="$REL_ACTUAL" ;;
+    *) fail "story unclaim $lease_story failed: $REL_ERROR" ;;
+  esac
+
+  leased_story_windows "$lease" "$lease_story" \
+    || refuse "cleanup-lease-tmux-unverifiable" "story.sh unclaim: the leased tmux server exists but its story windows cannot be enumerated."
+  local initial="$LEASE_TMUX_WINDOWS" removed=false failure=""
+  if [ -n "$initial" ]; then
+    local socket window_id
+    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
+    while IFS= read -r window_id; do
+      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
+        removed=true
+      else
+        failure="${failure:+$failure; }tmux refused to kill $window_id"
+      fi
+    done <<< "$initial"
+  fi
+  local absent=false
+  if leased_story_windows "$lease" "$lease_story"; then
+    [ -n "$LEASE_TMUX_WINDOWS" ] || absent=true
+  else
+    failure="${failure:+$failure; }tmux postcondition is unverifiable"
+  fi
+  [ "$absent" = true ] \
+    || failure="${failure:+$failure; }story tmux windows remain: $(printf '%s' "$LEASE_TMUX_WINDOWS" | tr '\n' ' ')"
+
+  local ok=false display
+  if [ "$absent" = true ] && [ -z "$failure" ]; then
+    ok=true
+    display="[story] unclaim $lease_story: exact story windows are absent on the leased tmux server."
+  else
+    display="[story] unclaim $lease_story released its claim but cleanup failed: ${failure:-the tmux absence postcondition is false}."
+  fi
+  jq -n --argjson ok "$ok" --arg id "$lease_story" --argjson lease "$lease" \
+    --argjson unclaimed "$unclaimed" --arg conflict "$conflict" \
+    --arg from "$REL_FROM" --arg to "$REL_TO" --arg fallback "$REL_FALLBACK" \
+    --argjson removed "$removed" --argjson absent "$absent" --arg display "$display" '
+      {ok:$ok,id:$id,unclaimed:$unclaimed,cleanup:{lease:$lease,
+       removed:{tmux:$removed},postconditions:{tmux_story_windows_absent:$absent}},
+       display:$display}
+      + (if $conflict == "" then {} else {unclaim_conflict:$conflict} end)
+      + (if $unclaimed then {unclaimed_from:$from,restored_to:$to} else {} end)
+      + (if $fallback == "" then {} else {restore_fallback:$fallback} end)'
+  [ "$ok" = true ]
 }
 
 # branch_worktree_path <branch> — print the registered worktree holding the
@@ -4308,17 +4438,30 @@ _release_fallback_clause() {
 # tmux, which is a different verb's behaviour and a different story's decision.
 RELEASE_WINDOW=""
 RELEASE_CLOSED=false
+RELEASE_WINDOW_ERROR=""
 _close_release_window() {
   local wname="$1"
   RELEASE_WINDOW="$CMP_WINDOW_STATUS"
   RELEASE_CLOSED=false
+  RELEASE_WINDOW_ERROR=""
   case "$CMP_WINDOW_STATUS" in
     self) return 0 ;;
-    open) _close_story_window "$wname" && RELEASE_CLOSED=true || RELEASE_CLOSED=false ;;
+    open)
+      if _close_story_window "$wname"; then
+        RELEASE_CLOSED=true
+      else
+        local rc=$?
+        [ "$rc" -ne 1 ] \
+          && RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname" \
+          || RELEASE_WINDOW="none"
+      fi ;;
     *)
       if _close_story_window "$wname"; then
-        RELEASE_WINDOW="open"
-        RELEASE_CLOSED=true
+        RELEASE_WINDOW="open"; RELEASE_CLOSED=true
+      else
+        local rc=$?
+        [ "$rc" -eq 1 ] \
+          || RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname"
       fi
       ;;
   esac
@@ -4330,6 +4473,10 @@ _close_release_window() {
 # left exactly as found; `reset` is the verb that removes them.
 cmd_unclaim() {
   _parse_release_args "$UNCLAIM_USAGE" false "$@"
+  if [ -n "${STORYHOOK_REAP_LEASE_V1:-}" ]; then
+    cmd_unclaim_leased "$REL_ID" "$STORYHOOK_REAP_LEASE_V1"
+    return
+  fi
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
 
@@ -4363,6 +4510,8 @@ cmd_unclaim() {
 
   _close_release_window "$CMP_WNAME"
   local closed="$RELEASE_CLOSED"
+  local cleanup_ok=true
+  [ -z "$RELEASE_WINDOW_ERROR" ] || cleanup_ok=false
 
   local display="[story] unclaim $id: released from \`$REL_FROM\` back to \`$REL_TO\`."
   display="$display$(_release_fallback_clause)"
@@ -4376,13 +4525,14 @@ cmd_unclaim() {
   if [ "$CMP_WT_STATUS" != "missing" ]; then
     display="$display Its worktree \`$CMP_WT_PATH\` ($CMP_WT_STATUS) was left in place — \`story.sh reset $id\` is the verb that removes it."
   fi
+  [ -z "$RELEASE_WINDOW_ERROR" ] || display="$display $RELEASE_WINDOW_ERROR."
 
-  jq -n --arg id "$id" --arg from "$REL_FROM" --arg to "$REL_TO" \
+  jq -n --argjson ok "$cleanup_ok" --arg id "$id" --arg from "$REL_FROM" --arg to "$REL_TO" \
         --arg fallback "$REL_FALLBACK" --arg window "$RELEASE_WINDOW" \
         --argjson closed "$closed" --arg wtpath "$CMP_WT_PATH" \
         --arg wtstatus "$CMP_WT_STATUS" --arg display "$display" '
     {
-      ok: true, id: $id,
+      ok: $ok, id: $id,
       unclaimed_from: $from, restored_to: $to
     }
     + (if $fallback == "" then {} else {restore_fallback: $fallback} end)
@@ -4391,6 +4541,7 @@ cmd_unclaim() {
       worktree_path: $wtpath, worktree_status: $wtstatus,
       display: $display
     }'
+  [ "$cleanup_ok" = true ]
 }
 
 # cmd_reset <story-id> [--force] — unclaim, then delete the worktree AND the
@@ -4514,10 +4665,23 @@ cmd_reset() {
     fi
   fi
 
+  if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 || [ -e "$CMP_WT_PATH" ]; then
+    wt_fail="${wt_fail:-worktree cleanup postcondition failed for $CMP_WT_PATH}"
+    removed_wt=false
+  fi
+  if local_branch_exists "$CMP_WT_BRANCH"; then
+    br_fail="${br_fail:-branch cleanup postcondition failed for $CMP_WT_BRANCH}"
+    removed_br=false
+  fi
+
   # `self` already refused above, so this can only find somebody else's window
   # — or one this caller could not see from outside tmux.
   _close_release_window "$CMP_WNAME"
   local closed="$RELEASE_CLOSED"
+  local reset_ok=true
+  if [ -n "$wt_fail" ] || [ -n "$br_fail" ] || [ -n "$RELEASE_WINDOW_ERROR" ]; then
+    reset_ok=false
+  fi
 
   local display="[story] reset $id: "
   if [ "$unclaimed" = true ]; then
@@ -4528,27 +4692,32 @@ cmd_reset() {
   fi
   if [ "$removed_wt" = true ]; then
     display="${display}removed worktree \`$CMP_WT_PATH\`, "
+  elif [ -n "$wt_fail" ]; then
+    display="${display}left worktree \`$CMP_WT_PATH\` in place, "
   else
     display="${display}worktree already gone, "
   fi
   if [ "$removed_br" = true ]; then
     display="${display}deleted branch \`$CMP_WT_BRANCH\`."
+  elif [ -n "$br_fail" ]; then
+    display="${display}left branch \`$CMP_WT_BRANCH\` in place."
   else
     display="${display}branch already gone."
   fi
   [ "$closed" = true ] && display="$display Closed its tmux window \`$CMP_WNAME\`."
   [ -n "$wt_fail" ] && display="$display $wt_fail."
   [ -n "$br_fail" ] && display="$display $br_fail."
+  [ -z "$RELEASE_WINDOW_ERROR" ] || display="$display $RELEASE_WINDOW_ERROR."
   [ "$REL_FORCE" = true ] && display="$display (\`--force\`)"
 
-  jq -n --arg id "$id" --argjson unclaimed "$unclaimed" --arg conflict "$conflict" \
+  jq -n --argjson ok "$reset_ok" --arg id "$id" --argjson unclaimed "$unclaimed" --arg conflict "$conflict" \
         --arg from "$REL_FROM" --arg to "$REL_TO" --arg fallback "$REL_FALLBACK" \
         --argjson forced "$REL_FORCE" --argjson rwt "$removed_wt" --argjson rbr "$removed_br" \
         --arg wtfail "$wt_fail" --arg brfail "$br_fail" \
         --arg window "$RELEASE_WINDOW" --argjson closed "$closed" \
         --argjson unpushed "$CMP_BR_UNPUSHED" --arg display "$display" '
     {
-      ok: true, id: $id, forced: $forced,
+      ok: $ok, id: $id, forced: $forced,
       unclaimed: $unclaimed
     }
     + (if $conflict == "" then {} else {unclaim_conflict: $conflict} end)
@@ -4562,6 +4731,7 @@ cmd_reset() {
     + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
     + (if $brfail == "" then {} else {branch_error: $brfail} end)
     + { display: $display }'
+  [ "$reset_ok" = true ]
 }
 
 # ---- router -----------------------------------------------------------------
