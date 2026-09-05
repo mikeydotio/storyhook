@@ -1515,10 +1515,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         serving.store,
         &serving.env,
         &serving.verification_activity,
-        &job.method,
-        &job.path,
-        &job.headers,
-        &job.body,
+        rest::RouteRequest::new(&job.method, &job.path, &job.headers, &job.body),
         &trusted_hosts,
     );
     drop(trusted_hosts);

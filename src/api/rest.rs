@@ -49,6 +49,31 @@ use crate::store::{ProjectId, ReadOps, Store};
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
 
+/// The transport-independent parts of one request routed through the REST API.
+///
+/// Keeping these values together makes the daemon and direct tests pass the
+/// same coherent request shape while socket ownership remains outside this
+/// module.
+pub struct RouteRequest<'a> {
+    method: &'a Method,
+    path: &'a str,
+    headers: &'a [Header],
+    body: &'a str,
+}
+
+impl<'a> RouteRequest<'a> {
+    /// Creates a request from an already parsed HTTP method, path, headers,
+    /// and body.
+    pub fn new(method: &'a Method, path: &'a str, headers: &'a [Header], body: &'a str) -> Self {
+        Self {
+            method,
+            path,
+            headers,
+            body,
+        }
+    }
+}
+
 /// Builds the self-contained dashboard shell with this binary's package
 /// version. The embedded HTML owns the presentation while the serving binary
 /// remains the only version authority.
@@ -231,10 +256,7 @@ pub fn route<S: Store>(
         store,
         env,
         &VerificationActivity::new(),
-        method,
-        path,
-        headers,
-        body,
+        RouteRequest::new(method, path, headers, body),
         trusted_hosts,
     )
 }
@@ -246,12 +268,15 @@ pub fn route_with_activity<S: Store>(
     store: &S,
     env: &Environment,
     verification_activity: &VerificationActivity,
-    method: &Method,
-    path: &str,
-    headers: &[Header],
-    body: &str,
+    request: RouteRequest<'_>,
     trusted_hosts: &TrustedHosts,
 ) -> Routed {
+    let RouteRequest {
+        method,
+        path,
+        headers,
+        body,
+    } = request;
     match classify(&path_segments(path), method) {
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => Routed::quiet(match repos_json(store, env) {
