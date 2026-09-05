@@ -1707,6 +1707,24 @@ release gate, so reusing that boundary avoids a second opinion about helper
 patience. A stalled remediation or cleanup attempt now returns its contextual
 error to the existing awaiting/retry paths instead of wedging the worker.
 
+### SH-555 — legacy verifier worktree recovery
+
+SH-552 keeps new speculative commits out of the persistent verifier's shared
+Git administration, but worktrees created before that boundary can retain
+HEAD and reflog entries whose private objects have already been deleted. Git's
+fetch connectivity check walks those shared entries, so it can install every
+requested remote object and still exit with `fatal: bad object`.
+
+`verify-pr.sh` now establishes the verifier worktree before its first fetch.
+A format marker distinguishes worktrees created under SH-552's private-Git-dir
+contract. A markerless, mismatched, or unresolvable verifier is disposable:
+the script removes it through `git worktree remove --force` and recreates it
+detached at a known local commit, replacing its HEAD, reflog and index as one
+Git-owned lifecycle operation. A healthy marked verifier is reused so its
+build caches survive. The private `--ensure-verifier-worktree` seam lets a
+real-Git regression reproduce the missing-object fetch failure and prove both
+recovery and healthy reuse without imitating GitHub.
+
 ### SH-466 — restart reconciliation
 
 **What shipped.** `HardStopKind::Interrupted` finally has a producer.

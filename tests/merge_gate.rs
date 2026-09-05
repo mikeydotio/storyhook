@@ -757,6 +757,131 @@ fn speculative_run_recovers_a_poller_whose_private_head_is_unavailable() {
 }
 
 #[test]
+fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let verifier = repo
+        .common_dir()
+        .join("storyhook")
+        .join("verification-worktree");
+    fs::create_dir_all(verifier.parent().unwrap()).expect("creating the verifier state directory");
+    assert_ok(
+        &repo.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &verifier.display().to_string(),
+            &base,
+        ]),
+        "creating the legacy verifier worktree",
+    );
+
+    let private_objects = scratch_dir();
+    let source_objects = repo.common_dir().join("objects");
+    fs::write(verifier.join("private"), "private\n").expect("writing the private verifier file");
+    assert_ok(
+        &git_with_objects(
+            &verifier,
+            private_objects.path(),
+            &source_objects,
+            &["add", "private"],
+        ),
+        "staging the private verifier file",
+    );
+    let private_tree = git_with_objects(
+        &verifier,
+        private_objects.path(),
+        &source_objects,
+        &["write-tree"],
+    );
+    assert_ok(&private_tree, "writing the private verifier tree");
+    let private_tree = stdout(&private_tree);
+    let private_commit = git_with_objects(
+        &verifier,
+        private_objects.path(),
+        &source_objects,
+        &["commit-tree", &private_tree, "-p", &base, "-m", "private"],
+    );
+    assert_ok(&private_commit, "creating the private verifier commit");
+    let private_commit = stdout(&private_commit);
+    assert_ok(
+        &git_with_objects(
+            &verifier,
+            private_objects.path(),
+            &source_objects,
+            &["checkout", "-q", "--detach", &private_commit],
+        ),
+        "checking out the private verifier commit",
+    );
+    drop(private_objects);
+
+    let broken_fetch = repo.git(&["fetch", "-q", "."]);
+    assert!(
+        !broken_fetch.status.success(),
+        "the fixture must reproduce fetch failure"
+    );
+    assert!(
+        stderr(&broken_fetch).contains("bad object"),
+        "the fixture must fail on the missing verifier object: {}",
+        stderr(&broken_fetch)
+    );
+
+    let script = checkout().join("scripts/verify-pr.sh");
+    let repaired = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
+    );
+    assert_ok(&repaired, "repairing the verifier worktree");
+    let payload: serde_json::Value = serde_json::from_slice(&repaired.stdout)
+        .expect("the verifier repair seam must return JSON");
+    assert_eq!(payload["result"], "verifier-worktree-ready");
+
+    assert_eq!(stdout(&run(&verifier, "git", &["rev-parse", "HEAD"])), base);
+    assert!(!verifier.join("private").exists());
+    assert_eq!(
+        fs::read_to_string(
+            repo.common_dir()
+                .join("storyhook/verification-worktree.format")
+        )
+        .expect("reading the verifier format marker"),
+        "private-gitdir-v1\n"
+    );
+    assert_ok(&repo.git(&["fetch", "-q", "."]), "fetching after repair");
+    assert_ok(
+        &repo.git(&[
+            "fsck",
+            "--no-progress",
+            "--connectivity-only",
+            "--no-dangling",
+        ]),
+        "checking connectivity after repair",
+    );
+
+    let sentinel = verifier.join("persistent-cache-sentinel");
+    fs::write(&sentinel, "keep\n").expect("writing the persistent cache sentinel");
+    let reused = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
+    );
+    assert_ok(&reused, "reusing the healthy verifier worktree");
+    assert!(
+        sentinel.exists(),
+        "a healthy formatted verifier must preserve its caches"
+    );
+}
+
+#[test]
 fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
     let repo = MergeRepo::new();
     let fork = repo.rev_parse("main");
