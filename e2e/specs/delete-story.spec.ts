@@ -121,11 +121,8 @@ test("Cancel dismisses the modal without deleting; the drawer stays open", async
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
-  // deleteStory() assumes a clean starting state; the drawer this test
-  // deliberately left open would otherwise block its own card click behind
-  // #drawer-backdrop.
-  await page.locator("#drawer-close").click();
-  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  // SH-554: detail is a peer, so the board card remains reachable while the
+  // panel is open. Let deleteStory() exercise that real route directly.
   await deleteStory(page, title);
 });
 
@@ -146,9 +143,8 @@ test("clicking the backdrop dismisses the modal without deleting; the drawer sta
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
-  // See the identical comment on the Cancel test above.
-  await page.locator("#drawer-close").click();
-  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  // SH-554: detail is a peer, so the board card remains reachable while the
+  // panel is open. Let deleteStory() exercise that real route directly.
   await deleteStory(page, title);
 });
 
