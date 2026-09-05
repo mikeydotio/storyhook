@@ -10,7 +10,9 @@
 //! [`fire`] is an inlined `Ok(())` and there is no arming machinery to call:
 //! the points cost nothing and cannot be reached in a release build. The
 //! feature is enabled for `cargo test` only, by way of the test-support crate's
-//! dependency on `storyhook` — see that crate's manifest.
+//! dependency on `storyhook` — see that crate's manifest. A release binary
+//! presented with `STORYHOOK_FAULT` refuses at startup through
+//! [`crate::fault_injection_guard`] rather than silently reaching this no-op.
 //!
 //! Arming is *thread-local*, because integration tests in one binary are
 //! parallel threads sharing a process and a process-global switch would make
