@@ -15,7 +15,8 @@ use std::time::Duration;
 use regex::Regex;
 
 use crate::domain::{
-    DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO, SuperState, VERIFYING_STATE_SLUG, is_epic,
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO,
+    StoryCleanupLease, SuperState, VERIFYING_STATE_SLUG, is_epic,
 };
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
@@ -383,6 +384,8 @@ pub struct DispatchRequest {
 pub struct UnclaimRequest {
     pub project: String,
     pub story: String,
+    /// Creation-time identity authorizing exact non-verification cleanup.
+    pub cleanup_lease: StoryCleanupLease,
 }
 
 /// A parsed answer from `story.sh`.
@@ -479,7 +482,7 @@ impl ShellDispatcher {
 
 impl Dispatcher for ShellDispatcher {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
-        run_shell_dispatch(
+        let outcome = run_shell_dispatch(
             &self.story_sh_path,
             &request.project,
             &request.story,
@@ -488,7 +491,11 @@ impl Dispatcher for ShellDispatcher {
             true,
             &DispatchOptions::default(),
             &self.env,
-        )
+        )?;
+        if outcome.state == DispatchOutcomeState::Ok {
+            cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
+        }
+        Ok(outcome)
     }
 
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
@@ -496,6 +503,7 @@ impl Dispatcher for ShellDispatcher {
             &self.story_sh_path,
             &request.project,
             &request.story,
+            &request.cleanup_lease,
             &self.env,
         )
     }
@@ -1305,6 +1313,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         .get("worktree_path")
                         .and_then(|v| v.as_str())
                         .map(str::to_string);
+                    live.cleanup_lease =
+                        cleanup_lease_from_payload(&outcome.payload, slug, &story).ok();
                     live.outcome = None;
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
@@ -1463,11 +1473,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 continue;
             }
             let story = lane.story_id.clone().expect("filtered occupied lane");
+            let cleanup_lease = lane.cleanup_lease.clone().ok_or_else(|| {
+                AppError::Storage(format!(
+                    "engine run `{run_id}` cannot immediately stop lane {} story `{story}`: no cleanup lease was recorded for this legacy lane",
+                    lane.lane_index
+                ))
+            })?;
             let outcome = self
                 .dispatcher
                 .unclaim(UnclaimRequest {
                     project: slug.clone(),
                     story: story.clone(),
+                    cleanup_lease,
                 })
                 .map_err(|error| {
                     error.with_context(&format!(
@@ -1619,6 +1636,7 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         pane_id: None,
         window_name: None,
         worktree_path: None,
+        cleanup_lease: None,
         dispatched_at: None,
         last_observed_at: at.to_string(),
         last_progress_seq: None,
@@ -1850,6 +1868,7 @@ fn run_shell_unclaim(
     script: &Path,
     project: &str,
     story: &str,
+    cleanup_lease: &StoryCleanupLease,
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("story"));
@@ -1861,10 +1880,14 @@ fn run_shell_unclaim(
         .arg("unclaim")
         .arg(story);
     apply_dispatch_allowlist(&mut command);
+    let encoded_lease = serde_json::to_string(cleanup_lease).map_err(|error| {
+        AppError::Storage(format!("could not encode stop-now cleanup lease: {error}"))
+    })?;
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
         .env("STORYHOOK_STORE_PATH", env.store_path())
+        .env(CLEANUP_LEASE_ENV, encoded_lease)
         .env("STORY_TARGET_SESSION", project)
         .env("GIT_TERMINAL_PROMPT", "0");
 
@@ -1883,7 +1906,57 @@ fn run_shell_unclaim(
             DISPATCH_TIMEOUT.as_secs()
         )),
     })?;
-    classify_dispatch_capture(&captured)
+    let outcome = classify_dispatch_capture(&captured)?;
+    if outcome.state == DispatchOutcomeState::Ok {
+        let echoed = outcome
+            .payload
+            .pointer("/cleanup/lease")
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Storage("leased unclaim success omitted its cleanup receipt".into())
+            })?;
+        let echoed: StoryCleanupLease = serde_json::from_value(echoed).map_err(|error| {
+            AppError::Storage(format!(
+                "leased unclaim returned an invalid cleanup lease: {error}"
+            ))
+        })?;
+        let absent = outcome
+            .payload
+            .pointer("/cleanup/postconditions/tmux_story_windows_absent")
+            .and_then(serde_json::Value::as_bool);
+        if &echoed != cleanup_lease || absent != Some(true) {
+            return Err(AppError::Storage(
+                "leased unclaim claimed success without echoing its lease and proving exact story-window absence".into(),
+            ));
+        }
+    }
+    Ok(outcome)
+}
+
+fn cleanup_lease_from_payload(
+    payload: &serde_json::Value,
+    project: &str,
+    story: &str,
+) -> Result<StoryCleanupLease, AppError> {
+    let lease = payload
+        .get("cleanup_lease")
+        .cloned()
+        .ok_or_else(|| AppError::Storage("dispatch success omitted cleanup_lease".to_string()))?;
+    let lease: StoryCleanupLease = serde_json::from_value(lease).map_err(|error| {
+        AppError::Storage(format!(
+            "dispatch success carried an invalid cleanup_lease: {error}"
+        ))
+    })?;
+    if lease.version != CLEANUP_LEASE_VERSION
+        || lease.project_slug != project
+        || lease.story_id != story
+    {
+        return Err(AppError::Storage(
+            "dispatch cleanup lease does not match protocol version, project, and story"
+                .to_string(),
+        ));
+    }
+    Ok(lease)
 }
 
 /// A much shorter bound than [`DISPATCH_TIMEOUT`]: `story.sh capabilities`

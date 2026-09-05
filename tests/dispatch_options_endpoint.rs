@@ -24,7 +24,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn capabilities_stub(hits_file: &Path) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=3
+DISPATCH_PROTOCOL=4
 set -u
 echo x >> {hits_file:?}
 if [ "$1" = "capabilities" ]; then
@@ -56,7 +56,7 @@ printf '{{"ok":true,"id":"%s","display":"stub dispatched"}}\n' "$4"
 /// contract for an unknown verb.
 fn no_capabilities_stub() -> String {
     r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=3
+DISPATCH_PROTOCOL=4
 set -u
 if [ "$1" = "capabilities" ]; then
   printf '{"ok":false,"display":"usage: story.sh <list | view ... > -- capabilities not recognized"}\n'
@@ -69,7 +69,7 @@ printf '{"ok":true,"id":"%s","display":"stub dispatched"}\n' "$4"
 
 fn contradictory_success_stub() -> String {
     r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=3
+DISPATCH_PROTOCOL=4
 printf '{"ok":true,"agent":"%s","models":[],"efforts":[],"speeds":[]}\n' "${2#--agent=}"
 exit 29
 "#
@@ -243,7 +243,7 @@ fn a_helper_that_prints_nothing_parseable_also_degrades_gracefully() {
     let _guard = DaemonGuard(&env);
     let stub = write_script(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=3
+DISPATCH_PROTOCOL=4
 exit 7
 "#,
     );

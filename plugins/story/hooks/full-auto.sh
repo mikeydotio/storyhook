@@ -4,16 +4,14 @@
 # Decision D6 of docs/spec/full-auto-engine.md. Inside an engine lane there is
 # nobody at the prompt, so two tool calls have to be answered by something other
 # than a person: the plan exit, which is normally approved by hand, and the
-# question, which normally waits for one. This hook answers both at the
-# provider's own event boundary. Claude Code 2.1.251 proved that allowing the
-# PreToolUse call authorizes ExitPlanMode but does NOT accept the separate plan
-# review pane. That pane emits PermissionRequest(ExitPlanMode), so this hook uses
-# that exact event to start a bounded watcher on the hook's own tmux pane and
-# presses Return only while Claude's exact, default-selected Auto option is
-# visible. A changed or missing UI receives no input and remains safely stopped.
+# question, which normally waits for one. This hook allows the plan tool and
+# refuses questions at provider events. Dispatch separately arms an exact-pane
+# watcher for each provider before it submits the autonomous charter, because
+# Claude Code 2.1.261 no longer emits the PermissionRequest event that used to
+# trigger its watcher. A changed or missing UI receives no input and remains
+# safely stopped.
 #
 #   PreToolUse: ExitPlanMode              -> allow the tool call
-#   PermissionRequest: ExitPlanMode       -> accept the exact plan-review pane
 #   AskUserQuestion | request_user_input  -> deny, with feedback the model reads
 #   anything else, or a payload it cannot read -> no decision
 #
@@ -51,7 +49,7 @@
 # this one.
 #
 # THE KNOWN HOLE, STATED RATHER THAN PAPERED OVER. Provider hooks fail OPEN at
-# their manifest timeout. If this hook times out, or Claude changes the exact
+# their manifest timeout. If this hook times out, or a provider changes the exact
 # review-pane text, the agent asks, nobody answers, and the session stalls. An
 # engine lane's ceiling quarantines it with a reason naming exactly that; an
 # ordinary Auto window remains available for operator capture. The same
@@ -60,36 +58,37 @@
 # silent, which is the bar.
 set -uo pipefail
 
-# Internal continuation for PermissionRequest(ExitPlanMode). It is scheduled by
-# the tmux server because Claude does not paint the review pane until its hook
-# process has returned (and culls detached hook children). The event and
-# `$TMUX_PANE` scope when/where this runs; three exact visible strings scope
-# what it may type into. Fifty 100ms probes
-# bound UI-startup variance without turning this into a pane monitor.
+# Dispatch-owned continuation for Claude's plan review. The original pane pid
+# and tmux's dead flag prevent a retained or respawned pane from inheriting this
+# watch; three exact visible strings scope what it may type into.
 approve_claude_plan() {
-  local pane="${1:-}" limit="${2:-50}" attempt=0 screen=""
+  local pane="${1:-}" expected_pid="${2:-}" limit="${3:-0}"
+  local attempt=0 screen="" identity=""
 
   [ -n "${STORYHOOK_AUTO:-}${STORYHOOK_FULL_AUTO:-}" ] || return 0
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 0
-  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=50
+  [[ "$expected_pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
   command -v tmux >/dev/null 2>&1 || return 0
 
-  # PermissionRequest paints the pane before its hook process fully returns;
-  # input sent during that handoff is discarded. Let the provider regain its
-  # input loop, then re-read the pane before typing anything.
-  sleep 0.5
-  while [ "$attempt" -lt "$limit" ]; do
-    attempt=$((attempt + 1))
+  while :; do
+    identity=$(tmux display-message -p -t "$pane" \
+      '#{pane_pid}:#{pane_dead}' 2>/dev/null) || return 0
+    [ "$identity" = "$expected_pid:0" ] || return 0
     screen=$(tmux capture-pane -p -t "$pane" 2>/dev/null) || return 0
     if [[ "$screen" == *"Ready to code?"* \
        && "$screen" == *"❯ 1. Yes, and use auto mode"* \
        && "$screen" == *"2. Yes, manually approve edits"* ]]; then
+      identity=$(tmux display-message -p -t "$pane" \
+        '#{pane_pid}:#{pane_dead}' 2>/dev/null) || return 0
+      [ "$identity" = "$expected_pid:0" ] || return 0
       tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
       return 0
     fi
-    sleep 0.1
+    attempt=$((attempt + 1))
+    [ "$limit" -eq 0 ] || [ "$attempt" -lt "$limit" ] || return 0
+    sleep 1
   done
-  return 0
 }
 
 # Codex 0.149.0 exposes no hook event before its separate plan-review UI, so
@@ -122,7 +121,7 @@ approve_codex_plan() {
 }
 
 if [ "${1:-}" = "--approve-claude-plan" ]; then
-  approve_claude_plan "${2:-}" "${3:-50}"
+  approve_claude_plan "${2:-}" "${3:-}" "${4:-0}"
   exit 0
 fi
 if [ "${1:-}" = "--approve-codex-plan" ]; then
@@ -154,7 +153,6 @@ import sys
 
 PLAN_EXIT = "ExitPlanMode"
 QUESTION_TOOLS = ("AskUserQuestion", "request_user_input")
-APPROVE_CLAUDE_PLAN = "__STORYHOOK_APPROVE_CLAUDE_PLAN__"
 # The reserved shape of a storyhook id: a project prefix and a number.
 STORY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9]*-[0-9]+$")
 
@@ -200,11 +198,6 @@ if not isinstance(payload, dict):
 event = payload.get("hook_event_name")
 tool = payload.get("tool_name")
 
-if event == "PermissionRequest":
-    if tool == PLAN_EXIT:
-        emit(APPROVE_CLAUDE_PLAN)
-    emit("{}")
-
 if event != "PreToolUse":
     emit("{}")
 
@@ -241,25 +234,6 @@ emit("{}")
 PY
 
 decision=$(FULL_AUTO_PAYLOAD="$stdin_json" python3 -c "$FULL_AUTO_PY" 2>/dev/null) || decision=""
-
-# PermissionRequest arrives before Claude paints its plan-review pane. Ask tmux
-# to own a bounded continuation so the provider's hook can return immediately
-# without Claude culling the watcher as a leftover hook child. `%q` quotes all
-# values before the tmux server gives the command to its shell.
-if [ "$decision" = "__STORYHOOK_APPROVE_CLAUDE_PLAN__" ]; then
-  pane="${TMUX_PANE:-}"
-  if [[ "$pane" =~ ^%[0-9]+$ ]] && command -v tmux >/dev/null 2>&1; then
-    printf -v hook_q '%q' "$0"
-    printf -v pane_q '%q' "$pane"
-    printf -v auto_q '%q' "${STORYHOOK_AUTO:-}"
-    printf -v full_q '%q' "${STORYHOOK_FULL_AUTO:-}"
-    tmux run-shell -b -t "$pane" \
-      "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_q bash $hook_q --approve-claude-plan $pane_q" \
-      >/dev/null 2>&1 || true
-  fi
-  printf '{}'
-  exit 0
-fi
 
 # Anything that is not an object is not a decision. A python3 that is missing,
 # that failed, or that printed a diagnostic collapses to the same silence as a

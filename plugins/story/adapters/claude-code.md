@@ -42,8 +42,8 @@ Do not rewrite those templates in prose.
 
 Autonomous Claude remains in Plan mode, but the child receives
 `STORYHOOK_AUTO=<story-id>` so the packaged hook allows `ExitPlanMode`, then
-uses Claude's `PermissionRequest(ExitPlanMode)` event to send Return to the exact
-selected Auto option in that child's tmux pane. The same hook refuses
+dispatch's pane-lifetime watcher sends Return to the exact selected Auto option
+only while that child's original tmux process remains live. The same hook refuses
 `AskUserQuestion`. Its launch settings make `acceptEdits` the post-plan default.
 A wholesale `STORY_LAUNCH_CMD` override is preserved and reported as
 potentially weakening this posture. Attended dispatch receives no marker and is

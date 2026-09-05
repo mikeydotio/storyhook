@@ -160,13 +160,21 @@ pub(super) fn put_engine_lane(
     conn: &Connection,
     lane: &EngineLaneRecord,
 ) -> Result<(), StoreError> {
+    let cleanup_lease = lane
+        .cleanup_lease
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            StoreError::Invariant(format!("cannot encode engine lane cleanup lease: {error}"))
+        })?;
     sql(
         conn.execute(
             "INSERT INTO engine_lanes \
                  (run_id, lane_index, state, story_id, window_name, worktree_path, \
                   dispatched_at, last_observed_at, outcome, outcome_detail, \
-                  last_progress_seq, last_progress_at, pane_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+                  last_progress_seq, last_progress_at, pane_id, cleanup_lease_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              ON CONFLICT (run_id, lane_index) DO UPDATE SET \
                  state = excluded.state, story_id = excluded.story_id, \
                  window_name = excluded.window_name, worktree_path = excluded.worktree_path, \
@@ -175,7 +183,8 @@ pub(super) fn put_engine_lane(
                  outcome = excluded.outcome, outcome_detail = excluded.outcome_detail, \
                  last_progress_seq = excluded.last_progress_seq, \
                  last_progress_at = excluded.last_progress_at, \
-                 pane_id = excluded.pane_id",
+                 pane_id = excluded.pane_id, \
+                 cleanup_lease_json = excluded.cleanup_lease_json",
             params![
                 lane.run_id,
                 lane.lane_index,
@@ -190,6 +199,7 @@ pub(super) fn put_engine_lane(
                 lane.last_progress_seq.map(GlobalSeq::get),
                 lane.last_progress_at,
                 lane.pane_id,
+                cleanup_lease,
             ],
         ),
         "writing an engine lane",
