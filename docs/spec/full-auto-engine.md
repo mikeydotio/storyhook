@@ -168,6 +168,7 @@ classDiagram
         +Option~String~ story_id
         +Option~String~ window
         +Option~String~ worktree
+        +Option~StoryCleanupLease~ cleanup_lease
         +Option~String~ dispatched_at
         +String last_observed_at
         +Option~LaneOutcome~ outcome
@@ -1864,9 +1865,14 @@ flow.
 `EngineService` owns start, status, pause, resume, stop, and acknowledge.
 Pause is resumable; graceful stop is irreversible draining; stop-now kills
 live windows and uses StoryHook's unclaim primitive to restore claimed
-stories, but preserves their branches and worktrees. A partially failed
-stop-now can be retried. Quarantined lanes are already evidence and are
-cleared without unclaiming or deleting that evidence.
+stories, but preserves their branches and worktrees. Each successful dispatch
+stores the helper's versioned creation-time cleanup lease on its lane. Stop-now
+must use that lease and accept success only after the helper echoes it and
+proves that no exact-name story window remains on the leased tmux server. A
+legacy lane without a lease is retained with an explicit error instead of
+inventing cleanup identity from mutable checkout or provider settings. A
+partially failed stop-now can be retried. Quarantined lanes are already
+evidence and are cleared without unclaiming or deleting that evidence.
 
 ### SH-467 — a singular operational CLI
 
@@ -1955,3 +1961,19 @@ cannot masquerade as queue drain. Restart, pause, and halt retain live lane
 evidence; drain releases stopped lanes so it can finish. Engine-status JSON and
 the dashboard read the run history, so three sequential failures in one lane
 still explain a breaker halt after reload.
+
+### SH-539 — exact non-verification cleanup receipts
+
+Dispatch protocol 4 returns the same `StoryCleanupLease` written into the
+worktree's private Git marker. Migration 29 persists it with the occupied lane,
+so daemon restart and later project checkout/provider changes cannot retarget
+stop-now. Leased unclaim releases through the selected project store, addresses
+only exact-name windows on the lease's tmux socket, and reports success only
+when a typed receipt echoes the lease and proves those windows absent.
+
+The same postcondition rule applies to operator cleanup verbs. `complete`,
+`unclaim`, and `reset` return nonzero `ok:false` when tmux or Git cleanup fails;
+dispatch rollback names any surviving marker, worktree, or branch instead of
+claiming that rollback completed. Successful partial mutations stay reported
+as such, so retry remains safe and diagnostics never erase what already
+happened.
