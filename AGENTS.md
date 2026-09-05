@@ -189,9 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: central verification of exact, durable non-verification cleanup
-  receipts for SH-539, while reconciling Full Auto lane accounting so
-  `verifying` is an intentional handoff rather than a stall.
+- Current: verify SH-204's lowercase label identity, compensating migration,
+  and shared create/drawer label editor through the centralized verifier.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
