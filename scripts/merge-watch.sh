@@ -5,9 +5,12 @@
 # SH-521 retires the public every-open-PR sweep. The daemon's store-backed
 # `verifying` queue selects exactly one linked candidate and calls
 # `verify-pr.sh`; that runner invokes this file only through the private
-# `--speculative-run` entry below. The entry owns private merge objects,
-# detached checkout, gate-command environment, restoration, and signal
-# cleanup. `tests/merge_gate.rs` provokes that boundary against real Git.
+# `--speculative-run` entry below. The entry owns private merge objects and
+# per-worktree Git administration, detached checkout, gate-command
+# environment, restoration, and signal cleanup. The private administration
+# keeps its synthetic HEAD out of the shared worktree ref namespace while its
+# `commondir` preserves the shared receipt store. `tests/merge_gate.rs`
+# provokes that boundary against real Git.
 #
 # A bare invocation fails with migration guidance after the private entry.
 # The legacy polling body remains unreachable for one compatibility cycle so
@@ -51,6 +54,14 @@ if [ "${1:-}" = "--speculative-run" ]; then
 
     [ -e "$poller_wt/.git" ] \
         || die "the speculative poller worktree at $poller_wt has no .git entry"
+    git -C "$poller_wt" checkout -q --detach "$base" \
+        || die "could not restore the shared poller worktree to $base"
+    shared_git_dir="$(cd "$(git -C "$poller_wt" rev-parse --absolute-git-dir)" && pwd -P)" \
+        || die "cannot resolve the poller worktree's shared Git directory"
+    case "$shared_git_dir/" in
+    "$common_dir/worktrees/"*) ;;
+    *) die "the speculative poller at $poller_wt is not a linked worktree of $common_dir" ;;
+    esac
 
     lease_root="$common_dir/storyhook"
     mkdir -p "$lease_root" || die "could not create private merge state at $lease_root"
@@ -58,8 +69,15 @@ if [ "${1:-}" = "--speculative-run" ]; then
         || die "cannot resolve the private merge-state directory"
     lease_prefix="$lease_root/merge-watch-objects."
     lease=""
+    objects=""
+    private_git=""
+    poller_gitlink="$poller_wt/.git"
+    original_gitlink=""
+    private_gitlink=""
+    gitlink_tmp=""
     child=""
     poller_needs_restore=0
+    gitlink_needs_restore=0
     retain_lease=0
     inherited_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
 
@@ -80,9 +98,15 @@ if [ "${1:-}" = "--speculative-run" ]; then
     }
 
     git_private() {
-        GIT_OBJECT_DIRECTORY="$lease" \
+        GIT_OBJECT_DIRECTORY="$objects" \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
             git "$@"
+    }
+
+    gitlink_matches() {
+        expected="$1"
+        [ -f "$poller_gitlink" ] && [ ! -L "$poller_gitlink" ] \
+            && cmp -s "$expected" "$poller_gitlink"
     }
 
     restore_poller() {
@@ -95,10 +119,38 @@ if [ "${1:-}" = "--speculative-run" ]; then
         return 1
     }
 
+    restore_gitlink() {
+        [ "$gitlink_needs_restore" -eq 1 ] || return 0
+        if gitlink_matches "$original_gitlink"; then
+            gitlink_needs_restore=0
+            return 0
+        fi
+        gitlink_matches "$private_gitlink" || return 1
+        gitlink_tmp="$(mktemp "$poller_wt/.git.merge-watch.XXXXXX")" || return 1
+        if ! cp "$original_gitlink" "$gitlink_tmp" \
+            || ! mv -f "$gitlink_tmp" "$poller_gitlink"; then
+            return 1
+        fi
+        gitlink_tmp=""
+        gitlink_needs_restore=0
+    }
+
+    restore_speculative_state() {
+        restore_poller || return 1
+        restore_gitlink || {
+            retain_lease=1
+            return 1
+        }
+    }
+
     cleanup() {
-        if ! restore_poller; then
-            note "could not restore $poller_wt to $base; retaining private objects at $lease for recovery"
+        if ! restore_speculative_state; then
+            note "could not restore $poller_wt to $base and its shared Git administration; retaining private state at $lease for recovery"
             return
+        fi
+        if [ -n "$gitlink_tmp" ]; then
+            rm -f "$gitlink_tmp"
+            gitlink_tmp=""
         fi
         if [ -n "$lease" ]; then
             if [ "$retain_lease" -eq 0 ] && lease_is_valid "$lease"; then
@@ -143,9 +195,29 @@ if [ "${1:-}" = "--speculative-run" ]; then
     lease="$canonical_lease"
     lease_is_valid "$lease" \
         || die "created object storage outside the expected private location"
+    objects="$lease/objects"
+    private_git="$lease/git"
+    original_gitlink="$lease/original-gitlink"
+    private_gitlink="$lease/private-gitlink"
+    mkdir -p "$objects" "$private_git" \
+        || die "could not initialize private merge state at $lease"
+    cp "$poller_gitlink" "$original_gitlink" \
+        || die "could not preserve the poller worktree's Git link"
+    {
+        printf '%s\n' "$base" > "$private_git/HEAD"
+        printf '%s\n' "$common_dir" > "$private_git/commondir"
+        printf '%s\n' "$poller_gitlink" > "$private_git/gitdir"
+        printf 'gitdir: %s\n' "$private_git" > "$private_gitlink"
+    } || die "could not initialize private per-worktree Git administration"
+    GIT_DIR="$private_git" \
+        GIT_WORK_TREE="$poller_wt" \
+        GIT_OBJECT_DIRECTORY="$objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        git read-tree "$base" \
+        || die "could not initialize the private poller index"
 
     candidate_tree="$(bash "$script_dir/merge-preflight.sh" \
-        --object-dir "$lease" "$base" "$head")"
+        --object-dir "$objects" "$base" "$head")"
     preflight_status=$?
     case "$preflight_status" in
     0 | 1) ;;
@@ -158,11 +230,19 @@ if [ "${1:-}" = "--speculative-run" ]; then
     merge_commit="$(git_private -C "$poller_wt" commit-tree "$candidate_tree" \
         -p "$base" -p "$head" -m "merge-watch: speculative merge")" \
         || die "could not build the speculative merge commit"
+    gitlink_tmp="$(mktemp "$poller_wt/.git.merge-watch.XXXXXX")" \
+        || die "could not stage the private poller Git link"
+    cp "$private_gitlink" "$gitlink_tmp" \
+        || die "could not stage the private poller Git link"
+    gitlink_needs_restore=1
+    mv -f "$gitlink_tmp" "$poller_gitlink" \
+        || die "could not activate private per-worktree Git administration"
+    gitlink_tmp=""
+    poller_needs_restore=1
     git_private -C "$poller_wt" checkout -q --detach "$merge_commit" \
         || die "could not check out the speculative merge"
-    poller_needs_restore=1
 
-    candidate_alternates="$lease"
+    candidate_alternates="$objects"
     if [ -n "$inherited_alternates" ]; then
         candidate_alternates="$candidate_alternates:$inherited_alternates"
     fi
@@ -188,8 +268,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
     command_status=$?
     child=""
 
-    if ! restore_poller; then
-        die "the gate command finished, but the poller worktree could not be restored; private objects were retained at $lease"
+    if ! restore_speculative_state; then
+        die "the gate command finished, but the poller worktree could not be restored; private state was retained at $lease"
     fi
     cleanup \
         || die "the gate command finished, but its private-object lease could not be removed"
