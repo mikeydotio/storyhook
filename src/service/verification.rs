@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery};
+use crate::store::{
+    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery,
+};
 
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
@@ -88,6 +90,11 @@ pub struct VerificationCandidate {
     /// (`next_cleanup`'s completed-story pass, where wait time is moot) or
     /// for the vanishingly unlikely case no such event survives.
     pub verifying_since: Option<String>,
+    /// Exact change-feed position of the latest transition into
+    /// [`VERIFYING_STATE`]. Unlike a story id or timestamp, this cannot be
+    /// reused by a later submission of the same story, so verifier ownership
+    /// and progress journals can reject stale attempts (SH-549).
+    pub verifying_generation: Option<GlobalSeq>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
     /// Exact disposable resources owned by this verification generation.
@@ -126,60 +133,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// computed from this list, never re-derived from a second query that
     /// could race the one [`Self::next`] itself used.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
-        Ok(self.store.read(|tx| {
-            let mut candidates = Vec::new();
-            for project in tx.projects()? {
-                let checkout = tx.checkout_path(project.id)?;
-                let registered =
-                    super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
-                let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
-                for row in rows {
-                    let links = tx
-                        .open_pr_links_for_story(project.id, row.story_no)?
-                        .into_iter()
-                        .filter(|link| link.close_on_merge)
-                        .collect::<Vec<_>>();
-                    let pull_request = match (&checkout, links.as_slice()) {
-                        (None, _) => Err(VerificationProblem::MissingCheckout),
-                        (Some(_), [link])
-                            if registered.iter().any(|repo| {
-                                repo.owner.eq_ignore_ascii_case(&link.owner)
-                                    && repo.repo.eq_ignore_ascii_case(&link.repo)
-                            }) =>
-                        {
-                            Ok(link.clone())
-                        }
-                        (Some(_), [link]) => Err(VerificationProblem::UnregisteredPullRequest {
-                            url: link.url.clone(),
-                            registered: registered
-                                .iter()
-                                .map(|repo| format!("{}/{}", repo.owner, repo.repo))
-                                .collect(),
-                        }),
-                        (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
-                        (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
-                            many.iter().map(|link| link.url.clone()).collect(),
-                        )),
-                    };
-                    let verifying_since = verifying_since(tx, project.id, row.story_no)?;
-                    let cleanup_lease = latest_cleanup_lease(tx, project.id, row.story_no)?;
-                    candidates.push(VerificationCandidate {
-                        project: project.id,
-                        project_slug: project.slug.clone(),
-                        story_id: row.story_no.to_id(&project.prefix),
-                        title: row.title,
-                        priority: row.priority,
-                        created_at: row.created_at,
-                        verifying_since,
-                        checkout: checkout.clone().unwrap_or_default(),
-                        cleanup_lease,
-                        pull_request,
-                    });
-                }
-            }
-            sort_candidates(&mut candidates);
-            Ok(candidates)
-        })?)
+        Ok(self.store.read(|tx| ordered_candidates(tx))?)
     }
 
     /// Returns a completed story whose post-merge resources still need reap.
@@ -226,6 +180,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         // The cleanup pass runs over stories already `done` —
                         // there is no queue wait left to report.
                         verifying_since: None,
+                        verifying_generation: None,
                         checkout: checkout.clone(),
                         cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                         pull_request,
@@ -324,18 +279,82 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
 /// unlikely case no such event survives (SH-372: absence states nothing —
 /// this is not asserted as an invariant, since a caller degrading to "wait
 /// unknown" is safer than a queue read that can fail for one odd story).
-fn verifying_since(
+fn verifying_entry(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
-) -> Result<Option<String>, AppError> {
+) -> Result<Option<(String, GlobalSeq)>, AppError> {
     let events = tx.events_for(project, story)?;
     Ok(events.iter().rev().find_map(|event| match event.known() {
         Some(StoryEvent::StoryStateChanged { at, state }) if state == VERIFYING_STATE => {
-            Some(at.clone())
+            Some((at.clone(), event.global_seq))
         }
         _ => None,
     }))
+}
+
+/// Every submitted story across every project, read from an existing
+/// transaction. The dashboard combines this queue snapshot with its story
+/// snapshot in one transaction; [`VerificationQueue::ordered`] delegates here
+/// so verifier and dashboard ordering cannot drift (SH-549).
+pub(crate) fn ordered_candidates(
+    tx: &impl ReadOps,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    let mut candidates = Vec::new();
+    for project in tx.projects()? {
+        let checkout = tx.checkout_path(project.id)?;
+        let registered =
+            super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
+        let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
+        for row in rows {
+            let links = tx
+                .open_pr_links_for_story(project.id, row.story_no)?
+                .into_iter()
+                .filter(|link| link.close_on_merge)
+                .collect::<Vec<_>>();
+            let pull_request = match (&checkout, links.as_slice()) {
+                (None, _) => Err(VerificationProblem::MissingCheckout),
+                (Some(_), [link])
+                    if registered.iter().any(|repo| {
+                        repo.owner.eq_ignore_ascii_case(&link.owner)
+                            && repo.repo.eq_ignore_ascii_case(&link.repo)
+                    }) =>
+                {
+                    Ok(link.clone())
+                }
+                (Some(_), [link]) => Err(VerificationProblem::UnregisteredPullRequest {
+                    url: link.url.clone(),
+                    registered: registered
+                        .iter()
+                        .map(|repo| format!("{}/{}", repo.owner, repo.repo))
+                        .collect(),
+                }),
+                (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
+                (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
+                    many.iter().map(|link| link.url.clone()).collect(),
+                )),
+            };
+            let entry = verifying_entry(tx, project.id, row.story_no)?;
+            let (verifying_since, verifying_generation) = entry
+                .map(|(at, generation)| (Some(at), Some(generation)))
+                .unwrap_or((None, None));
+            candidates.push(VerificationCandidate {
+                project: project.id,
+                project_slug: project.slug.clone(),
+                story_id: row.story_no.to_id(&project.prefix),
+                title: row.title,
+                priority: row.priority,
+                created_at: row.created_at,
+                verifying_since,
+                verifying_generation,
+                checkout: checkout.clone().unwrap_or_default(),
+                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                pull_request,
+            });
+        }
+    }
+    sort_candidates(&mut candidates);
+    Ok(candidates)
 }
 
 /// The lease paired with the story's latest entry into verification.
