@@ -1,26 +1,25 @@
-# SH-539 Handoff
+# SH-556 Verification Handoff
 
 ## Delivered
 
-- Dispatch protocol 4 returns its versioned creation-time cleanup lease.
-- Migration 29 persists that lease on each engine lane across daemon restart,
-  after main's pane-identity and quarantine-history migrations 27 and 28.
-- Stop-now uses only the persisted lease and requires an echoed exact-window
-  absence receipt; legacy unleased lanes remain occupied with a loud error.
-- `complete`, `unclaim`, and `reset` now return nonzero `ok:false` when attempted
-  tmux or Git cleanup cannot prove its postcondition.
-- Failed dispatch rollback reports surviving markers, worktrees, and branches.
+- The centralized verifier shares the daemon's existing `InFlight` registry.
+- An accepted candidate publishes `verify:<project>:<story>:<generation>` with
+  project, PID, checkout, start time, and the existing gate deadline.
+- Lifecycle and SH-549 activity guards remain live through outcome recording
+  and story-state transition, then retract on result, error, or panic.
+- Malformed and cleanup-only candidates retain their existing unowned paths.
+- Graceful replacement drains active verification; crash/force recovery still
+  harvests stale work and reapplies current queue priority.
 
 ## Verification scope
 
-- Rust: engine run model, restart/reconcile, dispatcher, daemon/dispatch API,
-  plugin contract, schema migration/fixture.
-- Shell: dispatch lease output, dispatch rollback survivor, complete, unclaim,
-  and reset cleanup failures.
+- New blocked-actuator shutdown-ownership regression.
+- Verification queue ownership, all outcomes, write-error, and unwind cases.
+- Existing graceful drain and stale-entry lifecycle cases.
+- AGENTS/template synchronization, targeted Clippy, formatting, diff check.
 
 ## Submission contract
 
-- Branch: `worktree-SH-539`.
-- Current `origin/main` is merged additively; published history is unchanged.
-- The one linked PR must remain open for the centralized verifier.
-- The verifier owns the full suite, merge, completion, and worktree cleanup.
+- Branch: `worktree-SH-556`.
+- One PR references SH-556 and remains open for centralized verification.
+- The verifier owns the full suite, merge, completion, and lane cleanup.

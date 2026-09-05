@@ -212,11 +212,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify authoritative active-versus-queued status chips for stories
-  handed to centralized verification.
-- Next: ensure newly-verifying stories do not interrupt a story already under
-  test (SH-556).
-- Later: expose queue health and gate diagnostics across engine/dashboard
+- Current: verify graceful daemon replacement drains a story already under
+  centralized test (SH-556).
+- Next: expose queue health and gate diagnostics across engine/dashboard
   surfaces, beyond individual story cards.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.

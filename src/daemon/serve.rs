@@ -349,8 +349,11 @@ where
             let env = env.clone();
             let bus = bus.clone();
             let activity = verification_activity.clone();
+            let inflight = Arc::clone(&serving.inflight);
             scope.spawn(move || {
-                crate::daemon::verification::poll_verification(store, &env, &bus, &stop, &activity)
+                crate::daemon::verification::poll_verification(
+                    store, &env, &bus, &stop, &activity, &inflight,
+                )
             });
         }
         {

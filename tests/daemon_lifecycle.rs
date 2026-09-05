@@ -1204,8 +1204,8 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
     lifecycle::publish_inflight(
         &environment,
         &[lifecycle::CurrentRequest {
-            request_id: "stale-from-a-killed-daemon".to_string(),
-            command: "pr-check".to_string(),
+            request_id: "verify:stale-project:SH-1:42".to_string(),
+            command: "verify".to_string(),
             project: Some("stale-project".to_string()),
             pid: 1,
             started_at: "2020-01-01T00:00:00Z".to_string(),
