@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# A narrow decorator around the shared tmux fake for SH-564. The shared fake
+# models a loaded SessionStart hook by publishing a sentinel for every Claude
+# launch. This decorator withholds that sentinel when the launch itself does
+# not bind StoryHook's plugin, matching a machine with no ambient registration.
+set -uo pipefail
+
+FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHARED_FAKE="$FIXTURE_DIR/../tmux"
+PLUGIN_ROOT="$(cd "$FIXTURE_DIR/../../.." && pwd)"
+
+args=("$@")
+command_index=0
+if [ "${args[0]:-}" = -S ]; then
+  command_index=2
+fi
+command_name="${args[$command_index]:-}"
+
+case "$command_name" in
+  new-window | respawn-pane)
+    launch_line=""
+    for arg in "${args[@]}"; do
+      case "$arg" in
+        claude | claude\ * | */claude | */claude\ *)
+          [ -n "$launch_line" ] || launch_line="$arg"
+          ;;
+      esac
+    done
+    if [ -n "$launch_line" ]; then
+      printf '%s' "$launch_line" >"$FAKE_TMUX_STATE/plugin_binding_launch"
+      case "$launch_line" in
+        *"--plugin-dir '$PLUGIN_ROOT'"* | *"--plugin-dir $PLUGIN_ROOT"*)
+          printf 'exact' >"$FAKE_TMUX_STATE/plugin_binding_status"
+          unset FAKE_TMUX_SUPPRESS_SENTINEL
+          ;;
+        *"--plugin-dir "*)
+          printf 'wrong-root' >"$FAKE_TMUX_STATE/plugin_binding_status"
+          export FAKE_TMUX_SUPPRESS_SENTINEL=1
+          ;;
+        *)
+          printf 'missing' >"$FAKE_TMUX_STATE/plugin_binding_status"
+          export FAKE_TMUX_SUPPRESS_SENTINEL=1
+          ;;
+      esac
+    fi
+    ;;
+esac
+
+exec "$SHARED_FAKE" "$@"

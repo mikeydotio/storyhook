@@ -190,8 +190,11 @@ project it is looking at.
 ## Mini-roadmap
 
 - Current: verify SH-204's lowercase label identity and shared label editor
-  through the repaired, installed centralized verifier.
+  plus SH-564's explicit Claude dispatch plugin binding through the repaired,
+  installed centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
+- Later: reproduce and choose a provider-native Codex autonomous hook-binding
+  contract (SH-571).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work
