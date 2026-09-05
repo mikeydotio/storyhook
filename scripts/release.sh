@@ -199,7 +199,8 @@ Environment:
   INSTALL_DIR                          Passed through to `make install`.
 
 Public release requirements:
-  rustup stable with both Darwin targets, cross, and a running Docker engine.
+  macOS with Xcode command-line tools and Lima. The first run also needs
+  network access to fetch the pinned Rust components and Ubuntu image.
 EOF
 }
 
