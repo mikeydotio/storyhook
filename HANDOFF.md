@@ -10,12 +10,17 @@
 - Malformed and cleanup-only candidates retain their existing unowned paths.
 - Graceful replacement drains active verification; crash/force recovery still
   harvests stale work and reapplies current queue priority.
+- Adopted the same missing-ledger defect in synchronous dashboard `stop --now`:
+  valid immediate stops now publish `engine-stop:<project>:<run>` until lane
+  termination, unclaim, and final run-state recording finish.
+- Ordinary engine controls and invalid stop requests remain outside the ledger.
 
 ## Verification scope
 
 - New blocked-actuator shutdown-ownership regression.
 - Verification queue ownership, all outcomes, write-error, and unwind cases.
 - Existing graceful drain and stale-entry lifecycle cases.
+- Immediate engine-stop ownership metadata, lifetime, and cleanup regression.
 - AGENTS/template synchronization, targeted Clippy, formatting, diff check.
 
 ## Submission contract
