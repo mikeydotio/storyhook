@@ -201,16 +201,35 @@ impl Pty {
     ///
     /// # Panics
     ///
-    /// If the timeout elapses, or the child exits without ever saying it. Both
-    /// panics carry the whole transcript, because "timed out" on its own tells
-    /// you nothing about which of six questions it stopped at.
+    /// If the timeout elapses, or the direct child exits without ever saying
+    /// it. Both panics carry the whole transcript, because "timed out" on its
+    /// own tells you nothing about which of six questions it stopped at.
     pub fn expect(&mut self, needle: &str) {
         let deadline = Instant::now() + self.timeout;
         loop {
             if self.transcript.contains(needle) {
                 return;
             }
-            if matches!(self.pump(), Pumped::Eof) {
+            let pumped = self.pump();
+            if self.transcript.contains(needle) {
+                return;
+            }
+            if matches!(pumped, Pumped::Eof) {
+                assert!(
+                    self.transcript.contains(needle),
+                    "{}: the child exited without ever writing {needle:?}.{}",
+                    self.label,
+                    self.rendered_transcript(),
+                );
+                return;
+            }
+            if self.child_has_exited() {
+                // EOF belongs to the terminal, not to the direct child: a
+                // descendant or an unrelated process may still hold a copy of
+                // the slave. The child status is authoritative, while this
+                // bounded drain collects output written immediately before it
+                // exited.
+                self.drain();
                 assert!(
                     self.transcript.contains(needle),
                     "{}: the child exited without ever writing {needle:?}.{}",
@@ -227,6 +246,17 @@ impl Pty {
                 self.rendered_transcript(),
             );
         }
+    }
+
+    /// Whether the direct child has exited, independently of terminal EOF.
+    fn child_has_exited(&mut self) -> bool {
+        let label = &self.label;
+        self.child.as_mut().is_some_and(|child| {
+            child
+                .try_wait()
+                .unwrap_or_else(|e| panic!("{label}: polling the child: {e}"))
+                .is_some()
+        })
     }
 
     /// Types `line` and a newline at the terminal.
@@ -513,26 +543,29 @@ mod tests {
         );
     }
 
-    /// A child that exits without saying it fails *immediately*, rather than
-    /// waiting out a timeout for something that can never arrive.
+    /// A child that exits without saying it fails *immediately*, even when a
+    /// descendant keeps the terminal open after the direct child is gone.
     #[test]
     fn an_expect_fails_at_once_when_the_child_exits_first() {
-        // Named rather than inline (SH-394): proves EOF is noticed rather
-        // than waiting out the 30s timeout set below, with margin for a
-        // whole subprocess spawn.
-        const EOF_NOTICED_CEILING: Duration = Duration::from_secs(5);
-
-        let started = Instant::now();
         let outcome = std::panic::catch_unwind(|| {
-            let mut pty = Pty::spawn("eof", contained("echo BYE")).timeout(Duration::from_secs(30));
+            // `cat` inherits the slave and outlives the shell, so the master
+            // cannot report EOF when the direct child exits. Closing the
+            // master when `Pty` drops also gives `cat` a deterministic exit.
+            let mut pty = Pty::spawn("eof", contained("exec 3<&0; cat <&3 >/dev/null & echo BYE"))
+                .timeout(Duration::from_millis(400));
             pty.expect("NEVER WRITTEN");
         });
 
-        assert!(outcome.is_err(), "the expect was supposed to fail");
+        let panic = outcome.expect_err("the expect was supposed to fail");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_else(|| "<non-string panic>".to_string());
         assert!(
-            started.elapsed() < EOF_NOTICED_CEILING,
-            "EOF must fail the expect rather than waiting out the deadline: {:?}",
-            started.elapsed()
+            message.contains("the child exited without ever writing")
+                && message.contains("NEVER WRITTEN")
+                && message.contains("BYE"),
+            "direct-child exit must win over the still-open terminal: {message}"
         );
     }
 
