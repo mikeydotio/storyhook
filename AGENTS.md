@@ -190,7 +190,9 @@ project it is looking at.
 ## Mini-roadmap
 
 - Current: central verification of exact, durable non-verification cleanup
-  receipts for SH-539.
+  receipts for SH-539, while reconciling Full Auto lane accounting so
+  `verifying` is an intentional handoff rather than a stall.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.
