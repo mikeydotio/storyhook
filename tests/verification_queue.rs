@@ -1,10 +1,10 @@
 //! Store-backed contracts for the SH-521 centralized verification queue.
 
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, TickResult, VerificationActuator, VerificationOutcome, journal_path,
-    tick_with,
+    ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
+    VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
 };
-use storyhook::daemon::verification_progress::publish_once;
+use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
@@ -20,7 +20,7 @@ use storyhook::service::{
     VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{
-    ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo, WriteOps, partition_known,
+    ExpectedSeq, GlobalSeq, PrLink, ReadOps, Store, StoreError, StoryNo, WriteOps, partition_known,
 };
 use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
@@ -98,6 +98,176 @@ fn ordered_lists_every_submitted_candidate_in_the_order_next_would_drain_them() 
     assert_eq!(ordered[0].story_id, high);
     assert_eq!(ordered[1].story_id, low);
     assert_eq!(next.story_id, ordered[0].story_id);
+}
+
+#[test]
+fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let low = submitted(&fixture, "already running", Priority::Low, PR_ONE);
+    let low_candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(&low_candidate, FIXTURE_NOW.into());
+
+    let high = submitted(&fixture, "arrived later", Priority::High, PR_TWO);
+    let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
+    assert_eq!(
+        ordered[0].story_id, high,
+        "priority must still order waiting work"
+    );
+    assert_eq!(ordered[1].story_id, low);
+
+    let statuses = status_snapshot(
+        &ordered,
+        activity.snapshot().as_ref(),
+        fixture.env(),
+        FIXTURE_NOW,
+    );
+    assert!(matches!(
+        statuses
+            .iter()
+            .find(|(_, id, _)| id == &low)
+            .map(|(_, _, status)| status),
+        Some(VerificationStatus::Running { .. })
+    ));
+    assert!(matches!(
+        statuses
+            .iter()
+            .find(|(_, id, _)| id == &high)
+            .map(|(_, _, status)| status),
+        Some(VerificationStatus::Queued { position: 1, .. })
+    ));
+
+    drop(guard);
+    let statuses = status_snapshot(
+        &ordered,
+        activity.snapshot().as_ref(),
+        fixture.env(),
+        FIXTURE_NOW,
+    );
+    assert!(matches!(
+        statuses
+            .iter()
+            .find(|(_, id, _)| id == &high)
+            .map(|(_, _, status)| status),
+        Some(VerificationStatus::Queued { position: 1, .. })
+    ));
+    assert!(matches!(
+        statuses
+            .iter()
+            .find(|(_, id, _)| id == &low)
+            .map(|(_, _, status)| status),
+        Some(VerificationStatus::Queued { position: 2, .. })
+    ));
+}
+
+#[test]
+fn a_different_verifying_generation_cannot_inherit_active_ownership() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    submitted(&fixture, "resubmitted", Priority::High, PR_ONE);
+    let old_candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let (activity, _guard) = active_for(&old_candidate);
+    let mut new_candidate = old_candidate.clone();
+    new_candidate.verifying_generation = Some(GlobalSeq::new(
+        old_candidate.verifying_generation.unwrap().get() + 1,
+    ));
+
+    let statuses = status_snapshot(
+        &[new_candidate],
+        activity.snapshot().as_ref(),
+        fixture.env(),
+        FIXTURE_NOW,
+    );
+
+    assert!(matches!(
+        statuses[0].2,
+        VerificationStatus::Queued { position: 1, .. }
+    ));
+}
+
+struct ActivityObservingActuator {
+    activity: VerificationActivity,
+    observed_story: Mutex<Option<String>>,
+}
+
+impl VerificationActuator for ActivityObservingActuator {
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        let active = self
+            .activity
+            .snapshot()
+            .expect("ownership must be visible while the actuator runs");
+        assert_eq!(active.project, candidate.project);
+        assert_eq!(active.story_id, candidate.story_id);
+        assert_eq!(active.generation, candidate.verifying_generation);
+        *self.observed_story.lock().unwrap() = Some(candidate.story_id.clone());
+        VerificationOutcome::InfrastructureFailure {
+            detail: "retry later".into(),
+        }
+    }
+
+    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        unreachable!("an infrastructure failure does not notify the agent")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        unreachable!("an infrastructure failure does not reap the lane")
+    }
+}
+
+#[test]
+fn tick_owns_only_the_blocking_actuator_call() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "owned while running", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    let actuator = ActivityObservingActuator {
+        activity: activity.clone(),
+        observed_story: Mutex::new(None),
+    };
+
+    assert_eq!(
+        tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity).unwrap(),
+        TickResult::RetryLater
+    );
+    assert_eq!(
+        actuator.observed_story.lock().unwrap().as_deref(),
+        Some(id.as_str())
+    );
+    assert_eq!(activity.snapshot(), None);
+}
+
+#[test]
+fn ownership_is_cleared_during_unwind() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    submitted(&fixture, "panicking attempt", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let activity = VerificationActivity::new();
+
+    let result = std::panic::catch_unwind({
+        let activity = activity.clone();
+        move || {
+            let _guard = activity.acquire(&candidate, FIXTURE_NOW.into());
+            panic!("simulated verifier panic");
+        }
+    });
+
+    assert!(result.is_err());
+    assert_eq!(activity.snapshot(), None);
 }
 
 /// A story's own comment-driven `updated_at` moves on every publish of the
@@ -408,6 +578,7 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         priority: Priority::High,
         created_at: "2026-01-01T00:00:00Z".into(),
         verifying_since: Some("2026-01-01T00:00:00Z".into()),
+        verifying_generation: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -445,6 +616,7 @@ fn cleanup_candidate(
         priority: Priority::High,
         created_at: FIXTURE_NOW.into(),
         verifying_since: Some(FIXTURE_NOW.into()),
+        verifying_generation: None,
         checkout: repository.to_path_buf(),
         cleanup_lease: Some(StoryCleanupLease {
             version: CLEANUP_LEASE_VERSION,
@@ -1032,6 +1204,19 @@ fn progress_comment_count(fixture: &ServiceFixture, id: &str) -> usize {
         .count()
 }
 
+fn active_for(candidate: &VerificationCandidate) -> (VerificationActivity, VerificationGuard) {
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(candidate, "2026-01-01T00:00:00Z".into());
+    (activity, guard)
+}
+
+fn attempt_journal(candidate: &VerificationCandidate, body: &str) -> String {
+    format!(
+        "{{\"kind\":\"run\",\"generation\":{},\"at\":\"2026-01-01T00:00:00Z\"}}\n{body}",
+        candidate.verifying_generation.unwrap().get()
+    )
+}
+
 #[test]
 fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
     let fixture = ServiceFixture::new();
@@ -1046,13 +1231,20 @@ fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":2}\n\
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":2}\n\
          {\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"t\",\"total\":4}\n\
-         {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n",
+         {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n"),
     )
     .unwrap();
 
-    let moved = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+    let (activity, _guard) = active_for(&candidate);
+    let moved = publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:02:00Z",
+        &activity,
+    )
+    .unwrap();
     assert!(
         moved,
         "the first publish for a running candidate must write"
@@ -1075,8 +1267,19 @@ fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
     fixture.link_origin("https://github.com/acme/widgets");
     let high = submitted(&fixture, "running", Priority::High, PR_ONE);
     let low = submitted(&fixture, "queued", Priority::Low, PR_TWO);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let (activity, _guard) = active_for(&candidate);
 
-    publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+    publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:02:00Z",
+        &activity,
+    )
+    .unwrap();
 
     let running_comment = last_comment(&fixture, &high);
     assert!(
@@ -1086,11 +1289,11 @@ fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
 
     let queued_comment = last_comment(&fixture, &low);
     assert!(
-        queued_comment.contains("QUEUED (position 2)"),
+        queued_comment.contains("QUEUED (position 1)"),
         "{queued_comment}"
     );
     assert!(
-        queued_comment.contains("1 candidate of higher priority, 0 of equal priority and older"),
+        queued_comment.contains("0 candidates of higher priority, 0 of equal priority and older"),
         "{queued_comment}"
     );
 }
@@ -1108,20 +1311,33 @@ fn republishing_rewrites_the_one_comment_rather_than_appending_a_new_one() {
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n"),
     )
     .unwrap();
+    let (activity, _guard) = active_for(&candidate);
 
-    let first = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap();
+    let first = publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:01:00Z",
+        &activity,
+    )
+    .unwrap();
     assert!(first);
     assert_eq!(progress_comment_count(&fixture, &id), 1);
 
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":5}\n",
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\",\"seconds\":5}\n"),
     )
     .unwrap();
-    let second = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:02:00Z").unwrap();
+    let second = publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:02:00Z",
+        &activity,
+    )
+    .unwrap();
     assert!(second, "a changed journal must publish again");
     assert_eq!(
         progress_comment_count(&fixture, &id),
@@ -1144,14 +1360,29 @@ fn an_unchanged_journal_writes_nothing_on_the_next_publish() {
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n"),
     )
     .unwrap();
+    let (activity, _guard) = active_for(&candidate);
 
     // Same `now` both times, so even the header's own timestamp is identical
     // and the rendered body is byte-for-byte the same on the second call.
-    assert!(publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap());
-    let moved_again = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap();
+    assert!(
+        publish_once(
+            fixture.store(),
+            fixture.env(),
+            "2026-01-01T00:01:00Z",
+            &activity
+        )
+        .unwrap()
+    );
+    let moved_again = publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:01:00Z",
+        &activity,
+    )
+    .unwrap();
     assert!(
         !moved_again,
         "an identical body must not be rewritten a second time"
@@ -1172,10 +1403,19 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n",
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"running\",\"at\":\"t\"}\n"),
     )
     .unwrap();
-    assert!(publish_once(fixture.store(), fixture.env(), "2026-01-01T00:01:00Z").unwrap());
+    let (activity, _guard) = active_for(&candidate);
+    assert!(
+        publish_once(
+            fixture.store(),
+            fixture.env(),
+            "2026-01-01T00:01:00Z",
+            &activity
+        )
+        .unwrap()
+    );
     assert_eq!(progress_comment_count(&fixture, &id), 1);
 
     let root = scratch_dir();
@@ -1196,10 +1436,16 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
 
     std::fs::write(
         &journal,
-        "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\"}\n",
+        attempt_journal(&candidate, "{\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"t\"}\n"),
     )
     .unwrap();
-    let moved = publish_once(fixture.store(), fixture.env(), "2026-01-01T00:05:00Z").unwrap();
+    let moved = publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:05:00Z",
+        &activity,
+    )
+    .unwrap();
     assert!(
         !moved,
         "a story no longer in `verifying` must not be touched by the publisher"
