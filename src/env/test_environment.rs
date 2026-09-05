@@ -61,6 +61,11 @@ pub enum Disposition {
     /// and exits when it dies, so it has to name a process whose death should
     /// take the daemon with it.
     OwnPid,
+    /// The native start token for [`Self::OwnPid`].
+    ///
+    /// Rust harnesses resolve this precisely. Shell harnesses use an empty
+    /// value, which explicitly selects the compatible PID-only contract.
+    OwnProcessStartTime,
     /// Remove it. There is no harmless value for a credential or for a
     /// selection somebody else made.
     Clear,
@@ -184,6 +189,13 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  outlives the run that made it and poisons every later one",
     },
     Parameter {
+        name: "STORYHOOK_PARENT_START_TIME",
+        disposition: Disposition::OwnProcessStartTime,
+        scope: Scope::Anywhere,
+        reason: "the incarnation paired with the parent pid; without it a \
+                 recycled pid makes a daemon follow an unrelated process",
+    },
+    Parameter {
         name: "STORYHOOK_GITHUB_TOKEN",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,
@@ -251,6 +263,9 @@ impl Parameter {
             }
             Disposition::Literal(value) => Some(OsString::from(value)),
             Disposition::OwnPid => Some(OsString::from(pid.to_string())),
+            Disposition::OwnProcessStartTime => Some(OsString::from(
+                crate::daemon::lifecycle::process_start_time(pid).unwrap_or_default(),
+            )),
             Disposition::Clear => None,
         }
     }
@@ -397,6 +412,9 @@ reach anything of yours.
             Disposition::Root(tail) => format!("<root>/{tail}"),
             Disposition::Literal(value) => value.to_string(),
             Disposition::OwnPid => "the isolating process's own pid".to_string(),
+            Disposition::OwnProcessStartTime => {
+                "the isolating process's native start token (empty for shell)".to_string()
+            }
             Disposition::Clear => "REMOVE IT".to_string(),
         };
         body.push_str(&format!("  {} = {disposition}\n", parameter.name));
@@ -429,6 +447,7 @@ sees nothing wrong.
   export STORYHOOK_STORE_PATH="$STORYHOOK_DATA_DIR/store.db"
   export STORYHOOK_DAEMON_ADDR=127.0.0.1:0
   export STORYHOOK_PARENT_PID=$$
+  export STORYHOOK_PARENT_START_TIME=
   unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
   unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
   unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
@@ -577,9 +596,31 @@ mod tests {
                         Some(OsString::from("4321").as_os_str())
                     );
                 }
+                Disposition::OwnProcessStartTime => {
+                    let expected =
+                        crate::daemon::lifecycle::process_start_time(4321).unwrap_or_default();
+                    assert_eq!(
+                        setting.value.as_deref(),
+                        Some(OsString::from(expected).as_os_str())
+                    );
+                }
                 Disposition::Clear => assert_eq!(setting.value, None),
             }
         }
+    }
+
+    #[test]
+    fn the_parent_pid_is_immediately_paired_with_its_start_token() {
+        let pid = TEST_ENVIRONMENT
+            .iter()
+            .position(|parameter| matches!(parameter.disposition, Disposition::OwnPid))
+            .expect("the daemon containment contract names its owning pid");
+        let token = TEST_ENVIRONMENT
+            .get(pid + 1)
+            .expect("the owning pid must have a following incarnation token");
+        assert_eq!(token.name, "STORYHOOK_PARENT_START_TIME");
+        assert_eq!(token.disposition, Disposition::OwnProcessStartTime);
+        assert_eq!(token.scope, TEST_ENVIRONMENT[pid].scope);
     }
 
     /// The narrower scope really is narrower, and by exactly one parameter.

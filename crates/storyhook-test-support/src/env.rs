@@ -322,7 +322,7 @@ impl TestEnv {
 /// correctly does not, because such a caller could not honour it.
 ///
 /// One definition rather than a copy per site is deliberate. SH-136 is about a
-/// hand-maintained list of places that export this pair, and adding more by hand
+/// hand-maintained list of places that export these parameters, and adding more by hand
 /// would have made that story worse.
 #[must_use]
 pub fn daemon_containment() -> Vec<(&'static str, String)> {
@@ -337,17 +337,19 @@ pub fn daemon_containment() -> Vec<(&'static str, String)> {
                 parameter.name == setting.name
                     && matches!(
                         parameter.disposition,
-                        Disposition::Literal(_) | Disposition::OwnPid
+                        Disposition::Literal(_)
+                            | Disposition::OwnPid
+                            | Disposition::OwnProcessStartTime
                     )
             })
         })
         .map(|setting| {
             let value = setting
                 .value
-                .expect("a literal or a pid always has a value");
+                .expect("a literal or process identity always has a value");
             let value = value
                 .into_string()
-                .expect("a literal and a pid are both valid UTF-8");
+                .expect("literal and process identity values are valid UTF-8");
             assert!(
                 !value.contains("no-root-is-needed-here"),
                 "{} was selected as root-independent but resolved through the \
@@ -823,6 +825,13 @@ mod tests {
             seen.lines().any(|line| line == expected),
             "a daemon that does not know its parent cannot outlive it politely; \
              expected {expected} in:\n{seen}"
+        );
+        let token = storyhook::daemon::lifecycle::process_start_time(std::process::id())
+            .expect("this platform exposes process start time");
+        let expected = format!("STORYHOOK_PARENT_START_TIME={token}");
+        assert!(
+            seen.lines().any(|line| line == expected),
+            "a reusable pid must be paired with its incarnation; expected {expected} in:\n{seen}"
         );
     }
 
