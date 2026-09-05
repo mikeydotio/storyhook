@@ -24,8 +24,8 @@ use storyhook::service::engine::{
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
-    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunState, EngineScope, ReadOps, Store,
-    WriteOps,
+    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunState, EngineScope, EngineSpeed,
+    ReadOps, Store, WriteOps,
 };
 use storyhook_test_support::{
     DispatcherCall, DispatcherStep, FIXTURE_NOW, FakeDispatcher, ServiceFixture,
@@ -522,6 +522,9 @@ fn started_run(fixture: &ServiceFixture, fake: &FakeDispatcher, lanes: u32) -> S
             scope: EngineScope::Project,
             lanes,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap()
         .id
@@ -667,6 +670,9 @@ fn no_hooks_suppresses_engine_hooks_too() {
             scope: EngineScope::Project,
             lanes: 1,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap();
 
@@ -1631,6 +1637,45 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
         .unwrap()
         .state;
     assert_eq!(state, "in-progress");
+}
+
+#[test]
+fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "configured claim", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({
+            "ok": true,
+            "window_name": story,
+            "worktree_path": "/tmp/wt/configured"
+        }),
+    ))]);
+    let ctx = fixture.ctx();
+    let run_id = EngineService::new(&ctx, &fake)
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+            model: Some("gpt-5.3-codex".into()),
+            effort: Some("high".into()),
+            speed: Some(EngineSpeed::Fast),
+        })
+        .unwrap()
+        .id;
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.filled, [(0, story.clone())]);
+    assert!(fake.calls().contains(&DispatcherCall::Dispatch(
+        storyhook::service::engine::DispatchRequest {
+            project: "fixture".into(),
+            story,
+            agent: EngineAgent::Codex,
+            model: Some("gpt-5.3-codex".into()),
+            effort: Some("high".into()),
+            speed: Some(EngineSpeed::Fast),
+        }
+    )));
 }
 
 /// The helper returns the pane id that tmux guarantees is stable for the

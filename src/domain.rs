@@ -5,6 +5,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+/// Validates one provider-defined model or effort token before it crosses a
+/// persistence or process boundary.
+///
+/// Provider catalog membership remains the provider helper's responsibility;
+/// this stable grammar prevents shell syntax and unbounded values from being
+/// stored or forwarded into a later launch argv.
+pub fn validate_dispatch_option_token(raw: &str) -> Result<(), String> {
+    let len = raw.chars().count();
+    if !(1..=64).contains(&len) {
+        return Err(format!("must be 1-64 characters (got {len})"));
+    }
+    if !raw
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("must contain only letters, digits, `.`, `_`, or `-`".to_string());
+    }
+    Ok(())
+}
+
 /// Git remote URLs, reduced to the one key project identity is decided by.
 ///
 /// Its own file rather than another thousand lines here: the grammar is

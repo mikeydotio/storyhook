@@ -112,6 +112,37 @@ impl EngineAgent {
     }
 }
 
+/// The optional speed selection stored on a Full Auto run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineSpeed {
+    /// Use the provider's standard service tier.
+    Standard,
+    /// Request the provider's fast service tier.
+    Fast,
+}
+
+impl EngineSpeed {
+    /// The stored and command-line vocabulary value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Fast => "fast",
+        }
+    }
+
+    /// Parses a constrained stored or command-line value.
+    #[must_use]
+    pub const fn parse(raw: &str) -> Option<Self> {
+        match raw.as_bytes() {
+            b"standard" => Some(Self::Standard),
+            b"fast" => Some(Self::Fast),
+            _ => None,
+        }
+    }
+}
+
 /// The durable lifecycle state of an engine run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -213,6 +244,12 @@ pub struct EngineRunRecord {
     pub lanes: u32,
     /// Agent host launched for each lane.
     pub agent: EngineAgent,
+    /// Explicit provider model, or the provider default when absent.
+    pub model: Option<String>,
+    /// Explicit reasoning effort, or the provider default when absent.
+    pub effort: Option<String>,
+    /// Explicit speed selection, or the provider default when absent.
+    pub speed: Option<EngineSpeed>,
     /// Current lifecycle state.
     pub state: EngineRunState,
     /// Consecutive hard stops seen by the breaker.

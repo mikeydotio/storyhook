@@ -16,7 +16,7 @@ use regex::Regex;
 
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO,
-    StoryCleanupLease, SuperState, VERIFYING_STATE_SLUG, is_epic,
+    StoryCleanupLease, SuperState, VERIFYING_STATE_SLUG, is_epic, validate_dispatch_option_token,
 };
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
@@ -28,7 +28,7 @@ use crate::process::{CaptureError, Captured, run_captured};
 use crate::store::ids::GlobalSeq;
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
-    EngineRunState, EngineScope, ReadOps, Store, StoreError, WriteOps,
+    EngineRunState, EngineScope, EngineSpeed, ReadOps, Store, StoreError, WriteOps,
 };
 
 use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story};
@@ -363,10 +363,9 @@ pub(crate) const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<'
 /// as SH-517 adds more of them; it is not itself a validation boundary.
 ///
 /// `Default` is "no selection" — [`run_shell_dispatch`] then appends none of
-/// `--model`/`--effort`/`--speed` to the helper's argv, reproducing today's
-/// argv byte for byte. An engine (Full Auto) lane always passes this default:
-/// SH-517 does not extend model/effort/speed selection to engine lanes, and
-/// SH-466 keeps interrupted-lane recovery separate from attended resume.
+/// `--model`/`--effort`/`--speed` to the helper's argv, preserving the legacy
+/// argv byte for byte. Full Auto copies its immutable run configuration here;
+/// SH-466 still keeps interrupted-lane recovery separate from attended resume.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchOptions {
     pub model: Option<String>,
@@ -381,6 +380,9 @@ pub struct DispatchRequest {
     pub project: String,
     pub story: String,
     pub agent: EngineAgent,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub speed: Option<EngineSpeed>,
 }
 
 /// Everything the shell helper needs to release one engine-owned claim.
@@ -486,6 +488,12 @@ impl ShellDispatcher {
 
 impl Dispatcher for ShellDispatcher {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+        let options = DispatchOptions {
+            model: request.model,
+            effort: request.effort,
+            fast: request.speed == Some(EngineSpeed::Fast),
+            resume: false,
+        };
         let outcome = run_shell_dispatch(
             &self.story_sh_path,
             &request.project,
@@ -493,7 +501,7 @@ impl Dispatcher for ShellDispatcher {
             request.agent,
             true,
             true,
-            &DispatchOptions::default(),
+            &options,
             &self.env,
         )?;
         if outcome.state == DispatchOutcomeState::Ok {
@@ -577,6 +585,9 @@ pub struct StartRequest {
     pub scope: EngineScope,
     pub lanes: u32,
     pub agent: EngineAgent,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub speed: Option<EngineSpeed>,
 }
 
 /// One transactionally consistent run and its ordered lanes.
@@ -614,6 +625,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
             )));
         }
+        for (name, value) in [("model", &request.model), ("effort", &request.effort)] {
+            if let Some(value) = value {
+                validate_dispatch_option_token(value).map_err(|reason| {
+                    AppError::Validation(format!("invalid engine {name} `{value}`: {reason}"))
+                })?;
+            }
+        }
 
         let project = self.ctx.project();
         let now = self.ctx.now();
@@ -645,6 +663,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 scope: request.scope.clone(),
                 lanes: request.lanes,
                 agent: request.agent,
+                model: request.model.clone(),
+                effort: request.effort.clone(),
+                speed: request.speed,
                 state: EngineRunState::Running,
                 consecutive_hard_stops: 0,
                 recent_quarantines: Vec::new(),
@@ -1304,6 +1325,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 project: slug.to_string(),
                 story: story.clone(),
                 agent: view.run.agent,
+                model: view.run.model.clone(),
+                effort: view.run.effort.clone(),
+                speed: view.run.speed,
             })?;
             match outcome.state {
                 DispatchOutcomeState::Ok => {
@@ -1809,8 +1833,8 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
 /// engine lane so that only the engine receives that identity and isolation
-/// boundary. `options` is [`DispatchOptions::default`] for every engine lane
-/// (SH-517 does not extend selection there).
+/// boundary. Full Auto lanes copy their run's immutable provider options into
+/// `options`; attended dispatch supplies its request-scoped selections.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,

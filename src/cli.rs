@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::normalize_labels;
+use crate::domain::{normalize_labels, validate_dispatch_option_token};
 use crate::error::AppError;
 use crate::service::engine::MAX_ENGINE_LANES;
-use crate::store::EngineAgent;
+use crate::store::{EngineAgent, EngineSpeed};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HooksAction {
@@ -135,9 +135,18 @@ pub enum EpicAction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineAction {
     Start {
+        /// Optional epic subtree; absent means the whole project.
         epic: Option<String>,
+        /// Number of homogeneous lanes to operate.
         lanes: u32,
+        /// Provider used by every lane.
         agent: EngineAgent,
+        /// Optional provider model selection.
+        model: Option<String>,
+        /// Optional provider reasoning-effort selection.
+        effort: Option<String>,
+        /// Optional provider speed selection.
+        speed: Option<EngineSpeed>,
     },
     Status {
         run: Option<String>,
@@ -204,6 +213,7 @@ Usage:
   story unclaim <id> [--comment <text> | --no-comment]
                      [--dry-run]                    (hand it back where it came from)
   story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+                     [--model <id>] [--effort <id>] [--speed standard|fast]
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
@@ -1644,7 +1654,14 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "engine",
         subcommand: Some("start"),
-        flags: &[value("epic"), value("lanes"), value("agent")],
+        flags: &[
+            value("epic"),
+            value("lanes"),
+            value("agent"),
+            value("model"),
+            value("effort"),
+            value("speed"),
+        ],
     },
     VerbFlags {
         verb: "engine",
@@ -3243,8 +3260,7 @@ fn parse_unclaim(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const ENGINE_START_USAGE: &str =
-    "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]";
+const ENGINE_START_USAGE: &str = "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]";
 const ENGINE_STATUS_USAGE: &str = "usage: story engine status [--run <id>]";
 const ENGINE_PAUSE_USAGE: &str = "usage: story engine pause [--run <id>]";
 const ENGINE_RESUME_USAGE: &str = "usage: story engine resume [--run <id>]";
@@ -3291,6 +3307,9 @@ fn parse_engine_start(args: &[String]) -> Result<EngineAction, AppError> {
     let mut epic = None;
     let mut lanes = 1_u32;
     let mut agent = EngineAgent::Claude;
+    let mut model = None;
+    let mut effort = None;
+    let mut speed = None;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -3327,11 +3346,42 @@ fn parse_engine_start(args: &[String]) -> Result<EngineAction, AppError> {
                 })?;
                 index += 2;
             }
+            "--model" | "--effort" => {
+                let name = args[index].trim_start_matches("--");
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(ENGINE_START_USAGE.to_string()))?
+                    .clone();
+                validate_dispatch_option_token(&raw)
+                    .map_err(|reason| AppError::Usage(format!("--{name} {reason}")))?;
+                if name == "model" {
+                    model = Some(raw);
+                } else {
+                    effort = Some(raw);
+                }
+                index += 2;
+            }
+            "--speed" => {
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(ENGINE_START_USAGE.to_string()))?;
+                speed = Some(EngineSpeed::parse(raw).ok_or_else(|| {
+                    AppError::Usage("--speed must be `standard` or `fast`".to_string())
+                })?);
+                index += 2;
+            }
             _ => break,
         }
     }
     expect_no_more(&args[index..], ENGINE_START_USAGE)?;
-    Ok(EngineAction::Start { epic, lanes, agent })
+    Ok(EngineAction::Start {
+        epic,
+        lanes,
+        agent,
+        model,
+        effort,
+        speed,
+    })
 }
 
 fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppError> {

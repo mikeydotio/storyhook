@@ -973,11 +973,21 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
     let store_only = StoreOnlyDispatcher;
     let service = EngineService::new(ctx, &store_only);
     let view = match action {
-        EngineAction::Start { epic, lanes, agent } => {
+        EngineAction::Start {
+            epic,
+            lanes,
+            agent,
+            model,
+            effort,
+            speed,
+        } => {
             let run = service.start(StartRequest {
                 scope: epic.map_or(EngineScope::Project, EngineScope::Epic),
                 lanes,
                 agent,
+                model,
+                effort,
+                speed,
             })?;
             one_engine_view(service.status(Some(&run.id))?, &run.id)?
         }
