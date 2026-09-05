@@ -1,6 +1,5 @@
 import { test, expect } from "./support";
 import {
-  awaitNoOverlay,
   cleanUpCreatedStories,
   createStory,
   deleteBlockedStory,
@@ -115,20 +114,10 @@ async function seedBlockedPair(
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // Two settling waits a manual mouse.down/up choreography needs that
-  // locator.click() gets for free via its own actionability checks:
-  //
-  // 1. `#drawer-backdrop` fades out on a timer AFTER closeDrawer() removes
-  //    `.open` (SH-302) -- `#drawer` losing `.open` does not mean the
-  //    backdrop has finished fading to `hidden`, and `.backdrop` is
-  //    `position: fixed; inset: 0`, so it still intercepts a raw
-  //    coordinate-based mouse event underneath it until it does.
-  //    `awaitNoOverlay` is this file's own helper for exactly that wait.
-  // 2. SH-407's display-promotion moves the worker's card into "blocked"
+  // SH-407's display-promotion moves the worker's card into "blocked"
   //    via playFlip()'s FLIP animation (up to 320ms) -- a bounding box
   //    grabbed before that settles is stale by the time a raw mouse event
   //    reaches it.
-  await awaitNoOverlay(page);
   const workerCard = page.locator(".card", { hasText: workerTitle });
   await expect(workerCard).not.toHaveClass(/moving/);
 
