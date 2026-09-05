@@ -23,10 +23,21 @@
 ## Commits
 
 - `3b49a86b6` — `fix(dispatch): bind autonomous Codex hooks`
-- Documentation commit follows this handoff update.
+- `ceffa4786` — `docs(dispatch): record Codex hook binding`
+
+## Reconciliation
+
+- Existing PR #654 is additively merged with `origin/main` at `ebedde948`;
+  published SH-571 history is unchanged.
+- One `STORY_PLUGIN_ROOT` now owns Claude's explicit plugin activation and
+  Codex's exact sentinel comparison.
+- AGENTS.md and its canonical template make SH-571 the current verifier item.
+- Main's launch-template fixture now emits the exact Codex identity sentinel.
+- Original SH-571 tests, the roadmap contract, and four intersecting SH-564
+  dispatch/path regressions pass on the merged tree.
 
 ## Submission boundary
 
-Push both commits, open and link one SH-571 PR, comment final evidence, then
-move SH-571 to `verifying` as the absolute last action. Central verification
-owns the full suite, merge, completion, and worktree cleanup.
+Push the additive merge commit to existing PR #654, comment final evidence,
+then move SH-571 to `verifying` as the absolute last action. Central
+verification owns the full suite, merge, completion, and worktree cleanup.
