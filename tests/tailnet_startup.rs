@@ -197,8 +197,7 @@ fn a_wedged_tailscale_cli_leaves_no_accepting_but_silent_window() {
     command
         .args(["web", "--serve", "--port", &port.to_string()])
         .env("PATH", &path);
-    let child = command.spawn().expect("spawning the dashboard");
-    let guard = ChildGuard::new(child);
+    let guard = ChildGuard::spawn(&mut command).expect("spawning the dashboard");
 
     let connect_deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -255,8 +254,7 @@ fn publication_does_not_wait_on_the_tailnet_probe() {
 
     let mut command = env.raw_story(std::env::temp_dir());
     command.args(["web", "--serve"]).env("PATH", &path);
-    let child = command.spawn().expect("spawning the dashboard");
-    let guard = ChildGuard::new(child);
+    let guard = ChildGuard::spawn(&mut command).expect("spawning the dashboard");
 
     let _port = port_of(&env, guard.pid());
     held.release();
