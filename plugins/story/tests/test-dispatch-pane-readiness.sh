@@ -109,4 +109,29 @@ state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$state" "todo" \
   "structural-idle-pane: the story must not be claimed by a dispatch that never actually reached Claude"
 
+# --- rollback must report a real Git survivor ------------------------------
+survivor=$(new_story "$repo" "Readiness rollback meets a locked worktree")
+out=$(
+  cd "$repo" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" \
+      TMUX="fake,0,0" TMUX_PANE="%0" \
+      STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
+      STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
+      FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
+      FAKE_TMUX_LOCK_WORKTREE_ON_OPEN=1 \
+      bash "$SCRIPT" dispatch "$survivor" --auto 2>&1
+)
+assert_eq "$(jqf "$out" .ok)" "false" "rollback-survivor: dispatch refused"
+assert_contains "$(jqf "$out" .display)" "WARNING: dispatch cleanup is incomplete" \
+  "rollback-survivor: the answer names incomplete cleanup"
+assert_contains "$(jqf "$out" .display)" "worktree remains" \
+  "rollback-survivor: the exact survivor is named"
+[ -d "$repo/.claude/worktrees/$survivor" ] \
+  || fail_test "rollback-survivor: fixture did not leave the worktree it reports"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$survivor") \
+  || fail_test "rollback-survivor: fixture did not leave the branch it reports"
+state=$(cd "$repo" && story show "$survivor" --json | jq -r '.story.story.state')
+assert_eq "$state" "todo" \
+  "rollback-survivor: claim rollback is independent from failed Git cleanup"
+
 finish

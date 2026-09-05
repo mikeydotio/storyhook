@@ -195,4 +195,5 @@ project it is looking at.
   queued high-priority candidate is never hidden behind stale ownership.
 - Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
-- Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.
