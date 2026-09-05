@@ -114,7 +114,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         );
         assert_eq!(
             activity
-                .snapshot()
+                .active()
                 .expect("process-local ownership must be active")
                 .story_id,
             low
@@ -147,7 +147,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
 
     assert_eq!(result, TickResult::RetryLater);
     assert_eq!(
-        activity.snapshot(),
+        activity.active(),
         None,
         "the low-priority story must leave active execution after its outcome is recorded"
     );

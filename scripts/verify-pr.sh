@@ -42,6 +42,58 @@ fi
 command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
+verifier_wt="$common_dir/storyhook/verification-worktree"
+verifier_format="$common_dir/storyhook/verification-worktree.format"
+readonly VERIFIER_FORMAT_VERSION="private-gitdir-v1"
+
+ensure_verifier_worktree() {
+    fallback="$1"
+    git cat-file -e "$fallback^{commit}" 2>/dev/null \
+        || die_json "cannot repair the verifier worktree from unavailable commit $fallback"
+    mkdir -p "$(dirname "$verifier_wt")" \
+        || die_json "could not create private verifier state"
+
+    rebuild=0
+    if [ -e "$verifier_wt/.git" ]; then
+        [ -f "$verifier_wt/.git" ] && [ ! -L "$verifier_wt/.git" ] \
+            || die_json "the verifier worktree has an invalid .git entry at $verifier_wt/.git"
+        installed_format="$(cat "$verifier_format" 2>/dev/null || true)"
+        if [ "$installed_format" != "$VERIFIER_FORMAT_VERSION" ]; then
+            rebuild=1
+        elif ! git -C "$verifier_wt" cat-file -e 'HEAD^{commit}' 2>/dev/null \
+            || ! git -C "$verifier_wt" reflog show --format='%H' HEAD >/dev/null 2>&1; then
+            rebuild=1
+        fi
+    elif [ -e "$verifier_wt" ]; then
+        die_json "the verifier path $verifier_wt exists without a registered worktree; refusing to overwrite unclassified evidence"
+    fi
+
+    if [ "$rebuild" -eq 1 ]; then
+        remove_output="$(git worktree remove --force "$verifier_wt" 2>&1)"
+        remove_status=$?
+        registration_survives=0
+        git worktree list --porcelain 2>/dev/null \
+            | awk -v target="$verifier_wt" \
+                '$1 == "worktree" && substr($0, 10) == target { found = 1 } END { exit !found }' \
+            && registration_survives=1
+        if [ -e "$verifier_wt" ] || [ "$registration_survives" -eq 1 ]; then
+            remove_detail="${remove_output:-git worktree remove exited $remove_status without a diagnostic}"
+            die_json "could not remove invalid verifier worktree metadata at $verifier_wt: $remove_detail"
+        fi
+    fi
+    if [ ! -e "$verifier_wt/.git" ]; then
+        git worktree add -q --detach "$verifier_wt" "$fallback" \
+            || die_json "could not create the persistent verifier worktree at $fallback"
+    fi
+
+    marker_tmp="$(mktemp "$verifier_format.XXXXXX")" \
+        || die_json "could not stage the verifier worktree format marker"
+    if ! printf '%s\n' "$VERIFIER_FORMAT_VERSION" > "$marker_tmp" \
+        || ! mv -f "$marker_tmp" "$verifier_format"; then
+        rm -f "$marker_tmp"
+        die_json "could not record the verifier worktree format"
+    fi
+}
 
 classify_land() {
     land_status="$1"
@@ -143,6 +195,18 @@ if [ "${1:-}" = --recover-merged ]; then
     recover_merged "$2" "$3" "$4"
 fi
 
+# Real-Git verifier repair seam. Production enters the same function before
+# its first fetch; tests can strand private worktree objects and prove the
+# recovery without a GitHub imitation.
+if [ "${1:-}" = --ensure-verifier-worktree ]; then
+    [ "$#" -eq 2 ] \
+        || die_json "private usage: verify-pr.sh --ensure-verifier-worktree <fallback-commit>"
+    ensure_verifier_worktree "$2"
+    jq -n --arg worktree "$verifier_wt" \
+        '{result:"verifier-worktree-ready", worktree:$worktree}'
+    exit 0
+fi
+
 [ "$#" -eq 1 ] || die_json "usage: verify-pr.sh <pr-url>"
 submitted_pr="$1"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
@@ -157,6 +221,9 @@ gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) 
 
 base_ref="refs/remotes/origin/$base"
 head_ref="refs/remotes/origin/pr/$pr"
+fallback="$(git rev-parse 'HEAD^{commit}' 2>/dev/null)" \
+    || die_json "could not resolve a local commit for verifier worktree recovery"
+ensure_verifier_worktree "$fallback"
 if [ "$state" = MERGED ]; then
     merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
         || die_json "merged PR #$pr returned no merge commit"
@@ -172,14 +239,6 @@ git fetch -q origin \
     || die_json "could not refresh origin/$base and PR #$pr"
 head="$(git rev-parse "$head_ref" 2>/dev/null)" || die_json "could not resolve fetched PR #$pr"
 [ "$head" = "$reported_head" ] || die_json "PR #$pr moved while its refs were being refreshed"
-
-verifier_wt="$common_dir/storyhook/verification-worktree"
-if [ ! -e "$verifier_wt/.git" ]; then
-    mkdir -p "$(dirname "$verifier_wt")" \
-        || die_json "could not create private verifier state"
-    git worktree add -q --detach "$verifier_wt" "$base_ref" \
-        || die_json "could not create the persistent verifier worktree"
-fi
 
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running

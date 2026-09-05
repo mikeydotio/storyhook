@@ -575,9 +575,12 @@ fn a_daemon_does_not_outlive_the_process_that_named_itself_its_parent() {
     let mut parent = ChildGuard::spawn(std::process::Command::new("sleep").arg("30"))
         .expect("spawning a stand-in parent");
     let parent_pid = parent.pid();
+    let parent_start_time = lifecycle::process_start_time(parent_pid)
+        .expect("the stand-in parent's native start token");
 
     env.story(dir.path())
         .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
+        .env("STORYHOOK_PARENT_START_TIME", parent_start_time)
         .args(["daemon", "start"])
         .assert()
         .success();
@@ -603,9 +606,12 @@ fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
     let mut parent = ChildGuard::spawn(std::process::Command::new("sleep").arg("30"))
         .expect("spawning a stand-in parent");
     let parent_pid = parent.pid();
+    let parent_start_time = lifecycle::process_start_time(parent_pid)
+        .expect("the stand-in parent's native start token");
 
     env.story(dir.path())
         .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
+        .env("STORYHOOK_PARENT_START_TIME", parent_start_time)
         .args(["daemon", "start"])
         .assert()
         .success();

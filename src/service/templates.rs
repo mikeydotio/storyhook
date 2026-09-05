@@ -212,12 +212,14 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify graceful daemon replacement drains a story already under
-  centralized test (SH-556).
-- Next: expose queue health and gate diagnostics across engine/dashboard
-  surfaces, beyond individual story cards.
-- Later: harden provider UI automation against approval-contract drift and
-  remaining Full Auto recovery and cleanup ownership boundaries.
+- Current: finish verifier metadata and ownership recovery after the
+  speculative-run repairs (SH-555, SH-556).
+- Next: cut and install the pending minor release once verification is stable
+  (SH-553).
+- Later: separate the project-owned roadmap from generated agent instructions
+  (SH-557).
+- Later: resume the attachment epic's authenticated serving and upload work
+  (SH-315).
 "#,
         done_state = done_state,
         prefix = prefix,
