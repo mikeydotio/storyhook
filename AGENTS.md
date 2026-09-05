@@ -190,7 +190,8 @@ project it is looking at.
 ## Mini-roadmap
 
 - Current: verify SH-204's lowercase label identity and shared label editor
-  while bounded verification subprocess and worktree recovery settle.
+  while SH-552 keeps verifier worktree refs resolvable throughout speculative
+  centralized-gate runs.
 - Next: make verification ownership durable and priority-preemptible so a
   queued high-priority candidate is never hidden behind stale ownership.
 - Later: expose queue health and verification diagnostics in engine/dashboard
