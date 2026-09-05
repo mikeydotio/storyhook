@@ -66,7 +66,11 @@ if [ "${1:-}" = "--speculative-run" ]; then
     *) die "the speculative poller at $poller_wt is not a linked worktree of $common_dir" ;;
     esac
 
-    lease_prefix=""
+    lease_root="$common_dir/storyhook"
+    mkdir -p "$lease_root" || die "could not create private merge state at $lease_root"
+    lease_root="$(cd "$lease_root" && pwd -P)" \
+        || die "cannot resolve the private merge-state directory"
+    lease_prefix="$lease_root/merge-watch-objects."
     lease=""
     objects=""
     private_git=""
@@ -186,18 +190,12 @@ if [ "${1:-}" = "--speculative-run" ]; then
     trap 'on_signal INT' INT
     trap 'on_signal TERM' TERM
 
-    # Cargo fingerprints the entire package when build.rs emits no narrower
-    # rerun directives. Keep this temporary Git repository outside the source
-    # repository so a concurrent fingerprint walk cannot discover it.
-    created_lease="$(mktemp -d -t storyhook-merge-watch-objects.XXXXXX)" \
+    created_lease="$(mktemp -d "$lease_prefix"XXXXXX)" \
         || die "could not create private merge object storage"
     lease="$created_lease"
     canonical_lease="$(cd "$created_lease" && pwd -P)" \
         || die "could not resolve private merge object storage"
     lease="$canonical_lease"
-    lease_root="$(cd "$(dirname "$lease")" && pwd -P)" \
-        || die "cannot resolve the private merge-state directory"
-    lease_prefix="$lease_root/storyhook-merge-watch-objects."
     lease_is_valid "$lease" \
         || die "created object storage outside the expected private location"
     objects="$lease/objects"
