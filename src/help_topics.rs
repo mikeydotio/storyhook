@@ -260,7 +260,8 @@ All flags are optional — everything but the title can also be set
 later via 'story set'. --label may be repeated; --labels accepts a
 comma-separated list (both may be combined). Comma is always the
 label delimiter, even inside a single --label value — a label can
-never contain one.
+never contain one. Labels are stored lowercase; case variants name
+the same label.
 
 --draft creates the story as a draft: it claims an id like any other
 story, but is excluded from 'story next'/'--ready' and shown inline
@@ -374,8 +375,8 @@ cycle, or an open predecessor that this queue cannot execute remain absent.
 --epic <id> restricts the queue to that epic's complete descendant subtree,
 including nested epics. The id must name a story typed `epic`; an ordinary
 story is refused rather than treated as an empty scope. --exclude-label <csv>
-omits stories carrying any named label. Labels use the same exact,
-case-sensitive matching as `story list --label`; unknown labels are harmless.
+omits stories carrying any named label. Labels use the same lowercase
+canonical matching as `story list --label`; unknown labels are harmless.
 Both filters compose with --phase and --count without changing queue order.
 
 This is a pure read: it answers a question and writes nothing. Taking the
@@ -1783,7 +1784,8 @@ Related:
 Update multiple fields on a story in a single command. Accepts any
 combination of field flags. Use --json for arbitrary key-value data.
 --labels adds to the story's existing labels; comma is always the
-delimiter, so a label can never contain one.
+delimiter, so a label can never contain one. Labels are stored
+lowercase; case variants name the same label.
 
 When to use:
   When you need to update more than one field at a time, or when
@@ -2178,7 +2180,8 @@ Related:
             r#"story label <id> <labels>
 
 Add one or more comma-separated labels to a story. Comma is always
-the delimiter — a single label can never contain one.
+the delimiter — a single label can never contain one. Labels are
+stored lowercase; case variants name the same label.
 
 When to use:
   To categorize stories for filtering and organization.
@@ -2222,7 +2225,8 @@ Related:
             r#"story unlabel <id> <labels>
 
 Remove one or more comma-separated labels from a story. Comma is
-always the delimiter — a single label can never contain one.
+always the delimiter — a single label can never contain one. Labels
+are stored lowercase; case variants name the same label.
 
 When to use:
   To remove labels that no longer apply to a story.

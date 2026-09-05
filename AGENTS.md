@@ -189,12 +189,12 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify explicit Claude dispatch plugin binding and the speculative-run
-  verifier/ownership repairs (SH-564, SH-561, SH-555, SH-556).
-- Next: reproduce and choose a provider-native Codex autonomous hook-binding
+- Current: verify SH-204's lowercase label identity and shared label editor
+  plus SH-564's explicit Claude dispatch plugin binding through the repaired,
+  installed centralized verifier.
+- Next: audit verifier behavior end to end (SH-560).
+- Later: reproduce and choose a provider-native Codex autonomous hook-binding
   contract (SH-571).
-- Next: cut and install the pending minor release once verification is stable
-  (SH-553).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work

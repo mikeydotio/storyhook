@@ -24,7 +24,8 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
+use rusqlite::{Connection, Error as SqlError};
 
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
@@ -326,6 +327,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // remain readable but carry no authority for exact cleanup.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 30,
+        name: "lowercase_labels",
+        sql: include_str!("schema/0030_lowercase_labels.sql"),
+        // Appends compensating events and updates the label read model. No
+        // referenced table is rebuilt and historical events remain untouched.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
@@ -374,6 +383,7 @@ pub fn run(
     backup_dir: &Path,
 ) -> Result<MigrationReport, StoreError> {
     validate_sequence(migrations);
+    register_migration_functions(conn)?;
 
     let from_version = schema_version(conn)?;
     let supported = migrations.last().map_or(0, |m| m.version);
@@ -423,6 +433,30 @@ pub fn run(
         applied,
         backup,
     })
+}
+
+/// Registers the exact Rust label canonicalizer for data migrations.
+///
+/// SQLite's built-in `lower()` is ASCII-only. A migration using it would
+/// disagree with the Unicode-aware write path and leave existing labels such
+/// as `ÄPPLE` noncanonical. The function is scoped to migration connections;
+/// no stored schema object depends on it after the transaction commits.
+fn register_migration_functions(conn: &Connection) -> Result<(), StoreError> {
+    conn.create_scalar_function(
+        "storyhook_normalize_labels_json",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            let raw = ctx.get::<String>(0)?;
+            let labels: Vec<String> = serde_json::from_str(&raw)
+                .map_err(|error| SqlError::UserFunctionError(Box::new(error)))?;
+            serde_json::to_string(&crate::domain::normalize_labels(labels))
+                .map_err(|error| SqlError::UserFunctionError(Box::new(error)))
+        },
+    )?;
+    Ok(())
 }
 
 /// Panics if the migration list is not contiguous and ascending from 1.
