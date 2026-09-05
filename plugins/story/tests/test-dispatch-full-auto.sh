@@ -151,7 +151,7 @@ assert_contains "$codex_commands" \
 assert_contains "$codex_commands" \
   "env STORYHOOK_AUTO= STORYHOOK_FULL_AUTO=$id" \
   "Codex Full Auto: watcher receives the selected marker"
-assert_contains "$codex_commands" "--approve-codex-plan <pane>" \
+assert_contains "$codex_commands" "--approve-codex-plan <pane> <pane-pid>" \
   "Codex Full Auto: exact-pane watcher remains armed"
 
 # The fake-tmux path pins the same matrix at the actual new-window argv

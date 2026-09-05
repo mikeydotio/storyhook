@@ -99,19 +99,25 @@ case "${1:-}" in
     if [ "${FULL_AUTO_TMUX_SCREEN:-ready}" != ready ]; then
       printf 'Provider changed this prompt\n1. Continue\n'
     elif [ "${FULL_AUTO_TMUX_PROVIDER:-claude}" = codex ]; then
-      printf 'Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\n'
+      if [ -f "$FULL_AUTO_TMUX_APPROVED" ]; then
+        printf 'Implementation started\n'
+      else
+        printf 'Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\n'
+      fi
     else
       printf 'Ready to code?\n❯ 1. Yes, and use auto mode\n  2. Yes, manually approve edits\n'
     fi
     ;;
   send-keys)
     printf '%s\n' "$*" >>"$FULL_AUTO_TMUX_LOG"
+    [ "${FULL_AUTO_TMUX_PROVIDER:-claude}" != codex ] || : >"$FULL_AUTO_TMUX_APPROVED"
     ;;
   *) exit 1 ;;
 esac
 MOCKTMUX
 chmod +x "$TMUX_FIXTURE/tmux"
 export FULL_AUTO_TMUX_LOG="$TMUX_FIXTURE/send-keys.log"
+export FULL_AUTO_TMUX_APPROVED="$TMUX_FIXTURE/codex-approved"
 : >"$FULL_AUTO_TMUX_LOG"
 
 PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
@@ -148,12 +154,13 @@ assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
 # Return and a changed UI receives none.
 : >"$FULL_AUTO_TMUX_LOG"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex \
-  bash "$HOOK" --approve-codex-plan %4242 1
+  bash "$HOOK" --approve-codex-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
   "Codex watcher: accepts the exact selected plan pane with Return"
 : >"$FULL_AUTO_TMUX_LOG"
+rm -f "$FULL_AUTO_TMUX_APPROVED"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex FULL_AUTO_TMUX_SCREEN=changed \
-  bash "$HOOK" --approve-codex-plan %4242 1
+  bash "$HOOK" --approve-codex-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Codex watcher: changed UI text receives no input"
 
