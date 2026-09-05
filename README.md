@@ -465,6 +465,9 @@ story mcp
 story session-start
 ```
 
+Story labels are comma-delimited and stored lowercase. Case variants address
+the same label on write, removal, filtering, and queue exclusion.
+
 Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
