@@ -1455,7 +1455,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
     assert_eq!(accepted["number"], 42);
 
     let draft = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":true"));
-    assert_eq!(draft["result"], "infrastructure-failure");
+    assert_eq!(draft["result"], "invalid-submission");
     assert!(draft["detail"].as_str().unwrap().contains("is a draft"));
     assert!(
         !draft["detail"]
@@ -1466,7 +1466,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
 
     let fork =
         validate(&ready.replace("\"isCrossRepository\":false", "\"isCrossRepository\":true"));
-    assert_eq!(fork["result"], "infrastructure-failure");
+    assert_eq!(fork["result"], "invalid-submission");
     assert!(
         fork["detail"]
             .as_str()
@@ -1482,6 +1482,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
 
     let invalid = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":\"false\""));
     assert_eq!(invalid["result"], "infrastructure-failure");
+    assert_eq!(invalid["disposition"], "permanent");
     assert!(
         invalid["detail"]
             .as_str()

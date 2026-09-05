@@ -10,7 +10,19 @@
 set -uo pipefail
 
 die_json() {
-    jq -n --arg detail "$1" '{result:"infrastructure-failure", detail:$detail}'
+    jq -n --arg detail "$1" \
+        '{result:"infrastructure-failure", disposition:"permanent", detail:$detail}'
+    exit 0
+}
+
+retry_json() {
+    jq -n --arg detail "$1" \
+        '{result:"infrastructure-failure", disposition:"retryable", detail:$detail}'
+    exit 0
+}
+
+invalid_json() {
+    jq -n --arg detail "$1" '{result:"invalid-submission", detail:$detail}'
     exit 0
 }
 
@@ -162,9 +174,9 @@ validate_metadata() {
         || die_json "PR #$pr returned no base branch"
     reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" \
         || die_json "PR #$pr returned no head oid"
-    [ "$draft" = false ] || die_json "PR #$pr is a draft"
+    [ "$draft" = false ] || invalid_json "PR #$pr is a draft"
     [ "$cross" = false ] \
-        || die_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+        || invalid_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
 }
 
 # Metadata-validation seam. The production path supplies GitHub's JSON; tests
@@ -215,7 +227,7 @@ verifier_window_banner "verifying $submitted_pr — checking pull request metada
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
 metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
-    || die_json "could not read submitted pull request $submitted_pr from GitHub"
+    || retry_json "could not read submitted pull request $submitted_pr from GitHub"
 validate_metadata "$metadata"
 gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) - _pr_meta_start ))"
 
@@ -228,15 +240,15 @@ if [ "$state" = MERGED ]; then
     merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
         || die_json "merged PR #$pr returned no merge commit"
     git fetch -q origin "+refs/heads/$base:$base_ref" \
-        || die_json "could not refresh origin/$base for merged PR #$pr"
+        || retry_json "could not refresh origin/$base for merged PR #$pr"
     recover_merged "$base_ref" "$merge_oid" "$pr"
 fi
 
-[ "$state" = OPEN ] || die_json "PR #$pr is $state, not OPEN or MERGED"
+[ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
 git fetch -q origin \
     "+refs/heads/$base:$base_ref" \
     "+refs/pull/$pr/head:$head_ref" \
-    || die_json "could not refresh origin/$base and PR #$pr"
+    || retry_json "could not refresh origin/$base and PR #$pr"
 head="$(git rev-parse "$head_ref" 2>/dev/null)" || die_json "could not resolve fetched PR #$pr"
 [ "$head" = "$reported_head" ] || die_json "PR #$pr moved while its refs were being refreshed"
 
