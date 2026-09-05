@@ -9,6 +9,13 @@
 - Healthy marked worktrees remain persistent and retain build caches.
 - A real-Git regression reproduces missing private HEAD/reflog/index objects
   and proves repair, fetch connectivity, and healthy reuse.
+- Central verification then exposed a load-sensitive daemon containment defect:
+  the parent watcher treated a reusable PID as process identity.
+- Commit `97ab33a6d` pairs every Rust test-parent PID with a native start token
+  and rejects a live PID whose incarnation does not match. Empty tokens retain
+  compatibility for shell-only harnesses.
+- The deterministic live-PID/mismatched-token regression is green 20/20; both
+  original parent-death tests are green.
 
 ## Verification scope
 
@@ -17,6 +24,19 @@
 - `cargo clippy --test merge_gate -- -D warnings`
 - `cargo test --test merge_gate`
 - Repository/generated AGENTS equality regression
+- `cargo test --test daemon_parent_identity ... --exact` (20 runs)
+- `cargo test --test daemon_lifecycle parent`
+- Daemon lifecycle and test-environment module unit tests
+- `cargo test --test test_environment`
+- Test-support parent-token propagation and scratch-environment rendering
+- Targeted Clippy with warnings denied; rustfmt, Bash syntax, and diff checks
+
+## Known compatibility boundary
+
+- Shell-only `storyhook_isolate` callers export an empty start token because a
+  portable shell cannot derive the same native high-resolution identity. They
+  retain PID-only containment; Rust tests, including the centralized Rust
+  battery that returned RED, use the incarnation-safe contract.
 
 ## Submission contract
 
