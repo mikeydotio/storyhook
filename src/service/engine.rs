@@ -1272,31 +1272,33 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             if occupied + n >= ENGINE_LANE_BUDGET {
                 break;
             }
-            // Stop-now may set the run to draining while this reconcile is
-            // blocked inside the preceding dispatch helper. Do not claim the
-            // next lane from the stale running view captured above.
-            if !self.run_accepts_claims(slug, run_id)? {
-                break;
-            }
+            let dispatched_at = self.ctx.now();
+            let mut working = lane.clone();
             let filters = ReadyQueueFilters {
                 phase: None,
                 epic: scope_epic.as_deref(),
                 exclude_label: Some(LABEL_NO_AUTO),
             };
-            let Some((before, claimed)) =
-                super::StoryService::new(self.ctx).claim_next_filtered(filters, None)?
+            let Some((before, claimed)) = super::StoryService::new(self.ctx)
+                .claim_next_filtered_if(
+                    filters,
+                    None,
+                    |tx| Ok(run_for_project(tx, slug, run_id)?.state == EngineRunState::Running),
+                    |tx, before, claimed| {
+                        working.state = EngineLaneState::Dispatching;
+                        working.story_id = Some(claimed.id.clone());
+                        working.dispatched_at = Some(dispatched_at.clone());
+                        working.last_observed_at = dispatched_at.clone();
+                        working.outcome = Some(before.state.clone());
+                        tx.put_engine_lane(&working)
+                    },
+                )?
             else {
                 break;
             };
             let story = claimed.id.clone();
-            let dispatched_at = self.ctx.now();
-            let mut working = lane.clone();
-            working.state = EngineLaneState::Dispatching;
-            working.story_id = Some(story.clone());
-            working.dispatched_at = Some(dispatched_at.clone());
-            working.last_observed_at = dispatched_at.clone();
-            working.outcome = Some(before.state.clone());
-            self.ctx.store().write(|tx| tx.put_engine_lane(&working))?;
+            debug_assert_eq!(working.story_id.as_deref(), Some(story.as_str()));
+            debug_assert_eq!(working.outcome.as_deref(), Some(before.state.as_str()));
 
             let outcome = self.dispatcher.dispatch(DispatchRequest {
                 project: slug.to_string(),
@@ -1376,13 +1378,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
         }
         Ok(hard_stops)
-    }
-
-    fn run_accepts_claims(&self, slug: &str, run_id: &RunId) -> Result<bool, AppError> {
-        Ok(self
-            .ctx
-            .store()
-            .read(|tx| Ok(run_for_project(tx, slug, run_id)?.state == EngineRunState::Running))?)
     }
 
     /// Ends a run whose lanes are all idle.
