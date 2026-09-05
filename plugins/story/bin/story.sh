@@ -350,9 +350,9 @@ configure_agent() {
   # with the other's worktree and keyboard contract.
   LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
   # AUTONOMOUS BLAST RADIUS (SH-511). These provider defaults keep Plan mode
-  # while allowing the approved plan to proceed without a person: Claude's
-  # PermissionRequest-scoped helper selects Auto and returns to acceptEdits;
-  # Codex's exact-pane watcher accepts its plan and workspace-write automatic
+  # while allowing the approved plan to proceed without a person: each
+  # provider's exact-pane watcher accepts its plan; Claude returns to
+  # acceptEdits, while Codex's workspace-write automatic
   # review handles later tool approvals while trusting the packaged hook.
   # The child still lives in a disposable worktree and its charter still bans
   # version/release/deploy work. STORY_LAUNCH_CMD remains a wholesale expert
@@ -977,22 +977,28 @@ ensure_provider_plan_mode() {
   return 1
 }
 
-# Codex has no hook event at its plan-review dialog (measured on CLI 0.149.0).
-# Arm the exact-pane watcher after Plan mode is confirmed and before the prompt
-# is submitted. tmux owns the continuation, so it shares the pane's lifetime
-# instead of the short-lived dispatch process's. All shell-bound values are
-# quoted before tmux hands the command to its shell.
-schedule_codex_plan_approval() {
-  local pane="$1" auto_marker="$2" full_auto_marker="$3"
-  local hook_q pane_q auto_q full_auto_q
-  [ "$AGENT" = codex ] || return 0
+# Neither provider has a reliable hook event at its plan-review dialog: Codex
+# exposes none, and Claude 2.1.261 stopped emitting the PermissionRequest event
+# observed in 2.1.251. Arm the provider-specific exact-pane watcher after Plan
+# mode is confirmed and before the prompt is submitted. tmux owns the
+# continuation; all shell-bound values are quoted before it invokes the hook.
+schedule_plan_approval() {
+  local pane="$1" pane_pid="$2" auto_marker="$3" full_auto_marker="$4"
+  local hook_q pane_q pid_q auto_q full_auto_q approval_args
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
+  [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || return 1
   printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
   printf -v pane_q '%q' "$pane"
+  printf -v pid_q '%q' "$pane_pid"
   printf -v auto_q '%q' "$auto_marker"
   printf -v full_auto_q '%q' "$full_auto_marker"
+  case "$AGENT" in
+    claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
+    codex) approval_args="--approve-codex-plan $pane_q" ;;
+    *) return 1 ;;
+  esac
   tmux run-shell -b -t "$pane" \
-    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q bash $hook_q --approve-codex-plan $pane_q" \
+    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q bash $hook_q $approval_args" \
     >/dev/null 2>&1
 }
 
@@ -2013,10 +2019,11 @@ cmd_dispatch() {
                 + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent)
              end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
-          (if $agent == "codex" and $auto then
+          (if $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
-              + " --approve-codex-plan <pane>")
+              + (if $agent == "claude" then " --approve-claude-plan <pane> <pane-pid>"
+                 else " --approve-codex-plan <pane>" end))
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
@@ -2290,17 +2297,16 @@ cmd_dispatch() {
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
   fi
 
-  # `--approve-for-me` reviews Codex tool calls, not the separate Plan-mode
-  # dialog. Refuse before handoff if the exact-pane Return watcher cannot even
-  # be armed; otherwise this command would claim unattendedness while knowingly
+  # Refuse before handoff if the provider's exact-pane Return watcher cannot be
+  # armed; otherwise this command would claim unattendedness while knowingly
   # launching a session that must stop for a person.
-  if [ -n "$auto" ] && [ "$AGENT" = codex ] \
-     && ! schedule_codex_plan_approval "$pane" "$auto_marker" "$full_auto_marker"; then
+  if [ -n "$auto" ] \
+     && ! schedule_plan_approval "$pane" "$pane_pid" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
     cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with plan-approval-unarmed \
-      "[story] $id → Codex Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,

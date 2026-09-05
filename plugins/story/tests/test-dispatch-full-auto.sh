@@ -133,6 +133,13 @@ assert_contains "$(jqf "$dedicated" .display)" \
   "Full Auto launch source: STORY_FULL_AUTO_LAUNCH_CMD (launch_overridden=true)" \
   "Full Auto dedicated override: display reports launch metadata"
 
+claude_commands=$(jqf "$full_auto" '.commands|join(" ")')
+assert_contains "$claude_commands" \
+  "env STORYHOOK_AUTO= STORYHOOK_FULL_AUTO=$id" \
+  "Claude Full Auto: watcher receives the selected marker"
+assert_contains "$claude_commands" "--approve-claude-plan <pane> <pane-pid>" \
+  "Claude Full Auto: exact-pane watcher is armed"
+
 # Codex reuses SH-511's provider command and exact-pane approval watcher. The
 # selected Full Auto marker is carried into that watcher; its predicate and
 # timing remain owned by the landed hook.
