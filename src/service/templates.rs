@@ -212,8 +212,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-542's exact-pane liveness and reusable quarantine lanes
-  through the centralized verifier.
+- Current: central verification of exact, durable non-verification cleanup
+  receipts for SH-539.
 - Next: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden remaining Full Auto recovery and cleanup ownership boundaries.
