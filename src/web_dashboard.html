@@ -6265,7 +6265,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var text = f.text.toLowerCase();
     return state.data.stories.filter(function(v) {
       var st = v.story;
-      if (!f.showClosed && stateSuperstate(st.state) === "CLOSED") return false;
+      // `display_state || st.state` (SH-407) -- the status this story actually
+      // renders under, shared by column placement and the State filter below.
+      // "Show closed" names the required `closed` status (SH-551), not every
+      // status in the CLOSED superstate: completed work in `done` stays visible.
+      var shownState = v.display_state || st.state;
+      if (!f.showClosed && shownState === "closed") return false;
       // SH-499: an epic is a story TYPED `epic`, never one that merely has
       // children. This read `v.progress`, which is present for ANY parent, so
       // an ordinary story that gained one sub-task was hidden from the board
@@ -6285,12 +6290,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var t = st.story_type || "__untyped__";
         if (f.types.indexOf(t) === -1) return false;
       }
-      // `display_state || st.state` (SH-407) -- same expression every other
-      // renderer in this file uses for "what state does this card actually
-      // show," so filtering by "blocked" finds the cards SH-407's own
-      // promotion just moved into that column, instead of missing them
-      // because their literal `state` is still `todo`.
-      var shownState = v.display_state || st.state;
       if (f.states.length && f.states.indexOf(shownState) === -1) return false;
       return true;
     });
