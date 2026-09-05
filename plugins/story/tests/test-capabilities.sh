@@ -31,18 +31,18 @@ assert_eq "$(jqf "$out" '.efforts | map(.id) | sort | join(",")')" \
 assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
   "fast" "claude: speed offers only the one alternative to Default -- no redundant standard entry"
 
-# Codex's catalog: the GPT-5.6 trio the story names, no forced default model
-# (its own config.toml decides, matching dispatch's existing no-flag
-# behavior), and an extra "none" effort level Codex's own CLI accepts.
+# Codex's catalog: Astra plus the GPT-5.6 trio, no forced default model (its
+# own config.toml decides, matching dispatch's existing no-flag behavior),
+# and the provider's full effort range from "none" through "ultra".
 out=$(run_capabilities --agent=codex)
 assert_eq "$(jqf "$out" .ok)" "true" "codex: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "codex: agent echoed"
 assert_eq "$(jqf "$out" '.models | map(.id) | sort | join(",")')" \
-  "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra" "codex: model id set"
+  "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-6-astra" "codex: model id set"
 assert_eq "$(jqf "$out" '[.models[] | select(.default==true)] | length')" \
   "0" "codex: no forced default model"
 assert_eq "$(jqf "$out" '.efforts | map(.id) | sort | join(",")')" \
-  "high,low,max,medium,none,xhigh" "codex: effort id set (includes none)"
+  "high,low,max,medium,none,ultra,xhigh" "codex: effort id set"
 assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
   "fast" "codex: speed offers only fast, same as claude"
 
