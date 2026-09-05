@@ -18,6 +18,74 @@ fn text(out: &Output) -> String {
     )
 }
 
+fn report_for_codex_source(source: Option<&str>) -> String {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let source = match source {
+        Some(version) if version.starts_with("release:") => env
+            .data_dir()
+            .join("plugins")
+            .join(version.trim_start_matches("release:"))
+            .display()
+            .to_string(),
+        Some(source) => source.to_string(),
+        None => env
+            .data_dir()
+            .join("plugins")
+            .join(env!("CARGO_PKG_VERSION"))
+            .display()
+            .to_string(),
+    };
+    std::fs::create_dir_all(env.home().join(".codex")).unwrap();
+    std::fs::write(
+        env.home().join(".codex/config.toml"),
+        format!("[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"),
+    )
+    .unwrap();
+    text(
+        &env.story(project.path())
+            .args(["doctor", "install"])
+            .output()
+            .expect("running `story doctor install`"),
+    )
+}
+
+fn report_for_claude_source(source: &str) -> String {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let plugins = env.home().join(".claude/plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(
+        plugins.join("known_marketplaces.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "storyhook": {
+                "source": { "source": "directory", "path": source },
+                "installLocation": source,
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    text(
+        &env.story(project.path())
+            .args(["doctor", "install"])
+            .output()
+            .expect("running `story doctor install`"),
+    )
+}
+
+#[test]
+fn codex_multiline_marketplace_source_is_detected() {
+    let report = report_for_codex_source(Some("/Volumes/Code/storyhook"));
+    assert!(report.contains("CHECKOUT"), "{report}");
+}
+
+#[test]
+fn claude_nested_marketplace_source_is_detected() {
+    let report = report_for_claude_source("/Volumes/Code/storyhook");
+    assert!(report.contains("CHECKOUT"), "{report}");
+}
+
 #[test]
 fn it_reports_the_installed_set_on_an_ordinary_machine() {
     let env = TestEnv::isolated();
@@ -128,4 +196,22 @@ fn the_summary_never_tells_anyone_to_revert_their_work() {
         !report.to_lowercase().contains("discard"),
         "nothing here may suggest discarding work:\n{report}"
     );
+}
+
+#[test]
+fn plugin_sources_distinguish_current_stale_unpinned_and_checkout_installations() {
+    let report = report_for_codex_source(None);
+    assert!(
+        report.contains("release ") && !report.contains("CHECKOUT"),
+        "{report}"
+    );
+
+    let stale = report_for_codex_source(Some("release:2.2.0"));
+    assert!(stale.contains("STALE RELEASE"), "{stale}");
+
+    let unpinned = report_for_codex_source(Some("mikeydotio/storyhook"));
+    assert!(unpinned.contains("UNPINNED"), "{unpinned}");
+
+    let checkout = report_for_codex_source(Some("/Volumes/Code/storyhook"));
+    assert!(checkout.contains("CHECKOUT"), "{checkout}");
 }

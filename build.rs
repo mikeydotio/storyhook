@@ -1,4 +1,4 @@
-//! Stamps every build with an identity distinct from `CARGO_PKG_VERSION`.
+//! Stamps every build and embeds the provider plugin marketplace.
 //!
 //! SH-406: `make install` puts `target/release/story` on `PATH` under
 //! whatever `VERSION` already says, so two builds with different
@@ -26,6 +26,16 @@
 //! (SH-396). Two builds share a version string if and only if their tracked
 //! content is byte-identical, which is what the story's title actually
 //! promises and a version bump structurally cannot.
+//!
+//! # Embedded plugin marketplace
+//!
+//! SH-538 makes the provider plugin part of the same artifact as the CLI.
+//! Cargo builds generate an `include_bytes!` table for both root marketplace
+//! manifests and every regular file beneath `plugins/story`, preserving the
+//! executable bit. Unlike the optional identity stamp below, this is a release
+//! capability: missing, unsafe, symlinked or special entries fail the build.
+//! The standalone identity tests explicitly remove `OUT_DIR`, so they
+//! exercise only the stamp contract they were built to isolate.
 //!
 //! # Resolution order
 //!
@@ -64,10 +74,18 @@
 //! the test, per this project's own SH-136 doctrine against hand-duplicated
 //! constants drifting from their source.
 
-use std::path::Path;
+use std::fs;
+use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    if let Err(error) = write_embedded_marketplace() {
+        panic!("could not embed the StoryHook plugin marketplace: {error}");
+    }
+
     let build_id = resolve_build_id();
 
     if let Some(id) = build_id {
@@ -78,6 +96,104 @@ fn main() {
     // directive anywhere in this file — see the module doc's "Why no
     // rerun-if-*" section. Emitting one here would narrow cargo's default
     // rerun trigger rather than add to it.
+}
+
+/// Generates the source table consumed by `src/plugin.rs`.
+///
+/// The standalone build-script tests intentionally remove `OUT_DIR`; only
+/// Cargo asks for an embedded artifact. A real Cargo build fails if any
+/// marketplace entry is missing or is not a regular file/directory, because a
+/// binary without its promised plugin payload is not a usable artifact.
+fn write_embedded_marketplace() -> io::Result<()> {
+    let Some(output_dir) = std::env::var_os("OUT_DIR") else {
+        return Ok(());
+    };
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "CARGO_MANIFEST_DIR is not set")
+        })?);
+    let mut files = vec![
+        manifest_dir.join(".agents/plugins/marketplace.json"),
+        manifest_dir.join(".claude-plugin/marketplace.json"),
+    ];
+    collect_regular_files(&manifest_dir.join("plugins/story"), &mut files)?;
+    files.sort();
+
+    let generated = PathBuf::from(output_dir).join("embedded_marketplace.rs");
+    let mut output = fs::File::create(&generated)?;
+    writeln!(output, "const EMBEDDED_MARKETPLACE: &[EmbeddedFile] = &[")?;
+    for file in files {
+        let metadata = fs::symlink_metadata(&file)?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", file.display()),
+            ));
+        }
+        let relative = file.strip_prefix(&manifest_dir).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} escapes the package root", file.display()),
+            )
+        })?;
+        validate_relative_path(relative)?;
+        #[cfg(unix)]
+        let executable = metadata.permissions().mode() & 0o111 != 0;
+        #[cfg(not(unix))]
+        let executable = false;
+        writeln!(
+            output,
+            "    EmbeddedFile {{ relative_path: {:?}, bytes: include_bytes!({:?}), executable: {executable} }},",
+            relative.to_string_lossy(),
+            file.to_string_lossy(),
+        )?;
+    }
+    writeln!(output, "];")?;
+    Ok(())
+}
+
+fn collect_regular_files(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a directory", directory.display()),
+        ));
+    }
+    let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_regular_files(&path, files)?;
+        } else if metadata.is_file() {
+            files.push(path);
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} is neither a regular file nor a directory",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_path(path: &Path) -> io::Result<()> {
+    if path
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("embedded marketplace path is unsafe: {}", path.display()),
+        ))
+    }
 }
 
 /// Resolves the build id via the order documented on the module.
