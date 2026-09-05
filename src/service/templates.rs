@@ -212,10 +212,10 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: keep verifier worktree refs resolvable throughout speculative
-  centralized-gate runs (SH-552).
+- Current: repair legacy verifier worktree metadata before Git fetch (SH-555).
 - Next: make verification ownership durable and priority-preemptible so a
-  queued high-priority candidate is never hidden behind stale ownership.
+  queued high-priority candidate is never hidden behind stale ownership
+  (SH-556).
 - Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
