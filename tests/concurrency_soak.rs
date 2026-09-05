@@ -47,11 +47,13 @@
 //!    which is the same oracle `story doctor` runs.
 
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model};
-use storyhook_test_support::{TestEnv, project_id_at, run_bounded, scratch_dir};
+use storyhook_test_support::{
+    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, project_id_at, run_bounded, scratch_dir,
+};
 
 /// How many clients run at once.
 ///
@@ -367,16 +369,15 @@ fn story_numbers_stay_unique_under_a_burst_of_simultaneous_allocations() {
     for _ in 0..CLIENTS * 2 {
         let mut cmd = client_command(&env, project.path(), &["new", "simultaneous", "--json"]);
         children.push(
-            cmd.stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawning a simultaneous allocator"),
+            ChildGuard::spawn_with_output(&mut cmd).expect("spawning a simultaneous allocator"),
         );
     }
 
     let mut ids: Vec<String> = Vec::new();
-    for child in children {
-        let out = child.wait_with_output().expect("waiting for an allocator");
+    for mut child in children {
+        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a simultaneous allocator did not finish".to_string()
+        });
         assert_clean(&out, "simultaneous story new");
         ids.push(minted_id(&out));
     }

@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_GRACE};
-use storyhook_test_support::{TestEnv, path_without_tailscale, scratch_dir, story_binary};
+use storyhook_test_support::{
+    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, path_without_tailscale, scratch_dir, story_binary,
+};
 
 /// Whether `info` describes a daemon running the `story` binary this build
 /// produced.
@@ -330,12 +332,8 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
         .success();
 
     let mut slow = env.raw_story(project.path());
-    let client = slow
-        .args(["comment", "PB-1", "trip the hook"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawning the slow command");
+    slow.args(["comment", "PB-1", "trip the hook"]);
+    let mut client = ChildGuard::spawn_with_output(&mut slow).expect("spawning the slow command");
 
     let environment = env.environment();
     wait_for(
@@ -350,10 +348,8 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
     // Spawned rather than run to completion, because a correct `stop` cannot
     // return until the gate below opens.
     let mut stop_command = env.raw_story(project.path());
-    let mut stop = stop_command
-        .args(["daemon", "stop"])
-        .spawn()
-        .expect("spawning `daemon stop`");
+    stop_command.args(["daemon", "stop"]);
+    let mut stop = ChildGuard::spawn(&mut stop_command).expect("spawning `daemon stop`");
 
     // The gate is shut, so the hook cannot have finished, so a stop that has
     // already returned abandoned it. Watched across a window rather than
@@ -362,7 +358,7 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
     // the first of those would pass against a daemon that exits on the next.
     let watched_until = Instant::now() + Duration::from_millis(750);
     while Instant::now() < watched_until {
-        if let Some(status) = stop.try_wait().expect("polling `daemon stop`") {
+        if let Some(status) = stop.try_wait() {
             panic!(
                 "`daemon stop` returned ({status}) while the hook it must wait for is \
                  still blocked: it abandoned the in-flight request rather than draining it"
@@ -377,12 +373,14 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
 
     std::fs::File::create(&gate).expect("opening the gate");
 
-    let stopped = stop.wait().expect("`daemon stop` finishes");
+    let stopped = stop.wait_within(STORY_COMMAND_DEADLINE, || {
+        "`daemon stop` did not finish after the in-flight hook was released".to_string()
+    });
     assert!(stopped.success(), "`daemon stop` must succeed: {stopped}");
 
-    let served = client
-        .wait_with_output()
-        .expect("the slow command finishes");
+    let served = client.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "the in-flight comment did not finish after its hook was released".to_string()
+    });
     assert!(
         served.status.success(),
         "the in-flight comment must have been served to completion rather than \
@@ -436,10 +434,8 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
         .success();
 
     let mut slow = env.raw_story(project.path());
-    let mut child = slow
-        .args(["comment", "PB-1", "trip the hook"])
-        .spawn()
-        .expect("spawning the slow command");
+    slow.args(["comment", "PB-1", "trip the hook"]);
+    let mut child = ChildGuard::spawn(&mut slow).expect("spawning the slow command");
 
     let environment = env.environment();
     wait_for(
@@ -475,7 +471,9 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
     // The killed daemon's socket closes underneath it — this client fails
     // fast rather than waiting out its own deadline. Its exact error is not
     // this test's concern, only that it is reaped rather than left running.
-    let _ = child.wait();
+    let _ = child.wait_within(STORY_COMMAND_DEADLINE, || {
+        "the client whose daemon was force-stopped did not exit".to_string()
+    });
 
     // What --force abandoned is not just gone — it is ledgered, and `story
     // doctor abandoned` is how a human reviews and clears it.
@@ -574,11 +572,9 @@ fn a_daemon_does_not_outlive_the_process_that_named_itself_its_parent() {
 
     // A real process to stand in for a test binary, so the pid is one that
     // genuinely exists and then genuinely stops existing.
-    let mut parent = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
+    let mut parent = ChildGuard::spawn(std::process::Command::new("sleep").arg("30"))
         .expect("spawning a stand-in parent");
-    let parent_pid = parent.id();
+    let parent_pid = parent.pid();
 
     env.story(dir.path())
         .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
@@ -587,8 +583,7 @@ fn a_daemon_does_not_outlive_the_process_that_named_itself_its_parent() {
         .success();
     assert!(lifecycle::is_live(&env.environment()));
 
-    parent.kill().expect("killing the stand-in parent");
-    parent.wait().expect("reaping the stand-in parent");
+    parent.kill_and_reap();
 
     wait_for("the orphaned daemon to exit", || {
         !lifecycle::is_live(&env.environment())
@@ -605,11 +600,9 @@ fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
     let _guard = DaemonGuard(&env);
     let dir = scratch_dir();
 
-    let mut parent = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
+    let mut parent = ChildGuard::spawn(std::process::Command::new("sleep").arg("30"))
         .expect("spawning a stand-in parent");
-    let parent_pid = parent.id();
+    let parent_pid = parent.pid();
 
     env.story(dir.path())
         .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
@@ -618,8 +611,7 @@ fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
         .success();
     assert!(lifecycle::is_live(&env.environment()));
 
-    parent.kill().expect("killing the stand-in parent");
-    parent.wait().expect("reaping the stand-in parent");
+    parent.kill_and_reap();
 
     wait_for("the orphaned daemon to exit", || {
         !lifecycle::is_live(&env.environment())
@@ -642,15 +634,16 @@ fn a_daemon_that_panics_is_classified_as_panicked_on_the_next_start() {
     let _guard = DaemonGuard(&env);
     let dir = scratch_dir();
 
-    let mut panicking = env
-        .raw_story(dir.path())
+    let mut command = env.raw_story(dir.path());
+    command
         .env("STORYHOOK_TEST_PANIC", "1")
         .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawning a daemon armed to panic");
-    let status = panicking.wait().expect("reaping the panicking daemon");
+        .stderr(Stdio::null());
+    let mut panicking = ChildGuard::spawn(&mut command).expect("spawning a daemon armed to panic");
+    let status = panicking.wait_within(STORY_COMMAND_DEADLINE, || {
+        "the panicking daemon did not exit".to_string()
+    });
     assert!(
         !status.success(),
         "a daemon that panics on its own thread must not exit successfully: {status:?}"
@@ -1155,10 +1148,8 @@ fn a_running_command_is_published_and_retracted() {
     // Fire a command that will sit inside its hook, and look at the record
     // while it does.
     let mut slow = env.raw_story(project.path());
-    let mut child = slow
-        .args(["comment", "PB-1", "trip the hook"])
-        .spawn()
-        .expect("spawning the slow command");
+    slow.args(["comment", "PB-1", "trip the hook"]);
+    let mut child = ChildGuard::spawn(&mut slow).expect("spawning the slow command");
 
     let environment = env.environment();
     let mut seen = None;
@@ -1184,7 +1175,9 @@ fn a_running_command_is_published_and_retracted() {
         "the record must carry the pid, because it is the only remedy that works"
     );
 
-    child.wait().expect("the slow command finishes");
+    child.wait_within(STORY_COMMAND_DEADLINE, || {
+        "the slow command did not finish".to_string()
+    });
 
     // And it is retracted, which is a signal in its own right: a client's clock
     // resets on the record disappearing exactly as on it changing.

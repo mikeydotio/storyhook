@@ -79,10 +79,10 @@
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -239,46 +239,24 @@ fn code(out: &Output) -> i32 {
 // The fixture
 // ---------------------------------------------------------------------------
 
-/// A live child that is killed if a case panics before collecting it.
-///
-/// `storyhook_test_support::ChildGuard` cannot serve here: collecting a
-/// spawned run's **stderr** needs `wait_with_output`, which consumes the
-/// `Child` that guard owns privately. Repeated rather than shared, the way
-/// `tests/machine_lock.rs` repeats `orphan_check.rs`'s zombie helper — the two
-/// suites are deliberately independent of each other.
-struct Runner(Option<Child>);
+/// A live child whose captured output is collected within the lock's own
+/// observation budget.
+struct Runner(ChildGuard);
 
 impl Runner {
-    fn child(&mut self) -> &mut Child {
-        self.0.as_mut().expect("the runner was already collected")
-    }
-
     fn pid(&mut self) -> u32 {
-        self.child().id()
+        self.0.pid()
     }
 
     fn finished(&mut self) -> bool {
-        self.child()
-            .try_wait()
-            .expect("asking after a child this test started")
-            .is_some()
+        self.0.try_wait().is_some()
     }
 
     fn collect(&mut self) -> Output {
-        self.0
-            .take()
-            .expect("the runner was already collected")
-            .wait_with_output()
-            .expect("collecting a child this test started")
-    }
-}
-
-impl Drop for Runner {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.0.wait_with_output_within(
+            Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED),
+            || "the spawned gate fixture did not finish".to_string(),
+        )
     }
 }
 
@@ -424,14 +402,12 @@ impl Fixture {
     }
 
     fn spawn(&self, args: &[&str]) -> Runner {
-        Runner(Some(
-            self.command(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
+        let mut command = self.command(args);
+        command.stdin(Stdio::null());
+        Runner(
+            ChildGuard::spawn_with_output(&mut command)
                 .unwrap_or_else(|e| panic!("spawning run-tests.sh with {args:?}: {e}")),
-        ))
+        )
     }
 
     /// A real, live holder of the `gate` lock that is nothing to do with
@@ -442,8 +418,8 @@ impl Fixture {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let child = cmd.spawn().expect("spawning a gate holder");
-        let runner = Runner(Some(child));
+        let child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning a gate holder");
+        let runner = Runner(child);
         wait_for_pid(&self.lock("gate").join("pid"));
         runner
     }

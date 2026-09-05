@@ -134,14 +134,13 @@ impl Fixture {
     }
 
     fn spawn(&self, args: &[&str]) -> ChildGuard {
-        ChildGuard::new(
-            self.command(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap_or_else(|e| panic!("spawning the script with {args:?}: {e}")),
-        )
+        let mut command = self.command(args);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        ChildGuard::spawn(&mut command)
+            .unwrap_or_else(|e| panic!("spawning the script with {args:?}: {e}"))
     }
 
     /// Plants a lock directory with a chosen identity — the only way to build
@@ -236,13 +235,13 @@ fn reclaim_deadline() -> String {
 /// A pid that is not in use. Spawning and reaping is the only way to be sure:
 /// a number picked out of the air can belong to something.
 fn a_dead_pid() -> u32 {
-    let mut child = Command::new("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawning a process to kill");
-    let pid = child.id();
-    child.wait().expect("reaping it");
+    let mut command = Command::new("true");
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = ChildGuard::spawn(&mut command).expect("spawning a process to reap");
+    let pid = child.pid();
+    child.wait_within(poll_ceiling(), || {
+        "the short-lived pid fixture did not exit".to_string()
+    });
     pid
 }
 
@@ -723,14 +722,13 @@ fn a_lock_left_by_a_dead_pid_is_reclaimed() {
 #[test]
 fn a_lock_whose_pid_was_reused_is_reclaimed() {
     let fixture = Fixture::new();
-    let victim = ChildGuard::new(
-        Command::new("sleep")
-            .arg("30")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawning a live process to impersonate a reused pid"),
-    );
+    let mut command = Command::new("sleep");
+    command
+        .arg("30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let victim = ChildGuard::spawn(&mut command)
+        .expect("spawning a live process to impersonate a reused pid");
     fixture.plant(
         "gate",
         &victim.pid().to_string(),
@@ -776,14 +774,12 @@ fn a_lock_whose_pid_was_reused_is_reclaimed() {
 #[test]
 fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
     let fixture = Fixture::new();
-    let victim = ChildGuard::new(
-        Command::new("sleep")
-            .arg("30")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawning a live holder"),
-    );
+    let mut command = Command::new("sleep");
+    command
+        .arg("30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let victim = ChildGuard::spawn(&mut command).expect("spawning a live holder");
     fixture.plant("gate", &victim.pid().to_string(), &started_of(victim.pid()));
 
     let out = fixture.run(&["--max-wait", "1", "gate", "--", "echo", "MUST-NOT-RUN"]);
