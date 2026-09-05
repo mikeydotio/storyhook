@@ -326,6 +326,7 @@ case "${1:-}" in
     # never passes one, so its path through this case is BYTE-IDENTICAL to
     # before this form existed. Bash-3.2-safe throughout (no negative array
     # indices, no `mapfile`) — this repo's own `bash --version` is 3.2.57.
+    rm -f "$STATE/killed_window" 2>/dev/null || true
     shift || true
     _all=("$@")
     _semi_idx=-1
@@ -362,6 +363,13 @@ case "${1:-}" in
       esac
       _i=$((_i + 1))
     done
+    # SH-539: make a just-created dispatch worktree reject rollback after the
+    # window opens. Combined with a later readiness failure, this produces a
+    # real surviving Git resource and proves the helper never says rollback
+    # completed when Git refused it.
+    if [ "${FAKE_TMUX_LOCK_WORKTREE_ON_OPEN:-}" = 1 ] && [ -n "$nw_cwd" ]; then
+      git -C "$nw_cwd" worktree lock "$nw_cwd" >/dev/null 2>&1 || exit 1
+    fi
     if [ "${FAKE_TMUX_INTERNAL_RESPAWN:-}" != 1 ]; then
       printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
     fi
@@ -690,6 +698,7 @@ case "${1:-}" in
     ;;
   kill-window)
     printf '%s\n' "$*" >> "$STATE/kill_window_args.log" 2>/dev/null || true
+    [ "${FAKE_TMUX_FAIL_KILL_WINDOW:-}" != 1 ] || exit 1
     # $FAKE_TMUX_KILL_WINDOW_PROBE=<path> (SH-308) — a test proving `complete`
     # closes a window BEFORE removing its worktree needs more than "kill-window
     # was called somewhere in the run"; the args log alone can't say WHEN. Each
@@ -714,6 +723,7 @@ case "${1:-}" in
         || { rm -f "$windows_temp"; exit 1; }
       mv -f "$windows_temp" "$STATE/windows" || { rm -f "$windows_temp"; exit 1; }
     fi
+    printf '%s' "${FAKE_TMUX_PANES:-}" >"$STATE/killed_window"
     ;;
   list-windows)
     [ ! -f "$STATE/windows" ] || cat "$STATE/windows"
@@ -722,7 +732,10 @@ case "${1:-}" in
     # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit
     # the seeded FAKE_TMUX_PANES (lines of "name<TAB>active<TAB>pane"), or nothing
     # (→ no matching window found).
-    if [ -n "${FAKE_TMUX_PANES:-}" ]; then printf '%s\n' "$FAKE_TMUX_PANES"; fi
+    killed_panes=$(cat "$STATE/killed_window" 2>/dev/null || printf '__none__')
+    if [ "$killed_panes" != "${FAKE_TMUX_PANES:-}" ] && [ -n "${FAKE_TMUX_PANES:-}" ]; then
+      printf '%s\n' "$FAKE_TMUX_PANES"
+    fi
     ;;
   capture-pane)
     # -S (scrollback start) present → the `capture` verb dumping a window's rendered

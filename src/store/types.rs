@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::provenance::Provenance;
-use crate::domain::{Priority, StoryEvent, StorySnapshot, SuperState};
+use crate::domain::{Priority, StoryCleanupLease, StoryEvent, StorySnapshot, SuperState};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 
@@ -270,6 +270,8 @@ pub struct EngineLaneRecord {
     pub window_name: Option<String>,
     /// The lane's preserved worktree path.
     pub worktree_path: Option<String>,
+    /// Exact creation-time resource identity for non-verification cleanup.
+    pub cleanup_lease: Option<StoryCleanupLease>,
     /// When dispatch began.
     pub dispatched_at: Option<String>,
     /// Most recent observation time — when the reconciler last *looked*.

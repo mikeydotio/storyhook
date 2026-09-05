@@ -43,7 +43,7 @@ being picked.
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
 | D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
-| D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; Claude's subsequent `PermissionRequest(ExitPlanMode)` starts a bounded exact-pane helper. Codex, which exposes no plan event, gets a pane-lifetime exact watcher after Plan mode is confirmed. Each sends one Return to its provider's selected approval option. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Provider-specific exact strings and pane identity guard the only keystroke. A changed UI fails closed instead of receiving input. |
+| D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. Each sends one Return to its provider's selected approval option. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard the only keystroke. A changed UI fails closed instead of receiving input. |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
@@ -168,6 +168,7 @@ classDiagram
         +Option~String~ story_id
         +Option~String~ window
         +Option~String~ worktree
+        +Option~StoryCleanupLease~ cleanup_lease
         +Option~String~ dispatched_at
         +String last_observed_at
         +Option~LaneOutcome~ outcome
@@ -440,8 +441,8 @@ the As-built section below.
 
 ## Enforcing unattendedness
 
-`plugins/story/hooks/full-auto.sh`, wired as `PreToolUse` and Claude's
-`PermissionRequest` in the plugin's existing `hooks.json` — the same file both Claude Code and Codex already
+`plugins/story/hooks/full-auto.sh`, wired as `PreToolUse` in the plugin's
+existing `hooks.json` — the same file both Claude Code and Codex already
 discover for `SessionStart`, `PostToolUse(Bash)` and `Stop`.
 
 **Inert by default.** With both `STORYHOOK_AUTO` and `STORYHOOK_FULL_AUTO`
@@ -455,7 +456,7 @@ When active:
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
 | Plan tool (`PreToolUse: ExitPlanMode`) | allow | — |
-| Claude plan review (`PermissionRequest: ExitPlanMode`) | one exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only in the hook's own pane. |
+| Claude plan review (watcher armed by dispatch) | one exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only while the original dispatched pane process remains live. |
 | Codex plan review (watcher armed after confirmed Plan mode) | one exact-gated tmux Return | Selects the already-highlighted “Yes, implement this plan” only in the dispatched pane. |
 | Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
 | Everything else | no decision | — |
@@ -1082,8 +1083,8 @@ proof makes the direct private-mode refusal test fail. The module document in
 
 ### SH-460 / SH-511 — autonomous approval hooks
 
-`plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries and one
-Claude `PermissionRequest` entry in the plugin's existing `hooks.json`. It allows
+`plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries in the
+plugin's existing `hooks.json`. It allows
 the `ExitPlanMode` tool, accepts Claude's separate plan-review pane with one
 exact-gated Return, denies `AskUserQuestion` and `request_user_input` with the
 feedback D6 specifies, and answers nothing else.
@@ -1154,7 +1155,11 @@ received `permissionDecision=allow`, yet Claude still stopped at a separate
 schedule the bounded helper on its own `$TMUX_PANE`; after a 500ms provider-input
 handoff, all three exact strings matched, one Return selected “Yes, and use auto
 mode,” Claude switched to Auto, and the requested proof file was written without
-a driver keystroke. `claude -p` is not a valid substitute for this measurement:
+a driver keystroke. SH-546 later measured Claude 2.1.261 emitting
+`PreToolUse(ExitPlanMode)` and `PostToolUse(ExitPlanMode)` but no intervening
+`PermissionRequest`; dispatch now arms the same exact-pane gate before prompt
+submission and binds it to the original pane pid/liveness instead of relying on
+that unstable event. `claude -p` is not a valid substitute for this measurement:
 the same version explicitly disables `ExitPlanMode` in print mode.
 
 ### SH-511 — ordinary Auto plan approval
@@ -1162,10 +1167,10 @@ the same version explicitly disables `ExitPlanMode` in print mode.
 SH-511 makes the existing `dispatch --auto` contract fully unattended without
 making it an engine lane. Every Auto child receives
 `STORYHOOK_AUTO=<story-id>` through `tmux new-window -e`; attended children
-receive no marker. The shared hook therefore allows Claude's `ExitPlanMode`,
-accepts its separate plan review at `PermissionRequest(ExitPlanMode)`, and denies
+receive no marker. The shared hook therefore allows Claude's `ExitPlanMode` and denies
 both providers' question tools for ordinary Auto as well as Full Auto, while the
-distinct variable keeps engine identity available to the reconcile loop.
+distinct variable keeps engine identity available to the reconcile loop. Dispatch
+arms Claude's separate exact-pane plan-review watcher before submitting the charter.
 
 The provider launch posture supplies what the hook does not. Claude keeps
 `--permission-mode plan` and sets `permissions.defaultMode` to `acceptEdits`.
@@ -1860,9 +1865,14 @@ flow.
 `EngineService` owns start, status, pause, resume, stop, and acknowledge.
 Pause is resumable; graceful stop is irreversible draining; stop-now kills
 live windows and uses StoryHook's unclaim primitive to restore claimed
-stories, but preserves their branches and worktrees. A partially failed
-stop-now can be retried. Quarantined lanes are already evidence and are
-cleared without unclaiming or deleting that evidence.
+stories, but preserves their branches and worktrees. Each successful dispatch
+stores the helper's versioned creation-time cleanup lease on its lane. Stop-now
+must use that lease and accept success only after the helper echoes it and
+proves that no exact-name story window remains on the leased tmux server. A
+legacy lane without a lease is retained with an explicit error instead of
+inventing cleanup identity from mutable checkout or provider settings. A
+partially failed stop-now can be retried. Quarantined lanes are already
+evidence and are cleared without unclaiming or deleting that evidence.
 
 ### SH-467 — a singular operational CLI
 
@@ -1951,3 +1961,19 @@ cannot masquerade as queue drain. Restart, pause, and halt retain live lane
 evidence; drain releases stopped lanes so it can finish. Engine-status JSON and
 the dashboard read the run history, so three sequential failures in one lane
 still explain a breaker halt after reload.
+
+### SH-539 — exact non-verification cleanup receipts
+
+Dispatch protocol 4 returns the same `StoryCleanupLease` written into the
+worktree's private Git marker. Migration 29 persists it with the occupied lane,
+so daemon restart and later project checkout/provider changes cannot retarget
+stop-now. Leased unclaim releases through the selected project store, addresses
+only exact-name windows on the lease's tmux socket, and reports success only
+when a typed receipt echoes the lease and proves those windows absent.
+
+The same postcondition rule applies to operator cleanup verbs. `complete`,
+`unclaim`, and `reset` return nonzero `ok:false` when tmux or Git cleanup fails;
+dispatch rollback names any surviving marker, worktree, or branch instead of
+claiming that rollback completed. Successful partial mutations stay reported
+as such, so retry remains safe and diagnostics never erase what already
+happened.

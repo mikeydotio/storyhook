@@ -39,6 +39,18 @@ out=$(dispatch_real "$repo" "$number")
 assert_eq "$(jqf "$out" .ok)" "true" "bare-id: dispatching by number succeeds"
 assert_eq "$(jqf "$out" .id)" "$id" "bare-id: the response reports the canonical id"
 assert_eq "$(jqf "$out" .window_name)" "$id" "bare-id: the window is named from the canonical id"
+assert_eq "$(jqf "$out" '.cleanup_lease.version')" "1" \
+  "bare-id: dispatch returns the versioned cleanup lease"
+assert_eq "$(jqf "$out" '.cleanup_lease.project_slug')" "$(slug_for "$repo")" \
+  "bare-id: cleanup lease names the selected project"
+assert_eq "$(jqf "$out" '.cleanup_lease.story_id')" "$id" \
+  "bare-id: cleanup lease names the canonical story"
+assert_eq "$(jqf "$out" '.cleanup_lease.worktree_path')" "$(jqf "$out" .worktree_path)" \
+  "bare-id: cleanup lease preserves the creation-time worktree"
+assert_eq "$(jqf "$out" '.cleanup_lease.branch')" "worktree-$id" \
+  "bare-id: cleanup lease preserves the creation-time branch"
+assert_contains "$(jqf "$out" '.cleanup_lease.tmux.socket_path')" "/" \
+  "bare-id: cleanup lease carries an absolute tmux socket"
 
 # The names on disk are the ones a later `/story do SH-N` would collide with,
 # which is the whole point of asserting them rather than trusting the JSON.
