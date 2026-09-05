@@ -22,6 +22,17 @@ type EngineLane = {
   outcome_detail: string | null;
 };
 
+type EngineQuarantine = {
+  lane_index: number;
+  story_id: string | null;
+  kind: string;
+  detail: string | null;
+  pane_id: string | null;
+  window_name: string | null;
+  worktree_path: string | null;
+  observed_at: string;
+};
+
 type EngineRun = {
   id: string;
   project: string;
@@ -31,6 +42,7 @@ type EngineRun = {
   state: "running" | "paused" | "draining" | "halted" | "finished";
   lanes: EngineLane[];
   consecutive_hard_stops: number;
+  recent_quarantines: EngineQuarantine[];
   stop_reason: string | null;
   acknowledged_at: string | null;
   created_at: string;
@@ -72,6 +84,7 @@ function run(
       },
     ],
     consecutive_hard_stops: 0,
+    recent_quarantines: [],
     stop_reason: null,
     acknowledged_at: null,
     created_at: now.toISOString(),
@@ -259,13 +272,25 @@ test("unacknowledged runs render newest-first with the last three linked quarant
     "2026-08-30T09:00:00Z",
   );
   halted.consecutive_hard_stops = 4;
-  halted.lanes = [
-    quarantine(0, "AA-2", "stalled", "2026-08-30T09:01:00Z"),
-    quarantine(1, "AA-1", "agent-blocked", "2026-08-30T09:02:00Z"),
-    quarantine(2, "AA-2", "window-gone", "2026-08-30T09:03:00Z"),
-    // A cleared quarantine has no live story column; the preserved detail is
-    // still the story identity the alert must link.
-    quarantine(3, null, "interrupted", "2026-08-30T09:04:00Z", "AA-1", "idle"),
+  // One reusable lane can produce the whole breaker series. Keep a stale lane
+  // outcome as a control: the durable run history must take precedence.
+  halted.lanes = [quarantine(0, "AA-2", "stalled", "2026-08-30T09:01:00Z")];
+  halted.recent_quarantines = [
+    {
+      lane_index: 0, story_id: "AA-1", kind: "agent-blocked", detail: null,
+      pane_id: "%201", window_name: "AA-1", worktree_path: "/tmp/AA-1",
+      observed_at: "2026-08-30T09:02:00Z",
+    },
+    {
+      lane_index: 0, story_id: "AA-2", kind: "window-gone", detail: null,
+      pane_id: "%202", window_name: "AA-2", worktree_path: "/tmp/AA-2",
+      observed_at: "2026-08-30T09:03:00Z",
+    },
+    {
+      lane_index: 0, story_id: "AA-1", kind: "interrupted", detail: null,
+      pane_id: "%203", window_name: "AA-1", worktree_path: "/tmp/AA-1-retry",
+      observed_at: "2026-08-30T09:04:00Z",
+    },
   ];
   halted.lane_count = halted.lanes.length;
   const acknowledged = stoppedRun(
