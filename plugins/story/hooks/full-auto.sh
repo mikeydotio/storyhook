@@ -60,10 +60,13 @@ set -uo pipefail
 
 # Dispatch-owned continuation for Claude's plan review. The original pane pid
 # and tmux's dead flag prevent a retained or respawned pane from inheriting this
-# watch; three exact visible strings scope what it may type into.
+# watch; three exact visible strings scope what it may type into. The pane
+# lifetime is the bound, while observation and Return retries are capped at
+# three. A Return completes only after a settled capture sees the dialog leave.
 approve_claude_plan() {
   local pane="${1:-}" expected_pid="${2:-}" limit="${3:-0}"
-  local attempt=0 screen="" identity=""
+  local poll_attempt=0 observation_failures=0 send_attempts=0
+  local awaiting_transition=0 screen="" identity=""
 
   [ -n "${STORYHOOK_AUTO:-}${STORYHOOK_FULL_AUTO:-}" ] || return 0
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 0
@@ -72,21 +75,48 @@ approve_claude_plan() {
   command -v tmux >/dev/null 2>&1 || return 0
 
   while :; do
-    identity=$(tmux display-message -p -t "$pane" \
-      '#{pane_pid}:#{pane_dead}' 2>/dev/null) || return 0
-    [ "$identity" = "$expected_pid:0" ] || return 0
-    screen=$(tmux capture-pane -p -t "$pane" 2>/dev/null) || return 0
-    if [[ "$screen" == *"Ready to code?"* \
-       && "$screen" == *"❯ 1. Yes, and use auto mode"* \
-       && "$screen" == *"2. Yes, manually approve edits"* ]]; then
-      identity=$(tmux display-message -p -t "$pane" \
-        '#{pane_pid}:#{pane_dead}' 2>/dev/null) || return 0
-      [ "$identity" = "$expected_pid:0" ] || return 0
-      tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
-      return 0
+    if ! identity=$(tmux display-message -p -t "$pane" \
+      '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
     fi
-    attempt=$((attempt + 1))
-    [ "$limit" -eq 0 ] || [ "$attempt" -lt "$limit" ] || return 0
+    [[ "$identity" =~ ^[1-9][0-9]*:[01]$ ]] || return 0
+    [ "$identity" = "$expected_pid:0" ] || return 0
+    if ! screen=$(tmux capture-pane -p -t "$pane" 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
+    fi
+    if ! [[ "$screen" == *"Ready to code?"* \
+        && "$screen" == *"❯ 1. Yes, and use auto mode"* \
+        && "$screen" == *"2. Yes, manually approve edits"* ]]; then
+      [ "$awaiting_transition" -eq 0 ] || return 0
+      observation_failures=0
+      poll_attempt=$((poll_attempt + 1))
+      [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0
+      sleep 1
+      continue
+    fi
+
+    [ "$send_attempts" -lt 3 ] || return 0
+
+    if ! identity=$(tmux display-message -p -t "$pane" \
+      '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
+      observation_failures=$((observation_failures + 1))
+      [ "$observation_failures" -lt 3 ] || return 0
+      sleep 1
+      continue
+    fi
+    [[ "$identity" =~ ^[1-9][0-9]*:[01]$ ]] || return 0
+    [ "$identity" = "$expected_pid:0" ] || return 0
+    observation_failures=0
+
+    send_attempts=$((send_attempts + 1))
+    tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
+    awaiting_transition=1
     sleep 1
   done
 }
