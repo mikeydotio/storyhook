@@ -664,6 +664,36 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
     assert!(repo.merge_object_artifacts().is_empty());
 }
 
+#[test]
+fn speculative_git_directory_cannot_be_inferred_as_bare() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", &base, "g", "feature\n");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "private_git=$(git rev-parse --absolute-git-dir) && GIT_DIR=\"$private_git\" git init -q -b main && basename \"$private_git\"",
+        ],
+    );
+
+    assert_ok(&outcome, "reinitializing the private speculative git-dir");
+    assert_eq!(stdout(&outcome), ".git");
+    assert_eq!(
+        stdout(&repo.git(&["config", "--get", "core.bare"])),
+        "false",
+        "a leaked speculative GIT_DIR must not classify the shared repository as bare"
+    );
+}
+
 /// Production passes the fetched base ref, not its already-resolved object
 /// id. Private administration must still begin with a valid detached HEAD.
 #[test]
