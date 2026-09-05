@@ -53,8 +53,6 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 REPO="mikeydotio/storyhook"
-MARKETPLACE="storyhook"          # `.claude-plugin/marketplace.json`'s `name`
-PLUGIN="story"                   # `plugins/story/.claude-plugin/plugin.json`'s `name`
 PLUGIN_DIR="plugins/story"
 
 # The four artifacts `release.yml`'s matrix builds. Named here so the
@@ -144,23 +142,8 @@ install_locally() {
   fi
 
   if [ "$skip_plugin" = 0 ]; then
-    step "Refreshing the Claude Code plugin from this working copy"
-    # `marketplace add` errors if the name is already registered, so update an
-    # existing registration rather than re-adding it.
-    if claude plugin marketplace list 2>/dev/null | grep -q "$MARKETPLACE"; then
-      info "marketplace \`$MARKETPLACE\` already registered; updating from source"
-      run claude plugin marketplace update "$MARKETPLACE"
-    else
-      info "registering marketplace \`$MARKETPLACE\` from $repo_root"
-      run claude plugin marketplace add "$repo_root"
-    fi
-
-    if claude plugin list 2>/dev/null | grep -q "$PLUGIN"; then
-      run claude plugin update "${PLUGIN}@${MARKETPLACE}" || run claude plugin update "$PLUGIN"
-    else
-      run claude plugin install "${PLUGIN}@${MARKETPLACE}"
-    fi
-    note "restart Claude Code for the plugin change to take effect"
+    step "Installing the Claude Code plugin embedded in this binary"
+    run story plugin install claude
   fi
 
   if [ "$skip_daemon" = 0 ]; then
