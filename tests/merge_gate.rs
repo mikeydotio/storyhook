@@ -664,6 +664,40 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
     assert!(repo.merge_object_artifacts().is_empty());
 }
 
+/// Production passes the fetched base ref, not its already-resolved object
+/// id. Private administration must still begin with a valid detached HEAD.
+#[test]
+fn speculative_run_accepts_the_symbolic_base_ref_used_by_the_verifier() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let base_ref = "refs/heads/main";
+    let expected_tree = stdout(&repo.preflight(base_ref, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.speculative_run(
+        &expected_tree,
+        base_ref,
+        &head,
+        &poller,
+        &["git", "rev-parse", "HEAD^{tree}"],
+    );
+
+    assert_ok(&outcome, "speculative run from the verifier base ref");
+    assert_eq!(stdout(&outcome), expected_tree);
+    assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+}
+
 #[test]
 fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked() {
     let repo = MergeRepo::new();

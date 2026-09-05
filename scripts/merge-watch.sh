@@ -52,6 +52,9 @@ if [ "${1:-}" = "--speculative-run" ]; then
     poller_wt="$5"
     shift 6
 
+    base_commit="$(git rev-parse --verify "$base^{commit}" 2>/dev/null)" \
+        || die "could not resolve speculative base $base to a commit"
+
     [ -e "$poller_wt/.git" ] \
         || die "the speculative poller worktree at $poller_wt has no .git entry"
     git -C "$poller_wt" checkout -q --detach "$base" \
@@ -204,7 +207,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     cp "$poller_gitlink" "$original_gitlink" \
         || die "could not preserve the poller worktree's Git link"
     {
-        printf '%s\n' "$base" > "$private_git/HEAD"
+        printf '%s\n' "$base_commit" > "$private_git/HEAD"
         printf '%s\n' "$common_dir" > "$private_git/commondir"
         printf '%s\n' "$poller_gitlink" > "$private_git/gitdir"
         printf 'gitdir: %s\n' "$private_git" > "$private_gitlink"

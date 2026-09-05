@@ -1,49 +1,35 @@
-# SH-555 Handoff
+# SH-556 Verification Handoff
 
 ## Delivered
 
-- Repaired this repository's legacy persistent verifier worktree under a
-  graceful daemon stop; connectivity checks and ordinary fetch now succeed.
-- `verify-pr.sh` repairs legacy or unreadable verifier administration before
-  fetch, then marks worktrees created under SH-552's private-Git-dir contract.
-- Healthy marked worktrees remain persistent and retain build caches.
-- A real-Git regression reproduces missing private HEAD/reflog/index objects
-  and proves repair, fetch connectivity, and healthy reuse.
-- Current main contributes SH-559's broader blocked-gate regression coverage:
-  fetch, pull, GC, fsck, repack, worktree prune, and bisect all remain safe
-  while a speculative verifier is blocked.
-- Central verification then exposed a load-sensitive daemon containment defect:
-  the parent watcher treated a reusable PID as process identity.
-- Commit `97ab33a6d` pairs every Rust test-parent PID with a native start token
-  and rejects a live PID whose incarnation does not match. Empty tokens retain
-  compatibility for shell-only harnesses.
-- The deterministic live-PID/mismatched-token regression is green 20/20; both
-  original parent-death tests are green.
+- The centralized verifier shares the daemon's existing `InFlight` registry.
+- An accepted candidate publishes `verify:<project>:<story>:<generation>` with
+  project, PID, checkout, start time, and the existing gate deadline.
+- Lifecycle and SH-549 activity guards remain live through outcome recording
+  and story-state transition, then retract on result, error, or panic.
+- Malformed and cleanup-only candidates retain their existing unowned paths.
+- Graceful replacement drains active verification; crash/force recovery still
+  harvests stale work and reapplies current queue priority.
+- Adopted the same missing-ledger defect in synchronous dashboard `stop --now`:
+  valid immediate stops now publish `engine-stop:<project>:<run>` until lane
+  termination, unclaim, and final run-state recording finish.
+- Ordinary engine controls and invalid stop requests remain outside the ledger.
+- Returned verification exposed an invalid private-poller `HEAD`: production
+  passed a base ref while tests covered only object IDs. The gate now resolves
+  that ref to an exact commit before writing its detached private `HEAD`.
 
 ## Verification scope
 
-- `bash -n scripts/verify-pr.sh`
-- `cargo fmt --all -- --check`
-- `cargo clippy --test merge_gate -- -D warnings`
-- `cargo test --test merge_gate`
-- Repository/generated AGENTS equality regression
-- `cargo test --test daemon_parent_identity ... --exact` (20 runs)
-- `cargo test --test daemon_lifecycle parent`
-- Daemon lifecycle and test-environment module unit tests
-- `cargo test --test test_environment`
-- Test-support parent-token propagation and scratch-environment rendering
-- Targeted Clippy with warnings denied; rustfmt, Bash syntax, and diff checks
-
-## Known compatibility boundary
-
-- Shell-only `storyhook_isolate` callers export an empty start token because a
-  portable shell cannot derive the same native high-resolution identity. They
-  retain PID-only containment; Rust tests, including the centralized Rust
-  battery that returned RED, use the incarnation-safe contract.
+- New blocked-actuator shutdown-ownership regression.
+- Verification queue ownership, all outcomes, write-error, and unwind cases.
+- Existing graceful drain and stale-entry lifecycle cases.
+- Immediate engine-stop ownership metadata, lifetime, and cleanup regression.
+- Real-Git symbolic-base private-poller regression and complete merge-gate
+  target.
+- AGENTS/template synchronization, targeted Clippy, formatting, diff check.
 
 ## Submission contract
 
-- Branch: `worktree-SH-555`.
-- Exactly one open PR references SH-555 and contains SH-555 in its title.
-- The centralized verifier owns the complete suite, merge, story completion,
-  and worktree cleanup.
+- Branch: `worktree-SH-556`.
+- One PR references SH-556 and remains open for centralized verification.
+- The verifier owns the full suite, merge, completion, and lane cleanup.

@@ -118,6 +118,18 @@ the store the same way any `story` caller does, and the engine reads the store.
 There is no lane-to-engine channel to go stale, and no agent assertion of
 completion to be wrong (D3).
 
+**Daemon-owned non-retryable work drains before graceful replacement
+(SH-556).** The centralized verifier and synchronous dashboard `stop --now`
+cleanup both enter the daemon's shared lifecycle registry before they mutate
+external state. Verification publishes
+`verify:<project>:<story>:<generation>` and stays owned through outcome and
+story-state recording. Immediate engine stop publishes
+`engine-stop:<project>:<run>` and stays owned through lane termination,
+unclaim, and final run-state recording. Ordinary engine controls and requests
+rejected during validation never enter the registry. Graceful replacement
+therefore waits for either operation; forced shutdown retains its existing
+stale-ledger recovery behavior.
+
 ## Type-system proposal
 
 ```mermaid
@@ -754,7 +766,8 @@ directions.
 | `e2e/specs/engine.spec.ts` | header control, lanes stepper, live lane panel, banner + ack |
 | `src/service/gate_progress.rs` (unit tests) | the SH-524 journal fold and render: attempt generation, current step, exact totals, truncated lines, unknown kinds, derived parent status, and the stale-gate header |
 | `src/daemon/verification_progress.rs` (unit tests) | `PublishBackoff`'s exact 1→2→5→10 minute ladder, reset-on-any-move, and file-activity staleness for untimestamped case records |
-| `tests/verification_queue.rs` | active ownership during the blocking actuator call; priority overtaking; release on return/unwind; generation isolation; running/queued `/data`; live checklist and queue comments |
+| `tests/verification_queue.rs` | active ownership during the blocking actuator call and outcome writes; priority overtaking; release on result/error/unwind; generation isolation; running/queued `/data`; live checklist and queue comments |
+| `tests/verification_shutdown_drain.rs` | accepted verification joins the daemon's durable drain set while a higher-priority arrival stays queued, then retracts ownership after outcome recording |
 | `tests/web_test.rs`; `e2e/specs/verification-status.spec.ts` | queued wire status and omission elsewhere; running, queued, starting, accessible status, percentage, and deterministic one-second elapsed updates in Chromium and WebKit |
 | `tests/store_isolation.rs` | every data-dir-isolating harness also neutralizes `$STORYHOOK_GATE_PROGRESS`, `scripts/run-e2e.sh` named as the one exception |
 | `tests/invoker_seam.rs` | the `Intent::Append` set is exactly three, named |
@@ -1561,13 +1574,24 @@ submitted higher-priority story can become the queue head while a lower-
 priority actuator call is still blocking. The daemon therefore shares one
 process-local `VerificationActivity` slot across the worker, progress
 publisher, and dashboard route. An RAII guard acquires the exact `(project,
-story, verifying-transition generation)` immediately around `verify()` and
-clears it on every return or unwind. `VerificationQueue::ordered()` still
-defines waiting order, after excluding that exact active generation; it never
-answers which attempt is running. After a daemon restart the slot is empty,
-so every surviving `verifying` story is queued until the new worker explicitly
-acquires one. A story that leaves `verifying` simply disappears from both
-status surfaces and its last progress comment remains frozen.
+story, verifying-transition generation)` for the accepted verification
+transaction and clears it after the outcome is recorded, on every return or
+unwind. `VerificationQueue::ordered()` still defines waiting order, after
+excluding that exact active generation; it never answers which attempt is
+running. A story that leaves `verifying` simply disappears from both status
+surfaces and its last progress comment remains frozen.
+
+**Active verification is daemon work and drains before graceful replacement
+(SH-556).** The worker shares the daemon's one `InFlight` registry with request
+dispatch and shutdown. After candidate checkout and pull-request validation,
+it publishes a `verify:<project>:<story>:<generation>` entry before acquiring
+the process-local activity guard, then holds both guards through the actuator
+and durable outcome/state transition. Thus “under test” implies both exact UI
+ownership and membership in the set graceful shutdown waits to empty. Idle,
+malformed, missing-checkout, and cleanup-only candidates never enter that set.
+Forced shutdown and crashes remain different by design: the next daemon
+ledgers and clears their stale entry, starts with an empty activity slot, and
+reapplies live queue priority rather than honoring dead ownership.
 
 **Journal detail belongs to one generation.** The actuator initializes each
 journal with a `run` record naming the latest `verifying` transition. Current
