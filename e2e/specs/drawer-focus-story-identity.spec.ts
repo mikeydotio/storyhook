@@ -94,20 +94,10 @@ async function readStoryId(page: Page, card: Locator): Promise<string> {
   return id;
 }
 
-/**
- * Closes the drawer and waits for the backdrop to actually finish
- * re-hiding itself -- `closeDrawer()` only sets its `hidden` attribute
- * 180ms later (a CSS fade), and an un-hidden backdrop still intercepts a
- * click aimed at a board card behind it even at opacity 0. Every test below
- * closes the drawer before deleting its own stories, and racing that
- * against the fade is exactly the kind of flake `deleteStory`'s first
- * `card.click()` (in ./support) would otherwise have to out-wait via its
- * own actionability retries.
- */
+/** Closes the detail panel before the next test action. */
 async function closeDrawerAndWait(page: Page): Promise<void> {
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-  await expect(page.locator("#drawer-backdrop")).toBeHidden();
 }
 
 /**

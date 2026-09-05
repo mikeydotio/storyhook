@@ -92,7 +92,29 @@ fn run_with_deadline(
     })
 }
 
+/// Refuses feature-gated environment instructions this build cannot honor.
+///
+/// This call is the first statement in [`main`]. Gathering reads process state
+/// but changes nothing; a refusal renders through the ordinary usage-error
+/// contract and exits before Git environment scrubbing, credential removal,
+/// argument dispatch, or any external side effect.
+fn refuse_unsupported_fault_injection_environment() {
+    let requested = storyhook::fault_injection_guard::requested_from_process();
+    let Err(refusal) =
+        storyhook::fault_injection_guard::decide(requested, storyhook::env::is_test_build())
+    else {
+        return;
+    };
+    let json = env::args_os().any(|argument| argument == "--json");
+    fail(
+        &storyhook::error::AppError::Usage(refusal.to_string()),
+        json,
+    );
+}
+
 fn main() {
+    refuse_unsupported_fault_injection_environment();
+
     // First, before anything — including argument parsing, which decides
     // nothing this depends on.
     //
