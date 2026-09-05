@@ -4633,10 +4633,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       : null;
   }
 
-  /** The lane table preserves the last outcome for a cleared quarantine, so
-   * state alone is not the classifier. Sort by the recorded observation and
-   * then lane index: simultaneous observations still have one stable order. */
+  /** New servers retain the current consecutive series on the run. Fall back
+   * to lane outcomes while reading a response from an older server. */
   function lastEngineQuarantines(run) {
+    if (Array.isArray(run.recent_quarantines) && run.recent_quarantines.length) {
+      return run.recent_quarantines.slice().reverse().map(function(item) {
+        return {
+          index: item.lane_index,
+          story: item.story_id,
+          outcome: item.kind,
+          outcome_detail: item.detail,
+          window: item.window_name,
+          worktree: item.worktree_path,
+          last_observed_at: item.observed_at
+        };
+      });
+    }
     return (run.lanes || []).filter(function(lane) {
       return !!ENGINE_QUARANTINE_OUTCOMES[lane.outcome];
     }).slice().sort(function(a, b) {
@@ -4655,6 +4667,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           stop_reason: run.stop_reason,
           acknowledged_at: run.acknowledged_at,
           consecutive_hard_stops: run.consecutive_hard_stops,
+          recent_quarantines: run.recent_quarantines,
           pending: engineAcknowledgementPending(run.id),
           lanes: (run.lanes || []).map(function(lane) {
             return [lane.index, lane.state, lane.story, lane.last_observed_at, lane.outcome, lane.outcome_detail];

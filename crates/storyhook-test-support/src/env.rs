@@ -9,6 +9,8 @@ use tempfile::TempDir;
 use crate::project::ProjectBuilder;
 use crate::scratch::scratch_dir_named;
 
+const BINARY_SNAPSHOT_DIR: &str = ".storyhook-test-binaries";
+
 /// The environment variables a storyhook process is allowed to see, and what
 /// each of them is set to, come from one place:
 /// [`storyhook::env::test_environment::TEST_ENVIRONMENT`].
@@ -360,34 +362,120 @@ pub fn daemon_containment() -> Vec<(&'static str, String)> {
 /// The `story` binary under test — always this build's, never a globally
 /// installed one.
 ///
-/// Resolved from the running test binary's own location rather than
-/// `assert_cmd::cargo::cargo_bin`, whose failure message (`CARGO_BIN_EXE_story`
-/// is unset) names a compile-time variable that a *different* crate's test
-/// binary could never have had, and so points at nothing actionable.
+/// The resolved Cargo artifact is hard-linked once per test process. Cargo
+/// atomically replaces that artifact when another build selects different
+/// features; the hard link keeps this process on the inode its own build
+/// produced while leaving the shared target directory available to production
+/// builds (SH-532).
+///
+/// Resolution still comes from the running test binary's own location rather
+/// than `assert_cmd::cargo::cargo_bin`, whose failure message
+/// (`CARGO_BIN_EXE_story` is unset) names a compile-time variable that a
+/// *different* crate's test binary could never have had, and so points at
+/// nothing actionable.
+fn snapshot_binary_in(source: &Path, root: &Path, owner_pid: u32) -> PathBuf {
+    assert!(owner_pid > 0, "a binary snapshot lease needs a process id");
+    std::fs::create_dir_all(root).unwrap_or_else(|error| {
+        panic!("creating binary snapshot root {}: {error}", root.display())
+    });
+    sweep_binary_snapshots(root, process_might_be_alive);
+
+    let lease = tempfile::Builder::new()
+        .prefix(&format!("{owner_pid}-"))
+        .tempdir_in(root)
+        .unwrap_or_else(|error| {
+            panic!(
+                "creating a process-owned binary snapshot under {}: {error}",
+                root.display()
+            )
+        });
+    let basename = source
+        .file_name()
+        .unwrap_or_else(|| panic!("the story binary path {} has no basename", source.display()));
+    let snapshot = lease.path().join(basename);
+    std::fs::hard_link(source, &snapshot).unwrap_or_else(|error| {
+        panic!(
+            "hard-linking story binary {} to {}: {error}; refusing a copy fallback because a \
+             concurrent Cargo replacement could make a byte copy internally inconsistent \
+             (SH-532)",
+            source.display(),
+            snapshot.display()
+        )
+    });
+    lease.keep().join(basename)
+}
+
+/// Reclaims only leases whose directory name identifies a process known to be
+/// absent. An unreadable or malformed entry is retained: cleanup may leak
+/// space, but it may never take a live consumer's executable path away.
+fn sweep_binary_snapshots(root: &Path, owner_is_alive: impl Fn(u32) -> bool) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some((pid, _nonce)) = name.split_once('-') else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if pid == 0 || owner_is_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
+/// Whether `pid` may still identify a process.
+///
+/// POSIX defines signal zero as error checking without signal delivery.
+/// `ESRCH` is the only answer that proves absence; permission errors and every
+/// other failure retain the lease conservatively.
+fn process_might_be_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal zero performs existence and permission checks only; it
+    // delivers no signal, and `pid` was checked to fit the platform's pid_t.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 pub fn story_binary() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         // Set for the integration tests of the package that declares the
         // binary; absent everywhere else, including this crate's own tests.
-        if let Some(path) = std::env::var_os("CARGO_BIN_EXE_story") {
-            return PathBuf::from(path);
-        }
-        let exe = std::env::current_exe().expect("locating the running test binary");
-        let mut dir = exe
-            .parent()
-            .expect("a test binary always has a parent directory")
-            .to_path_buf();
-        if dir.ends_with("deps") {
-            dir.pop();
-        }
-        let candidate = dir.join(format!("story{}", std::env::consts::EXE_SUFFIX));
+        let candidate = std::env::var_os("CARGO_BIN_EXE_story")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let exe = std::env::current_exe().expect("locating the running test binary");
+                let mut dir = exe
+                    .parent()
+                    .expect("a test binary always has a parent directory")
+                    .to_path_buf();
+                if dir.ends_with("deps") {
+                    dir.pop();
+                }
+                dir.join(format!("story{}", std::env::consts::EXE_SUFFIX))
+            });
         assert!(
             candidate.is_file(),
             "the `story` binary is not at {} — this harness only ever runs the binary this \
              build produced. Run `cargo build -p storyhook` (or `make test`, which does).",
             candidate.display()
         );
-        candidate
+        let root = candidate
+            .parent()
+            .expect("the story binary always has a target directory")
+            .join(BINARY_SNAPSHOT_DIR);
+        snapshot_binary_in(&candidate, &root, std::process::id())
     })
 }
 
@@ -506,6 +594,111 @@ fn probe_fault_capability() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, message: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{message}'\n"))
+            .unwrap_or_else(|error| panic!("writing {}: {error}", path.display()));
+        let mut permissions = std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+            .unwrap_or_else(|error| panic!("making {} executable: {error}", path.display()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_snapshot_survives_atomic_source_replacement() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let fixture = crate::scratch_dir();
+        let debug = fixture.path().join("debug");
+        let snapshots = debug.join(BINARY_SNAPSHOT_DIR);
+        std::fs::create_dir_all(&debug).expect("creating the fake target directory");
+        let source = debug.join("story");
+        write_executable(&source, "fault-capable");
+
+        let snapshot = snapshot_binary_in(&source, &snapshots, std::process::id());
+        let source_metadata = std::fs::metadata(&source).expect("reading the source inode");
+        let snapshot_metadata = std::fs::metadata(&snapshot).expect("reading the snapshot inode");
+        assert_eq!(
+            snapshot_metadata.ino(),
+            source_metadata.ino(),
+            "the snapshot must be a hard link, not a second binary copy"
+        );
+        assert!(
+            source_metadata.nlink() >= 2,
+            "the source inode must include the process-owned lease"
+        );
+
+        let replacement = debug.join("replacement");
+        write_executable(&replacement, "featureless");
+        std::fs::rename(&replacement, &source).expect("atomically replacing the Cargo artifact");
+
+        let snapshot_output = std::process::Command::new(&snapshot)
+            .output()
+            .expect("running the snapshotted executable");
+        let source_output = std::process::Command::new(&source)
+            .output()
+            .expect("running the replacement executable");
+        assert_eq!(snapshot_output.stdout, b"fault-capable\n");
+        assert_eq!(source_output.stdout, b"featureless\n");
+        assert_eq!(
+            snapshot.file_name(),
+            source.file_name(),
+            "PATH-based hooks must still resolve the snapshot by the production basename"
+        );
+        assert_ne!(
+            snapshot, source,
+            "returning Cargo's mutable artifact path leaves the producer conflict open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_snapshot_liveness_proves_only_absence() {
+        assert!(
+            process_might_be_alive(std::process::id()),
+            "signal zero must recognize the current process"
+        );
+        assert!(
+            !process_might_be_alive(i32::MAX as u32),
+            "the platform's maximum signed pid is outside its live pid range"
+        );
+    }
+
+    #[test]
+    fn binary_snapshot_sweep_removes_only_provably_dead_leases() {
+        let fixture = crate::scratch_dir();
+        let root = fixture.path().join(BINARY_SNAPSHOT_DIR);
+        let live_pid = std::process::id();
+        let dead_pid = live_pid.checked_add(1).expect("a representable fake pid");
+        let live = root.join(format!("{live_pid}-live"));
+        let dead = root.join(format!("{dead_pid}-dead"));
+        let malformed = root.join("owner-unknown");
+        for dir in [&live, &dead, &malformed] {
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
+        }
+
+        sweep_binary_snapshots(&root, |pid| pid == live_pid);
+
+        assert!(
+            live.is_dir(),
+            "a live process still needs its executable path"
+        );
+        assert!(
+            malformed.is_dir(),
+            "an entry with no provable owner must be retained"
+        );
+        assert!(
+            !dead.exists(),
+            "a dead lease pins an obsolete binary inode until it is removed"
+        );
+    }
 
     #[test]
     fn every_isolated_variable_reaches_the_child_process() {

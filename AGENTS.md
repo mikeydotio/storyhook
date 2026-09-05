@@ -191,6 +191,6 @@ project it is looking at.
 
 - Current: verify authoritative active-versus-queued status chips for stories
   handed to centralized verification.
-- Next: reconcile Full Auto lane accounting so `verifying` is an intentional
-  handoff, not a stall or dead-window failure.
-- Later: extend queue health and gate diagnostics beyond each story card.
+- Next: expose queue health and gate diagnostics beyond individual story cards.
+- Later: harden provider UI automation against approval-contract drift and
+  remaining Full Auto recovery and cleanup ownership boundaries.

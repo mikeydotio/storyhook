@@ -157,7 +157,7 @@ using** — after which the CLI's next command would evict that one back. Two bi
 fight over the daemon forever. `story mcp` is therefore a mode of the one shipped binary,
 exactly like `story tui` and `story daemon --serve` already are, dispatched in `main.rs`
 before `parse_invocation` ever runs — never a new `Invocation` variant, never a second
-artifact in the release matrix.
+artifact in the release target set.
 
 ### The five obligations of any client of this daemon
 

@@ -4,12 +4,12 @@
 //! aggregate `full` receipt is never written. That must not erase successful
 //! evidence from earlier, unrelated batteries. These tests provoke the real
 //! `scripts/leg.sh --reuse` wrapper in disposable git repositories and count
-//! command executions; no receipt is forged and no implementation text is
-//! parsed.
+//! command executions. The fixtures reach the tracked scripts through symlinks,
+//! so no receipt is forged, no implementation text is parsed, and no copy can
+//! drift from the artifact that ships.
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -21,12 +21,15 @@ fn checkout() -> &'static Path {
 
 struct Repo {
     root: TempDir,
+    path: PathBuf,
 }
 
 impl Repo {
     fn new() -> Self {
         let root = storyhook_test_support::scratch_dir();
-        let repo = Self { root };
+        let path = root.path().join("main");
+        fs::create_dir(&path).expect("creating fixture repository");
+        let repo = Self { root, path };
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "gate-leg@example.test"]);
         repo.git(&["config", "user.name", "Gate Leg Test"]);
@@ -42,38 +45,29 @@ impl Repo {
                 "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n#[test] fn contract() { assert!(!ROOT.is_empty()); }\n",
             ),
             ("e2e/specs/board.spec.ts", "// browser fixture\n"),
-            ("scripts/leg.sh", "# fingerprint fixture\n"),
         ] {
             repo.write(path, contents);
         }
-        let fingerprint = repo.path().join("scripts/gate-leg-fingerprint.sh");
-        fs::copy(
-            checkout().join("scripts/gate-leg-fingerprint.sh"),
-            &fingerprint,
-        )
-        .expect("copying the real fingerprint helper into the fixture");
-        let mut permissions = fs::metadata(&fingerprint)
-            .expect("reading fingerprint helper metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&fingerprint, permissions)
-            .expect("making fixture fingerprint helper executable");
-        let classifier = repo.path().join("scripts/rust-test-targets.sh");
-        fs::copy(checkout().join("scripts/rust-test-targets.sh"), &classifier)
-            .expect("copying the real Rust target classifier into the fixture");
-        let mut permissions = fs::metadata(&classifier)
-            .expect("reading Rust target classifier metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&classifier, permissions)
-            .expect("making fixture Rust target classifier executable");
+        fs::create_dir_all(repo.path().join("scripts")).expect("creating fixture scripts/");
+        for script in [
+            "leg.sh",
+            "gate-progress.sh",
+            "gate-leg-fingerprint.sh",
+            "rust-test-targets.sh",
+        ] {
+            std::os::unix::fs::symlink(
+                checkout().join("scripts").join(script),
+                repo.path().join("scripts").join(script),
+            )
+            .unwrap_or_else(|e| panic!("linking the tracked {script}: {e}"));
+        }
         repo.git(&["add", "."]);
         repo.git(&["commit", "-q", "-m", "fixture"]);
         repo
     }
 
     fn path(&self) -> &Path {
-        self.root.path()
+        &self.path
     }
 
     fn write(&self, relative: &str, contents: &str) {
@@ -98,31 +92,110 @@ impl Repo {
         out
     }
 
-    fn counter(&self, label: &str) -> PathBuf {
-        self.path().join(format!("{label}.count"))
+    fn linked_worktree(&self, name: &str) -> PathBuf {
+        let path = self.root.path().join(name);
+        let out = Command::new("git")
+            .args(["worktree", "add", "-q", "--detach"])
+            .arg(&path)
+            .arg("HEAD")
+            .current_dir(self.path())
+            .output()
+            .expect("adding linked fixture worktree");
+        assert!(
+            out.status.success(),
+            "adding linked fixture worktree failed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        path
+    }
+
+    fn counter_at(&self, root: &Path, label: &str) -> PathBuf {
+        root.join(format!("{label}.count"))
     }
 
     fn run_leg(&self, label: &str, succeeds: bool) -> Output {
-        let counter = self.counter(label);
+        self.run_leg_at(self.path(), label, succeeds)
+    }
+
+    fn run_leg_at(&self, root: &Path, label: &str, succeeds: bool) -> Output {
         let script = if succeeds {
             "printf x >> \"$1\""
         } else {
             "printf x >> \"$1\"; exit 23"
         };
         Command::new("bash")
-            .arg(checkout().join("scripts/leg.sh"))
+            .arg(root.join("scripts/leg.sh"))
             .args(["--reuse", label, "--", "bash", "-c", script, "gate-leg"])
-            .arg(counter)
-            .current_dir(self.path())
+            // The relative counter keeps argv byte-identical across linked
+            // worktrees while recording which worktree actually executed.
+            .arg(format!("{label}.count"))
+            .current_dir(root)
             .output()
             .expect("running reusable leg")
     }
 
     fn executions(&self, label: &str) -> usize {
-        fs::read_to_string(self.counter(label))
+        self.executions_at(self.path(), label)
+    }
+
+    fn executions_at(&self, root: &Path, label: &str) -> usize {
+        fs::read_to_string(self.counter_at(root, label))
             .unwrap_or_default()
             .len()
     }
+}
+
+#[test]
+fn build_results_are_worktree_local_while_pure_results_remain_shared() {
+    let repo = Repo::new();
+    let sibling = repo.linked_worktree("sibling");
+
+    let first_build = repo.run_leg("build", true);
+    assert!(first_build.status.success(), "first build: {first_build:?}");
+    let sibling_build = repo.run_leg_at(&sibling, "build", true);
+    assert!(
+        sibling_build.status.success(),
+        "sibling build: {sibling_build:?}"
+    );
+    assert_eq!(repo.executions("build"), 1, "the first build did not run");
+    assert_eq!(
+        repo.executions_at(&sibling, "build"),
+        1,
+        "a sibling worktree reused build evidence without producing its artifact"
+    );
+
+    let first_build_retry = repo.run_leg("build", true);
+    assert!(
+        first_build_retry.status.success(),
+        "first build retry: {first_build_retry:?}"
+    );
+    assert_eq!(
+        repo.executions("build"),
+        1,
+        "returning to a worktree did not reuse its own build evidence"
+    );
+    assert!(
+        String::from_utf8_lossy(&first_build_retry.stderr).contains("REUSED"),
+        "worktree-local reuse was not reported: {}",
+        String::from_utf8_lossy(&first_build_retry.stderr)
+    );
+
+    let first_fmt = repo.run_leg("fmt", true);
+    assert!(first_fmt.status.success(), "first fmt: {first_fmt:?}");
+    let sibling_fmt = repo.run_leg_at(&sibling, "fmt", true);
+    assert!(sibling_fmt.status.success(), "sibling fmt: {sibling_fmt:?}");
+    assert_eq!(repo.executions("fmt"), 1, "the first fmt did not run");
+    assert_eq!(
+        repo.executions_at(&sibling, "fmt"),
+        0,
+        "a pure result stopped being reusable across worktrees"
+    );
+    assert!(
+        String::from_utf8_lossy(&sibling_fmt.stderr).contains("REUSED"),
+        "cross-worktree pure reuse was not reported: {}",
+        String::from_utf8_lossy(&sibling_fmt.stderr)
+    );
 }
 
 #[test]

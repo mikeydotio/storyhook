@@ -274,6 +274,24 @@ fn reconcile_restart_at(
         .unwrap()
 }
 
+fn reconcile_steady_at(
+    fixture: &ServiceFixture,
+    fake: &FakeDispatcher,
+    run_id: &str,
+    now: &str,
+) -> storyhook::service::engine::ReconcileReport {
+    let ctx = Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.cwd(),
+        fixture.env().clone(),
+    )
+    .clock(Clock::Fixed(now.to_string()));
+    EngineService::new(&ctx, fake)
+        .reconcile(&run_id.to_string())
+        .unwrap()
+}
+
 /// The central case: a lane occupied when the daemon went down is
 /// quarantined `Interrupted`, and the reason names the kind and the run.
 #[test]
@@ -283,7 +301,7 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
     // `ShellDispatcher` answers `false` for a session that does not exist;
     // the fake needs a step regardless, since `observe_lanes` still probes.
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -303,6 +321,39 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
     );
 }
 
+/// Restart preserves evidence during its special pass, then the first steady
+/// pass releases the lane and resumes normal queue work below the breaker.
+#[test]
+fn the_first_steady_pass_after_restart_continues_with_a_fresh_story() {
+    let fixture = ServiceFixture::new();
+    let interrupted = new_story(&fixture, "interrupted", &[]);
+    let next = new_story(&fixture, "next", &[]);
+    let restart = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{interrupted}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &restart, 1);
+    occupy(&fixture, &run_id, 0, &interrupted);
+    reconcile_restart_at(&fixture, &restart, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        lane_at(&fixture, &run_id, 0).state,
+        EngineLaneState::Quarantined
+    );
+
+    let steady = FakeDispatcher::new([DispatcherStep::Dispatch(
+        storyhook::service::engine::DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "pane": "%113",
+            "window_name": next,
+            "worktree_path": "/tmp/wt/next"
+        })),
+    )]);
+    let report = reconcile_steady_at(&fixture, &steady, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.filled, [(0, next.clone())]);
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(next));
+}
+
 /// D11's own text: worktree, branch and window are preserved, and the
 /// engine never resumes or resets — it never calls `unclaim` or
 /// `kill_window` for an interrupted lane. There is no `Dispatcher` method
@@ -312,7 +363,7 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
 fn an_interrupted_lane_preserves_its_worktree_and_window_and_is_never_torn_down() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -361,7 +412,7 @@ fn an_interrupted_lane_preserves_its_worktree_and_window_and_is_never_torn_down(
 fn a_lane_whose_window_survived_the_restart_is_untouched_and_its_clock_is_reseeded() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: true,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
@@ -452,15 +503,15 @@ fn three_interrupted_lanes_halt_the_run() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-3".into(),
+            window: "=fixture:=story-SH-3".into(),
             alive: false,
         },
     ]);
@@ -493,11 +544,11 @@ fn two_interrupted_lanes_leave_the_run_running() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
-            window: "story-SH-1".into(),
+            window: "=fixture:=story-SH-1".into(),
             alive: false,
         },
         DispatcherStep::WindowAlive {
-            window: "story-SH-2".into(),
+            window: "=fixture:=story-SH-2".into(),
             alive: false,
         },
     ]);
@@ -532,11 +583,11 @@ fn a_completion_zeroes_the_streak_before_this_passs_hard_stops_are_added() {
         // `story_closed`, so the fake needs an answer even though it is
         // irrelevant to the outcome.
         DispatcherStep::WindowAlive {
-            window: format!("story-{a}"),
+            window: format!("=fixture:=story-{a}"),
             alive: true,
         },
         DispatcherStep::WindowAlive {
-            window: format!("story-{b}"),
+            window: format!("=fixture:=story-{b}"),
             alive: false,
         },
     ]);
@@ -579,7 +630,7 @@ fn an_idle_lane_is_untouched_by_a_restart_pass() {
 fn a_second_restart_pass_does_not_re_quarantine_or_grow_the_streak() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
-        window: "story-SH-1".into(),
+        window: "=fixture:=story-SH-1".into(),
         alive: false,
     }]);
     let story = new_story(&fixture, "lane work", &[]);
