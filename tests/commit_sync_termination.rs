@@ -49,7 +49,7 @@ use std::path::Path;
 use std::process::Command;
 
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo};
-use storyhook_test_support::{Project, TestEnv};
+use storyhook_test_support::{ChildGuard, Project, STORY_COMMAND_DEADLINE, TestEnv};
 
 /// How many times the loop is run. Two would prove idempotency; five is cheap
 /// and makes "converges after a while" as visible a failure as "never
@@ -284,21 +284,24 @@ fn concurrent_runs_over_one_commit_still_produce_one_link() {
         ],
     );
 
-    let mut children: Vec<std::process::Child> = (0..4)
+    let mut children: Vec<ChildGuard> = (0..4)
         .map(|_| {
-            env.raw_story(project.path())
-                .args(["commit-sync", "--since", "1h"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .expect("spawning commit-sync")
+            ChildGuard::spawn_with_output(env.raw_story(project.path()).args([
+                "commit-sync",
+                "--since",
+                "1h",
+            ]))
+            .expect("spawning commit-sync")
         })
         .collect();
     for child in &mut children {
-        let output = child.wait().expect("waiting on commit-sync");
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a concurrent commit-sync did not finish".to_string()
+        });
         assert!(
-            output.success(),
-            "a concurrent commit-sync failed: {output}"
+            output.status.success(),
+            "a concurrent commit-sync failed: {:?}",
+            output.status
         );
     }
 

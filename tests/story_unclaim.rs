@@ -12,7 +12,7 @@
 //! whose setup varies with the developer's terminal is a fixture that fails
 //! in one of the two places.
 
-use storyhook_test_support::{Project, TestEnv};
+use storyhook_test_support::{ChildGuard, Project, STORY_COMMAND_DEADLINE, TestEnv};
 
 /// A project with a claimable state and nothing else assumed.
 fn project() -> Project<'static> {
@@ -585,8 +585,6 @@ fn a_dry_run_with_no_comment_names_no_comment() {
 /// safety from back-to-back sequential calls.
 #[test]
 fn concurrent_unclaimers_of_one_story_yield_exactly_one_winner() {
-    use std::process::Stdio;
-
     let project = project();
     let id = project.new_story("The contended one");
     json(&project, &["claim", &id, "--no-comment"]);
@@ -595,21 +593,22 @@ fn concurrent_unclaimers_of_one_story_yield_exactly_one_winner() {
     const ATTEMPTS: usize = 6;
     let children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            env.raw_story(project.path())
+            let mut command = env.raw_story(project.path());
+            command
                 .args(["unclaim", &id, "--json"])
                 .env_remove("TMUX")
-                .env_remove("TMUX_PANE")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .env_remove("TMUX_PANE");
+            ChildGuard::spawn_with_output(&mut command)
                 .expect("failed to spawn concurrent `story unclaim <id>`")
         })
         .collect();
 
     let mut winners = 0usize;
     let mut conflicts = 0usize;
-    for child in children {
-        let output = child.wait_with_output().unwrap();
+    for mut child in children {
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a concurrent `story unclaim <id>` did not finish".to_string()
+        });
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         match value["result"].as_str() {
@@ -641,8 +640,6 @@ fn concurrent_unclaimers_of_one_story_yield_exactly_one_winner() {
 /// a release that both conflicted and wrote.
 #[test]
 fn a_claim_racing_an_unclaim_leaves_exactly_one_of_them_applied() {
-    use std::process::Stdio;
-
     let project = project();
     let id = project.new_story("The contended one");
     json(&project, &["claim", &id, "--no-comment"]);
@@ -650,29 +647,27 @@ fn a_claim_racing_an_unclaim_leaves_exactly_one_of_them_applied() {
     let env = project.env();
     let mut children: Vec<_> = (0..3)
         .map(|_| {
-            env.raw_story(project.path())
+            let mut command = env.raw_story(project.path());
+            command
                 .args(["unclaim", &id, "--no-comment", "--json"])
                 .env_remove("TMUX")
-                .env_remove("TMUX_PANE")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawning a concurrent unclaim")
+                .env_remove("TMUX_PANE");
+            ChildGuard::spawn_with_output(&mut command).expect("spawning a concurrent unclaim")
         })
         .collect();
     children.extend((0..3).map(|_| {
-        env.raw_story(project.path())
+        let mut command = env.raw_story(project.path());
+        command
             .args(["claim", &id, "--no-comment", "--json"])
             .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawning a concurrent claim")
+            .env_remove("TMUX_PANE");
+        ChildGuard::spawn_with_output(&mut command).expect("spawning a concurrent claim")
     }));
 
-    for child in children {
-        let output = child.wait_with_output().unwrap();
+    for mut child in children {
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a claim/unclaim racer did not finish".to_string()
+        });
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         assert!(

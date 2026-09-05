@@ -26,9 +26,14 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
+
+/// A shell hook gets twice the operating-system process-start budget.
+const HOOK_DEADLINE: Duration =
+    Duration::from_secs(2 * storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs());
 
 /// The tracked hook, never a copy.
 fn hook() -> PathBuf {
@@ -73,15 +78,16 @@ fn ask_with_path(data_home: &std::path::Path, payload: &str, path: Option<&str>)
         let existing = std::env::var("PATH").unwrap_or_default();
         command.env("PATH", format!("{prefix}:{existing}"));
     }
-    let mut child = command.spawn().expect("spawning the hook");
+    let mut child = ChildGuard::spawn_with_output(&mut command).expect("spawning the hook");
     use std::io::Write;
     child
-        .stdin
-        .as_mut()
+        .stdin()
         .expect("stdin")
         .write_all(payload.as_bytes())
         .expect("writing the payload");
-    let out = child.wait_with_output().expect("running the hook");
+    let out = child.wait_with_output_within(HOOK_DEADLINE, || {
+        "the protect-install hook did not finish".to_string()
+    });
     assert!(
         out.status.success(),
         "the hook must always exit 0 — a nonzero exit is not how a decision is \

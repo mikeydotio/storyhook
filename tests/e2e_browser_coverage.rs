@@ -35,6 +35,13 @@
 //!    `the_fake_tmux_writer_guard_applies_only_to_dispatch`.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use storyhook_test_support::ChildGuard;
+
+/// A local utility process gets twice the operating-system process-start budget.
+const UTILITY_DEADLINE: Duration =
+    Duration::from_secs(2 * storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs());
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -602,19 +609,21 @@ fn grep_count(pattern: &str, input: &str) -> usize {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("grep")
+    let mut command = Command::new("grep");
+    command
         .args(["-c", pattern])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
+        .stdout(Stdio::piped());
+    let mut child = ChildGuard::spawn_with_output(&mut command)
         .expect("spawning the same grep scripts/run-e2e.sh uses");
     child
-        .stdin
-        .as_mut()
+        .stdin()
         .expect("grep stdin was piped")
         .write_all(input.as_bytes())
         .expect("writing synthetic Playwright list output to grep");
-    let output = child.wait_with_output().expect("waiting for grep");
+    let output = child.wait_with_output_within(UTILITY_DEADLINE, || {
+        "the grep coverage probe did not finish".to_string()
+    });
     assert!(
         output.status.success() || output.status.code() == Some(1),
         "grep failed unexpectedly: {}",
