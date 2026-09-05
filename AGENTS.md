@@ -189,8 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: finish verifier metadata and ownership recovery after the
-  speculative-run repairs (SH-555, SH-556).
+- Current: verify Codex Astra support plus verifier metadata and ownership
+  recovery after the speculative-run repairs (SH-561, SH-555, SH-556).
 - Next: cut and install the pending minor release once verification is stable
   (SH-553).
 - Later: separate the project-owned roadmap from generated agent instructions
