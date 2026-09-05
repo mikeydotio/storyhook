@@ -489,8 +489,8 @@ pub enum VerificationProgressView<'a> {
         progress: &'a GateProgress,
         /// Elapsed seconds since this story last entered `verifying`.
         elapsed_seconds: Option<u64>,
-        /// Elapsed seconds since the journal's last line, when known — the
-        /// staleness signal a wedged run shows up as.
+        /// Elapsed seconds since the journal file last changed, when known —
+        /// the staleness signal a wedged run shows up as.
         seconds_since_last_event: Option<u64>,
     },
 }
