@@ -189,9 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: surface Full Auto halt and drain outcomes as durable dashboard
-  alerts that remain until the operator acknowledges each run.
+- Current: verify authoritative active-versus-queued status chips for stories
+  handed to centralized verification.
 - Next: reconcile Full Auto lane accounting so `verifying` is an intentional
   handoff, not a stall or dead-window failure.
-- Later: expose queue health and verification diagnostics in engine/dashboard
-  surfaces.
+- Later: extend queue health and gate diagnostics beyond each story card.

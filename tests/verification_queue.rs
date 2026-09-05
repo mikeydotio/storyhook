@@ -1,5 +1,8 @@
 //! Store-backed contracts for the SH-521 centralized verification queue.
 
+use storyhook::api::http::TrustedHosts;
+use storyhook::api::rest;
+use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::verification::{
     ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
     VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
@@ -165,6 +168,74 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 }
 
 #[test]
+fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let running_id = submitted(&fixture, "active low", Priority::Low, PR_ONE);
+    let running = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let activity = VerificationActivity::new();
+    let acquired_at = fixture.env().now();
+    let _guard = activity.acquire(&running, acquired_at.clone());
+    let journal = journal_path(fixture.env(), &running);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        journal,
+        attempt_journal(
+            &running,
+            &format!(
+                "{{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":{at},\"total\":4}}\n\
+                 {{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}}\n",
+                at = serde_json::to_string(&acquired_at).unwrap()
+            ),
+        ),
+    )
+    .unwrap();
+    let queued_id = submitted(&fixture, "queued high", Priority::High, PR_TWO);
+    let idle_id = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "ordinary story".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    let path = format!("/api/repos/{}/data", running.project_slug);
+
+    let routed = rest::route_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &activity,
+        &Method::Get,
+        &path,
+        &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+        "",
+        &TrustedHosts::default(),
+    );
+    assert_eq!(routed.reply.status, 200);
+    let json: serde_json::Value = serde_json::from_str(routed.reply.body()).unwrap();
+    let story = |id: &str| {
+        json["stories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|view| view["story"]["id"] == id)
+            .unwrap()
+    };
+
+    let running = &story(&running_id)["verification"];
+    assert_eq!(running["status"], "running");
+    assert!(running["elapsed_seconds"].as_u64().unwrap() <= 1);
+    assert_eq!(running["current_step"]["label"], "rust-suite");
+    assert_eq!(running["tests"]["completed"], 1);
+    assert_eq!(running["tests"]["total"], 4);
+    assert_eq!(story(&queued_id)["verification"]["status"], "queued");
+    assert_eq!(story(&queued_id)["verification"]["position"], 1);
+    assert!(story(&idle_id).get("verification").is_none());
+}
+
+#[test]
 fn a_different_verifying_generation_cannot_inherit_active_ownership() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
@@ -192,9 +263,50 @@ fn a_different_verifying_generation_cannot_inherit_active_ownership() {
     ));
 }
 
+#[test]
+fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    submitted(&fixture, "fresh attempt", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let journal = journal_path(fixture.env(), &candidate);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(
+        journal,
+        format!(
+            "{{\"kind\":\"run\",\"generation\":{},\"at\":{at}}}\n\
+             {{\"kind\":\"item\",\"path\":\"release gate/old-suite\",\"status\":\"running\",\"at\":{at},\"total\":99}}\n",
+            candidate.verifying_generation.unwrap().get() - 1,
+            at = serde_json::to_string(FIXTURE_NOW).unwrap()
+        ),
+    )
+    .unwrap();
+    let (activity, _guard) = active_for(&candidate);
+
+    let statuses = status_snapshot(
+        &[candidate],
+        activity.snapshot().as_ref(),
+        fixture.env(),
+        FIXTURE_NOW,
+    );
+
+    assert!(matches!(
+        &statuses[0].2,
+        VerificationStatus::Running {
+            current_step: None,
+            tests: None,
+            ..
+        }
+    ));
+}
+
 struct ActivityObservingActuator {
     activity: VerificationActivity,
     observed_story: Mutex<Option<String>>,
+    outcome: Option<VerificationOutcome>,
 }
 
 impl VerificationActuator for ActivityObservingActuator {
@@ -211,40 +323,93 @@ impl VerificationActuator for ActivityObservingActuator {
         assert_eq!(active.story_id, candidate.story_id);
         assert_eq!(active.generation, candidate.verifying_generation);
         *self.observed_story.lock().unwrap() = Some(candidate.story_id.clone());
-        VerificationOutcome::InfrastructureFailure {
-            detail: "retry later".into(),
-        }
+        self.outcome
+            .clone()
+            .unwrap_or_else(|| panic!("simulated verifier panic"))
     }
 
     fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
-        unreachable!("an infrastructure failure does not notify the agent")
+        Ok(())
     }
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
-        unreachable!("an infrastructure failure does not reap the lane")
+        Ok(())
     }
 }
 
 #[test]
-fn tick_owns_only_the_blocking_actuator_call() {
-    let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
-    let id = submitted(&fixture, "owned while running", Priority::High, PR_ONE);
-    let activity = VerificationActivity::new();
-    let actuator = ActivityObservingActuator {
-        activity: activity.clone(),
-        observed_story: Mutex::new(None),
-    };
+fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
+    let cases = [
+        (
+            VerificationOutcome::Merged {
+                tree: "abc123".into(),
+                detail: "landed".into(),
+            },
+            TickResult::Completed,
+        ),
+        (
+            VerificationOutcome::Conflict {
+                detail: "conflict".into(),
+            },
+            TickResult::Returned,
+        ),
+        (
+            VerificationOutcome::InvalidSubmission {
+                detail: "invalid".into(),
+            },
+            TickResult::Returned,
+        ),
+        (
+            VerificationOutcome::TestsFailed {
+                tree: "abc123".into(),
+                log: "/tmp/red.log".into(),
+                detail: "red".into(),
+            },
+            TickResult::Returned,
+        ),
+        (
+            VerificationOutcome::InfrastructureFailure {
+                detail: "retry later".into(),
+            },
+            TickResult::RetryLater,
+        ),
+    ];
 
-    assert_eq!(
-        tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity).unwrap(),
-        TickResult::RetryLater
-    );
-    assert_eq!(
-        actuator.observed_story.lock().unwrap().as_deref(),
-        Some(id.as_str())
-    );
-    assert_eq!(activity.snapshot(), None);
+    for (outcome, expected) in cases {
+        let fixture = ServiceFixture::new();
+        fixture.link_origin("https://github.com/acme/widgets");
+        let id = submitted(&fixture, "owned while running", Priority::High, PR_ONE);
+        let activity = VerificationActivity::new();
+        let actuator = ActivityObservingActuator {
+            activity: activity.clone(),
+            observed_story: Mutex::new(None),
+            outcome: Some(outcome),
+        };
+
+        assert_eq!(
+            tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity).unwrap(),
+            expected
+        );
+        assert_eq!(
+            actuator.observed_story.lock().unwrap().as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(activity.snapshot(), None);
+
+        if expected == TickResult::RetryLater {
+            let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
+            assert!(matches!(
+                status_snapshot(
+                    &ordered,
+                    activity.snapshot().as_ref(),
+                    fixture.env(),
+                    FIXTURE_NOW
+                )[0]
+                .2,
+                VerificationStatus::Queued { position: 1, .. }
+            ));
+        }
+    }
 }
 
 #[test]
@@ -252,21 +417,22 @@ fn ownership_is_cleared_during_unwind() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     submitted(&fixture, "panicking attempt", Priority::High, PR_ONE);
-    let candidate = VerificationQueue::new(fixture.store())
-        .next()
-        .unwrap()
-        .unwrap();
     let activity = VerificationActivity::new();
+    let actuator = ActivityObservingActuator {
+        activity: activity.clone(),
+        observed_story: Mutex::new(None),
+        outcome: None,
+    };
 
-    let result = std::panic::catch_unwind({
-        let activity = activity.clone();
-        move || {
-            let _guard = activity.acquire(&candidate, FIXTURE_NOW.into());
-            panic!("simulated verifier panic");
-        }
-    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity);
+    }));
 
     assert!(result.is_err());
+    assert_eq!(
+        actuator.observed_story.lock().unwrap().as_deref(),
+        Some("SH-1")
+    );
     assert_eq!(activity.snapshot(), None);
 }
 
