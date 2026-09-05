@@ -191,7 +191,9 @@ project it is looking at.
 
 - Current: keep verifier worktree refs resolvable throughout speculative
   centralized-gate runs (SH-552).
-- Next: expose queue health and verification diagnostics in engine/dashboard
+- Next: make verification ownership durable and priority-preemptible so a
+  queued high-priority candidate is never hidden behind stale ownership.
+- Later: expose queue health and verification diagnostics in engine/dashboard
   surfaces.
 - Later: harden provider UI automation against approval-contract drift and
   remaining Full Auto recovery and cleanup ownership boundaries.
