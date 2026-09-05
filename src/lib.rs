@@ -11,6 +11,7 @@ pub mod domain;
 pub mod env;
 pub mod error;
 pub mod event_hooks;
+pub mod fault_injection_guard;
 #[cfg(feature = "github-pr")]
 pub mod github;
 pub mod help_topics;

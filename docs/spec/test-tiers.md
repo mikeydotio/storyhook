@@ -1087,10 +1087,23 @@ cost in each worktree.
   wedges. SH-524's per-case progress journal is the fact-based signal a
   no-progress watchdog would need, so it can stay inside SH-394 — SH-536.
 - **~30 non-`ChildGuard` child waits in `tests/**`** — SH-535.
-- **A production refusal of `STORYHOOK_FAULT` on a build that cannot honour it** — SH-534,
-  the SH-357 shape. Withdrawn from this story by its own author once the probe settled: it
-  buys the harness nothing the probe does not already give it, and its wiring is unobservable
-  in every `cargo test` build.
+
+### Production refuses fault instructions it cannot honor (SH-534)
+
+The harness probe above protects tests, but a human can still export a test-only
+instruction against an installed build. `fault_injection_guard` now refuses both
+feature-gated variables — `STORYHOOK_FAULT` and `STORYHOOK_TEST_PANIC` — before
+argument dispatch or any process mutation when the binary lacks `fault-injection`.
+Presence is the request, including an empty or non-UTF-8 value; silently deciding
+that a malformed instruction means nothing would preserve the same defect one
+layer down.
+
+The decision remains provable despite Cargo test always enabling the feature:
+`decide(requested, feature_enabled)` receives the capability as a plain value,
+while production supplies the existing exact sentinel, `env::is_test_build()`.
+A source wiring fence keeps the call first in `main`; manual build toggles prove
+the two compiled branches end to end. The refusal is a usage error (exit 2) and
+names both remedies: unset the variable or build with the feature.
 
 ## The orphan bracket: refuse before the run, reap after it (SH-412)
 
