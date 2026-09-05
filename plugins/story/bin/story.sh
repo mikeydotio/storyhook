@@ -272,9 +272,9 @@ validate_agent_speed() {
 # which may be "" to mean "provider default". "full-auto" is not a MODE
 # here: it reuses "auto"'s composition exactly, the same sharing
 # DEFAULT_AUTO_LAUNCH_TPL and FULL_AUTO_LAUNCH_TPL already had before
-# SH-517. Called with all three empty, this reproduces the literal strings
-# DEFAULT_LAUNCH_TPL/DEFAULT_AUTO_LAUNCH_TPL held before SH-517, byte for
-# byte -- an unselected dispatch's argv must not change.
+# SH-517. Called with all three empty, this preserves each provider's model,
+# effort, and speed defaults. Claude additionally carries the helper-owned
+# plugin binding required by SH-564; Codex's unselected argv remains unchanged.
 compose_launch_tpl() {
   case "$AGENT" in
     claude) compose_claude_launch_tpl "$@" ;;
