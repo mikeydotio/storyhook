@@ -421,3 +421,18 @@ fn the_archive_topic_is_right_about_lists_default() {
     assert!(!list_ids(&project, &[]).contains(&"SH-3".to_string()));
     assert!(list_ids(&project, &["--include-archived"]).contains(&"SH-3".to_string()));
 }
+
+#[test]
+fn the_engine_topic_documents_immutable_launch_configuration() {
+    let topic = get_help_topic("engine").expect("the engine topic exists");
+    for flag in ["--model", "--effort", "--speed"] {
+        assert!(
+            topic.contains(flag),
+            "the engine topic must document {flag}: {topic}"
+        );
+    }
+    assert!(
+        topic.contains("every lane") && topic.contains("status"),
+        "the engine topic must explain reuse and visibility: {topic}"
+    );
+}
