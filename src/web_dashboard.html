@@ -710,6 +710,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   font-variant-numeric: tabular-nums; line-height: 1.35;
 }
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .chip {
@@ -1556,6 +1557,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="repo-workspace" id="repo-workspace">
   <div class="workspace-content" id="workspace-content">
   <section class="engine-banner-region" id="engine-banner-region" aria-label="Full Auto alerts" aria-live="polite" hidden></section>
+  <section class="engine-banner-region" id="verification-banner-region" aria-label="Verification alerts" aria-live="assertive" hidden></section>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
   <main class="board" id="board-view" aria-describedby="board-kbd-hint"></main>
@@ -2421,6 +2423,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // from launch claims because historical runs remain actionable while a
     // newer run is live.
     engineAcknowledgements: Object.create(null),
+    verificationAcknowledgement: null,
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -3441,7 +3444,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * open. Its clipped, zero-width closed track still gives both children an
    * intrinsic height, so counting them then would reserve notice space for a
    * panel the reader cannot see. */
-  var NOTICE_BAND_TOP = [".topbar", "#filter-bar", "#engine-banner-region", ".drawer-header"];
+  var NOTICE_BAND_TOP = [
+    ".topbar", "#filter-bar", "#engine-banner-region", "#verification-banner-region", ".drawer-header"
+  ];
   var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
 
   /** A detail-panel band contributes only while that peer is visible. Its
@@ -4745,6 +4750,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     measureNoticeBands();
   }
 
+  /** Durable machine-wide verifier halt. It comes from `/data` so the banner
+   * and card statuses are one consistent store snapshot. */
+  function renderVerificationBanner() {
+    var mount = $("verification-banner-region");
+    var incident = state.data && state.data.verification_incident;
+    var visible = !!(incident && incident.halted);
+    mount.hidden = !visible;
+    if (!visible) {
+      if (mount.firstChild) clear(mount);
+      return;
+    }
+    var pending = state.verificationAcknowledgement === incident.incident_id;
+    var fingerprint = JSON.stringify([incident, pending]);
+    if (mount.dataset.fingerprint === fingerprint) return;
+    clear(mount);
+    mount.appendChild(el("article", { class: "engine-banner verification-halted-banner" }, [
+      el("div", { class: "engine-banner-head" }, [
+        el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
+        el("button", {
+          type: "button", class: "btn btn-warn", disabled: pending,
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id); }
+        }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
+      ]),
+      el("div", { class: "engine-banner-meta" }, [
+        el("span", {}, ["Story ", el("code", {}, [incident.story_id])]),
+        el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
+        el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
+      ]),
+      el("div", { class: "engine-banner-quarantines" }, [incident.detail])
+    ]));
+    mount.dataset.fingerprint = fingerprint;
+    measureNoticeBands();
+  }
+
+  function acknowledgeVerificationIncident(incidentId) {
+    if (!state.repoId || state.verificationAcknowledgement) return;
+    state.verificationAcknowledgement = incidentId;
+    renderVerificationBanner();
+    api("POST", apiBase() + "/verification/ack", { incident_id: incidentId }).then(function() {
+      state.verificationAcknowledgement = null;
+      fetchData();
+    }).catch(function(err) {
+      state.verificationAcknowledgement = null;
+      toastError(err);
+      fetchData();
+    });
+  }
+
   function currentEngineStartPending() {
     return !!state.repoId && !!state.engineStarts[state.repoId];
   }
@@ -4953,7 +5006,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         queued.push(formatVerificationDuration(liveVerificationSeconds(verification.wait_seconds)));
       }
       queued.push("position " + verification.position);
+      if (verification.blocked_by) {
+        queued.push("verifier " + (verification.blocked_by.halted ? "halted" : "retrying") +
+          " at " + verification.blocked_by.story_id);
+      }
       return queued.join(" · ");
+    }
+    if (verification.status === "stalled") {
+      return (verification.halted ? "Verification halted" : "Verification retrying") +
+        " · attempt " + verification.attempts + " · " + verification.detail;
     }
     if (verification.status !== "running") return "";
     if (!verification.current_step && !verification.tests) return "Verifying · starting…";
@@ -6669,6 +6730,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderView();
     renderEngineControl();
     renderEngineBanners();
+    renderVerificationBanner();
     updateSubtitle();
     updateDraftsButton();
     syncCreateAvailability();

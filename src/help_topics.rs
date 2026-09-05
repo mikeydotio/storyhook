@@ -1011,7 +1011,8 @@ A hook's environment is the daemon's, not yours:
 Full Auto engine events:
   A Full Auto run (`story engine start`) raises four more events through this
   same mechanism: on_engine_run_started, on_engine_run_halted,
-  on_engine_run_drained, and on_engine_lane_quarantined. storyhook ships no
+  on_engine_run_drained, on_engine_lane_quarantined, and
+  on_verification_halted. storyhook ships no
   notification stack of its own — bind whichever of these you care about to a
   command (ntfy, terminal-notifier, a curl to Slack) the same way you would
   on_create or on_close. See `docs/spec/full-auto-engine.md`'s
