@@ -3,6 +3,7 @@
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
+use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
     ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
     VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
@@ -309,8 +310,29 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 
 struct ActivityObservingActuator {
     activity: VerificationActivity,
+    env: Environment,
     observed_story: Mutex<Option<String>>,
     outcome: Option<VerificationOutcome>,
+}
+
+impl ActivityObservingActuator {
+    fn assert_owned(&self, candidate: &VerificationCandidate) {
+        let active = self
+            .activity
+            .active()
+            .expect("ownership must be visible while verification is active");
+        assert_eq!(active.project, candidate.project);
+        assert_eq!(active.story_id, candidate.story_id);
+        assert_eq!(active.generation, candidate.verifying_generation);
+        let lifecycle_entries = lifecycle::read_inflight(&self.env);
+        assert_eq!(lifecycle_entries.len(), 1);
+        assert_eq!(lifecycle_entries[0].command, "verify");
+        assert!(
+            lifecycle_entries[0]
+                .request_id
+                .contains(&candidate.story_id)
+        );
+    }
 }
 
 impl VerificationActuator for ActivityObservingActuator {
@@ -319,24 +341,28 @@ impl VerificationActuator for ActivityObservingActuator {
         candidate: &VerificationCandidate,
         _pull_request: &PrLink,
     ) -> VerificationOutcome {
-        let active = self
-            .activity
-            .active()
-            .expect("ownership must be visible while the actuator runs");
-        assert_eq!(active.project, candidate.project);
-        assert_eq!(active.story_id, candidate.story_id);
-        assert_eq!(active.generation, candidate.verifying_generation);
+        self.assert_owned(candidate);
         *self.observed_story.lock().unwrap() = Some(candidate.story_id.clone());
         self.outcome
             .clone()
             .unwrap_or_else(|| panic!("simulated verifier panic"))
     }
 
-    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        self.assert_owned(candidate);
         Ok(())
     }
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        assert_eq!(
+            self.activity.active(),
+            None,
+            "process-local ownership must end before post-merge cleanup"
+        );
+        assert!(
+            lifecycle::read_inflight(&self.env).is_empty(),
+            "shutdown ownership must end before post-merge cleanup"
+        );
         Ok(())
     }
 }
@@ -384,14 +410,24 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
         fixture.link_origin("https://github.com/acme/widgets");
         let id = submitted(&fixture, "owned while running", Priority::High, PR_ONE);
         let activity = VerificationActivity::new();
+        std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(fixture.env().clone());
         let actuator = ActivityObservingActuator {
             activity: activity.clone(),
+            env: fixture.env().clone(),
             observed_story: Mutex::new(None),
             outcome: Some(outcome),
         };
 
         assert_eq!(
-            tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity).unwrap(),
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+            )
+            .unwrap(),
             expected
         );
         assert_eq!(
@@ -399,6 +435,7 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
             Some(id.as_str())
         );
         assert_eq!(activity.active(), None);
+        assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 
         if expected == TickResult::RetryLater {
             let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
@@ -422,14 +459,23 @@ fn ownership_is_cleared_during_unwind() {
     fixture.link_origin("https://github.com/acme/widgets");
     submitted(&fixture, "panicking attempt", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
     let actuator = ActivityObservingActuator {
         activity: activity.clone(),
+        env: fixture.env().clone(),
         observed_story: Mutex::new(None),
         outcome: None,
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = tick_with_activity(fixture.store(), fixture.env(), &actuator, &activity);
+        let _ = tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+        );
     }));
 
     assert!(result.is_err());
@@ -438,6 +484,45 @@ fn ownership_is_cleared_during_unwind() {
         Some("SH-1")
     );
     assert_eq!(activity.active(), None);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
+    use storyhook::store::fault::{FaultAction, FaultPoint, arm};
+
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    submitted(&fixture, "failing outcome write", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = ActivityObservingActuator {
+        activity: activity.clone(),
+        env: fixture.env().clone(),
+        observed_story: Mutex::new(None),
+        outcome: Some(VerificationOutcome::InfrastructureFailure {
+            detail: "retry later".into(),
+        }),
+    };
+    let _fault = arm(
+        FaultPoint::BeforeCommit,
+        FaultAction::Fail("outcome recording interrupted".into()),
+    );
+
+    let error = tick_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &actuator,
+        &activity,
+        &inflight,
+    )
+    .expect_err("the injected outcome write must fail");
+
+    assert!(error.to_string().contains("outcome recording interrupted"));
+    assert_eq!(activity.active(), None);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
 /// A story's own comment-driven `updated_at` moves on every publish of the
