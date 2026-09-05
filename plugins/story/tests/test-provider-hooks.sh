@@ -44,8 +44,12 @@ assert_eq "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "S
   "SessionStart: valid context envelope"
 assert_contains "$(cat "$STORY_HOOK_LOG")" "--deadline 3 session-start" \
   "SessionStart: bounded CLI invocation"
-assert_eq "$(cat "$STORY_HOOK_STDIN")" "$session_payload" \
-  "SessionStart: provider payload forwarded intact"
+assert_eq "$(jq -r .session_id "$STORY_HOOK_STDIN")" "codex-session-1" \
+  "SessionStart: provider session identity forwarded"
+assert_eq "$(jq -r .cwd "$STORY_HOOK_STDIN")" "$repo" \
+  "SessionStart: provider cwd forwarded"
+assert_eq "$(jq -r .storyhook_plugin_root "$STORY_HOOK_STDIN")" "$PLUGIN_ROOT" \
+  "SessionStart: exact executing plugin root added to the payload"
 
 : >"$STORY_HOOK_LOG"
 post_payload='{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git pull --ff-only"}}'
