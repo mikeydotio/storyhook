@@ -699,9 +699,33 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         filters: ReadyQueueFilters<'_>,
         comment: Option<&str>,
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
+        self.claim_next_filtered_if(filters, comment, |_| Ok(true), |_, _, _| Ok(()))
+    }
+
+    /// Claims the next filtered story only while `eligible` remains true,
+    /// then runs `after_claim`, all in the transaction that performs selection
+    /// and the state transition.
+    ///
+    /// Engine control uses this to linearize its run-state gate with the
+    /// claim. A preceding read cannot authorize a later write: stop may commit
+    /// between them and make the claim invalid before it lands (SH-549).
+    pub(crate) fn claim_next_filtered_if(
+        &self,
+        filters: ReadyQueueFilters<'_>,
+        comment: Option<&str>,
+        eligible: impl FnOnce(&S::WriteTx<'_>) -> Result<bool, StoreError>,
+        after_claim: impl FnOnce(
+            &mut S::WriteTx<'_>,
+            &StorySnapshot,
+            &StorySnapshot,
+        ) -> Result<(), StoreError>,
+    ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         let claimed = self.ctx.store().write(|tx| {
+            if !eligible(&*tx)? {
+                return Ok(None);
+            }
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let query = super::QueryService::new(&*tx, project, &now);
@@ -726,7 +750,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &events,
                 self.ctx.provenance(),
             )?;
-            Ok(Some((row.snapshot, snapshot)))
+            let before = row.snapshot;
+            after_claim(tx, &before, &snapshot)?;
+            Ok(Some((before, snapshot)))
         })?;
 
         let Some((before, snapshot)) = claimed else {

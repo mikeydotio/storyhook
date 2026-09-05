@@ -230,8 +230,9 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
     headers: MUTATION_HEADERS,
     data: { run: liveRun!.id, now: true },
   });
-  expect(stopResponse.status()).toBe(200);
-  const stopBody = (await stopResponse.json()) as { result: string; run: EngineRun };
+  const stopText = await stopResponse.text();
+  expect(stopResponse.status(), stopText).toBe(200);
+  const stopBody = JSON.parse(stopText) as { result: string; run: EngineRun };
   expect(stopBody.result).toBe("ok");
   expect(stopBody.run.state).toBe("finished");
   expect(stopBody.run.stop_reason).toBe("operator-stopped-now");

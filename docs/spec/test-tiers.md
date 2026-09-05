@@ -187,11 +187,40 @@ its provider-tagged pane; infrastructure leaves it `verifying` for bounded
 retry. The public every-open-PR mode of `merge-watch.sh` is retired; only its
 private real-Git speculative-run primitive remains.
 
+**Speculative Git state stays private without publishing an unreadable shared
+worktree ref (SH-552, extended by SH-559).** The persistent verifier's shared
+administration remains detached at the ordinary base commit. For the gate only,
+`merge-watch.sh` atomically points the verifier's `.git` file at lease-local
+per-worktree administration whose `commondir` still reaches shared receipts;
+its synthetic `HEAD`, index, and objects therefore remain private together.
+The gate process receives the private objects as an alternate, while ordinary
+sibling Git processes continue to resolve every shared worktree ref without
+special environment.
+
+SH-559 held that gate open in a disposable real-Git repository and recorded
+this extent:
+
+| Concurrent operation | Context | Result |
+|---|---|---|
+| `fetch` | main worktree | succeeds |
+| explicit `pull --ff-only` | second linked worktree | succeeds |
+| `gc`, connectivity `fsck`, `repack` | shared repository | succeed |
+| `worktree prune` | second linked worktree | succeeds |
+| `bisect start` / `bisect reset` | second linked worktree | succeed |
+
+Normal completion, command failure, HUP, INT, and TERM restore the verifier and
+remove the lease. An untrappable termination can strand verifier-private state,
+but cannot put its private object id in shared worktree metadata and therefore
+cannot recreate the repository-wide fetch outage. SH-555 owns detection and
+recreation of legacy or stranded verifier administration; it is recovery, not
+a second speculative-object design.
+
 `tests/merge_gate.rs` still drives the correctness boundary against real Git,
 including exact-tree equality, conflicts, receipts, persistent-worktree
-restoration, and recovery after a merge/restart. `tests/verification_queue.rs`
-drives durable selection and outcome handling. Live GitHub orchestration is
-not replaced by a behavioral fake.
+restoration, recovery after a merge/restart, and the concurrent-operation
+matrix above. `tests/verification_queue.rs` drives durable selection and
+outcome handling. Live GitHub orchestration is not replaced by a behavioral
+fake.
 
 ## The push gate narrowed to `main`/`master`, so work ships before it is tested (SH-429)
 
