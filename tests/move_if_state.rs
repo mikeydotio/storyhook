@@ -7,7 +7,7 @@
 //! `tests/fix_cycle_5.rs`.
 
 use assert_cmd::Command;
-use storyhook_test_support::{Project, TestEnv};
+use storyhook_test_support::{ChildGuard, Project, STORY_COMMAND_DEADLINE, TestEnv};
 
 /// Every `story` invocation in this file runs in the shared test
 /// environment's private HOME/XDG directories, so nothing here can reach the
@@ -296,8 +296,6 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     // (src/lock.rs), so a future reordering of the if_state comparison
     // relative to `lock::with_project_lock` (a TOCTOU regression) would
     // fail this test even though every sequential test above stays green.
-    use std::process::Stdio;
-
     let (dir, id) = init_and_create();
 
     let show = story(dir.path())
@@ -318,26 +316,26 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     // just inferring concurrency safety from back-to-back sequential calls.
     let children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            env.raw_story(dir.path())
-                .args([
-                    "move",
-                    &id,
-                    "in-progress",
-                    "--if-state",
-                    &current_state,
-                    "--json",
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+            let mut command = env.raw_story(dir.path());
+            command.args([
+                "move",
+                &id,
+                "in-progress",
+                "--if-state",
+                &current_state,
+                "--json",
+            ]);
+            ChildGuard::spawn_with_output(&mut command)
                 .expect("failed to spawn concurrent `story move`")
         })
         .collect();
 
     let mut successes = 0usize;
     let mut conflicts = 0usize;
-    for child in children {
-        let output = child.wait_with_output().unwrap();
+    for mut child in children {
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "a concurrent `story move` did not finish".to_string()
+        });
         assert!(
             output.stderr.is_empty(),
             "no concurrent attempt should print to stderr: {:?}",

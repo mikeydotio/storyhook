@@ -1,5 +1,5 @@
 import { test, expect } from "./support";
-import { activateBehindOverlay, openProject, requiredEnv, seedToken } from "./support";
+import { openProject, requiredEnv, seedToken } from "./support";
 
 /**
  * SH-290 — the drawer belongs to the repo screen, and to no other.
@@ -9,10 +9,9 @@ import { activateBehindOverlay, openProject, requiredEnv, seedToken } from "./su
  * statuses editor — a sub-view of Settings that has nothing to do with the
  * story it was showing.
  *
- * Reaching that state took two facts about this file, one of which SH-300
- * has since closed:
+ * Reaching that state depended on a deep-link race SH-300 has since closed:
  *
- *  1. **A drawer used to be able to open while the user was on Settings.**
+ * **A drawer used to be able to open while the user was on Settings.**
  *     `consumeDeepLinkStory()` ran off the first `/data` reply for a repo and
  *     was gated on `state.repoId` alone, which `goSettings()` does not
  *     change — so a `?project=&story=` link whose `/data` was still in
@@ -24,26 +23,12 @@ import { activateBehindOverlay, openProject, requiredEnv, seedToken } from "./su
  *     `deep-link.spec.ts`, inverted to assert the refusal instead. See that
  *     file's own header and SH-300's `DECISION.md` for the fix and why it
  *     lives where it does.
- *  2. **The Statuses button was unreachable by hand in that state, and was
- *     not always.** `.backdrop` is `position: fixed; inset: 0`, so a pointer
- *     click lands on it and closes the drawer. Until SH-299 nothing marked
- *     the background `inert`, so the same button kept its place in the tab
- *     order and Enter activated it — the dashboard was modal for one input
- *     device and not the other. SH-299 closed that gap too, correctly; this
- *     fact is preserved here only because it still governs the two tests
- *     below, which drive Home/Settings the same synthetic way.
- *
  * What remains provable here — and still worth its own spec, distinct from
  * `project-selector.spec.ts`'s `selectRepo()` pin — is `renderScreen()`'s
  * derived dismissal rule itself: leaving the repo screen for Home or
  * Settings by the ordinary board route closes an open drawer.
- *
- * Synthetic activation (`activateBehindOverlay()`) is still required for
- * both: with the drawer open, `.backdrop` intercepts a real click on either
- * topbar button, and the click that does land is the backdrop's own
- * dismissal, which closes the drawer without ever running the navigation
- * under test. Since SH-299 the keyboard fares no better, by design — see
- * that helper's own comment.
+ * SH-554 makes the detail panel a non-modal peer, so these now use the real
+ * topbar clicks a person uses; that interaction is part of the contract.
  */
 
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
@@ -83,7 +68,7 @@ for (const route of [
   }) => {
     await openBoardDrawer(page);
 
-    await activateBehindOverlay(page.locator(route.button));
+    await page.locator(route.button).click();
 
     await expect(page.locator(route.view)).toBeVisible();
     await expect(page.locator("#drawer")).not.toHaveClass(/open/);
