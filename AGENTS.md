@@ -189,9 +189,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-584's dispatch/Astra fixes and verifier preparation,
-  restoration, and remediation-delivery repairs through the centralized verifier.
-- Next: SH-585 independently owns the installed-path guard correction.
+- Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
+- Current: verify SH-585's narrow installed-launcher reader exception through
+  the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
