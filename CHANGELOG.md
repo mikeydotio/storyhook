@@ -3,6 +3,35 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.4.2] - 2026-09-06
+
+### Added
+- configure Full Auto launches (SH-566) (d093d4d2f)
+- persist launch configuration (SH-566) (55605278b)
+
+### Fixed
+- stabilize mirror pane cwd (SH-582) (764af159a)
+- own a stable working directory (SH-582) (73ef69cb8)
+- model composite tmux liveness probes (29d427bb4)
+- refresh status goldens (SH-566) (93769252a)
+
+### Changed
+- Merge pull request #666 from mikeydotio/fix/SH-582-daemon-cwd (3f36cc0e7)
+- Merge pull request #652 from mikeydotio/worktree-SH-566 (f199c98c2)
+- Merge pull request #665 from mikeydotio/release/v2.4.1 (60f9fd7d2)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-566 (98b533be4)
+- reconcile current main (484e76f98)
+- reconcile SH-566 with current main (45e098365)
+
+### Documentation
+- record plugin cwd postmortem (SH-582) (8025c69ce)
+- hand off SH-582 verification (42648983f)
+- record status golden incident (SH-566) (1731fcfba)
+- record verifier repair (SH-566) (c3f49f038)
+- describe configured Full Auto runs (SH-566) (78eb9ace7)
+
+_[manual]_
+
 ## [v2.4.1] - 2026-09-06
 
 ### Added
