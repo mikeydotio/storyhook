@@ -56,12 +56,25 @@ if [ "$*" = "plugin marketplace remove storyhook --json" ]; then
 fi
 
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add" ]; then
+  printf '%s\n' "$4" > "$HOME/codex-marketplace-source"
   printf '{"marketplaceName":"storyhook","installedRoot":"%s","alreadyAdded":false}\n' "$4"
   exit 0
 fi
 
 if [ "$*" = "plugin add story@storyhook --json" ]; then
-  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"current","installedPath":"%s/.codex/plugins/cache/storyhook/story/current","authPolicy":"ON_INSTALL"}\n' "$HOME"
+  IFS= read -r source < "$HOME/codex-marketplace-source"
+  version=$(basename "$source")
+  installed="$HOME/.codex/plugins/cache/storyhook/story/$version"
+  mkdir -p "$installed"
+  cp -Rp "$source/plugins/story/." "$installed/"
+  printf '%s\n' "$version" > "$HOME/codex-installed-version"
+  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installedPath":"%s","authPolicy":"ON_INSTALL"}\n' "$version" "$installed"
+  exit 0
+fi
+
+if [ "$*" = "plugin list --json" ]; then
+  IFS= read -r version < "$HOME/codex-installed-version"
+  printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":true}]}\n' "$version"
   exit 0
 fi
 

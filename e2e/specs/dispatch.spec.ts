@@ -1,14 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { basename, join, resolve } from "node:path";
 import { test, expect } from "./support";
 import { dispatchStory, openProject, requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
- * and a real `plugins/story/bin/story.sh`, with only tmux doubled
+ * and a real `plugins/story/bin/story.sh`, with tmux and the provider doubled
  * (`scripts/run-e2e.sh` puts the plugin test harness's fake tmux ahead of
  * the real one on the daemon's `PATH`) — the worktree, the branch, the CAS
- * claim and the readiness/prompt handoff all run for real. This is the one
+ * claim and the readiness/prompt handoff all run for real. Codex's emitted
+ * shell launch executes against an argv recorder at the terminal boundary.
+ * This is the one
  * place in the suite that proves the daemon's dispatch endpoint actually
  * reaches production code, not just its own HTTP contract (that is
  * `tests/dispatch_endpoint.rs`'s job, against a stub script).
@@ -159,10 +162,10 @@ test("Dispatch opens with defaults and does not remember cancelled edits", async
   // no forced default model).
   await page.locator("#dispatch-agent").selectOption("codex");
   await expect(page.locator("#dispatch-model option")).toHaveText([
-    "Default", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
+    "Default", "GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
   ]);
   await expect(page.locator("#dispatch-effort option")).toHaveText([
-    "Default", "none", "low", "medium", "high", "xhigh", "max",
+    "Default", "none", "low", "medium", "high", "xhigh", "max", "ultra",
   ]);
   await expect(page.locator("#dispatch-speed option")).toHaveText(["Default", "Fast"]);
 
@@ -335,7 +338,7 @@ test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected
   });
 });
 
-test("a saved token is not asked for again on a second dispatch", async ({
+test("a saved token dispatches Codex Astra from the real catalog to the executed provider (SH-584)", async ({
   page,
 }) => {
   test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
@@ -354,7 +357,16 @@ test("a saved token is not asked for again on a second dispatch", async ({
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   const dispatchButton = page.locator("#dispatch-btn");
-  await dispatchStory(page);
+  const optionsResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/dispatch-options") && response.ok(),
+  );
+  const dispatchedRequest = page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/dispatch"),
+  );
+  await dispatchStory(page, { agent: "codex", model: "gpt-6-astra" });
+  const dispatchedPath = new URL((await dispatchedRequest).url()).pathname.split("/");
+  const catalog = await (await optionsResponse).json();
+  expect(catalog.codex.models).toContainEqual({ id: "gpt-6-astra", label: "GPT-6 Astra" });
 
   // No modal this time -- the saved token goes straight onto the request.
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
@@ -362,4 +374,24 @@ test("a saved token is not asked for again on a second dispatch", async ({
 
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  const state = requiredEnv("FAKE_TMUX_STATE");
+  const provider = JSON.parse(readFileSync(join(state, "provider-argv.json"), "utf8"));
+  expect(provider.argv.filter((argument: string) => argument === "-m")).toHaveLength(1);
+  expect(provider.argv[provider.argv.indexOf("-m") + 1]).toBe("gpt-6-astra");
+  expect(provider.cwd).toContain(join(ALPHA_CHECKOUT, ".codex/worktrees"));
+  expect(existsSync(join(provider.cwd, ".git"))).toBe(true);
+  const claimed = JSON.parse(execFileSync(resolve("../target/debug/story"),
+    ["show", basename(provider.cwd), "--json"],
+    { cwd: ALPHA_CHECKOUT, encoding: "utf8", timeout: 15_000 },
+  )).story.story;
+  expect(claimed.state).toBe("in-progress");
+  const session = readFileSync(join(state, "session_name"), "utf8").trim();
+  const window = readFileSync(join(state, "window_name"), "utf8").trim();
+  expect(session).toBe(decodeURIComponent(dispatchedPath[3]));
+  expect(window).toBe(basename(provider.cwd));
+  expect(claimed.comments.map((comment: { text: string }) => comment.text)).toContain(
+    `Dispatching to tmux window ${session}:${window}.`,
+  );
+  expect(readFileSync(join(state, "prompt_submits"), "utf8").trim()).toBe("1");
+  expect(readFileSync(join(state, "submitted"), "utf8")).toContain(`story show ${basename(provider.cwd)}`);
 });

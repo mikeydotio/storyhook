@@ -440,7 +440,7 @@ fn codex_installed_plugin_root_from(home: &Path, raw: &[u8]) -> Option<PathBuf> 
             && plugin.get("marketplaceName").and_then(|v| v.as_str()) == Some(MARKETPLACE_NAME)
             && plugin.get("name").and_then(|v| v.as_str()) == Some("story")
             && plugin.get("installed").and_then(|v| v.as_bool()) == Some(true)
-            && plugin.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+            && plugin.get("enabled").and_then(|v| v.as_bool()) == Some(true)
     })?;
     let version = plugin.get("version")?.as_str()?;
     if version.is_empty()
@@ -818,11 +818,81 @@ fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError>
     Ok(message)
 }
 
+/// Provider success describes its operation, not the files dispatch will
+/// execute. Verify that exact enabled installation before publishing success
+/// or changing the launcher; only Codex may refresh its cache.
+fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
+    let action = "verify the enabled Storyhook Codex plugin";
+    let out = run_provider(PluginTarget::Codex, &["plugin", "list", "--json"])
+        .map_err(|error| AppError::Storage(format!("failed to {action}: {error}")))?;
+    codex_json(&out, action)?;
+    let home = home_dir()?;
+    let enabled = codex_installed_plugin_root_from(&home, &out.stdout).ok_or_else(|| {
+        AppError::Storage(format!(
+            "failed to {action}: Codex reported installation at `{installed_path}`, but no enabled plugin with an existing manifest could be resolved"
+        ))
+    })?;
+    let expected = home
+        .join(".codex/plugins/cache/storyhook/story")
+        .join(env!("CARGO_PKG_VERSION"));
+    if enabled != expected || Path::new(installed_path) != enabled {
+        return Err(AppError::Storage(format!(
+            "failed to {action}: expected release at `{}`, but Codex returned `{installed_path}` and enabled `{}`",
+            expected.display(),
+            enabled.display()
+        )));
+    }
+    let fail = |detail: String| {
+        AppError::Storage(format!(
+            "failed to {action} at `{}`: {detail}; the installed payload must match this binary's embedded release {}",
+            enabled.display(),
+            env!("CARGO_PKG_VERSION")
+        ))
+    };
+    let files: Vec<_> = EMBEDDED_MARKETPLACE
+        .iter()
+        .filter_map(|file| {
+            file.relative_path
+                .strip_prefix("plugins/story/")
+                .map(|relative| (relative, file))
+        })
+        .collect();
+    let expected_files = files
+        .iter()
+        .map(|(relative, _)| PathBuf::from(relative))
+        .collect();
+    if embedded_file_set(&enabled).as_ref() != Some(&expected_files) {
+        return Err(fail(
+            "missing, unexpected, or non-regular plugin files".to_string(),
+        ));
+    }
+    for (relative, file) in files {
+        let path = enabled.join(relative);
+        let bytes = fs::read(&path)
+            .map_err(|error| fail(format!("could not read `{relative}`: {error}")))?;
+        if bytes != file.bytes {
+            return Err(fail(format!("stale or changed plugin file `{relative}`")));
+        }
+        #[cfg(unix)]
+        {
+            let metadata = fs::metadata(&path)
+                .map_err(|error| fail(format!("could not inspect `{relative}`: {error}")))?;
+            if (metadata.permissions().mode() & 0o111 != 0) != file.executable {
+                return Err(fail(format!(
+                    "incorrect executable permissions for `{relative}`"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
     remove_codex_plugin()?;
     remove_codex_marketplace()?;
     add_codex_marketplace(source)?;
     let installed_path = add_codex_plugin()?;
+    verify_codex_install(&installed_path)?;
     let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
     let mut message = format!(
         "registered the `{MARKETPLACE_NAME}` marketplace (source: {source})\n\

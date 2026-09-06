@@ -107,3 +107,13 @@ established `TestEnv::raw_story` seam, retaining the fixture provider PATH.
 A new regression asserts the actual command environment: every shared
 containment value, isolated HOME/data directory, provider PATH and cwd.
 Keep the detector intact and validate the real Claude/Codex reinstall tests.
+
+## Reconciliation with SH-584
+
+Merge origin/main at `86605a4fd` (PR #668) without rewriting SH-585 history.
+Preserve main's installer freshness checks, real provider payload fixtures,
+dispatch and verifier fixes. Retain SH-585's shared reinstall command builder
+and environment regression; both satisfy main's containment intent.
+Resolve AGENTS.md and its source template identically: SH-584 merged, SH-585
+current. The handoff retains links to SH-584 evidence and recovery artifacts
+while directing remaining work through PR #669 and centralized verification.

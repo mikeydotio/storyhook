@@ -1,44 +1,45 @@
 # SH-585 Handoff
 
-## Root cause
+## Current work
 
-The installed-artifact guard classified shell calls by six reader executable
-names, so the exact stable Codex launcher with `context` was denied before
-execution. SH-584 transferred guard ownership and reproduction evidence here.
+- PR #669 on `worktree-SH-585`: exact installer-produced Codex launcher plus
+  five narrow reader argv contracts; no general Bash or compound exemption.
+- Real launcher/helper/CLI tests preserve story data, global events and
+  installed artifact bytes. Unsupported shell safety has an honest diagnosis.
+- Verifier repairs synchronize the AGENTS.md source template and use
+  `TestEnv::raw_story` for the older reinstall fixture. Actual environment
+  assertions cover containment, isolated paths, provider PATH and cwd.
+- RCA: `docs/rca/SH-585-installed-launcher-readers.md`.
 
-## Delivered
+## Reconciled main
 
-- Exact installer-produced launcher identity plus five narrow reader argv
-  contracts; no wrapper, compound-command or general Bash exemption.
-- Unknown shell safety is distinguished from structured artifact edits.
-- Installer-backed classification and real helper/domain immutability tests.
-- Verifier-return repair synchronizes the generated AGENTS.md roadmap with
-  `src/service/templates.rs`; its byte-equality regression reproduced RED.
-- Second verifier-return repair uses `TestEnv::raw_story` in the older plugin
-  reinstall fixture; direct environment assertions pin containment and PATH.
+SH-584 merged as PR #668. Its changes are preserved:
 
-## RCA
+- Daemon dispatch and engine monitoring exclude ambient tmux identity while
+  interactive and explicit cleanup-lease addressing remain intact.
+- Installer verifies the enabled plugin's complete release payload; provider
+  fixtures now materialize that payload. Capabilities track helper content.
+- Verifier preparation/restoration preserve tracked edits and speculative
+  refs; remediation retains tmux diagnostics and provider-specific keys.
+- Context: `docs/rca/web-dispatch-tmux-and-stale-catalog.md` and
+  `docs/rca/verifier-remediation-context.md`. SH-583 was absorbed into SH-584.
+- SH-584 preserved a dirty verifier at
+  `.git/storyhook/verification-recovery-SH-584-20260906`; do not remove it.
 
-- Report: `docs/rca/SH-585-installed-launcher-readers.md`.
-- Automated RED on unchanged hook; independent read-only challenge.
-- Classification: checking, missing; surgical.
+## Reconciliation validation
 
-## Focused verification
-
-- Run plugin_install, protect_install_hook, hook_budgets and hook_bounds.
-- Run targeted Clippy with warnings denied, rustfmt, Bash/Python syntax and
-  diff checks. Exact final results are recorded on SH-585 and its PR.
-- Return repair: scope_rubric, priority_rubric, service_system, new_command,
-  and engine_labels cover the template and generated scaffold contracts.
-- Second return: store_isolation and plugin_reinstall_cwd cover containment
-  contracts and real Claude/Codex reinstall after deletion of startup cwd.
+- Keep main's provider payload fixtures with SH-585's shared command builder
+  and containment regression. Keep generated AGENTS.md equal to its template.
+- Run installer/freshness/reinstall, launcher/guard, containment and scaffold
+  contracts; targeted Clippy, formatting and diff checks. Final results are
+  recorded on SH-585 and PR #669.
 
 ## Submission boundary
 
-Push `worktree-SH-585`, open and link exactly one PR with SH-585 in its title,
-then move SH-585 to `verifying` as the absolute final action. Central
-verification owns the full suite, merge, completion and cleanup. Repair a
-returned PR with additional commits; never rewrite published history.
+Merge current origin/main into the existing branch, preserving published
+history. Push to PR #669; no new PR, rebase or force-push. Record final context,
+then make `story move SH-585 verifying` the absolute final action.
 
-No full suite, merge, version, release, or deployment from this worktree.
-SH-584 remains the owner of dispatch and plugin freshness work.
+Central verification owns the full suite, merge, completion and cleanup.
+No full-suite, release, version or deployment operation from this worktree.
+SH-557 remains responsible for separating roadmap data from the template.
