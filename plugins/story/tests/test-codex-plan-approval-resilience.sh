@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # SH-570 -- Codex plan approval survives bounded tmux/TUI races without typing
 # into a pane whose original process is no longer known to be alive.
-set -uo pipefail
+source "$(dirname "$0")/lib.sh"
 
-TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$TESTS_DIR/../hooks/full-auto.sh"
 TMUX_FIXTURE="$(mktemp -d /tmp/story-test-codex-plan-resilience.XXXXXX)"
-trap 'rm -rf -- "$TMUX_FIXTURE"' EXIT
+_TMP_REPOS+=("$TMUX_FIXTURE")
 
 cat >"$TMUX_FIXTURE/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
