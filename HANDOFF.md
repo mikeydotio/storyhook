@@ -18,6 +18,9 @@
   and returns focus to Stop or Run Full Auto after state changes.
 - Existing global focus-visible styling is sufficient; no SH-567-specific
   focus CSS was added.
+- SH-568's durable alert owns the top overlay after a confirmed Stop. The Stop
+  confirmation closes and focuses the logical lifecycle control first, so
+  acknowledgement returns focus to Stop (draining) or Run Full Auto.
 
 ## Evidence
 
@@ -36,19 +39,23 @@
 - The first reconciliation merged `origin/main` at `a396b3e9a` additively.
 - The second reconciliation merges `origin/main` at `64c2b256f` additively;
   published SH-567 history remains unchanged.
+- The third reconciliation merges `origin/main` at `2d8dd34d3` additively;
+  published SH-567 history remains unchanged.
 - Main's verification-incident dashboard and Full Auto specification changes
   merge with SH-567 automatically.
 - Main's dispatch-resource persistence changes do not overlap the dashboard
   lifecycle controls.
+- Main's SH-568 alert surface and SH-567's lifecycle controls keep independent
+  request claims. Each Stop result opens the non-dismissable alert, and the
+  combined regression proves durable acknowledgement and focus restoration.
 - AGENTS.md and its canonical template keep the SH-567 verifier roadmap in
   sync; this handoff remains scoped to the active story.
 
 ## Focused verification
 
-- Second-reconciliation engine E2E: 19 Chromium, 18 WebKit plus 1 documented
-  skip, 19 mobile Chromium, and 18 mobile WebKit plus 1 documented skip passed.
-- The prior first-reconciliation Chromium interruption did not recur in this
-  clean full-matrix run.
+- Third-reconciliation engine and overlay-modality E2E: 29 Chromium, 28 WebKit
+  plus 1 documented skip, 23 mobile Chromium, and 22 mobile WebKit plus 1
+  documented skip passed (102 passed, 2 skipped total).
 - Web template, dashboard error-reporting, focus-coverage, and roadmap-template
   tests: 251 passed.
 
