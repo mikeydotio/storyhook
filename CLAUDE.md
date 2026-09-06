@@ -1278,6 +1278,35 @@ Standing rules for every wave:
   store's advice a dead end (SH-404's documented trap, SH-405's defect). Design of record:
   `docs/spec/release-lockstep.md`. The release channel itself is SH-537; the plugin's
   distribution is SH-538.
+- **A toolchain that cannot find its own sysroot is refused by name, and a sysroot is
+  never named after a target triple** (SH-576). rustc does not read its sysroot from
+  argv0; it reads it from the directory holding the `librustc_driver` dylib it loaded, and
+  decides how far to walk up from the names it finds there. A dylib at
+  `<anything>/<target-triple>/lib/` is indistinguishable, **by name**, from one at
+  `$sysroot/lib/rustlib/$target/lib/` — the layout pre-built target libraries ship in — so
+  rustc strips four components instead of one. `ensure_release_toolchain` assembled the
+  pinned release toolchain at `.../toolchains/$lock_hash/$host_target`, which put the
+  detected sysroot three levels above the toolchain and failed every release build with
+  E0463 "can't find crate for `std`", advising a `rustup target add` that this path never
+  uses — a confident wrong diagnosis for a defect in our own layout. It blocked all four
+  archives (both Darwin probes, the Darwin `cargo build`s, and the Lima guest, which
+  sources the same function), and it shipped in `0da1b66a0`, *after* the v2.4.0 tag, so the
+  pinned toolchain had never once assembled a release. Reproduced by toggle before it was
+  fixed: the identical toolchain tree reports the correct sysroot at `/tmp/x/tc` and the
+  wrong one at `/tmp/x/a/b/aarch64-apple-darwin` — only the leaf directory name changes.
+  Two mechanisms, neither sufficient alone. The layout moved to `.../$host_target/toolchain`,
+  so the triple still keys the cache but no longer names the sysroot, pinned by
+  `tests/release_targets.rs` over triples derived from `scripts/release-targets.sh` rather
+  than repeated (SH-136). And `ensure_release_toolchain` now has a **single exit** carrying
+  `release_toolchain_verify_sysroot`, so no branch — operator override, warm cache, or
+  fresh assembly — can hand back a toolchain that was never asked whether it can find
+  itself; the obligation is structural rather than fenced, in SH-365's shape. An empty
+  answer is refused by name rather than resolved, for the SH-372 reason: `cd ""` succeeds
+  and stays put, so reading it would report the caller's own directory as rustc's claim.
+  What the suite deliberately does **not** prove is rustc's walking rule itself — that
+  needs a real 500 MB toolchain, and `build-release-assets.sh --check` now runs the same
+  verification against the real one on every release. Design of record: the module docs on
+  `scripts/release-toolchain.sh`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

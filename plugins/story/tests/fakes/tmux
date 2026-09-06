@@ -614,7 +614,13 @@ case "${1:-}" in
       *'#{pane_pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
       *'#{socket_path}'*) printf '%s\n' "$STATE/tmux.sock" ;;
       *'#{pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
-      *'#{session_name}'*) printf '%s\n' "$(cat "$STATE/session_name" 2>/dev/null || printf 'story-session')" ;;
+      *'#{session_name}'*)
+        if [ "${FAKE_TMUX_NO_SESSION:-}" = 1 ]; then
+          printf '\n'
+        else
+          printf '%s\n' "$(cat "$STATE/session_name" 2>/dev/null || printf 'story-session')"
+        fi
+        ;;
       *'#{window_name}'*) printf '%s\n' "$(cat "$STATE/window_name" 2>/dev/null || printf 'story-window')" ;;
       ''|*'#{window_id}'*) printf '@1\n' ;;
       *) printf '\n' ;;
