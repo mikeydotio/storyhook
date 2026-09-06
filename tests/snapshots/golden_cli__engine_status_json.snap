@@ -11,6 +11,7 @@ source: tests/golden_cli.rs
         "agent": "claude",
         "consecutive_hard_stops": 0,
         "created_at": "[timestamp]",
+        "effort": null,
         "id": "[run-id]",
         "lane_count": 2,
         "lanes": [
@@ -27,6 +28,7 @@ source: tests/golden_cli.rs
             "story": null
           }
         ],
+        "model": null,
         "needs_human": [
           {
             "id": "SH-16",
@@ -38,6 +40,7 @@ source: tests/golden_cli.rs
           "epic": "SH-15",
           "kind": "epic"
         },
+        "speed": null,
         "state": "running",
         "stop_reason": null,
         "updated_at": "[timestamp]"
