@@ -989,6 +989,17 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="dispatch-effort""#));
     assert!(body.contains(r#"id="dispatch-speed""#));
     assert!(body.contains(r#"id="dispatch-auto""#));
+    // SH-566: Full Auto has its own launch dialog but consumes the same
+    // provider catalog and preference store as attended Dispatch.
+    assert!(body.contains(r#"id="engine-modal""#));
+    assert!(body.contains(r#"id="engine-lanes""#));
+    assert!(body.contains(r#"id="engine-agent""#));
+    assert!(body.contains(r#"id="engine-model""#));
+    assert!(body.contains(r#"id="engine-effort""#));
+    assert!(body.contains(r#"id="engine-speed""#));
+    assert!(body.contains("saveDispatchProviderDefaults(agent, model, effort, speed)"));
+    assert!(body.contains("openEngineModal(st.id, e.currentTarget)"));
+    assert!(body.contains("openEngineModal(null, e.currentTarget)"));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
     assert!(body.contains(r#"id="projsel-btn""#));
@@ -4318,8 +4329,12 @@ fn engine_http_serves_every_control_and_stable_run_views() {
         fixture.port, fixture.repo_id
     );
 
-    let started = post_json(&fixture, &base, r#"{"lanes":2,"agent":"codex"}"#)
-        .expect("starting an engine run");
+    let started = post_json(
+        &fixture,
+        &base,
+        r#"{"lanes":2,"agent":"codex","model":"gpt-5.6-sol","effort":"xhigh","speed":"fast"}"#,
+    )
+    .expect("starting an engine run");
     assert_eq!(started.status(), 201);
     let started = response_json(started);
     assert_eq!(started["result"], "ok");
@@ -4327,6 +4342,9 @@ fn engine_http_serves_every_control_and_stable_run_views() {
     assert_eq!(started["run"]["scope"]["kind"], "project");
     assert_eq!(started["run"]["lane_count"], 2);
     assert_eq!(started["run"]["agent"], "codex");
+    assert_eq!(started["run"]["model"], "gpt-5.6-sol");
+    assert_eq!(started["run"]["effort"], "xhigh");
+    assert_eq!(started["run"]["speed"], "fast");
     assert_eq!(started["run"]["state"], "running");
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
     let run = started["run"]["id"].as_str().unwrap().to_string();
@@ -4398,6 +4416,16 @@ fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
     );
 
     assert_eq!(status_of(post_json(&fixture, &base, "{").unwrap_err()), 400);
+    for body in [
+        r#"{"model":"a;rm"}"#,
+        r#"{"effort":"$(id)"}"#,
+        r#"{"speed":"turbo"}"#,
+    ] {
+        assert_eq!(
+            status_of(post_json(&fixture, &base, body).unwrap_err()),
+            400
+        );
+    }
     assert_eq!(
         status_of(post_json(&fixture, &base, r#"{"lanes":0}"#).unwrap_err()),
         422

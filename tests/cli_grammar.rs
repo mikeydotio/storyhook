@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use storyhook::cli::{EngineAction, Invocation, parse_invocation};
-use storyhook::store::EngineAgent;
+use storyhook::store::{EngineAgent, EngineSpeed};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// Every `story` this file runs is the one THIS build produced, in the shared
@@ -778,12 +778,28 @@ fn engine_parser_covers_every_action_and_default() {
                 epic: None,
                 lanes: 1,
                 agent: EngineAgent::Claude,
+                model: None,
+                effort: None,
+                speed: None,
             },
         }
     );
     assert_eq!(
         invocation(&[
-            "engine", "start", "--agent", "codex", "--lanes", "3", "--epic", "SH-9",
+            "engine",
+            "start",
+            "--agent",
+            "codex",
+            "--lanes",
+            "3",
+            "--epic",
+            "SH-9",
+            "--model",
+            "gpt-5.6-sol",
+            "--effort",
+            "xhigh",
+            "--speed",
+            "fast",
         ])
         .unwrap(),
         Invocation::Engine {
@@ -791,6 +807,9 @@ fn engine_parser_covers_every_action_and_default() {
                 epic: Some("SH-9".to_string()),
                 lanes: 3,
                 agent: EngineAgent::Codex,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some("xhigh".to_string()),
+                speed: Some(EngineSpeed::Fast),
             },
         }
     );
@@ -831,6 +850,9 @@ fn engine_parser_refuses_bad_values_scoped_flags_and_trailing_words() {
         vec!["engine", "start", "--lanes", "256"],
         vec!["engine", "start", "--lanes", "many"],
         vec!["engine", "start", "--agent", "other"],
+        vec!["engine", "start", "--model", "gpt;unsafe"],
+        vec!["engine", "start", "--effort", "high effort"],
+        vec!["engine", "start", "--speed", "turbo"],
     ] {
         assert!(
             invocation(&args).is_err(),
@@ -864,7 +886,21 @@ fn engine_cli_runs_the_lifecycle_and_reports_no_auto_work() {
         .success();
 
     let started = story(path)
-        .args(["engine", "start", "--lanes", "2", "--json"])
+        .args([
+            "engine",
+            "start",
+            "--lanes",
+            "2",
+            "--agent",
+            "codex",
+            "--model",
+            "gpt-5.6-sol",
+            "--effort",
+            "xhigh",
+            "--speed",
+            "fast",
+            "--json",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -875,18 +911,22 @@ fn engine_cli_runs_the_lifecycle_and_reports_no_auto_work() {
     let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
     let run_id = started["run"]["id"].as_str().unwrap().to_string();
     assert_eq!(started["run"]["scope"]["kind"], "project");
-    assert_eq!(started["run"]["agent"], "claude");
+    assert_eq!(started["run"]["agent"], "codex");
+    assert_eq!(started["run"]["model"], "gpt-5.6-sol");
+    assert_eq!(started["run"]["effort"], "xhigh");
+    assert_eq!(started["run"]["speed"], "fast");
     assert_eq!(started["run"]["lane_count"], 2);
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
     assert_eq!(started["run"]["needs_human"][0]["id"], "SH-1");
 
     story(path)
-        .args(["engine", "status"])
+        .args(["engine", "status", "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(format!("run: {run_id}")))
-        .stdout(predicate::str::contains("lane  state"))
-        .stdout(predicate::str::contains("needs a human (no-auto)"));
+        .stdout(predicate::str::contains(format!(r#""id": "{run_id}""#)))
+        .stdout(predicate::str::contains(r#""model": "gpt-5.6-sol""#))
+        .stdout(predicate::str::contains(r#""effort": "xhigh""#))
+        .stdout(predicate::str::contains(r#""speed": "fast""#));
     story(path)
         .args(["engine", "pause"])
         .assert()

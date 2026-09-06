@@ -8,7 +8,8 @@ and claims the next — one lane at a time by default, `--lanes <n>` in parallel
 Two entry points, one engine:
 
 - **Project scope** — a control in the dashboard's project header, or
-  `story engine start [--lanes <n>]`. Works the project's ready backlog.
+  `story engine start [--lanes <n>] [provider options]`. Works the project's
+  ready backlog.
 - **Epic scope** — `story dispatch <epic-id> --auto` (equivalently `/story do
   <epic> --auto`), or a control in the epic's drawer. Works that epic's
   descendant subtree.
@@ -53,6 +54,7 @@ being picked.
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
 | D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
+| D16 | **Provider configuration is immutable run state.** A start may select model, effort, and standard or fast speed; every lane fill reuses that exact selection, and status exposes it. | Reading mutable browser preferences or provider environment variables on each refill could change behavior halfway through one run. Snapshotting the selection makes a run reproducible. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
 
 ## Assumptions recorded rather than asked
 
@@ -141,6 +143,9 @@ classDiagram
         +RunScope scope
         +u8 lanes
         +AgentKind agent
+        +Option~String~ model
+        +Option~String~ effort
+        +Option~EngineSpeed~ speed
         +RunState state
         +u8 consecutive_hard_stops
         +Option~StopReason~ stop_reason
@@ -683,7 +688,7 @@ the story rather than release it.
 ### CLI
 
 ```
-story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine status [--run <id>] [--json]
 story engine pause  [--run <id>]
 story engine resume [--run <id>]
@@ -694,12 +699,17 @@ story engine ack    [--run <id>]
 Every arm ends in `expect_no_more` — a word that lands nowhere is refused, not
 dropped (SH-357).
 
+Model and effort use the provider token grammar and remain open to new provider
+vocabulary. Speed is `standard` or `fast`; explicit `standard` preserves the
+legacy lane argv without a speed flag. The immutable selection appears in
+human and JSON output and is forwarded on every later lane fill.
+
 ### HTTP
 
 | Method | Path | Answers |
 |---|---|---|
-| POST | `/api/repos/{project}/engine` | start a run; 409 if one is live |
-| GET | `/api/repos/{project}/engine` | the run view: state, lanes, streak, stop reason |
+| POST | `/api/repos/{project}/engine` | start a run with scope, lanes, agent, model, effort, and speed; 409 if one is live |
+| GET | `/api/repos/{project}/engine` | the run view: immutable configuration, state, lanes, streak, stop reason |
 | POST | `/api/repos/{project}/engine/{action}` | `pause`, `resume`, `stop`, `ack` |
 
 Answered off the store thread where a dispatch is spawned, per
@@ -707,9 +717,14 @@ Answered off the store thread where a dispatch is spawned, per
 
 ### Web UI
 
-- **Project header**: a Full Auto control with a lanes stepper. Live runs show
+- **Project header**: a Full Auto launch button. Its dedicated modal selects
+  lanes, provider, model, effort, and speed. Live runs show that configuration,
   state, lane count, and the current story per lane with elapsed time.
-- **Epic drawer**: "Run Full Auto on this epic", scoping a run to the subtree.
+- **Epic drawer**: "Run Full Auto on this epic" opens the same modal and scopes
+  the resulting run to the subtree.
+- **Preferences**: Full Auto and attended Dispatch share submitted provider
+  choices and the capability cache. Full Auto never changes Dispatch's
+  separate attended Auto-mode preference. Cancel and Escape save nothing.
 - **Modal alert**: on halt or drain, a non-dismissable modal persists until
   acknowledged; a live run can instead be immediately abandoned and then
   acknowledged. Multiple alerts appear newest first, one at a time (D13).
@@ -2000,17 +2015,17 @@ the dashboard and daemon reconciler observe one state transition.
 starts an epic-scoped engine run through the existing helper protocol. A bare
 typed epic dispatch refuses because the folder has no executable steps.
 Provider model, effort, and speed overrides refuse on this path rather than
-being silently ignored; lane sessions keep their provider's configured
-defaults.
+being silently ignored; use `story engine start --epic` or the dashboard
+modal when an epic-scoped run needs explicit provider configuration.
 
 ### SH-470 — one dashboard control surface
 
-The project header starts and reports Full Auto with a lane stepper; an epic
-drawer replaces ordinary Dispatch with an epic-scoped Full Auto action. A
-live view names each lane's current story and elapsed time. Mutations use the
-same in-flight and ambiguous-outcome rules as other dashboard controls, and
-the press gate prevents a data refresh from destroying a pointer target
-between down and up.
+The project header starts and reports Full Auto; an epic drawer replaces
+ordinary Dispatch with an epic-scoped Full Auto action. Both start actions open
+the configuration modal described by SH-566. A live view names each lane's
+current story and elapsed time. Mutations use the same in-flight and
+ambiguous-outcome rules as other dashboard controls, and the press gate
+prevents a data refresh from destroying a pointer target between down and up.
 
 ### SH-567 — live lifecycle controls
 
@@ -2099,6 +2114,23 @@ dispatch rollback names any surviving marker, worktree, or branch instead of
 claiming that rollback completed. Successful partial mutations stay reported
 as such, so retry remains safe and diagnostics never erase what already
 happened.
+
+### SH-566 — immutable provider configuration per run
+
+Migration 32 adds nullable model, effort, and speed columns to engine runs.
+Start requests accept the same provider-scoped model, effort, and speed choices
+as attended dispatch. Model and effort share one bounded shell-safe token
+grammar at CLI, HTTP, service, and store-read boundaries; speed is the stored
+`standard|fast` enumeration. Reconciliation copies those immutable fields
+into every `DispatchRequest`. Fast emits `--speed=fast`; standard and omission
+preserve the historical helper argv.
+
+The project header and epic drawer open one Full Auto modal backed by the
+existing cached provider capability catalog. Submitted provider choices are
+remembered with attended Dispatch, while its Auto checkbox remains unchanged;
+dismissed drafts change neither. Live controls show provider, model, effort,
+and speed. The engine browser spec proves both scopes and the configured request
+across Chromium, WebKit, mobile Chromium, and mobile WebKit.
 
 ### SH-569 — lane membership on stories
 

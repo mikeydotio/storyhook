@@ -20,12 +20,14 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
-use crate::domain::{Member, StateDef, StoryCleanupLease, StoryEvent, TypeDef};
+use crate::domain::{
+    Member, StateDef, StoryCleanupLease, StoryEvent, TypeDef, validate_dispatch_option_token,
+};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
     AttachmentBlobRow, EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord,
-    EngineRunRecord, EngineRunState, EngineScope, FeedEvent, PrLink, ProjectRecord,
+    EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, FeedEvent, PrLink, ProjectRecord,
     ProjectRemoteRecord, ProjectSettings, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
     StoryRow, StorySort, VerificationFailureDisposition, VerificationIncident, parse_priority,
     parse_superstate,
@@ -232,7 +234,7 @@ pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreErr
 
 const ENGINE_RUN_COLUMNS: &str = "id, project_slug, scope_kind, scope_story_id, lanes, agent, \
     state, consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at, \
-    recent_quarantines_json";
+    recent_quarantines_json, model, effort, speed";
 
 #[derive(Debug)]
 struct RawEngineRun {
@@ -249,6 +251,9 @@ struct RawEngineRun {
     created_at: String,
     updated_at: String,
     recent_quarantines_json: String,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<String>,
 }
 
 fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
@@ -266,6 +271,9 @@ fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
         recent_quarantines_json: row.get(12)?,
+        model: row.get(13)?,
+        effort: row.get(14)?,
+        speed: row.get(15)?,
     })
 }
 
@@ -296,12 +304,32 @@ fn hydrate_engine_run(raw: RawEngineRun) -> Result<EngineRunRecord, StoreError> 
             raw.state
         ))
     })?;
+    let speed = raw
+        .speed
+        .map(|value| {
+            EngineSpeed::parse(&value).ok_or_else(|| {
+                StoreError::Corrupt(format!("engine_runs.speed holds unknown value `{value}`"))
+            })
+        })
+        .transpose()?;
+    for (column, value) in [("model", &raw.model), ("effort", &raw.effort)] {
+        if let Some(value) = value {
+            validate_dispatch_option_token(value).map_err(|reason| {
+                StoreError::Corrupt(format!(
+                    "engine_runs.{column} holds invalid value `{value}`: {reason}"
+                ))
+            })?;
+        }
+    }
     Ok(EngineRunRecord {
         id: raw.id,
         project_slug: raw.project_slug,
         scope,
         lanes: stored_u32(raw.lanes, "engine_runs.lanes")?,
         agent,
+        model: raw.model,
+        effort: raw.effort,
+        speed,
         state,
         consecutive_hard_stops: stored_u32(
             raw.consecutive_hard_stops,

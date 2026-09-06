@@ -177,6 +177,9 @@ fn started_run(fixture: &ServiceFixture, fake: &FakeDispatcher, lanes: u32) -> S
             scope: EngineScope::Project,
             lanes,
             agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
         })
         .unwrap()
         .id

@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::api::admission::named_token_ok;
-use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
+use crate::api::dispatch::{DispatchAgent, OptionToken, resolve_dispatch_script};
 use crate::api::http::{
     Reply, TrustedHosts, content_type_is_json, error_reply, json_reply, mutation_guard_ok,
     text_reply,
@@ -35,7 +35,7 @@ use crate::service::engine::{
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
-    EngineScope, ReadOps, SqliteStore, Store,
+    EngineScope, EngineSpeed, ReadOps, SqliteStore, Store,
 };
 
 /// One persistent store handle for engine requests, shared by every worker.
@@ -77,6 +77,9 @@ impl EngineController {
             scope: request.epic.map_or(EngineScope::Project, EngineScope::Epic),
             lanes: request.lanes,
             agent: request.agent.into(),
+            model: request.model.map(|value| value.as_str().to_string()),
+            effort: request.effort.map(|value| value.as_str().to_string()),
+            speed: request.speed,
         })?;
         service
             .status(Some(&run.id))?
@@ -355,6 +358,12 @@ struct StartBody {
     lanes: u32,
     #[serde(default)]
     agent: AgentBody,
+    #[serde(default)]
+    model: Option<OptionToken>,
+    #[serde(default)]
+    effort: Option<OptionToken>,
+    #[serde(default)]
+    speed: Option<EngineSpeed>,
 }
 
 const fn default_lanes() -> u32 {
@@ -412,6 +421,9 @@ struct HttpRunView {
     scope: HttpScope,
     lane_count: u32,
     agent: &'static str,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<&'static str>,
     state: &'static str,
     lanes: Vec<HttpLaneView>,
     consecutive_hard_stops: u32,
@@ -430,6 +442,9 @@ impl From<RunView> for HttpRunView {
             scope,
             lanes,
             agent,
+            model,
+            effort,
+            speed,
             state,
             consecutive_hard_stops,
             recent_quarantines,
@@ -444,6 +459,9 @@ impl From<RunView> for HttpRunView {
             scope: scope.into(),
             lane_count: lanes,
             agent: agent.as_str(),
+            model,
+            effort,
+            speed: speed.map(EngineSpeed::as_str),
             state: state.as_str(),
             lanes: value.lanes.into_iter().map(Into::into).collect(),
             consecutive_hard_stops,

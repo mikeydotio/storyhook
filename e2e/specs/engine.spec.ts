@@ -49,6 +49,9 @@ type EngineRun = {
   scope: { kind: "project" } | { kind: "epic"; story: string };
   lane_count: number;
   agent: "claude" | "codex";
+  model: string | null;
+  effort: string | null;
+  speed: "standard" | "fast" | null;
   state: "running" | "paused" | "draining" | "halted" | "finished";
   lanes: EngineLane[];
   consecutive_hard_stops: number;
@@ -72,6 +75,9 @@ function run(
     scope: { kind: "project" },
     lane_count: 2,
     agent: "claude",
+    model: null,
+    effort: null,
+    speed: null,
     state,
     lanes: [
       {
@@ -219,6 +225,16 @@ async function installTestEventSource(page: Page): Promise<void> {
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
 });
+
+async function openProjectEngineModal(page: Page): Promise<void> {
+  await page.locator(".engine-run-btn").click();
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
+}
+
+async function submitEngineModal(page: Page): Promise<void> {
+  await page.locator("#engine-modal-submit").click();
+  await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
+}
 
 test("engine alerts are non-dismissable queued dialogs with a live-run abandon action", async ({
   page,
@@ -442,11 +458,12 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await page.goto("/");
   await openProject(page, ENGINE_PROJECT);
 
+  await openProjectEngineModal(page);
   const lanes = page.locator("#engine-lanes");
   await expect(lanes).toBeEnabled();
   await expect(lanes).toHaveValue("1");
   await lanes.fill("2");
-  await page.locator(".engine-run-btn").click();
+  await submitEngineModal(page);
 
   await expect(page.locator(".engine-state")).toHaveText("running", {
     timeout: REAL_ENGINE_TIMEOUT,
@@ -798,6 +815,16 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   page,
 }) => {
   await page.clock.install();
+  await page.addInitScript(() => {
+    localStorage.setItem("storyhook.dispatch.defaults", JSON.stringify({
+      agent: "claude",
+      auto: true,
+      byAgent: {
+        claude: { model: "", effort: "", speed: "" },
+        codex: { model: "", effort: "", speed: "" },
+      },
+    }));
+  });
   let current: EngineRun | null = null;
   let posts = 0;
   let submitted: unknown = null;
@@ -815,6 +842,10 @@ test("project launch is guarded once and becomes a live lane instrument", async 
     submitted = route.request().postDataJSON();
     await postGate;
     current = run("alpha", "AA-12");
+    current.agent = "codex";
+    current.model = "gpt-5.6-sol";
+    current.effort = "xhigh";
+    current.speed = "fast";
     await route.fulfill({
       status: 201,
       contentType: "application/json",
@@ -825,17 +856,30 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
-  const lanes = page.locator("#engine-lanes");
   const start = page.locator(".engine-run-btn");
-  await expect(lanes).toBeEnabled();
+  await expect(start).toBeEnabled();
+  await openProjectEngineModal(page);
+  await page.locator("#engine-lanes").fill("4");
+  await page.locator("#engine-agent").selectOption("codex");
+  await page.locator("#engine-modal-cancel").click();
+  await expect(start).toBeFocused();
+
+  await openProjectEngineModal(page);
+  const lanes = page.locator("#engine-lanes");
   await expect(lanes).toHaveValue("1");
+  await expect(page.locator("#engine-agent")).toHaveValue("claude");
   await lanes.fill("3");
+  await page.locator("#engine-agent").selectOption("codex");
+  await expect(page.locator('#engine-model option[value="gpt-5.6-sol"]')).toHaveCount(1);
+  await page.locator("#engine-model").selectOption("gpt-5.6-sol");
+  await page.locator("#engine-effort").selectOption("xhigh");
+  await page.locator("#engine-speed").selectOption("fast");
 
   // HTMLElement.click() honors the native disabled state. Calling it twice
   // in one task is the strongest double-submit witness: no human timing and
   // no Playwright actionability wait can serialize the two activations.
   await page.evaluate(() => {
-    const button = document.querySelector(".engine-run-btn") as HTMLButtonElement;
+    const button = document.querySelector("#engine-modal-submit") as HTMLButtonElement;
     button.click();
     button.click();
   });
@@ -843,10 +887,24 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await expect.poll(() => posts).toBe(1);
   await expect(start).toBeDisabled();
   await expect(start).toHaveAccessibleName("Starting Full Auto…");
-  expect(submitted).toEqual({ lanes: 3 });
+  expect(submitted).toEqual({
+    lanes: 3,
+    agent: "codex",
+    model: "gpt-5.6-sol",
+    effort: "xhigh",
+    speed: "fast",
+  });
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("storyhook.dispatch.defaults") || "{}").auto,
+    ),
+  ).toBe(true);
 
   releasePost();
   await expect(page.locator(".engine-state")).toHaveText("running");
+  await expect(page.locator(".engine-config")).toContainText(
+    "Codex · gpt-5.6-sol · xhigh effort · fast",
+  );
   await expect(page.locator(".engine-lane-count")).toHaveText("2 lanes");
   await expect(page.locator(".engine-lane").nth(0)).toContainText("AA-12");
   const elapsed = page.locator(".engine-lane-elapsed");
@@ -1108,7 +1166,7 @@ test("a timed-out lifecycle mutation is reported as ambiguous and reconciled", a
   await done;
 });
 
-test("changing the lane count preserves the launch button's physical click", async ({
+test("the modal submits a changed lane count through a physical click", async ({
   page,
 }) => {
   let submitted: unknown = null;
@@ -1129,14 +1187,15 @@ test("changing the lane count preserves the launch button's physical click", asy
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
   await page.locator("#engine-lanes").fill("2");
 
-  // A trusted pointer gesture moves focus off the number input, firing its
-  // `change` handler between press and click. HTMLElement.click() would skip
-  // that boundary and could not witness WebKit's swallowed-click regression.
-  await page.locator(".engine-run-btn").click();
+  // A trusted pointer gesture moves focus off the number input before the
+  // submit activation. HTMLElement.click() would skip that browser boundary
+  // and could not witness WebKit swallowing the physical click.
+  await page.locator("#engine-modal-submit").click();
 
-  await expect.poll(() => submitted).toEqual({ lanes: 2 });
+  await expect.poll(() => submitted).toEqual({ lanes: 2, agent: "claude" });
   await expect(page.locator(".engine-state")).toHaveText("running");
 });
 
@@ -1161,12 +1220,14 @@ test("a definite refusal releases the start claim for another attempt", async ({
   await openProject(page, "Alpha Project");
   const button = page.locator(".engine-run-btn");
   await expect(button).toBeEnabled();
-  await button.click();
+  await openProjectEngineModal(page);
+  await submitEngineModal(page);
   await expect(page.locator("#toast-stack .toast.error")).toContainText(
     "project already has a live engine run",
   );
   await expect(button).toBeEnabled();
-  await button.click();
+  await openProjectEngineModal(page);
+  await submitEngineModal(page);
   await expect.poll(() => posts).toBe(2);
 });
 
@@ -1226,7 +1287,22 @@ test("an epic replaces ordinary Dispatch with an epic-scoped Full Auto start", a
   const button = page.locator("#engine-epic-run-btn");
   await expect(button).toHaveText("Run Full Auto on this epic");
   await button.click();
-  await expect.poll(() => submitted).toEqual({ epic: transformedEpicId });
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
+  await page.locator("#engine-lanes").fill("2");
+  await page.locator("#engine-agent").selectOption("codex");
+  await expect(page.locator('#engine-model option[value="gpt-5.6-terra"]')).toHaveCount(1);
+  await page.locator("#engine-model").selectOption("gpt-5.6-terra");
+  await page.locator("#engine-effort").selectOption("high");
+  await page.locator("#engine-speed").selectOption("fast");
+  await submitEngineModal(page);
+  await expect.poll(() => submitted).toEqual({
+    epic: transformedEpicId,
+    lanes: 2,
+    agent: "codex",
+    model: "gpt-5.6-terra",
+    effort: "high",
+    speed: "fast",
+  });
 });
 
 test("an unconfirmed start stays honest and reconciles the run with GET", async ({
@@ -1248,7 +1324,8 @@ test("an unconfirmed start stays honest and reconciles the run with GET", async 
   await page.goto("/");
   await openProject(page, "Alpha Project");
   await expect(page.locator(".engine-run-btn")).toBeEnabled();
-  await page.locator(".engine-run-btn").click();
+  await openProjectEngineModal(page);
+  await submitEngineModal(page);
 
   const notice = page.locator("#toast-stack .toast.error");
   await expect(notice).toContainText(
@@ -1539,16 +1616,16 @@ test("an engine repaint waits until a held press can dispatch its click", async 
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  const input = page.locator("#engine-lanes");
-  await expect(input).toBeEnabled();
-  await input.evaluate((node) => {
-    (window as unknown as { __engineInputClicks: number }).__engineInputClicks = 0;
+  const button = page.locator(".engine-run-btn");
+  await expect(button).toBeEnabled();
+  await button.evaluate((node) => {
+    (window as unknown as { __engineButtonClicks: number }).__engineButtonClicks = 0;
     node.addEventListener("click", () => {
-      (window as unknown as { __engineInputClicks: number }).__engineInputClicks++;
+      (window as unknown as { __engineButtonClicks: number }).__engineButtonClicks++;
     });
   });
 
-  const box = await input.boundingBox();
+  const box = await button.boundingBox();
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.mouse.down();
@@ -1567,16 +1644,17 @@ test("an engine repaint waits until a held press can dispatch its click", async 
       ),
     )
     .toBe(true);
-  await expect(input).toBeAttached();
+  await expect(button).toBeAttached();
 
   await page.mouse.up();
   await expect
     .poll(() =>
       page.evaluate(() =>
-        (window as unknown as { __engineInputClicks: number }).__engineInputClicks,
+        (window as unknown as { __engineButtonClicks: number }).__engineButtonClicks,
       ),
     )
     .toBe(1);
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
   await expect(engineStoryLane(page, "AA-PUSH")).toHaveText("AA-PUSH");
 });
 
