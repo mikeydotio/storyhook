@@ -2012,6 +2012,25 @@ same in-flight and ambiguous-outcome rules as other dashboard controls, and
 the press gate prevents a data refresh from destroying a pointer target
 between down and up.
 
+### SH-567 — live lifecycle controls
+
+The live project-header control now exposes the server's complete operator
+lifecycle surface. A running run offers **Pause new claims** and **Stop**;
+paused offers **Resume** and **Stop**; draining retains a labelled Stop control
+so the operator can escalate to an immediate stop without pretending another
+graceful stop would do anything. Pause affects future claims only and leaves
+all lane work untouched.
+
+Stop opens one guarded confirmation with the two server meanings stated in
+full. **Drain** posts `now: false`: no more stories are claimed, occupied lanes
+finish, and the launch control returns only after the last lane lands. **Stop
+now** posts `now: true`: active claims are released and their windows closed,
+while branches and worktrees remain as recovery evidence. Once draining,
+Drain is labelled unavailable and Stop now remains active. All four mutations
+share one run-keyed in-flight claim, publish their pending label through the
+live-control fingerprint, and reconcile an unconfirmed transport outcome with
+a status read rather than reporting it as a failure.
+
 ### SH-471 — durable operator outcomes
 
 Runs with a recorded stop reason remain visible in a persistent modal until

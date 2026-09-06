@@ -212,8 +212,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-490's durable dispatch-resource trail and SH-569's Full
-  Auto lane chips through the centralized verifier.
+- Current: verify SH-567's dashboard lifecycle controls and SH-569's Full Auto
+  lane chips through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
