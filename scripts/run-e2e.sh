@@ -172,6 +172,15 @@ run_one_project() {
   . "$repo_root/scripts/test-env.sh"
   storyhook_isolate "$data_root"
 
+  # This is not a store-isolation parameter, so test-env.sh deliberately does
+  # not own it. It is still a browser-fixture input: an ambient proxy allowlist
+  # makes TrustedHosts::behind_a_proxy() true and withdraws local_request
+  # authority even from loopback, which makes handoff.spec.ts fail according to
+  # the developer's shell rather than this harness (SH-321). Start every
+  # project from the explicit no-proxy baseline; the one specialized project
+  # that needs an allowlist will opt in below.
+  unset STORYHOOK_WEB_TRUSTED_HOSTS
+
   # --- Dispatch (SH-50): the daemon invokes this repo's own plugin script,
   # against the fake tmux the plugin test harness already uses -- no real
   # tmux server, no real claude, no network. Exported before `daemon start`
