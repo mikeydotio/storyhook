@@ -584,9 +584,11 @@ case "${1:-}" in
     # re-queries and `kill -0`s for real, so it answers the REAL pid of the
     # placeholder process new-window spawned (`$STATE/pane_pid`) rather than a
     # canned value — a fake pid would make every sentinel-readiness dispatch
-    # test fail its liveness check unconditionally. Empty (not a fallback
-    # literal) when nothing was ever spawned, so a mismatch is observable
-    # rather than silently matching by coincidence.
+    # test fail its liveness check unconditionally. The engine requests pid,
+    # occupant, and dead state in one format, so answer that composite before
+    # either single-field substring can win. Empty (not a fallback literal)
+    # when nothing was ever spawned, so a mismatch is observable rather than
+    # silently matching by coincidence.
     dm_fmt=""
     shift || true
     while [ "$#" -gt 0 ]; do
@@ -597,6 +599,15 @@ case "${1:-}" in
       shift || true
     done
     case "$dm_fmt" in
+      *'#{pane_pid}'*'#{pane_current_command}'*'#{pane_dead}'*)
+        dm_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
+        dm_command="${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
+        dm_dead=1
+        if [[ "$dm_pid" =~ ^[0-9]+$ ]] && kill -0 "$dm_pid" 2>/dev/null; then
+          dm_dead=0
+        fi
+        printf '%s\t%s\t%s\n' "$dm_pid" "$dm_command" "$dm_dead"
+        ;;
       *'#{pane_current_command}'*)
         printf '%s\n' "${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
         ;;

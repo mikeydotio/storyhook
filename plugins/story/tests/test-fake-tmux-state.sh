@@ -46,6 +46,10 @@ _TMP_REPOS+=("$pane_cwd")
 
 occupant() { "$FAKE_TMUX" display-message -p '#{pane_current_command}'; }
 pane_pid() { "$FAKE_TMUX" display-message -p '#{pane_pid}'; }
+engine_probe() {
+  "$FAKE_TMUX" display-message -p -t %1 \
+    '#{pane_pid}\t#{pane_current_command}\t#{pane_dead}'
+}
 
 # --- the field failure, reproduced ----------------------------------------
 #
@@ -58,6 +62,9 @@ pane_pid() { "$FAKE_TMUX" display-message -p '#{pane_pid}'; }
 assert_eq "$(occupant)" "claude" "the launch's own occupant is claude"
 launched_pid="$(pane_pid)"
 [ -n "$launched_pid" ] || fail_test "the launch recorded no pane pid"
+expected_engine_probe="$(printf '%s\tclaude\t0' "$launched_pid")"
+assert_eq "$(engine_probe)" "$expected_engine_probe" \
+  "the engine liveness probe receives every requested pane field"
 
 env -u FAKE_TMUX_STATE "$FAKE_TMUX" new-window -d -P -F '#{pane_id}' \
   -n probe -c "$pane_cwd" >/dev/null 2>&1
