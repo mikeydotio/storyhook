@@ -195,10 +195,10 @@ apple-native-keyring-store = { version = "1", optional = true, default-features 
 # choice follow the same rule as the crate itself — depend on nothing the
 # target may not have:
 #
-# * `crypto-rust` over `crypto-openssl`, because `aarch64-unknown-linux-gnu`
-#   is cross-compiled and a system OpenSSL is exactly what cannot be counted
-#   on there. The pure-Rust primitives (`aes`, `cbc`, `sha2`, `hkdf`) build
-#   for any target the compiler has.
+# * `crypto-rust` over `crypto-openssl`, because one Linux artifact is always
+#   cross-compiled in the Lima guest and a target system OpenSSL is exactly
+#   what cannot be counted on there. The pure-Rust primitives (`aes`, `cbc`,
+#   `sha2`, `hkdf`) build for any target the compiler has.
 # * `rt-async-io` over `rt-tokio`, because this crate has no async runtime and
 #   wants none: every I/O path here is blocking (`ureq`, our own HTTP/1.1
 #   layer). `async-io` is what `zbus` enables by default anyway, so this

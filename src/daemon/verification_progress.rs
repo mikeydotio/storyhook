@@ -18,7 +18,8 @@ use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
 use crate::service::{Ctx, StoryService, VerificationCandidate, VerificationQueue};
-use crate::store::Store;
+use crate::store::VerificationIncident;
+use crate::store::{ReadOps, Store};
 
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
@@ -33,6 +34,9 @@ pub enum VerificationStatus {
         #[serde(skip_serializing_if = "Option::is_none")]
         wait_seconds: Option<u64>,
         position: usize,
+        /// Infrastructure incident preventing this queue position from running.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        blocked_by: Option<VerificationBlocker>,
     },
     /// Work inside the verifier actuator now.
     Running {
@@ -42,6 +46,34 @@ pub enum VerificationStatus {
         #[serde(skip_serializing_if = "Option::is_none")]
         tests: Option<VerificationTests>,
     },
+    /// The head candidate is retrying infrastructure or has halted the queue.
+    Stalled {
+        /// Number of failed actuator attempts in this incident.
+        attempts: u32,
+        /// RFC3339 time of the first failure.
+        first_failed_at: String,
+        /// RFC3339 time of the latest failed attempt.
+        last_failed_at: String,
+        /// Latest infrastructure diagnosis.
+        detail: String,
+        /// True once the bounded retry policy requires acknowledgement.
+        halted: bool,
+    },
+}
+
+/// Infrastructure evidence inherited by candidates waiting behind the head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VerificationBlocker {
+    /// Display id of the candidate that encountered the failure.
+    pub story_id: String,
+    /// RFC3339 time of the first failed attempt.
+    pub first_failed_at: String,
+    /// RFC3339 time of the latest failed attempt.
+    pub last_failed_at: String,
+    /// Latest infrastructure diagnosis.
+    pub detail: String,
+    /// Whether retry policy has stopped the queue.
+    pub halted: bool,
 }
 
 /// Current explicit journal item for an active attempt.
@@ -91,6 +123,18 @@ pub fn status_snapshot(
     env: &Environment,
     now: &str,
 ) -> Vec<StoryVerificationStatus> {
+    status_snapshot_with_incident(ordered, active, None, env, now)
+}
+
+/// Builds statuses with durable infrastructure evidence between attempts.
+#[must_use]
+pub fn status_snapshot_with_incident(
+    ordered: &[VerificationCandidate],
+    active: Option<&ActiveVerification>,
+    incident: Option<&VerificationIncident>,
+    env: &Environment,
+    now: &str,
+) -> Vec<StoryVerificationStatus> {
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
         .filter(|candidate| !active.is_some_and(|held| owns(candidate, held)))
@@ -99,7 +143,20 @@ pub fn status_snapshot(
     ordered
         .iter()
         .map(|candidate| {
-            let status = if let Some(held) = active.filter(|held| owns(candidate, held)) {
+            let is_incident = incident.is_some_and(|incident| {
+                candidate.project == incident.project
+                    && candidate.verifying_generation == Some(incident.generation)
+            });
+            let status = if is_incident {
+                let incident = incident.expect("incident presence established");
+                VerificationStatus::Stalled {
+                    attempts: incident.attempts,
+                    first_failed_at: incident.first_failed_at.clone(),
+                    last_failed_at: incident.last_failed_at.clone(),
+                    detail: incident.detail.clone(),
+                    halted: incident.halted,
+                }
+            } else if let Some(held) = active.filter(|held| owns(candidate, held)) {
                 let progress = matching_progress(env, candidate);
                 let current_step = progress.as_ref().and_then(|progress| {
                     let step = progress.current_step()?;
@@ -133,6 +190,19 @@ pub fn status_snapshot(
                         .as_deref()
                         .and_then(|since| elapsed_secs(since, now)),
                     position,
+                    blocked_by: incident.and_then(|incident| {
+                        let head = ordered.iter().find(|candidate| {
+                            candidate.project == incident.project
+                                && candidate.verifying_generation == Some(incident.generation)
+                        })?;
+                        Some(VerificationBlocker {
+                            story_id: head.story_id.clone(),
+                            first_failed_at: incident.first_failed_at.clone(),
+                            last_failed_at: incident.last_failed_at.clone(),
+                            detail: incident.detail.clone(),
+                            halted: incident.halted,
+                        })
+                    }),
                 }
             };
             (candidate.project, candidate.story_id.clone(), status)
@@ -233,7 +303,9 @@ pub fn publish_once(
 ) -> Result<bool, AppError> {
     let ordered = VerificationQueue::new(store).ordered()?;
     let active = activity.active();
-    let statuses = status_snapshot(&ordered, active.as_ref(), env, now);
+    let incident = store.read(|tx| tx.verification_incident())?;
+    let statuses =
+        status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
     let mut moved = false;
     for (candidate, (_, _, status)) in ordered.iter().zip(statuses) {
         let ctx = Ctx::new(
@@ -243,7 +315,23 @@ pub fn publish_once(
             env.clone(),
         )
         .no_hooks(true);
-        let body = if matches!(&status, VerificationStatus::Running { .. }) {
+        let body = if let VerificationStatus::Stalled {
+            attempts,
+            first_failed_at,
+            last_failed_at,
+            detail,
+            halted,
+        } = &status
+        {
+            format!(
+                "{GATE_PROGRESS_PREFIX} last evidence {last_failed_at}\n\nVerification — {} after {attempts} attempt(s)\nFirst infrastructure failure: {first_failed_at}.\nReason: {detail}\n",
+                if *halted {
+                    "HALTED"
+                } else {
+                    "RETRYING INFRASTRUCTURE"
+                }
+            )
+        } else if matches!(&status, VerificationStatus::Running { .. }) {
             let journal = journal_path(env, candidate);
             let progress = matching_progress(env, candidate).unwrap_or_default();
             let elapsed_seconds = active
@@ -260,7 +348,12 @@ pub fn publish_once(
                 now,
             )
         } else {
-            let VerificationStatus::Queued { position, .. } = status else {
+            let VerificationStatus::Queued {
+                position,
+                blocked_by,
+                ..
+            } = status
+            else {
                 unreachable!("running handled above")
             };
             let waiting: Vec<VerificationCandidate> = ordered
@@ -270,14 +363,27 @@ pub fn publish_once(
                 .collect();
             let (ahead_higher_priority, ahead_equal_priority_older) =
                 ahead_counts(&waiting, position - 1);
-            gate_progress::render(
+            let evidence_at = blocked_by
+                .as_ref()
+                .map_or(now, |blocker| blocker.last_failed_at.as_str());
+            let mut rendered = gate_progress::render(
                 &VerificationProgressView::Queued {
                     position,
                     ahead_higher_priority,
                     ahead_equal_priority_older,
                 },
-                now,
-            )
+                evidence_at,
+            );
+            if let Some(blocker) = blocked_by {
+                rendered.push_str(&format!(
+                    "\nVerifier {} since {}; blocked by {}: {}\n",
+                    if blocker.halted { "HALTED" } else { "RETRYING" },
+                    blocker.first_failed_at,
+                    blocker.story_id,
+                    blocker.detail
+                ));
+            }
+            rendered
         };
         let (_, wrote) = StoryService::new(&ctx).upsert_marked_comment(
             &candidate.story_id,

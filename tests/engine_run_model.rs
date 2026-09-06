@@ -51,10 +51,10 @@ fn run(id: &str, project_slug: &str, state: EngineRunState) -> EngineRunRecord {
 }
 
 #[test]
-fn migration_31_adds_nullable_run_configuration_without_inventing_defaults() {
+fn migration_32_adds_nullable_run_configuration_without_inventing_defaults() {
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
-    store.migrate_with(&migrate::MIGRATIONS[..30]).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..31]).unwrap();
     seed_project(&store, "alpha", "AL");
     insert_raw_run(
         &raw(&store),
@@ -67,10 +67,10 @@ fn migration_31_adds_nullable_run_configuration_without_inventing_defaults() {
     )
     .unwrap();
 
-    let report = store.migrate_with(&migrate::MIGRATIONS[..31]).unwrap();
+    let report = store.migrate_with(&migrate::MIGRATIONS[..32]).unwrap();
 
-    assert_eq!(report.from_version, 30);
-    assert_eq!(report.to_version, 31);
+    assert_eq!(report.from_version, 31);
+    assert_eq!(report.to_version, 32);
     assert_eq!(report.applied, ["engine_run_options"]);
     let stored = store
         .read(|tx| tx.engine_run("run-before-options"))
