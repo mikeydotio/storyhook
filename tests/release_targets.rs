@@ -1738,3 +1738,80 @@ fn a_cache_root_that_cannot_be_created_is_refused_by_name_not_reported_as_a_down
          for it: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A cross linker needs a cross C runtime, or it cannot link (SH-578)
+// ---------------------------------------------------------------------------
+//
+// `release-linux.yaml` installs both cross compilers with
+// `--no-install-recommends`, and on Debian/Ubuntu the matching
+// `libc6-dev-<arch>-cross` is a *Recommends* of the compiler, not a Depends.
+// So the guest had `gcc-x86-64-linux-gnu` and no `Scrt1.o`, and every
+// cross-link died at `ld: cannot find Scrt1.o` — a compiler that is present
+// and cannot do the one job it was installed for.
+//
+// Derived from the linkers `release-linux.sh` will actually ask for, so
+// teaching that script a new cross target fails here until its runtime is
+// installed too, with no list to remember to update (SH-136).
+
+/// Every cross linker `linker_for_target` can name, with the Debian
+/// architecture its C runtime package is keyed by.
+fn cross_linkers_and_runtime_architectures() -> Vec<(String, String)> {
+    let script = read("scripts/release-linux.sh");
+    let mut found = Vec::new();
+    for line in script.lines() {
+        // `      aarch64-unknown-linux-gnu) printf 'aarch64-linux-gnu-gcc\n' ;;`
+        let Some((target, rest)) = line.trim().split_once(") printf '") else {
+            continue;
+        };
+        if !target.ends_with("-unknown-linux-gnu") {
+            continue;
+        }
+        let Some(linker) = rest.split('\\').next() else {
+            continue;
+        };
+        if !linker.ends_with("-linux-gnu-gcc") {
+            continue;
+        }
+        let debian_architecture = match target {
+            "x86_64-unknown-linux-gnu" => "amd64",
+            "aarch64-unknown-linux-gnu" => "arm64",
+            other => panic!(
+                "{other} is a Linux release target this test has not been taught a Debian \
+                 architecture for. Name it here rather than letting the check pass \
+                 vacuously — a target whose C runtime is unnamed is one whose cross-link \
+                 will fail in the guest, where it costs a whole release to find out."
+            ),
+        };
+        found.push((linker.to_string(), debian_architecture.to_string()));
+    }
+    found
+}
+
+#[test]
+fn every_cross_linker_the_guest_may_use_has_its_c_runtime_installed() {
+    let provisioning = read("scripts/release-linux.yaml");
+    let linkers = cross_linkers_and_runtime_architectures();
+    assert_eq!(
+        linkers.len(),
+        2,
+        "expected both Linux cross linkers to be discoverable in release-linux.sh; \
+         found {linkers:?}"
+    );
+
+    for (linker, debian_architecture) in linkers {
+        let compiler = linker.trim_end_matches("-gcc");
+        let runtime = format!("libc6-dev-{debian_architecture}-cross");
+        assert!(
+            provisioning.contains(&format!("gcc-{}", compiler.replace('_', "-"))),
+            "the guest must install the {compiler} cross compiler"
+        );
+        assert!(
+            provisioning.contains(&runtime),
+            "the guest installs a cross compiler for {compiler} but not {runtime}. \
+             `--no-install-recommends` drops it, because the runtime is a Recommends \
+             of the compiler rather than a Depends, and the compiler then fails at \
+             `ld: cannot find Scrt1.o` (SH-578)"
+        );
+    }
+}
