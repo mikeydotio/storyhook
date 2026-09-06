@@ -24,6 +24,12 @@
 
 ## Focused verification
 
+- Central verification exposed one stale fixture: the claim-conflict test used
+  fake caller tmux variables but could no longer reach the claim after SH-490's
+  truthful pre-claim session resolution. It now uses the existing named-target
+  seam and documents the transactional intent-comment claim.
+- The repaired claim-conflict test and eight adjacent ID-claim, session, and
+  conflict tests pass; shell syntax and whitespace checks pass.
 - All 11 SH-490 dispatch/unclaim/reset shell files pass on the latest tree.
 - Nine intersecting Codex/Claude dispatch and plan-watcher files also pass.
 - Plugin-skill determinism and scope/scaffold contracts pass: 16 Rust tests.
