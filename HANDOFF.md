@@ -1,42 +1,36 @@
-# SH-582 Handoff
+# SH-585 Handoff
 
 ## Root cause
 
-The long-lived daemon inherited the cwd of its initiating client. When a
-worktree was removed, Claude and Codex provider children inherited that deleted
-directory and plugin reinstall failed.
+The installed-artifact guard classified shell calls by six reader executable
+names, so the exact stable Codex launcher with `context` was denied before
+execution. SH-584 transferred guard ownership and reproduction evidence here.
 
 ## Delivered
 
-- `73ef69cb`: daemon entry changes to stable `Environment::home()` before any
-  fallible initialization or request work.
-- Two-phase Claude/Codex regression starts the real daemon in an ephemeral
-  directory, deletes it, then proves reinstall succeeds through the same PID
-  and provider cwd is canonical HOME.
-- `764af159`: the machine-wide verifier tmux pane now uses explicit HOME cwd
-  for session/window creation and banner/tail respawn.
-- Verifier-window argv tests cover all long-lived pane forms with a spaced HOME
-  path.
+- Exact installer-produced launcher identity plus five narrow reader argv
+  contracts; no wrapper, compound-command or general Bash exemption.
+- Unknown shell safety is distinguished from structured artifact edits.
+- Installer-backed classification and real helper/domain immutability tests.
 
 ## RCA
 
-- FULL artifacts: `.rca/claude-and-codex-plugin-reinstall/` (local, ignored).
-- Confidence: HIGH. Live deleted daemon cwd plus deterministic reproduction and
-  fail-pass-fail causal toggle.
-- Classification: Assignment/Init Missing; SURGICAL.
+- Report: `docs/rca/SH-585-installed-launcher-readers.md`.
+- Automated RED on unchanged hook; independent read-only challenge.
+- Classification: checking, missing; surgical.
 
 ## Focused verification
 
-- Plugin cwd regression: 2/2.
-- Daemon invoke: 7/7; daemon lifecycle: 28/28; lifecycle units: 47/47.
-- Plugin install: 23/23; dispatch resolver: 12/12.
-- Project command: 19/19; spawn inventory: 2/2.
-- Verifier window: 8/8.
-- Targeted Clippy with warnings denied, rustfmt, Bash syntax, and diff checks.
+- Run plugin_install, protect_install_hook, hook_budgets and hook_bounds.
+- Run targeted Clippy with warnings denied, rustfmt, Bash/Python syntax and
+  diff checks. Exact final results are recorded on SH-585 and its PR.
 
 ## Submission boundary
 
-Push `fix/SH-582-daemon-cwd`, open and link one SH-582 PR, then move SH-582 to
-`verifying` as the final action. Central verification owns the full suite,
-merge, completion, and worktree cleanup. Do not version, release, deploy, or
-merge from this linked worktree.
+Push `worktree-SH-585`, open and link exactly one PR with SH-585 in its title,
+then move SH-585 to `verifying` as the absolute final action. Central
+verification owns the full suite, merge, completion and cleanup. Repair a
+returned PR with additional commits; never rewrite published history.
+
+No full suite, merge, version, release, or deployment from this worktree.
+SH-584 remains the owner of dispatch and plugin freshness work.
