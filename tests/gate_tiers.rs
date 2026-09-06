@@ -481,4 +481,44 @@ fn skip_gate_is_refused_outside_local_only() {
         "the refusal must name both the escape hatch's real scope and the \
          battery a public release runs, got: {err}"
     );
+    assert!(
+        err.contains("STORYHOOK_RELEASE_UNGATED=1"),
+        "the refusal must name the second confirmation, or the only way past \
+         it is to edit this script during the release it is blocking: {err}"
+    );
+}
+
+/// The flag alone is refused; the flag PLUS the environment variable is not.
+/// Provoked rather than read, and stopped at the next preflight step so the
+/// test never reaches a bump: running from a temporary directory means the
+/// `git rev-parse --show-toplevel` below the gate decision refuses on its own.
+///
+/// What this pins is only that the ungated branch is reachable and says so.
+/// It deliberately does not assert that a release happens — that would mean
+/// cutting one.
+#[test]
+fn an_ungated_public_release_needs_the_flag_and_the_environment_variable() {
+    let out = Command::new("bash")
+        .arg(checkout().join("scripts/release.sh").display().to_string())
+        .args(["--bump", "patch", "--skip-gate"])
+        .env("STORYHOOK_RELEASE_UNGATED", "1")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("running scripts/release.sh");
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("UNGATED release because STORYHOOK_RELEASE_UNGATED=1"),
+        "the ungated path must announce itself, every time, in the same run \
+         that ships the bytes: {err}"
+    );
+    assert!(
+        !err.contains("--skip-gate is only allowed with --local-only"),
+        "the second confirmation must actually clear the refusal: {err}"
+    );
+    assert!(
+        err.contains("No receipt is minted"),
+        "an ungated run must say that nothing will claim the battery ran — a \
+         gate's silence reading as a pass is the SH-306 shape: {err}"
+    );
 }
