@@ -30,6 +30,8 @@ out=$(
 assert_eq "$(jqf "$out" .ok)" "true" "notify: remediation delivered"
 assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" \
   "notify: multi-line remediation submitted as one prompt"
+assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Tab" \
+  "notify: Codex remediation uses its configured submit key"
 
 rm -f "$FAKE_TMUX_STATE/storyhook_agent"
 out=$(
@@ -50,5 +52,15 @@ out=$(
 assert_eq "$(jqf "$out" .ok)" "false" "notify: changed pane refused"
 assert_eq "$(jqf "$out" .reason)" "pane-changed" \
   "notify: refusal identifies the unrelated occupant"
+
+printf 'claude' > "$FAKE_TMUX_STATE/storyhook_agent"
+out=$(
+  cd "$repo" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
+      FAKE_TMUX_PANE_COMMAND=claude bash "$SCRIPT" notify "$id" "$message" 2>&1
+)
+assert_eq "$(jqf "$out" .ok)" "true" "notify: Claude remediation delivered"
+assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Enter" \
+  "notify: Claude remediation retains its configured submit key"
 
 finish

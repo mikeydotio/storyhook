@@ -3201,7 +3201,7 @@ cmd_notify() {
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
-  tmux send-keys -t "$pane" Enter 2>/dev/null \
+  tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null \
     || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
   jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
     '{ok:true, id:$id, window_name:$window, pane:$pane,
