@@ -1,57 +1,42 @@
-# SH-566 Handoff
+# SH-582 Handoff
+
+## Root cause
+
+The long-lived daemon inherited the cwd of its initiating client. When a
+worktree was removed, Claude and Codex provider children inherited that deleted
+directory and plugin reinstall failed.
 
 ## Delivered
 
-- Engine runs persist immutable agent, model, effort, and speed configuration.
-- Initial and replacement lane dispatches reuse the stored configuration.
-- CLI, HTTP, human output, JSON, project starts, and epic starts expose the
-  configuration through one validated contract and one shared dashboard modal.
-- Current main's lifecycle controls, persistent alerts, and lane chips coexist
-  with the configured launch surface.
+- `73ef69cb`: daemon entry changes to stable `Environment::home()` before any
+  fallible initialization or request work.
+- Two-phase Claude/Codex regression starts the real daemon in an ephemeral
+  directory, deletes it, then proves reinstall succeeds through the same PID
+  and provider cwd is canonical HOME.
+- `764af159`: the machine-wide verifier tmux pane now uses explicit HOME cwd
+  for session/window creation and banner/tail respawn.
+- Verifier-window argv tests cover all long-lived pane forms with a spaced HOME
+  path.
 
-## Commits
+## RCA
 
-- `55605278`: backend persistence, service, CLI, and wire behavior.
-- `d093d4d2`: dashboard modal and browser coverage.
-- `78eb9ace`: documentation and original handoff.
-- `93769252`: verifier-found engine-status golden correction.
-- `29d427bb`: fake-tmux composite liveness probe repair for SH-575.
-
-## Reconciliation
-
-- Published history remains unchanged; `origin/main` at `78c2bde0` is merged
-  additively into `worktree-SH-566`.
-- Main's verification incident is migration 31; engine run options are
-  migration 32.
-- D15 records verification incidents; D16 records immutable provider options.
-- AGENTS.md and its canonical template name SH-566 as the current verifier
-  item.
-- Dashboard overlay precedence is alert, stop confirmation, launch modal, then
-  older surfaces.
-
-## Verifier repairs
-
-- Central verification found two stale complete-output snapshots. `93769252`
-  updates only those expected human and JSON outputs.
-- The desktop-Chromium engine project exposed a fake-tmux contract defect:
-  production requested pane pid, command, and dead state together, but the fake
-  returned only the first matching field. `29d427bb` renders the composite and
-  derives dead state from the placeholder process; its exact regression test
-  passed after reproducing RED.
+- FULL artifacts: `.rca/claude-and-codex-plugin-reinstall/` (local, ignored).
+- Confidence: HIGH. Live deleted daemon cwd plus deterministic reproduction and
+  fail-pass-fail causal toggle.
+- Classification: Assignment/Init Missing; SURGICAL.
 
 ## Focused verification
 
-- Fake-tmux state regression: 1 passed.
-- Desktop Chromium `specs/engine.spec.ts`: 24 passed, including the formerly
-  repeatable real-daemon failure.
-- Desktop Chromium `specs/overlay-modality.spec.ts`: 6 passed.
-- Rust `web_test`: 219 passed.
-- Engine-status goldens: 2 passed with snapshot updates disabled.
-- AGENTS/template equality: 1 passed; `cargo fmt --check` passed.
+- Plugin cwd regression: 2/2.
+- Daemon invoke: 7/7; daemon lifecycle: 28/28; lifecycle units: 47/47.
+- Plugin install: 23/23; dispatch resolver: 12/12.
+- Project command: 19/19; spawn inventory: 2/2.
+- Verifier window: 8/8.
+- Targeted Clippy with warnings denied, rustfmt, Bash syntax, and diff checks.
 
 ## Submission boundary
 
-Run only the new and directly impacted tests, push the additive merge to
-existing PR #652, record the evidence on SH-566, then move SH-566 to
-`verifying` as the absolute last action. Central verification owns the full
-suite, merge, completion, and worktree cleanup.
+Push `fix/SH-582-daemon-cwd`, open and link one SH-582 PR, then move SH-582 to
+`verifying` as the final action. Central verification owns the full suite,
+merge, completion, and worktree cleanup. Do not version, release, deploy, or
+merge from this linked worktree.
