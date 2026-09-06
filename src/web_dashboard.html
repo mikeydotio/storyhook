@@ -571,6 +571,28 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
 
+/* ---- Persistent central-verification alert (SH-573) ---- */
+.engine-banner-region {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1.25rem 0;
+  flex-shrink: 0;
+}
+.engine-banner {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem;
+  border: 1px solid var(--warn); border-radius: var(--radius);
+  background: var(--warn-soft); color: var(--fg); box-shadow: var(--shadow-sm);
+}
+.engine-banner-head { display: flex; align-items: center; gap: 0.75rem; }
+.engine-banner-title { font-weight: 800; color: var(--warn); }
+.engine-banner-ack { margin-left: auto; flex: none; }
+.engine-banner-meta { display: flex; flex-wrap: wrap; gap: 0.375rem 1rem; color: var(--fg-muted); }
+.engine-banner-meta code { font-family: var(--mono); color: var(--fg); }
+.engine-banner-quarantines { display: flex; flex-direction: column; gap: 0.25rem; }
+.engine-banner-quarantines-title { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
+.engine-banner-stale {
+  padding: 0.5rem 0.75rem; border-left: 3px solid var(--warn);
+  background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem;
+}
+
 /* ---- Persistent Full Auto alerts (SH-471/SH-568) ----
    This is intentionally not a toast and intentionally cannot be dismissed.
    The engine owns its lifetime through `acknowledged_at`; no notice clock,
@@ -704,6 +726,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   font-variant-numeric: tabular-nums; line-height: 1.35;
 }
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .chip {
@@ -1455,6 +1478,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   .filter-clear-short { display: inline; }
   .engine-lanes-input { width: 3rem; }
   .engine-lane-strip { max-width: min(13rem, 42vw); }
+  .engine-banner-region { padding: 0.5rem 0.75rem 0; }
+  .engine-banner-head { align-items: stretch; flex-direction: column; }
+  .engine-banner-ack { align-self: flex-start; margin-left: 0; }
   .engine-alert-modal .modal-footer { align-items: stretch; flex-direction: column; }
   .engine-alert-impact { align-self: flex-start; }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
@@ -1548,6 +1574,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   <div class="repo-workspace" id="repo-workspace">
   <div class="workspace-content" id="workspace-content">
+  <section class="engine-banner-region" id="verification-banner-region" aria-label="Verification alerts" aria-live="assertive" hidden></section>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
   <main class="board" id="board-view" aria-describedby="board-kbd-hint"></main>
@@ -2429,6 +2456,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // while a newer run is live, and because abandon owns a stop-then-ack
     // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
+    verificationAcknowledgement: null,
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -3449,7 +3477,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * open. Its clipped, zero-width closed track still gives both children an
    * intrinsic height, so counting them then would reserve notice space for a
    * panel the reader cannot see. */
-  var NOTICE_BAND_TOP = [".topbar", "#filter-bar", ".drawer-header"];
+  var NOTICE_BAND_TOP = [
+    ".topbar", "#filter-bar", "#verification-banner-region", ".drawer-header"
+  ];
   var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
 
   /** A detail-panel band contributes only while that peer is visible. Its
@@ -4076,19 +4106,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
    *
-   * The clock is not a bare `setTimeout`, because two states stop it:
+   * The clock is not a bare `setTimeout`, because three states stop it:
    *
    *   - the pointer resting on the notice, which IS a request to keep
    *     reading, made in the only vocabulary a toast offers;
    *   - the tab being hidden, the one state in which "three seconds of
    *     being visible" definitively did not happen. A notice exists because
    *     nobody may be watching; letting its clock run down in a background
-   *     tab defeats the notice at exactly the moment it was needed.
+   *     tab defeats the notice at exactly the moment it was needed;
+   *   - the document lacking focus, which covers the different case where
+   *     its tab remains visible but the browser is behind another application
+   *     or another browser window. Page Visibility may still call that tab
+   *     visible, so `window` focus and `document.hasFocus()` are both needed:
+   *     the event catches a transition after the clock starts, and the state
+   *     check catches a notice created after the transition already happened.
    *
    * Pausing preserves what is left rather than restarting it, so a reader
    * who hovers twice does not get a fresh three seconds each time.
    *
-   * **Both are courtesies, and neither is this dashboard's WCAG conformance
+   * **All three are courtesies, and none is this dashboard's WCAG conformance
    * story** — a distinction this comment got wrong until SH-322, in a way
    * worth recording because it is easy to get wrong again. SC 2.2.1 (Timing
    * Adjustable) offers exactly three mechanisms — **Turn off, Adjust,
@@ -4134,6 +4170,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     function resume() {
       if (leaving || timer !== null) return;
       if (document.hidden) return;
+      if (!document.hasFocus()) return;
       if (node.matches(":hover")) return;
       startedAt = Date.now();
       timer = window.setTimeout(depart, remaining);
@@ -4143,6 +4180,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       leaving = true;
       timer = null;
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
       node.classList.add("leaving");
       // Removal is NOT gated on reduced motion, unlike the fade itself: a
       // reader who asked for less movement did not ask for notices that
@@ -4156,15 +4195,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", pause);
+    window.addEventListener("focus", resume);
     // The teardown this notice's own removal has to run (SH-323). `depart()`
-    // detaches the document-level listener on the path where the clock expires;
-    // a notice removed by "Dismiss all" never reaches `depart()`, so without a
-    // handle here its listener would outlive the node it belongs to, for the
-    // rest of the session, with nothing left able to release it.
+    // detaches the document/window listeners on the path where the clock
+    // expires; a notice removed by "Dismiss all" never reaches `depart()`, so
+    // without a handle here its listeners would outlive the node they belong
+    // to, for the rest of the session, with nothing left able to release them.
     node.cancelNoticeClock = function() {
       if (timer !== null) window.clearTimeout(timer);
       timer = null;
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
     };
     resume();
   }
@@ -4778,6 +4821,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
+  /** Durable machine-wide verifier halt. It comes from `/data` so the banner
+   * and card statuses are one consistent store snapshot. */
+  function renderVerificationBanner() {
+    var mount = $("verification-banner-region");
+    var incident = state.data && state.data.verification_incident;
+    var visible = !!(incident && incident.halted);
+    mount.hidden = !visible;
+    if (!visible) {
+      if (mount.firstChild) clear(mount);
+      return;
+    }
+    var pending = state.verificationAcknowledgement === incident.incident_id;
+    var fingerprint = JSON.stringify([incident, pending]);
+    if (mount.dataset.fingerprint === fingerprint) return;
+    clear(mount);
+    mount.appendChild(el("article", { class: "engine-banner verification-halted-banner" }, [
+      el("div", { class: "engine-banner-head" }, [
+        el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
+        el("button", {
+          type: "button", class: "btn btn-warn", disabled: pending,
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id); }
+        }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
+      ]),
+      el("div", { class: "engine-banner-meta" }, [
+        el("span", {}, ["Story ", el("code", {}, [incident.story_id])]),
+        el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
+        el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
+      ]),
+      el("div", { class: "engine-banner-quarantines" }, [incident.detail])
+    ]));
+    mount.dataset.fingerprint = fingerprint;
+    measureNoticeBands();
+  }
+
+  function acknowledgeVerificationIncident(incidentId) {
+    if (!state.repoId || state.verificationAcknowledgement) return;
+    state.verificationAcknowledgement = incidentId;
+    renderVerificationBanner();
+    api("POST", apiBase() + "/verification/ack", { incident_id: incidentId }).then(function() {
+      state.verificationAcknowledgement = null;
+      fetchData();
+    }).catch(function(err) {
+      state.verificationAcknowledgement = null;
+      toastError(err);
+      fetchData();
+    });
+  }
+
   function currentEngineStartPending() {
     return !!state.repoId && !!state.engineStarts[state.repoId];
   }
@@ -4986,7 +5077,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         queued.push(formatVerificationDuration(liveVerificationSeconds(verification.wait_seconds)));
       }
       queued.push("position " + verification.position);
+      if (verification.blocked_by) {
+        queued.push("verifier " + (verification.blocked_by.halted ? "halted" : "retrying") +
+          " at " + verification.blocked_by.story_id);
+      }
       return queued.join(" · ");
+    }
+    if (verification.status === "stalled") {
+      return (verification.halted ? "Verification halted" : "Verification retrying") +
+        " · attempt " + verification.attempts + " · " + verification.detail;
     }
     if (verification.status !== "running") return "";
     if (!verification.current_step && !verification.tests) return "Verifying · starting…";
@@ -6337,7 +6436,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var text = f.text.toLowerCase();
     return state.data.stories.filter(function(v) {
       var st = v.story;
-      if (!f.showClosed && stateSuperstate(st.state) === "CLOSED") return false;
+      // `display_state || st.state` (SH-407) -- the status this story actually
+      // renders under, shared by column placement and the State filter below.
+      // "Show closed" names the required `closed` status (SH-551), not every
+      // status in the CLOSED superstate: completed work in `done` stays visible.
+      var shownState = v.display_state || st.state;
+      if (!f.showClosed && shownState === "closed") return false;
       // SH-499: an epic is a story TYPED `epic`, never one that merely has
       // children. This read `v.progress`, which is present for ANY parent, so
       // an ordinary story that gained one sub-task was hidden from the board
@@ -6357,12 +6461,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var t = st.story_type || "__untyped__";
         if (f.types.indexOf(t) === -1) return false;
       }
-      // `display_state || st.state` (SH-407) -- same expression every other
-      // renderer in this file uses for "what state does this card actually
-      // show," so filtering by "blocked" finds the cards SH-407's own
-      // promotion just moved into that column, instead of missing them
-      // because their literal `state` is still `todo`.
-      var shownState = v.display_state || st.state;
       if (f.states.length && f.states.indexOf(shownState) === -1) return false;
       return true;
     });
@@ -6741,6 +6839,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderView();
     renderEngineControl();
     renderEngineAlert();
+    renderVerificationBanner();
     updateSubtitle();
     updateDraftsButton();
     syncCreateAvailability();
@@ -8419,6 +8518,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return (state.data && state.data.stories || []).filter(function(v) { return v.story.id === id; })[0] || null;
   }
 
+  /** Whether `id` still names any story in the project's exhaustive `/data`
+   * arrays. Drafts remain deliberately absent from findStory(): they have no
+   * board card or drawer navigation target, but their absence must never be
+   * mistaken for deletion. */
+  function storyReferenceExists(id) {
+    if (findStory(id)) return true;
+    return (state.data && state.data.drafts || []).some(function(v) { return v.story.id === id; });
+  }
+
   /** The story id a block-reason prompt is currently open for, or null. */
   var dropBlockedReasonMoveId = null;
 
@@ -8644,12 +8752,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * alphanumerics, no hyphen) -- rather than requiring a server field
    * just for this.
    *
-   * Two cases are deliberately left as plain text, not a light: `selfId`
-   * itself (a self-reference names nothing to navigate to), and an id
-   * this project's loaded stories can't resolve (`findStory` returns
-   * null) -- linking it would render storyLight()'s "unknown" ring for
-   * what may simply be a typo or a reference to another project, which
-   * reads as this feature being broken rather than as an honest gap. */
+   * A self-reference stays plain because it names nothing to navigate to.
+   * An unresolved canonical id becomes `<DELETED>` only when the project's
+   * allocation watermark proves it was minted; malformed and future ids stay
+   * plain. Older daemon responses carry no watermark and therefore degrade to
+   * that same conservative plain-text behavior. */
   function linkifyStoryIds(text, selfId) {
     var prefixMatch = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(selfId || "");
     if (!prefixMatch) return [text];
@@ -8661,7 +8768,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var id = match[2];
       var idStart = match.index + match[1].length;
       parts.push(text.slice(lastIndex, idStart));
-      parts.push(id === selfId || !findStory(id) ? id : storyRef(id));
+      var story = findStory(id);
+      var rawNumber = id.slice(prefixMatch[1].length + 1);
+      var storyNumber = Number(rawNumber);
+      var highestStoryNumber = state.data && state.data.highest_story_number;
+      var canonical = Number.isSafeInteger(storyNumber) && storyNumber >= 1 && String(storyNumber) === rawNumber;
+      var watermarkIsSafe = Number.isSafeInteger(highestStoryNumber) && highestStoryNumber >= 0;
+      var deleted = canonical && watermarkIsSafe && storyNumber <= highestStoryNumber && !storyReferenceExists(id);
+      parts.push(id === selfId ? id : story ? storyRef(id) : deleted ? "<DELETED>" : id);
       lastIndex = idStart + id.length;
       re.lastIndex = lastIndex;
     }
