@@ -63,6 +63,7 @@ use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
 use crate::api::rpc::token_ok;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
+use crate::domain::validate_dispatch_option_token;
 use crate::env::Environment;
 #[cfg(test)]
 use crate::service::engine::{
@@ -153,16 +154,7 @@ impl OptionToken {
     /// `Err` names what was wrong, for the 400 body — never the value's
     /// hazard class, since a query caller has already seen the raw value.
     fn parse(raw: &str) -> Result<Self, String> {
-        let len = raw.chars().count();
-        if !(1..=64).contains(&len) {
-            return Err(format!("must be 1-64 characters (got {len})"));
-        }
-        if !raw
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
-            return Err("must contain only letters, digits, `.`, `_`, or `-`".to_string());
-        }
+        validate_dispatch_option_token(raw)?;
         Ok(Self(raw.to_string()))
     }
 }

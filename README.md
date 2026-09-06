@@ -400,7 +400,7 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
-story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine status [--run <run-id>]
 story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
@@ -584,14 +584,22 @@ tmux window, and watches the story store for completion or a hard stop. Start a
 project-wide run from that project's checkout, or scope it to a typed epic:
 
 ```bash
-story engine start --lanes 2 --agent codex
-story engine start --epic SH-452 --lanes 2 --agent claude
+story engine start --lanes 2 --agent codex --model gpt-5.6-sol --effort high --speed fast
+story engine start --epic SH-452 --lanes 2 --agent claude --model sonnet
 ```
 
 Only one run may be live for a project. A project run considers the whole ready
 queue; an epic run considers only descendants of that epic. Full Auto never
 claims `no-auto` or `human-only` stories. The former appear under "needs a
 human" in status; the latter remain available only to a person.
+
+Model, effort, and speed are optional provider settings. Storyhook stores the
+selection on the run and applies it to every lane the run fills, including
+later replacements after a completion or quarantine. Omit a setting to use
+the provider default; `--speed standard` is also the normal provider path and
+does not add a speed override to the lane command. The dashboard uses one Full
+Auto launch dialog for project and epic runs, remembers submitted provider
+choices alongside attended Dispatch, and shows the active configuration.
 
 | State | Meaning | Operator action |
 |---|---|---|
@@ -601,9 +609,10 @@ human" in status; the latter remain available only to a person.
 | `halted` | Three consecutive hard stops tripped the breaker. Preserved work needs inspection. | Diagnose each quarantine before cleanup or redispatch. |
 | `finished` | The queue drained or an immediate stop completed. | Review the stop reason, then acknowledge it. |
 
-`story engine status` shows the selected run, its state, stop reason, hard-stop
-streak, and each lane's story and elapsed time. With no `--run`, it selects the
-one live run; name a halted or finished run explicitly:
+`story engine status` shows the selected run, its provider configuration,
+state, stop reason, hard-stop streak, and each lane's story and elapsed time.
+With no `--run`, it selects the one live run; name a halted or finished run
+explicitly:
 
 ```bash
 story engine status

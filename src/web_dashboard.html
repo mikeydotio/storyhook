@@ -573,6 +573,10 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-state-paused { color: var(--accent); background: var(--accent-soft); }
 .engine-state-draining { color: var(--warn); background: var(--warn-soft); }
 .engine-lane-count { flex: none; font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
+.engine-config {
+  flex: none; max-width: 22rem; overflow: hidden; text-overflow: ellipsis;
+  font-size: 0.6875rem; color: var(--fg-muted); white-space: nowrap;
+}
 .engine-lane-strip { display: flex; gap: 0.375rem; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .engine-lane {
   flex: none; display: inline-flex; align-items: baseline; gap: 0.3rem;
@@ -1757,6 +1761,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="dispatch-modal-cancel">Cancel</button>
     <button type="button" class="btn btn-primary" id="dispatch-modal-submit">Dispatch</button>
+  </div>
+</div>
+
+<div class="backdrop" id="engine-modal-backdrop" data-overlay="engine-modal" hidden></div>
+<div class="modal" id="engine-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="engine-modal-header">
+  <div class="modal-header" id="engine-modal-header">Run Full Auto</div>
+  <div class="modal-body">
+    <div class="field-grid">
+      <div class="field"><label for="engine-lanes">Lanes</label>
+        <input id="engine-lanes" class="engine-lanes-input" type="number" min="1" max="255" step="1" value="1"></div>
+      <div class="field"><label for="engine-agent">Provider</label>
+        <select id="engine-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></div>
+      <div class="field"><label for="engine-model">Model</label>
+        <select id="engine-model"><option value="">Default</option></select></div>
+      <div class="field"><label for="engine-effort">Effort</label>
+        <select id="engine-effort"><option value="">Default</option></select></div>
+      <div class="field"><label for="engine-speed">Speed</label>
+        <select id="engine-speed"><option value="">Default</option></select></div>
+    </div>
+    <div class="modal-error" id="engine-modal-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="engine-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="engine-modal-submit">Run Full Auto</button>
   </div>
 </div>
 
@@ -4667,21 +4695,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return defaults;
   }
 
-  /** Commits one submitted configuration to memory first, then best-effort
-   * localStorage. The in-page preference therefore survives even when the
-   * browser refuses durable storage; a later page load simply returns to the
-   * historical defaults in that case. */
+  /** Commits one submitted provider configuration to memory first, then
+   * best-effort localStorage. Full Auto and attended Dispatch share this
+   * provider preference, while attended Auto mode remains separately owned. */
   var dispatchDefaults = loadDispatchDefaults();
-  function saveDispatchDefaults(agent, auto, model, effort, speed) {
+  function saveDispatchProviderDefaults(agent, model, effort, speed) {
     var normalizedAgent = agent === "codex" ? "codex" : "claude";
     dispatchDefaults.agent = normalizedAgent;
-    dispatchDefaults.auto = auto === true;
     dispatchDefaults.byAgent[normalizedAgent] = sanitizeDispatchAgentDefaults({
       model: model, effort: effort, speed: speed
     });
     try {
       localStorage.setItem(DISPATCH_DEFAULTS_STORAGE_KEY, JSON.stringify(dispatchDefaults));
     } catch (e) { /* the in-memory preference above remains authoritative */ }
+  }
+
+  function saveDispatchDefaults(agent, auto, model, effort, speed) {
+    dispatchDefaults.auto = auto === true;
+    saveDispatchProviderDefaults(agent, model, effort, speed);
   }
 
   /** Whether the project currently open has a checkout on this machine --
@@ -4974,28 +5005,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (shortLabel.textContent !== short) shortLabel.textContent = short;
   }
 
-  /** Updates the stable idle control without replacing its focused number
-   * input. A status poll is allowed to change disabled/readiness state; it is
-   * not allowed to eat a lane count somebody is typing. */
+  /** Updates the stable idle launch button without replacing it under a
+   * pointer press. Configuration lives in the dedicated modal. */
   function syncEngineLaunchControl(control) {
-    var input = control.querySelector(".engine-lanes-input");
     var button = control.querySelector(".engine-run-btn");
-    if (!input || !button) return;
-    var expectedValue = String(state.engineLanes);
-    if (document.activeElement !== input && input.value !== expectedValue) input.value = expectedValue;
-    var entered = Number(input.value);
-    var valid = Number.isInteger(entered) && entered >= 1 && entered <= 255;
+    if (!button) return;
     var blocked = engineStartBlocked();
-    // A valid number input fires `change` when the next pointer press blurs
-    // it. WebKit suppresses that press's queued click when this handler
-    // needlessly mutates the destination button or its descendants. Preserve
-    // the same native invariant without writing any launch-control property
-    // whose semantic value did not actually change.
-    if (input.disabled !== blocked) input.disabled = blocked;
-    var buttonBlocked = blocked || !valid;
-    if (button.disabled !== buttonBlocked) button.disabled = buttonBlocked;
+    if (button.disabled !== blocked) button.disabled = blocked;
     var title = engineReadinessTitle();
-    if (input.title !== title) input.title = title;
     if (button.title !== title) button.title = title;
     if (currentEngineStartPending()) {
       setEngineRunButtonText(button, "Starting Full Auto…", "Starting…");
@@ -5009,33 +5026,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function buildEngineLaunchControl() {
-    var input = el("input", {
-      id: "engine-lanes", class: "engine-lanes-input", type: "number",
-      min: "1", max: "255", step: "1", value: String(state.engineLanes),
-      "aria-label": "Full Auto lanes"
-    });
     var button = el("button", {
       type: "button", class: "btn btn-primary engine-run-btn",
-      onClick: function() { startEngineRun(null); }
+      onClick: function(e) { openEngineModal(null, e.currentTarget); }
     }, [
       el("span", { class: "engine-run-label" }, ["Run Full Auto"]),
       el("span", { class: "engine-run-short", "aria-hidden": "true" }, ["Run"])
     ]);
-    input.addEventListener("input", function() {
-      var value = Number(input.value);
-      if (Number.isInteger(value) && value >= 1 && value <= 255) state.engineLanes = value;
-      syncEngineLaunchControl(input.parentNode.parentNode);
-    });
-    input.addEventListener("change", function() {
-      var value = Number(input.value);
-      if (!Number.isInteger(value) || value < 1 || value > 255) input.value = String(state.engineLanes);
-      syncEngineLaunchControl(input.parentNode.parentNode);
-    });
     var control = el("div", { class: "engine-launch" }, [
       el("span", { class: "engine-wordmark" }, ["Full Auto"]),
-      el("label", { class: "engine-lanes-label" }, [
-        el("span", { class: "engine-lanes-copy" }, ["Lanes"]), input
-      ]),
       button
     ]);
     syncEngineLaunchControl(control);
@@ -5045,6 +5044,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function engineRunFingerprint(run) {
     return JSON.stringify({
       id: run.id, state: run.state, lane_count: run.lane_count,
+      agent: run.agent, model: run.model, effort: run.effort, speed: run.speed,
       pending_action: engineActionPending(run.id),
       lanes: (run.lanes || []).map(function(lane) {
         return [lane.index, lane.state, lane.story, lane.dispatched_at];
@@ -5060,6 +5060,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (seconds < 60) return seconds + "s";
     if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
     return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds / 60) % 60) + "m";
+  }
+
+  function engineConfigurationText(run) {
+    var provider = run.agent === "codex" ? "Codex" : "Claude";
+    return [
+      provider,
+      run.model || "Default model",
+      run.effort ? run.effort + " effort" : "Default effort",
+      run.speed || "Default speed"
+    ].join(" · ");
   }
 
   function buildEngineLiveControl(run) {
@@ -5079,6 +5089,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, [elapsed]) : null
       ]));
     });
+    var configuration = engineConfigurationText(run);
     var actions = [];
     if (run.state === "running") {
       actions.push(el("button", {
@@ -5100,6 +5111,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       el("span", { class: "engine-wordmark" }, ["Full Auto"]),
       el("span", { class: "engine-state engine-state-" + run.state }, [run.state]),
       el("span", { class: "engine-lane-count" }, [run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")]),
+      el("span", { class: "engine-config", title: configuration }, [configuration]),
       lanes,
       el("div", { class: "engine-actions", "aria-label": "Full Auto controls" }, actions)
     ]);
@@ -5272,19 +5284,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * project id is the in-flight claim, acquired before `api()` and released
    * on every response. A status GET follows success and refusal alike so an
    * ambiguous transport outcome is reconciled instead of guessed. */
-  function startEngineRun(epicId) {
+  function startEngineRun(epicId, lanes, agent, model, effort, speed) {
     var project = state.repoId;
     if (!project || state.engineStarts[project] || engineStartBlocked()) return;
-    var body;
-    if (epicId) {
-      body = { epic: epicId };
-    } else {
-      var input = $("engine-lanes");
-      var lanes = input ? Number(input.value) : state.engineLanes;
-      if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) return;
-      state.engineLanes = lanes;
-      body = { lanes: lanes };
-    }
+    if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) return;
+    var body = { lanes: lanes, agent: agent };
+    if (epicId) body.epic = epicId;
+    if (model) body.model = model;
+    if (effort) body.effort = effort;
+    if (speed) body.speed = speed;
 
     state.engineStarts[project] = true;
     renderEngineControl();
@@ -5586,11 +5594,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * modal open and whenever Provider changes -- a Claude selection has no
    * meaning once Codex is chosen, and vice versa. */
   function applyDispatchProviderOptions(agent, caps) {
+    applyProviderOptions("dispatch", agent, caps);
+  }
+
+  function applyEngineProviderOptions(agent, caps) {
+    applyProviderOptions("engine", agent, caps);
+  }
+
+  function applyProviderOptions(prefix, agent, caps) {
     var providerCaps = (caps && caps[agent]) || {};
     var remembered = dispatchDefaults.byAgent[agent] || sanitizeDispatchAgentDefaults(null);
-    populateDispatchSelector("dispatch-model", providerCaps.models, remembered.model);
-    populateDispatchSelector("dispatch-effort", providerCaps.efforts, remembered.effort);
-    populateDispatchSelector("dispatch-speed", providerCaps.speeds, remembered.speed);
+    populateDispatchSelector(prefix + "-model", providerCaps.models, remembered.model);
+    populateDispatchSelector(prefix + "-effort", providerCaps.efforts, remembered.effort);
+    populateDispatchSelector(prefix + "-speed", providerCaps.speeds, remembered.speed);
   }
 
   /** Opens with the last submitted configuration. Localhost remains the only
@@ -5655,6 +5671,70 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     saveDispatchDefaults(agent, auto, model, effort, speed);
     closeDispatchModal();
     startDispatch(storyId, agent, auto, model, effort, speed);
+  }
+
+  var engineModalProject = null;
+  var engineModalEpicId = null;
+
+  /** Opens one shared Full Auto configuration surface for project and epic
+   * launches. Catalog and provider preferences are the attended Dispatch
+   * ones; lanes remain this page session's last submitted value. */
+  function openEngineModal(epicId, returnFocus) {
+    if (engineStartBlocked()) return;
+    var project = state.repoId;
+    engineModalProject = project;
+    engineModalEpicId = epicId;
+    $("engine-modal-header").textContent = epicId
+      ? "Run Full Auto on " + epicId
+      : "Run Full Auto";
+    $("engine-modal-error").textContent = "";
+    $("engine-lanes").value = String(state.engineLanes);
+    $("engine-agent").value = dispatchDefaults.agent;
+    populateDispatchSelector("engine-model", null, "");
+    populateDispatchSelector("engine-effort", null, "");
+    populateDispatchSelector("engine-speed", null, "");
+    fetchDispatchOptions().then(function(caps) {
+      if (engineModalProject === project && engineModalEpicId === epicId) {
+        applyEngineProviderOptions($("engine-agent").value, caps);
+      }
+    }).catch(function() { /* default selections keep Full Auto usable */ });
+    showBackdrop("engine-modal-backdrop");
+    activateOverlay("engine-modal", "engine-lanes");
+    if (returnFocus) overlayReturnFocus["engine-modal"] = returnFocus;
+    $("engine-modal").classList.add("open");
+    $("engine-modal").setAttribute("aria-hidden", "false");
+  }
+
+  function onEngineAgentChange() {
+    applyEngineProviderOptions($("engine-agent").value, dispatchOptionsCache);
+  }
+
+  function closeEngineModal() {
+    engineModalProject = null;
+    engineModalEpicId = null;
+    hideBackdrop("engine-modal-backdrop");
+    $("engine-modal").classList.remove("open");
+    $("engine-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("engine-modal");
+  }
+
+  function submitEngineModal() {
+    var project = engineModalProject;
+    var epicId = engineModalEpicId;
+    if (!project || project !== state.repoId || engineStartBlocked()) return;
+    var lanes = Number($("engine-lanes").value);
+    if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) {
+      $("engine-modal-error").textContent = "Lanes must be an integer from 1 through 255.";
+      return;
+    }
+    var agent = $("engine-agent").value;
+    var model = $("engine-model").value;
+    var effort = $("engine-effort").value;
+    var speed = $("engine-speed").value;
+    state.engineLanes = lanes;
+    saveDispatchProviderDefaults(agent, model, effort, speed);
+    closeEngineModal();
+    startEngineRun(epicId, lanes, agent, model, effort, speed);
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
@@ -10904,7 +10984,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         next.appendChild(el("button", {
           id: "engine-epic-run-btn", class: "btn btn-primary",
           disabled: engineStartBlocked(), title: engineReadinessTitle(),
-          onClick: function() { startEngineRun(st.id); }
+          onClick: function(e) { openEngineModal(st.id, e.currentTarget); }
         }, [engineLabel]));
       } else {
         next.appendChild(dispatchButton(st));
@@ -13685,6 +13765,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
     $("dispatch-agent").addEventListener("change", onDispatchAgentChange);
+    $("engine-modal-cancel").addEventListener("click", closeEngineModal);
+    $("engine-modal-backdrop").addEventListener("click", closeEngineModal);
+    $("engine-modal-submit").addEventListener("click", submitEngineModal);
+    $("engine-agent").addEventListener("change", onEngineAgentChange);
     $("engine-stop-cancel").addEventListener("click", closeEngineStopModal);
     $("engine-stop-modal-backdrop").addEventListener("click", closeEngineStopModal);
     $("engine-stop-drain").addEventListener("click", function() { submitEngineStop(false); });
@@ -13743,6 +13827,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           closeEngineStopModal();
           return;
         }
+        if (overlayStack[overlayStack.length - 1] === "engine-modal") {
+          closeEngineModal();
+          return;
+        }
         // The dispatch dialog is nested over the story drawer. Escape belongs
         // to the topmost surface only: closing the broad overlay list below
         // would also slide the drawer away, making its recorded return-focus
@@ -13768,7 +13856,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // open, which is what lets it be called unconditionally here, the way
         // every closer beside it already is.
         var armedYieldsToNothing = overlayStack.length === 0;
-        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); closeDispatchModal(); skipDropBlockedReasonModal(); closeCloseModal(); closeDeleteModal();
+        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); closeDispatchModal(); closeEngineModal(); skipDropBlockedReasonModal(); closeCloseModal(); closeDeleteModal();
         if (armedYieldsToNothing) cancelStatusMove();
       }
     });

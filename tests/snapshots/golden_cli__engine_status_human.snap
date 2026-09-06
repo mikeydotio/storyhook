@@ -6,6 +6,9 @@ run: [run-id]
 scope: epic SH-15
 state: running
 agent: claude
+model: default
+effort: default
+speed: default
 lanes: 2
 consecutive hard stops: 0
 

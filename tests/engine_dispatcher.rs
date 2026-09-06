@@ -6,7 +6,7 @@ use storyhook::service::engine::{
     DispatchOutcome, DispatchOutcomeState, DispatchRequest, Dispatcher, ShellDispatcher,
     UnclaimRequest,
 };
-use storyhook::store::EngineAgent;
+use storyhook::store::{EngineAgent, EngineSpeed};
 use storyhook_test_support::{DispatcherCall, DispatcherStep, FakeDispatcher, scratch_dir};
 
 fn write_script(path: &Path, body: &str) {
@@ -18,7 +18,50 @@ fn request() -> DispatchRequest {
         project: "alpha".to_string(),
         story: "ALPHA-7".to_string(),
         agent: EngineAgent::Codex,
+        model: None,
+        effort: None,
+        speed: None,
     }
+}
+
+#[test]
+fn shell_dispatcher_appends_the_run_configuration_to_every_lane() {
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        r#"printf '{"ok":true,"argv":"%s","cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*""#,
+    );
+    let configured = DispatchRequest {
+        model: Some("gpt-5.6-sol".to_string()),
+        effort: Some("xhigh".to_string()),
+        speed: Some(EngineSpeed::Fast),
+        ..request()
+    };
+
+    let outcome = ShellDispatcher::new(&script, Environment::at(home))
+        .dispatch(configured)
+        .unwrap();
+
+    assert_eq!(
+        outcome.payload["argv"],
+        "--project alpha dispatch ALPHA-7 --agent=codex --auto --full-auto --force --model=gpt-5.6-sol --effort=xhigh --speed=fast"
+    );
+
+    let standard = DispatchRequest {
+        speed: Some(EngineSpeed::Standard),
+        ..request()
+    };
+    let outcome = ShellDispatcher::new(&script, Environment::at(root.path().join("home")))
+        .dispatch(standard)
+        .unwrap();
+    assert_eq!(
+        outcome.payload["argv"],
+        "--project alpha dispatch ALPHA-7 --agent=codex --auto --full-auto --force",
+        "explicit standard keeps the helper's legacy argv"
+    );
 }
 
 fn unclaim_request() -> UnclaimRequest {

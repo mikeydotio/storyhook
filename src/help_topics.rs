@@ -10,8 +10,8 @@ pub fn list_topics() -> Vec<&'static str> {
     TOPICS.keys().copied().collect()
 }
 
-static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
-    std::sync::LazyLock::new(|| {
+static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::sync::LazyLock::new(
+    || {
         let mut m = BTreeMap::new();
 
         m.insert(
@@ -2544,7 +2544,7 @@ Use `story delete <id> [--force]` for permanent story removal.
 
         m.insert(
             "engine",
-            r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+            r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine status [--run <id>]
 story engine pause [--run <id>]
 story engine resume [--run <id>]
@@ -2556,8 +2556,11 @@ Control one Full Auto run for the selected project.
 start
   Starts a project-wide run, or narrows it to an epic's descendant
   subtree with --epic. --lanes defaults to 1 and accepts 1 through 255.
-  --agent defaults to claude; codex selects a Codex lane instead. A
-  project may have only one live run.
+  --agent defaults to claude; codex selects a Codex lane instead. Model,
+  effort, and speed are optional provider settings. They are stored on the
+  run, reused by every lane, and shown by start and status. standard keeps
+  the provider's normal speed; fast requests its accelerated mode. A project
+  may have only one live run.
 
 status / pause / resume / stop / ack
   With no --run, these select the project's sole live running, paused,
@@ -2576,7 +2579,7 @@ status / pause / resume / stop / ack
 
 Examples:
   story engine start
-  story engine start --epic SH-40 --lanes 2 --agent codex
+  story engine start --epic SH-40 --lanes 2 --agent codex --model gpt-5.6-sol --effort high --speed fast
   story engine status
   story engine pause
   story engine resume --run 7d8f
@@ -3035,7 +3038,8 @@ Related:
         );
 
         m
-    });
+    },
+);
 
 /// LLM-optimized compact CLI reference. Hand-curated, 40-100 lines, <3000 chars.
 /// No verbose examples or "When to use:" sections.
