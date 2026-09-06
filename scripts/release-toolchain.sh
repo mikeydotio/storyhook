@@ -161,7 +161,15 @@ ensure_release_toolchain() {
     else
       download_dir="$cache_root/downloads"
       staging="$cache_root/toolchains/.partial-$host_target-$$"
-      mkdir -p "$download_dir" "$staging"
+      # Checked, because `set -e` cannot do it here: every caller invokes this
+      # function as `x="$(ensure_release_toolchain ...)" || ...`, and `set -e`
+      # is suppressed inside a command substitution whose assignment is part of
+      # a `||` list. An unchecked `mkdir` on a read-only cache root printed its
+      # own error, carried on, and surfaced as a failed download — a network
+      # diagnosis for a filesystem fault (SH-578).
+      mkdir -p "$download_dir" "$staging" \
+        || release_toolchain_die "could not create the release toolchain cache under $cache_root; it must exist and be writable" \
+        || return
       release_toolchain_install_component rustc "$host_target" "$staging" "$download_dir" "$lock_file" || return
       release_toolchain_install_component cargo "$host_target" "$staging" "$download_dir" "$lock_file" || return
       for target in "${required_targets[@]}"; do
