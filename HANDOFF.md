@@ -18,6 +18,9 @@
 - Reconciled additively with `origin/main` at `2d8dd34d3`; published SH-569
   history remains unchanged.
 - Main's SH-568 and SH-490 implementation is preserved alongside SH-569.
+- Verifier tree `3c7308a16` exposed a scaffold contract regression from the
+  roadmap conflict resolution: `AGENTS.md` changed without its source template.
+- `269c32946` fixes the origin by synchronizing `templates::agents_md`.
 
 ## Focused verification
 
@@ -28,9 +31,11 @@
 - `cargo fmt --check` and `git diff --check` passed.
 - After the `2d8dd34d3` reconciliation, the expanded engine spec passed 80/80
   across the same four projects; 219 web and 4 reserved-label tests passed.
+- The exact generator-equality regression reproduced RED, then GREEN.
+- Five directly impacted scaffold/template binaries passed 61/61 after repair.
 
 ## Submission boundary
 
-Push the additive merge to existing PR #658, comment final evidence, then move
+Push the repair commits to existing PR #658, comment final evidence, then move
 SH-569 to `verifying` as the absolute final action. Central verification owns
 the full suite, merge, completion, and worktree cleanup.
