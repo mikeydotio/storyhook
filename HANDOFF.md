@@ -38,8 +38,19 @@
   WebKit; it intentionally selects no mobile cases.
 - Formatting and workspace/all-target warnings-as-errors checks pass.
 
+## Verifier repair
+
+- Central verification found only `engine_status_human` and
+  `engine_status_json` newly red on merge tree `33b84e63`.
+- RCA confirmed that feature commit `55605278` added the approved status
+  fields but omitted both complete-output fixtures.
+- Fix commit `93769252` updates only those two snapshot bodies; production
+  output remains unchanged.
+- Each exact regression test passes with `INSTA_UPDATE=no`; the complete
+  `golden_cli` target passes 30/30.
+
 ## Submission boundary
 
-Push the additive merge commit to existing PR #652, comment final evidence,
-then move SH-566 to `verifying` as the absolute last action. Central
+Push the verifier repair and this handoff to existing PR #652, comment final
+evidence, then move SH-566 to `verifying` as the absolute last action. Central
 verification owns the full suite, merge, completion, and worktree cleanup.
