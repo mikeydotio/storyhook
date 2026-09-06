@@ -360,8 +360,19 @@ the first replacement for it was wrong in an instructive way: "a story may not b
 ancestor" is a `RelationService` rule, and that harness bypasses the service on purpose to
 exercise the store. Symmetry is the whole of what the store itself promises.
 
-### Not yet built
+### SH-506 identifies deleted references at render time
 
-SH-506 (`<DELETED>` references) remains separate. The dashboard has no Close action yet;
-the retained-closure state and CLI verb landed in SH-505, and permanent dashboard
-deletion landed with SH-498.
+`GET /api/repos/{project}/data` now carries the top-level integer
+`highest_story_number`, derived as `projects.next_story_no - 1`. An empty project reports
+zero; hard deletion leaves the watermark unchanged.
+
+`linkifyStoryIds` renders `<DELETED>` only for a canonical id under the open project's
+prefix whose number is at or below that watermark and which resolves in neither
+`state.data.stories` nor `state.data.drafts`. Existing archived stories retain their
+status-light link; drafts, self-references, malformed ids, other-project ids and future
+numbers retain their previous plain-text treatment. A response from an older daemon with
+no safe integer watermark also falls back to plain text.
+
+`tests/web_test.rs` pins the empty and post-delete wire values.
+`e2e/specs/story-status-light.spec.ts` drives both description and comment rendering in a
+real browser across the full predicate boundary.

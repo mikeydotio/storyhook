@@ -3316,6 +3316,10 @@ fn web_serve_api_data_empty_project() {
     let body = resp.into_body().read_to_string().unwrap();
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["summary"]["total_open"], 0);
+    assert_eq!(
+        json["highest_story_number"], 0,
+        "an empty project has not minted a story number"
+    );
     assert_eq!(json["stories"].as_array().unwrap().len(), 0);
     assert_eq!(json["ready_ids"].as_array().unwrap().len(), 0);
     assert_eq!(json["blocked_ids"].as_array().unwrap().len(), 0);
@@ -3614,6 +3618,10 @@ fn web_serve_api_data_excludes_deleted_stories() {
         ids,
         vec!["SH-1"],
         "deleted story SH-2 leaked into /api/data"
+    );
+    assert_eq!(
+        json["highest_story_number"], 2,
+        "hard deletion must not roll the allocation watermark back"
     );
 }
 
