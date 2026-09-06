@@ -88,6 +88,15 @@ assert_contains "$(jqf "$out3" .display)" "Rolled the claim back" \
 
 rolled_state=$(cd "$repo3" && story show "$id3" --json | jq -r '.story.story.state')
 assert_eq "$rolled_state" "todo" "create-session/fails: story state rolled back, not stranded at in-progress"
+comments=$(cd "$repo3" && story show "$id3" --json \
+  | jq -c '[.story.story.comments[].text]')
+assert_eq "$(printf '%s' "$comments" | jq 'length')" "2" \
+  "create-session/fails: both the attempted dispatch and its correction are recorded"
+assert_eq "$(printf '%s' "$comments" | jq -r '.[0]')" \
+  "Dispatching to tmux window dash-gamma:$id3." \
+  "create-session/fails: the transactional claim records its intended target"
+assert_contains "$(printf '%s' "$comments" | jq -r '.[1]')" "Unclaimed from" \
+  "create-session/fails: rollback records the correcting release"
 [ -d "$repo3/.claude/worktrees/$id3" ] \
   && fail_test "create-session/fails: worktree directory was left behind"
 (cd "$repo3" && git show-ref --verify --quiet "refs/heads/worktree-$id3") \

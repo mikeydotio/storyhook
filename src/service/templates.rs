@@ -212,8 +212,7 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-570's PID-bound, acknowledged provider plan watchers
-  through the centralized verifier.
+- Current: verify SH-490's durable dispatch-resource trail.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).

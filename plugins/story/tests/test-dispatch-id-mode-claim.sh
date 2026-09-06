@@ -10,14 +10,9 @@
 # CLI's (SH-481 was that drift; `claim_rollback_note`'s own doc named this
 # story as what closes the last of it).
 #
-# The claim is SILENT (`--no-comment`), exactly as SH-477 wired NEXT MODE, and
-# for the same mechanical reason: `story claim`'s default sentence names the
-# CALLING process's tmux window, which inside dispatch is the DISPATCHER's
-# window, not the window dispatch is about to open for the work. SH-490 owns
-# the question of what dispatch should say once that window exists; this file
-# pins that it says nothing AT THE CLAIM, so a future edit that drops
-# `--no-comment` is caught here rather than discovered as a wrong sentence in
-# the tracker.
+# SH-490 settles the comment asymmetry: ID MODE knows the future window name,
+# so its claim and truthful intent comment are one transaction. NEXT MODE does
+# not know its id yet and comments only after the resources exist.
 source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
@@ -54,10 +49,9 @@ claim_command=$(printf '%s' "$log" \
 assert_eq "$claim_command" "claim" \
   "claim: the dispatch claim is recorded as \`claim\`, not a hand-rolled set-state"
 
-# --- and it is silent ------------------------------------------------------
-# The claim writes a state transition and NOTHING else. A comment here would
-# name the dispatcher's own tmux window as the place the work is happening,
-# which is the one thing SH-476's determination forbids outright.
+# --- and its intent comment is part of that claim --------------------------
+# The future window name is deterministic from the caller-supplied id. The
+# session must come from tmux, never from the dispatcher's own window name.
 #
 # POSITIVE CONTROL FIRST, and it is not decoration: written without one, this
 # assertion named the event kind `StoryCommented`, which storyhook does not
@@ -70,10 +64,13 @@ control_id=$(new_story "$repo" "Positive control for the comment filter")
 control_log=$(cd "$repo" && story log "$control_id" --json)
 control_count=$(printf '%s' "$control_log" | jq -r '[.log[] | select(.kind == "StoryCommentAdded")] | length')
 assert_eq "$control_count" "1" \
-  "control: the comment filter can see a comment at all -- otherwise the silence assertion below is vacuous"
+  "control: the comment filter can see a comment at all -- otherwise the exact assertion below is vacuous"
 
-comment_count=$(printf '%s' "$log" | jq -r '[.log[] | select(.kind == "StoryCommentAdded")] | length')
-assert_eq "$comment_count" "0" "claim: the dispatch claim posts no comment (--no-comment, SH-490)"
+comment_entries=$(printf '%s' "$log" \
+  | jq -c '[.log[] | select(.kind == "StoryCommentAdded") | {actor,command,detail}]')
+assert_eq "$comment_entries" \
+  "[{\"actor\":\"story.sh:dispatch\",\"command\":\"claim\",\"detail\":\"comment — Dispatching to tmux window story-session:$id.\"}]" \
+  "claim: the transactional comment names the future target window"
 
 # --- the dry-run preview names the verb, and no client-resolved state -------
 # SH-481's own dry-run leg used to assert the previewed command named the
@@ -85,9 +82,11 @@ assert_eq "$comment_count" "0" "claim: the dispatch claim posts no comment (--no
 dry_id=$(new_story "$repo" "Dry-run previews the verb")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dry_id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
-assert_eq "$(jqf "$out" '.commands[0]')" "story claim $dry_id --no-comment" \
+assert_eq "$(jqf "$out" '.commands[0]')" \
+  "story claim $dry_id --comment \"Dispatching to tmux window <current-session>:$dry_id.\"" \
   "dry-run: the previewed claim command is the verb"
-assert_contains "$(jqf "$out" .display)" "would claim it via \`story claim $dry_id --no-comment\`" \
+assert_contains "$(jqf "$out" .display)" \
+  "would claim it via \`story claim $dry_id --comment \"Dispatching to tmux window <current-session>:$dry_id.\"\`" \
   "dry-run: display names the claim command it would run"
 case "$(jqf "$out" '.commands[0]')" in
   *in-progress* | *--if-state*)
@@ -109,6 +108,8 @@ assert_eq "$(jqf "$out" .ok)" "true" "force: ok:true reusing the existing claim"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "force: reused_claim:true"
 assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | length')" "0" \
   "force: no claim command is planned for a reused claim"
+assert_eq "$(jqf "$out" '.commands | map(select(startswith("story comment"))) | length')" "1" \
+  "force: the dry-run plans the post-handoff resource record"
 
 # And the unforced guard still refuses BEFORE the verb, with its own more
 # specific message -- not with the verb's `conflict`, whose `expected` is the
@@ -117,5 +118,29 @@ out=$(cd "$force_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$force_id" 2>
 assert_eq "$(jqf "$out" .ok)" "false" "guard: an already-claimed story is still refused"
 assert_contains "$(jqf "$out" .display)" "already" "guard: names the story as already claimed"
 assert_contains "$(jqf "$out" .display)" "--force" "guard: offers the force remedy"
+
+forced=$(dispatch_real "$force_repo" "$force_id" --force)
+assert_eq "$(jqf "$forced" .ok)" "true" "force: real redispatch succeeds"
+force_repo_real=$(cd "$force_repo" && pwd -P)
+force_comment=$(cd "$force_repo" && story show "$force_id" --json \
+  | jq -r '.story.story.comments[-1].text')
+assert_eq "$force_comment" \
+  "Dispatched to tmux window story-session:$force_id, worktree $force_repo_real/.claude/worktrees/$force_id, branch worktree-$force_id." \
+  "force: a successful claim-reuse records its resources after handoff"
+
+# A real ID claim needs a real target session. If tmux cannot resolve one,
+# dispatch refuses before the claim rather than fabricating a location.
+session_repo=$(mk_story_repo SES)
+session_id=$(new_story "$session_repo" "No tmux session identity")
+export FAKE_TMUX_NO_SESSION=1
+session_out=$(dispatch_real "$session_repo" "$session_id")
+unset FAKE_TMUX_NO_SESSION
+assert_eq "$(jqf "$session_out" .ok)" "false" "session: missing identity refuses"
+assert_contains "$(jqf "$session_out" .display)" "no claim was made" \
+  "session: refusal names the no-side-effect boundary"
+assert_eq "$(cd "$session_repo" && story show "$session_id" --json | jq -r '.story.story.state')" \
+  "todo" "session: unresolved target leaves the story ready"
+[ ! -d "$session_repo/.claude/worktrees/$session_id" ] \
+  || fail_test "session: unresolved target created a worktree"
 
 finish

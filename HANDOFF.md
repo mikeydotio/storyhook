@@ -1,43 +1,42 @@
-# SH-571 Handoff
+# SH-490 Handoff
 
 ## Delivered
 
-- Auto and Full Auto Codex dispatch require a protocol-2 SessionStart sentinel
-  from the exact plugin root that owns the helper before prompt delivery.
-- Missing hooks, legacy identity-free sentinels, and mismatched plugin roots
-  refuse with diagnostics and roll back the claim and Git resources.
-- Attended Codex remains screen-gated. Claude's sentinel contract is unchanged.
-- SessionStart records its canonical hook root; direct CLI calls remain valid
-  with a null `plugin_root`.
-
-## Evidence
-
-- Pre-fix live Codex 0.153.2 probe, with no plugins, accepted the charter and
-  stalled at a Plan-mode `request_user_input` question.
-- Post-fix live probe reached the normal idle Codex TUI, refused with
-  `no-sentinel`, delivered no prompt, and restored LIVE-1 to `todo`.
-- New regression covers absent, legacy, mismatched, and exact hook identity for
-  Auto and Full Auto, plus unchanged attended behavior.
-- Focused Rust hook/service and shell dispatch/provider/autonomy suites pass.
-
-## Commits
-
-- `3b49a86b6` — `fix(dispatch): bind autonomous Codex hooks`
-- `ceffa4786` — `docs(dispatch): record Codex hook binding`
+- Fresh named dispatches record their intended tmux window in the atomic claim.
+- NEXT, forced, and resumed dispatches record tmux window, worktree, and branch
+  after confirmed handoff.
+- Dispatch rollbacks retain `story unclaim`'s transactional correction comment.
+- A failed post-handoff audit write preserves the live claim and resources and
+  returns `dispatch-comment-failed` with their identities.
 
 ## Reconciliation
 
-- Existing PR #654 is additively merged with `origin/main` at `ebedde948`;
-  published SH-571 history is unchanged.
-- One `STORY_PLUGIN_ROOT` now owns Claude's explicit plugin activation and
-  Codex's exact sentinel comparison.
-- AGENTS.md and its canonical template make SH-571 the current verifier item.
-- Main's launch-template fixture now emits the exact Codex identity sentinel.
-- Original SH-571 tests, the roadmap contract, and four intersecting SH-564
-  dispatch/path regressions pass on the merged tree.
+- The published branch is additively merged with `origin/main` at `96417b9a3`;
+  SH-490 history remains unchanged.
+- A second additive reconciliation merges `origin/main` at `29c238e30` after
+  SH-573 and SH-506 landed; published history remains unchanged.
+- A third additive reconciliation merges `origin/main` at `a396b3e9a` after
+  SH-570 and SH-551 landed; published history remains unchanged.
+- Main's autonomous Codex dispatch changes auto-merge with SH-490's resource
+  comments, including its PID-bound plan watcher in the shared story helper.
+- AGENTS.md and its canonical template make SH-490 the current verifier item
+  while retaining main's forward roadmap.
+
+## Focused verification
+
+- Central verification exposed one stale fixture: the claim-conflict test used
+  fake caller tmux variables but could no longer reach the claim after SH-490's
+  truthful pre-claim session resolution. It now uses the existing named-target
+  seam and documents the transactional intent-comment claim.
+- The repaired claim-conflict test and eight adjacent ID-claim, session, and
+  conflict tests pass; shell syntax and whitespace checks pass.
+- All 11 SH-490 dispatch/unclaim/reset shell files pass on the latest tree.
+- Nine intersecting Codex/Claude dispatch and plan-watcher files also pass.
+- Plugin-skill determinism and scope/scaffold contracts pass: 16 Rust tests.
+- Shell syntax, Rust formatting, and staged/unstaged whitespace checks pass.
 
 ## Submission boundary
 
-Push the additive merge commit to existing PR #654, comment final evidence,
-then move SH-571 to `verifying` as the absolute last action. Central
+Push one additive merge commit to existing PR #660, comment final evidence,
+then move SH-490 to `verifying` as the absolute last action. Central
 verification owns the full suite, merge, completion, and worktree cleanup.
