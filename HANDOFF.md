@@ -34,6 +34,26 @@
   Load samples, final commit and PR are recorded on SH-577.
 - No full suite was run from this worktree; central verification owns it.
 
+## Reconciled main
+
+- Merged origin/main d4b060e6e (SH-581, PR #670) without rewriting history.
+- Preserve its Lima guest fix: Cargo runs in a subshell inside extracted source;
+  the caller cwd remains available for export. Both Linux targets are covered
+  by the archived-source/cwd, locked arguments, rustc/linker and export regression.
+- SH-581 recorded RED before the fix and 59 passing release_targets/scaffold/
+  scope_rubric tests afterward. No real Lima build was run; toolchain/Cargo
+  shims exercise the real guest script. Its story retains the detailed evidence.
+- The three merge conflicts were roadmap/template text and this handoff.
+  SH-577 browser changes and SH-581 release code/tests remain unchanged.
+- Reconciliation: 59 Rust contracts and 26 browser cases per desktop engine
+  passed. Formatting, shell syntax and diff checks passed. Logs are under
+  /tmp/SH-577-reconcile-*.log; final details are on SH-577 and PR #672.
+- Run same-checkout Rust builds and browser tests sequentially: both use
+  target/debug/story, and executable mtime changes invalidate a running daemon.
+  The first overlapping run reported dispatch PID overlap, then connection
+  refusal; its evidence is in /tmp/SH-577-reconcile-failed-artifacts. The PID
+  overlap's cause is unproven. A fresh sequential Chromium run passed 26/26.
+
 ## Submission boundary
 
 Exactly one PR on `worktree-SH-577`, with SH-577 in title and body. Link and
