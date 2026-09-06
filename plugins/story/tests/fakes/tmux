@@ -355,12 +355,14 @@ case "${1:-}" in
     nw_cwd=""
     nw_name="${FAKE_TMUX_WINDOW_NAME:-story-window}"
     nw_session="${FAKE_TMUX_SESSION_NAME:-story-session}"
+    nw_codex_autonomous=false
     _i=0
     for _a in "${nw_args[@]}"; do
       case "$_a" in
         -c) nw_cwd="${nw_args[$((_i + 1))]:-}" ;;
         -n) nw_name="${nw_args[$((_i + 1))]:-}" ;;
         -t) nw_session="${nw_args[$((_i + 1))]:-}"; nw_session="${nw_session%:}" ;;
+        STORYHOOK_AUTO=?*|STORYHOOK_FULL_AUTO=?*) nw_codex_autonomous=true ;;
       esac
       _i=$((_i + 1))
     done
@@ -453,19 +455,36 @@ case "${1:-}" in
       # reason the pane-placeholder job above is (SH-231): an un-redirected
       # background job keeps `$(tmux new-window ...)`'s own command
       # substitution pipe open until the job itself exits.
+      publish_sentinel=false
+      sentinel_json='{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}'
+      if [ "$launch_bin" != codex ]; then
+        publish_sentinel=true
+      elif [ "$nw_codex_autonomous" = true ]; then
+        case "${FAKE_TMUX_CODEX_SENTINEL_MODE:-missing}" in
+          identity)
+            publish_sentinel=true
+            sentinel_json=$(jq -cn --arg root "${FAKE_TMUX_CODEX_PLUGIN_ROOT:-}" \
+              '{protocol_version:2,session_id:null,story_id:null,plugin_root:$root,written_at:"2026-01-01T00:00:00Z"}')
+            ;;
+          legacy)
+            publish_sentinel=true
+            ;;
+          missing) ;;
+        esac
+      fi
       if [ "${FAKE_TMUX_LAUNCH_MANGLE:-}" != 1 ] \
          && [ "${FAKE_TMUX_SUPPRESS_SENTINEL:-}" != 1 ] \
-         && [ "$launch_bin" != codex ] \
+         && [ "$publish_sentinel" = true ] \
          && [ -n "$nw_cwd" ]; then
         if [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
           ( sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"
             mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
-              '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
+              "$sentinel_json" \
               > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
           ) </dev/null >/dev/null 2>&1 &
         else
           mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
-            '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
+            "$sentinel_json" \
             > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
         fi
       fi
