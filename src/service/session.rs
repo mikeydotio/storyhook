@@ -25,7 +25,7 @@ use super::Ctx;
 /// Bumped whenever a field is added, renamed or removed — a reader that
 /// understands an older version can then tell "absent" from "renamed" instead
 /// of guessing.
-const SENTINEL_PROTOCOL_VERSION: u32 = 1;
+const SENTINEL_PROTOCOL_VERSION: u32 = 2;
 
 /// The dispatch sentinel written on every `SessionStart`, at
 /// `<cwd>/.claude/dispatch-sentinel.json` — SH-231 (SH-227 R2), replacing
@@ -56,6 +56,11 @@ struct DispatchSentinel {
     /// stdin was empty, unparseable, or the field was missing. Diagnostic
     /// only: nothing on the readiness path matches against it.
     session_id: Option<String>,
+    /// Canonical root of the Storyhook plugin package whose SessionStart
+    /// hook produced this sentinel. Autonomous Codex dispatch compares this
+    /// with its helper package before delivering any prompt. Absent for a
+    /// direct CLI invocation and retained as optional for compatibility.
+    plugin_root: Option<String>,
     /// Best-effort, derived from `cwd`'s own final path component — the
     /// dispatch worktree's directory name, which is the story id under
     /// every naming scheme this plugin ships (`resolve_wname`) unless a
@@ -188,9 +193,11 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
     /// `no-sentinel` reason) — the CLI's own diagnosis pointing at the wrong
     /// layer entirely, with nothing anywhere naming the real cause.
     pub fn publish_sentinel(&self) {
+        let payload = self.ctx.stdin().map(hook_payload).unwrap_or_default();
         let sentinel = DispatchSentinel {
             protocol_version: SENTINEL_PROTOCOL_VERSION,
-            session_id: self.ctx.stdin().and_then(session_id_from_payload),
+            session_id: payload.session_id,
+            plugin_root: payload.storyhook_plugin_root,
             story_id: story_id_from_cwd(self.ctx.cwd()),
             written_at: self.ctx.now(),
         };
@@ -215,19 +222,22 @@ fn sentinel_write_failure_warning(cwd: &std::path::Path, error: &AppError) -> St
     )
 }
 
-/// Pulls `session_id` out of a raw SessionStart hook payload. `None` on
-/// anything short of a well-formed object carrying a non-empty string —
-/// swallowed rather than surfaced, since this field is diagnostic-only (see
-/// [`DispatchSentinel::session_id`]).
-fn session_id_from_payload(raw: &str) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Payload {
-        session_id: Option<String>,
-    }
-    serde_json::from_str::<Payload>(raw)
-        .ok()?
-        .session_id
-        .filter(|id| !id.is_empty())
+#[derive(Default, serde::Deserialize)]
+struct HookPayload {
+    session_id: Option<String>,
+    storyhook_plugin_root: Option<String>,
+}
+
+/// Pulls sentinel fields out of a raw SessionStart hook payload. Anything
+/// short of a well-formed object degrades to absent fields; dispatch treats a
+/// missing plugin identity as a failed autonomous readiness proof.
+fn hook_payload(raw: &str) -> HookPayload {
+    let mut payload = serde_json::from_str::<HookPayload>(raw).unwrap_or_default();
+    payload.session_id = payload.session_id.filter(|value| !value.is_empty());
+    payload.storyhook_plugin_root = payload
+        .storyhook_plugin_root
+        .filter(|value| !value.is_empty());
+    payload
 }
 
 /// The dispatch worktree's directory name — see
@@ -562,23 +572,23 @@ mod tests {
     fn session_id_round_trips_out_of_a_real_hook_payload() {
         let payload = r#"{"session_id":"abc-123","hook_event_name":"SessionStart","source":"startup","cwd":"/tmp/x"}"#;
         assert_eq!(
-            session_id_from_payload(payload),
+            hook_payload(payload).session_id,
             Some("abc-123".to_string())
         );
     }
 
     #[test]
     fn session_id_is_none_for_anything_short_of_a_well_formed_field() {
-        assert_eq!(session_id_from_payload(""), None, "empty stdin");
-        assert_eq!(session_id_from_payload("not json"), None, "malformed JSON");
-        assert_eq!(session_id_from_payload("{}"), None, "field absent");
+        assert_eq!(hook_payload("").session_id, None, "empty stdin");
+        assert_eq!(hook_payload("not json").session_id, None, "malformed JSON");
+        assert_eq!(hook_payload("{}").session_id, None, "field absent");
         assert_eq!(
-            session_id_from_payload(r#"{"session_id":""}"#),
+            hook_payload(r#"{"session_id":""}"#).session_id,
             None,
             "empty string is not an identity"
         );
         assert_eq!(
-            session_id_from_payload(r#"{"session_id":null}"#),
+            hook_payload(r#"{"session_id":null}"#).session_id,
             None,
             "explicit null"
         );

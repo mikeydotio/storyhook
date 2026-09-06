@@ -192,8 +192,6 @@ project it is looking at.
 - Current: verify SH-570's PID-bound, acknowledged provider plan watchers
   through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
-- Later: reproduce and choose a provider-native Codex autonomous hook-binding
-  contract (SH-571).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work
