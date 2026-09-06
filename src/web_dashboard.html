@@ -549,6 +549,9 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   min-width: 0; max-width: min(44rem, 65vw); margin-left: 0;
 }
 .engine-launch, .engine-live { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.engine-live { flex: 1 1 auto; }
+.engine-actions { display: flex; align-items: center; gap: 0.375rem; flex: none; }
+.engine-actions .btn { white-space: nowrap; }
 .engine-wordmark {
   font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--fg-muted); white-space: nowrap;
@@ -579,6 +582,9 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-lane-index { font-family: var(--mono); color: var(--fg-faint); }
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
+.engine-stop-options { display: flex; flex-direction: column; gap: 0.75rem; }
+.engine-stop-choice { display: flex; flex-direction: column; gap: 0.125rem; }
+.engine-stop-choice span { color: var(--fg-muted); font-size: 0.8125rem; }
 
 /* ---- Persistent central-verification alert (SH-573) ---- */
 .engine-banner-region {
@@ -1494,7 +1500,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   .engine-lanes-copy, .filter-clear-label { display: none; }
   .filter-clear-short { display: inline; }
   .engine-lanes-input { width: 3rem; }
-  .engine-lane-strip { max-width: min(13rem, 42vw); }
+  .engine-live { flex-wrap: wrap; justify-content: flex-end; }
+  .engine-lane-strip { order: 2; max-width: min(13rem, 42vw); }
+  .engine-actions { order: 1; }
   .engine-banner-region { padding: 0.5rem 0.75rem 0; }
   .engine-banner-head { align-items: stretch; flex-direction: column; }
   .engine-banner-ack { align-self: flex-start; margin-left: 0; }
@@ -1749,6 +1757,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="dispatch-modal-cancel">Cancel</button>
     <button type="button" class="btn btn-primary" id="dispatch-modal-submit">Dispatch</button>
+  </div>
+</div>
+
+<div class="backdrop" id="engine-stop-modal-backdrop" data-overlay="engine-stop-modal" hidden></div>
+<div class="modal" id="engine-stop-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="engine-stop-modal-header" aria-describedby="engine-stop-modal-summary engine-stop-options">
+  <div class="modal-header" id="engine-stop-modal-header">Stop Full Auto?</div>
+  <div class="modal-body">
+    <div id="engine-stop-modal-summary"></div>
+    <div class="engine-stop-options" id="engine-stop-options">
+      <div class="engine-stop-choice">
+        <strong>Drain</strong>
+        <span>Occupied lanes finish, no new stories are claimed, and Run Full Auto returns after the last lane lands.</span>
+      </div>
+      <div class="engine-stop-choice">
+        <strong>Stop now</strong>
+        <span>Active claims are released and their windows are closed. Branches and worktrees are preserved.</span>
+      </div>
+    </div>
+    <div class="modal-error" id="engine-stop-modal-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="engine-stop-cancel">Cancel</button>
+    <button type="button" class="btn btn-warn" id="engine-stop-drain">Drain</button>
+    <button type="button" class="btn btn-danger-solid" id="engine-stop-now">Stop now</button>
   </div>
 </div>
 
@@ -2468,6 +2500,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // Project -> true while its start has no reply. A map keeps the claim
     // held even if the reader switches away and back before that reply.
     engineStarts: Object.create(null),
+    // Run id -> pause | resume | drain | stop-now while that lifecycle
+    // mutation has no reply. The run is the server's arbitration unit, so
+    // one claim prevents both repeat presses and conflicting controls.
+    engineActions: Object.create(null),
     // Run id -> {project, action} while acknowledge or abandon has no reply.
     // Kept apart from launch claims because historical runs remain actionable
     // while a newer run is live, and because abandon owns a stop-then-ack
@@ -4661,6 +4697,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // ============================================================
 
   var engineFetchDebounceTimer = null;
+  var engineStopRunId = null;
   var ENGINE_QUARANTINE_OUTCOMES = {
     "agent-blocked": true,
     "dispatch-refused": true,
@@ -4712,6 +4749,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function engineAcknowledgementPending(runId) {
     return !!state.engineAcknowledgements[runId];
+  }
+
+  function engineActionPending(runId) {
+    return state.engineActions[runId] || null;
   }
 
   function engineAcknowledgementAction(runId) {
@@ -5004,6 +5045,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function engineRunFingerprint(run) {
     return JSON.stringify({
       id: run.id, state: run.state, lane_count: run.lane_count,
+      pending_action: engineActionPending(run.id),
       lanes: (run.lanes || []).map(function(lane) {
         return [lane.index, lane.state, lane.story, lane.dispatched_at];
       })
@@ -5021,6 +5063,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function buildEngineLiveControl(run) {
+    var pending = engineActionPending(run.id);
     var lanes = el("div", { class: "engine-lane-strip", "aria-label": "Full Auto lanes" }, []);
     (run.lanes || []).forEach(function(lane) {
       var subject = lane.story || lane.state;
@@ -5036,11 +5079,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, [elapsed]) : null
       ]));
     });
+    var actions = [];
+    if (run.state === "running") {
+      actions.push(el("button", {
+        type: "button", class: "btn engine-pause-btn", disabled: !!pending,
+        onClick: function() { runEngineAction(run.id, "pause"); }
+      }, [pending === "pause" ? "Pausing…" : "Pause new claims"]));
+    } else if (run.state === "paused") {
+      actions.push(el("button", {
+        type: "button", class: "btn engine-resume-btn", disabled: !!pending,
+        onClick: function() { runEngineAction(run.id, "resume"); }
+      }, [pending === "resume" ? "Resuming…" : "Resume"]));
+    }
+    actions.push(el("button", {
+      type: "button", class: "btn btn-warn engine-stop-btn", disabled: !!pending,
+      onClick: function(e) { openEngineStopModal(run.id, e.currentTarget); }
+    }, [pending === "drain" ? "Draining…" : pending === "stop-now" ? "Stopping…"
+      : run.state === "draining" ? "Stop (draining)" : "Stop"]));
     return el("div", { class: "engine-live" }, [
       el("span", { class: "engine-wordmark" }, ["Full Auto"]),
       el("span", { class: "engine-state engine-state-" + run.state }, [run.state]),
       el("span", { class: "engine-lane-count" }, [run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")]),
-      lanes
+      lanes,
+      el("div", { class: "engine-actions", "aria-label": "Full Auto controls" }, actions)
     ]);
   }
 
@@ -5249,6 +5310,147 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderEngineControl();
     if (state.drawerId) renderDrawer();
     fetchEngineRuns();
+  }
+
+  /** Replaces one run from a confirmed mutation response, including runs a
+   * status read has not yet observed. The collection remains the source of
+   * both the live slot and durable outcome alerts. */
+  function applyEngineRun(run) {
+    var found = false;
+    var runs = state.engineRuns.map(function(existing) {
+      if (existing.id !== run.id) return existing;
+      found = true;
+      return run;
+    });
+    if (!found) runs.push(run);
+    applyEngineRuns(runs);
+  }
+
+  /** Pause and Resume share one run-scoped claim. Their different server
+   * transitions are already authoritative; the dashboard only chooses the
+   * route and reconciles the returned run without inventing another state
+   * machine. */
+  function runEngineAction(runId, action) {
+    var project = state.repoId;
+    var run = state.engineRuns.filter(function(item) { return item.id === runId; })[0];
+    var allowed = run && ((action === "pause" && run.state === "running")
+      || (action === "resume" && run.state === "paused"));
+    if (!project || !allowed || engineActionPending(runId)) return;
+
+    state.engineActions[runId] = action;
+    renderEngineControl();
+    api("POST", apiBase() + "/engine/" + action, { run: runId }).then(function(response) {
+      delete state.engineActions[runId];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      // A GET issued before this confirmed write may not overwrite it. The
+      // reconciliation below owns the next ticket.
+      state.engineFetchTicket++;
+      if (response.run) applyEngineRun(response.run);
+      toast(action === "pause"
+        ? "Full Auto paused — current lane work continues"
+        : "Full Auto resumed", "success");
+      renderEngineControl();
+      renderEngineAlert();
+      fetchEngineRuns();
+    }).catch(function(err) {
+      delete state.engineActions[runId];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      // toastError's status:0 branch says the outcome is ambiguous; a
+      // definite server response keeps its own message. Both reconcile.
+      toastError(err);
+      renderEngineControl();
+      fetchEngineRuns();
+    });
+  }
+
+  function engineStopRun() {
+    return state.engineRuns.filter(function(run) { return run.id === engineStopRunId; })[0] || null;
+  }
+
+  function syncEngineStopModal() {
+    var run = engineStopRun();
+    var pending = run ? engineActionPending(run.id) : null;
+    var draining = !!run && run.state === "draining";
+    $("engine-stop-modal-summary").textContent = run
+      ? "Choose how to stop run " + run.id + "."
+      : "Choose how to stop this run.";
+    $("engine-stop-cancel").disabled = !!pending;
+    $("engine-stop-drain").disabled = !!pending || draining;
+    $("engine-stop-now").disabled = !!pending;
+    $("engine-stop-drain").textContent = pending === "drain"
+      ? "Draining…" : draining ? "Already draining" : "Drain";
+    $("engine-stop-now").textContent = pending === "stop-now" ? "Stopping…" : "Stop now";
+  }
+
+  /** Opens an ordinary dismissible confirmation. The invoker is recorded
+   * explicitly because WebKit does not necessarily focus a button after a
+   * pointer click, so document.activeElement cannot name where Cancel should
+   * return. */
+  function openEngineStopModal(runId, returnFocus) {
+    var run = state.engineRuns.filter(function(item) { return item.id === runId; })[0];
+    if (!isLiveEngineRun(run) || engineActionPending(runId)) return;
+    engineStopRunId = runId;
+    $("engine-stop-modal-error").textContent = "";
+    syncEngineStopModal();
+    showBackdrop("engine-stop-modal-backdrop");
+    activateOverlay("engine-stop-modal", "engine-stop-cancel");
+    if (returnFocus) overlayReturnFocus["engine-stop-modal"] = returnFocus;
+    $("engine-stop-modal").classList.add("open");
+    $("engine-stop-modal").setAttribute("aria-hidden", "false");
+  }
+
+  function closeEngineStopModal() {
+    var run = engineStopRun();
+    if (run && engineActionPending(run.id)) return;
+    engineStopRunId = null;
+    hideBackdrop("engine-stop-modal-backdrop");
+    $("engine-stop-modal").classList.remove("open");
+    $("engine-stop-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("engine-stop-modal");
+  }
+
+  function focusEngineControlAfterStop() {
+    if (overlayStack.length) return;
+    var target = document.querySelector(".engine-stop-btn, .engine-run-btn");
+    if (target) target.focus();
+  }
+
+  /** Both stop flavours use the same run-scoped mutation claim. Graceful
+   * stop is unavailable once the server already reports draining, while
+   * Stop now stays available so a person can escalate an existing drain. */
+  function submitEngineStop(now) {
+    var project = state.repoId;
+    var run = engineStopRun();
+    if (!project || !run || engineActionPending(run.id) || (!now && run.state === "draining")) return;
+    var action = now ? "stop-now" : "drain";
+    state.engineActions[run.id] = action;
+    syncEngineStopModal();
+    renderEngineControl();
+    api("POST", apiBase() + "/engine/stop", { run: run.id, now: now }).then(function(response) {
+      delete state.engineActions[run.id];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      state.engineFetchTicket++;
+      if (response.run) applyEngineRun(response.run);
+      renderEngineControl();
+      closeEngineStopModal();
+      focusEngineControlAfterStop();
+      renderEngineAlert();
+      fetchEngineRuns();
+    }).catch(function(err) {
+      delete state.engineActions[run.id];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      renderEngineControl();
+      if (err && err.status === 0) {
+        // The modal would hide the status surface that answers an ambiguous
+        // outcome. Close it, report only what is known, then ask the server.
+        closeEngineStopModal();
+        toastError(err);
+      } else {
+        $("engine-stop-modal-error").textContent = describeFailure(err);
+        syncEngineStopModal();
+      }
+      fetchEngineRuns();
+    });
   }
 
   /** Acknowledges exactly one historical run. Transport ambiguity cannot
@@ -13483,6 +13685,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
     $("dispatch-agent").addEventListener("change", onDispatchAgentChange);
+    $("engine-stop-cancel").addEventListener("click", closeEngineStopModal);
+    $("engine-stop-modal-backdrop").addEventListener("click", closeEngineStopModal);
+    $("engine-stop-drain").addEventListener("click", function() { submitEngineStop(false); });
+    $("engine-stop-now").addEventListener("click", function() { submitEngineStop(true); });
     $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);
@@ -13524,10 +13730,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // comment above its own listener bindings.
       if (e.key === "Escape") {
         // SH-568's D13 exception: this alert must not disappear without a
-        // durable acknowledgement. Return before the broad closer list so
+        // durable acknowledgement. Return before any dismissible surface so
         // Escape cannot alter either this dialog or a surface behind it.
         if (overlayStack[overlayStack.length - 1] === "engine-alert-modal") {
           e.preventDefault();
+          return;
+        }
+        // The Stop confirmation is dismissible until its mutation starts.
+        // While outstanding, its controls and every dismissal path remain
+        // locked around the one uncancelable request.
+        if (overlayStack[overlayStack.length - 1] === "engine-stop-modal") {
+          closeEngineStopModal();
           return;
         }
         // The dispatch dialog is nested over the story drawer. Escape belongs
