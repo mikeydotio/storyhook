@@ -45,7 +45,19 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = add ]; then
   [ "$mode" = "plugin-fail" ] && { echo 'plugin exploded' >&2; exit 18; }
   IFS= read -r version < "$HOME/codex-marketplace-version"
   printf '%s\n' "$version" > "$HOME/codex-installed-version"
-  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installedPath":"%s/.codex/plugins/cache/storyhook/story/%s","authPolicy":"ON_INSTALL"}\n' "$version" "$HOME" "$version"
+  IFS= read -r source < "$HOME/codex-marketplace-source"
+  installed="$HOME/.codex/plugins/cache/storyhook/story/$version"
+  mkdir -p "$installed"
+  cp -Rp "$source/plugins/story/." "$installed/" || exit 22
+  case "$mode" in
+    payload-missing) rm "$installed/bin/story.sh" ;;
+    payload-stale) printf '%s\n' 'stale helper' > "$installed/bin/story.sh" ;;
+    payload-mode) chmod 644 "$installed/bin/story.sh" ;;
+    payload-extra) printf '%s\n' 'unexpected' > "$installed/extra.sh" ;;
+    payload-link) mv "$installed/bin/story.sh" "$HOME/original-helper"; ln -s "$HOME/original-helper" "$installed/bin/story.sh" ;;
+    divergent-path) installed="$HOME/unrelated-plugin" ;;
+  esac
+  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installedPath":"%s","authPolicy":"ON_INSTALL"}\n' "$version" "$installed"
   exit 0
 fi
 
@@ -53,7 +65,10 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = list ]; then
   version=0.6.0
   if [ -f "$HOME/codex-installed-version" ]; then IFS= read -r version < "$HOME/codex-installed-version"; fi
   if [ -f "$HOME/codex-plugin-version" ]; then IFS= read -r version < "$HOME/codex-plugin-version"; fi
-  printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":true}]}\n' "$version"
+  [ "$mode" = "list-fail" ] && { echo 'list exploded' >&2; exit 23; }
+  enabled=true
+  [ "$mode" = "disabled" ] && enabled=false
+  printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":%s}]}\n' "$version" "$enabled"
   exit 0
 fi
 
@@ -652,6 +667,8 @@ fn codex_replaces_a_stale_git_snapshot_with_the_current_release() {
     let harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
     harness.seed_codex_install("2.2.1-beta.3", "mikeydotio/storyhook");
+    let stale = harness.install_fake_plugin_helper("2.2.1-beta.3", "stale catalog\n");
+    fs::remove_file(harness.home.join("codex-plugin-version")).unwrap();
 
     let output = harness.run(&["plugin", "install", "codex"]);
     assert!(output.status.success(), "{}", combined(&output));
@@ -681,6 +698,70 @@ fn codex_replaces_a_stale_git_snapshot_with_the_current_release() {
         "{message}"
     );
     assert!(!message.contains("2.2.1-beta.3"), "{message}");
+    let current = harness
+        .home
+        .join(".codex/plugins/cache/storyhook/story")
+        .join(current_version);
+    assert_eq!(
+        regular_files(&current),
+        regular_files(&harness.release_marketplace().join("plugins/story"))
+    );
+    assert!(
+        fs::read_to_string(current.join("bin/story.sh"))
+            .unwrap()
+            .contains("gpt-6-astra")
+    );
+    assert_eq!(
+        fs::read_to_string(stale.join("bin/story.sh")).unwrap(),
+        "stale catalog\n"
+    );
+}
+
+#[test]
+fn codex_install_refuses_unverified_enabled_payloads_before_writing_launcher() {
+    for mode in [
+        "payload-missing",
+        "payload-stale",
+        "payload-mode",
+        "payload-extra",
+        "payload-link",
+        "divergent-path",
+        "disabled",
+        "list-fail",
+    ] {
+        let harness = Harness::new(true);
+        harness.install_fake("codex", FAKE_CODEX);
+        harness.set_codex_mode(mode);
+        let output = harness.run(&["plugin", "install", "codex"]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{mode}: {message}");
+        assert!(
+            message.contains("verify") && message.contains("plugin"),
+            "{mode}: {message}"
+        );
+        assert!(!harness.codex_launcher().exists(), "{mode}");
+        assert!(!harness.codex_rule().exists(), "{mode}");
+        assert!(!harness.codex_log().contains("execpolicy check"), "{mode}");
+    }
+}
+
+#[test]
+fn codex_install_refuses_when_provider_keeps_an_older_version_enabled() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let old = harness.install_fake_plugin_helper("2.2.1-beta.3", "old helper\n");
+    let output = harness.run(&["plugin", "install", "codex"]);
+    let message = combined(&output);
+    assert!(!output.status.success(), "{message}");
+    assert!(
+        message.contains("verify") && message.contains("2.2.1-beta.3"),
+        "{message}"
+    );
+    assert_eq!(
+        fs::read_to_string(old.join("bin/story.sh")).unwrap(),
+        "old helper\n"
+    );
+    assert!(!harness.codex_launcher().exists());
 }
 
 #[test]
