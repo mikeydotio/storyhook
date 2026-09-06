@@ -284,6 +284,14 @@ fn release_tool_shims() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBu
     write_executable(&bin.join("xcrun"), "#!/bin/bash\necho /usr/bin/clang\n");
     let builder = r#"#!/bin/bash
 set -eu
+# A real rustc reports the toolchain root it lives in, and
+# `ensure_release_toolchain` refuses a toolchain that does not (SH-576).
+# Answered before the log line, so the verification probe never appears in the
+# command log the packaging assertions below read.
+if [ "${1:-}" = --print ] && [ "${2:-}" = sysroot ]; then
+  cd "$(dirname "$0")/.." && pwd -P
+  exit 0
+fi
 echo "$(basename "$0") $*" >> "$RELEASE_TEST_LOG"
 echo "strip=${CARGO_PROFILE_RELEASE_STRIP:-} x86_linker=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-} rustc=${RUSTC:-}" >> "$RELEASE_TEST_LOG"
 target=""
@@ -702,7 +710,16 @@ for argument in "$@"; do
   case "$argument" in --prefix=*) prefix="${argument#--prefix=}" ;; esac
 done
 mkdir -p "$prefix/bin"
-printf '#!/bin/bash\nexit 0\n' > "$prefix/bin/rustc"
+cat > "$prefix/bin/rustc" <<'RUSTC'
+#!/bin/bash
+# Reports the root it was installed under, as a real rustc does. Resolved at
+# call time, so it still answers correctly once the staging directory has been
+# moved to its final name (SH-576).
+if [ "${1:-}" = --print ] && [ "${2:-}" = sysroot ]; then
+  cd "$(dirname "$0")/.." && pwd -P
+fi
+exit 0
+RUSTC
 printf '#!/bin/bash\nexit 0\n' > "$prefix/bin/cargo"
 chmod +x "$prefix/bin/rustc" "$prefix/bin/cargo"
 "#,
@@ -1329,5 +1346,252 @@ fn the_repository_files_under_test_are_the_real_ones() {
     assert!(
         read("Cargo.toml").contains("name = \"storyhook\""),
         "the manifest read here must be storyhook's own"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The assembled toolchain must be able to find its own sysroot (SH-576)
+// ---------------------------------------------------------------------------
+//
+// rustc does not read its sysroot off argv0; it reads it off the directory
+// holding the `librustc_driver` dylib it loaded, and decides how far to walk
+// up by the names it finds there. A dylib in `<anything>/<target-triple>/lib/`
+// is indistinguishable by name from one in `$sysroot/lib/rustlib/$target/lib/`
+// — the layout pre-built target libraries ship in — so rustc strips four
+// components instead of one. Assembling the toolchain at
+// `.../toolchains/$hash/$host_target` did exactly that, put the sysroot three
+// levels above the toolchain, and failed every compile with E0463 "can't find
+// crate for `std`" plus advice to run a `rustup target add` that is not part
+// of this path at all.
+//
+// Two mechanisms, because neither covers the other. The layout is pinned
+// below from `release_toolchain_root_path`, the one function that spells the
+// path. The obligation to *prove* it is structural: `ensure_release_toolchain`
+// has a single exit, and the verification sits on it, so no branch can hand
+// back a toolchain that was never asked. What these tests deliberately do NOT
+// prove is rustc's own walking rule — that needs a real 500 MB toolchain and
+// belongs to `build-release-assets.sh --check`, which now runs the same
+// verification against the real thing on every release.
+
+/// Every release target triple, read from the one file that defines them
+/// rather than repeated here (SH-136).
+fn release_target_triples() -> Vec<String> {
+    let script = format!(
+        "source '{}'; printf '%s\\n' \"${{RELEASE_TARGETS[@]}}\"",
+        repo_root().join("scripts/release-targets.sh").display()
+    );
+    let output = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "could not read the release targets"
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .filter(|triple| !triple.is_empty())
+        .collect()
+}
+
+/// Asks the production function where a toolchain for `host_target` goes.
+fn toolchain_root_path(cache_root: &Path, lock_hash: &str, host_target: &str) -> PathBuf {
+    let script = format!(
+        "source '{}'; release_toolchain_root_path '{}' '{}' '{}'",
+        repo_root().join("scripts/release-toolchain.sh").display(),
+        cache_root.display(),
+        lock_hash,
+        host_target
+    );
+    let output = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "release_toolchain_root_path failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+}
+
+/// A toolchain whose `rustc` answers `--print sysroot` with `answer`, which is
+/// evaluated by the shim at call time so a fixture can lie about it.
+fn fake_toolchain(root: &Path, answer: &str) {
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    write_executable(
+        &root.join("bin/rustc"),
+        &format!(
+            "#!/bin/bash\nif [ \"${{1:-}}\" = --print ] && [ \"${{2:-}}\" = sysroot ]; then\n  {answer}\nfi\nexit 0\n"
+        ),
+    );
+    write_executable(&root.join("bin/cargo"), "#!/bin/bash\nexit 0\n");
+}
+
+/// Reports its own root, the way a real toolchain does.
+const HONEST_SYSROOT: &str = "cd \"$(dirname \"$0\")/..\" && pwd -P";
+
+/// Prepares a warm cache hit for `host_target` and returns its root.
+fn warm_cache(cache_root: &Path, lock: &Path, host_target: &str, answer: &str) -> PathBuf {
+    let digest = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(lock)
+        .output()
+        .unwrap();
+    assert!(digest.status.success());
+    let lock_hash = String::from_utf8(digest.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let root = toolchain_root_path(cache_root, &lock_hash, host_target);
+    fake_toolchain(&root, answer);
+    std::fs::write(
+        root.join(".storyhook-release-toolchain"),
+        format!("{lock_hash} {host_target} {host_target}\n"),
+    )
+    .unwrap();
+    root
+}
+
+/// Runs `ensure_release_toolchain` against a fixture cache.
+fn ensure_toolchain(cache_root: &Path, lock: &Path, host_target: &str) -> Output {
+    let script = format!(
+        "source '{}'; ensure_release_toolchain '{}' '{}' '{}' '{}'",
+        repo_root().join("scripts/release-toolchain.sh").display(),
+        host_target,
+        cache_root.display(),
+        lock.display(),
+        host_target
+    );
+    Command::new("/bin/bash")
+        .args(["-c", &script])
+        .env_remove("STORYHOOK_RELEASE_TOOLCHAIN_DIR")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_assembled_toolchain_root_is_never_named_after_a_release_target() {
+    let triples = release_target_triples();
+    assert!(
+        !triples.is_empty(),
+        "the release target list must not be empty"
+    );
+
+    for host_target in &triples {
+        let root = toolchain_root_path(Path::new("/cache"), "deadbeef", host_target);
+        let leaf = root.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            !triples.contains(&leaf),
+            "the toolchain for {host_target} is assembled at {}, whose own directory is \
+             named after a target triple — rustc reads that as the pre-built-library \
+             layout and resolves the sysroot three levels too high (SH-576)",
+            root.display()
+        );
+        // The host still has to key the cache, or two hosts would share one
+        // toolchain; the triple moves off the leaf, it does not leave.
+        assert!(
+            root.components()
+                .any(|component| component.as_os_str() == host_target.as_str()),
+            "{} no longer keys the cache by host",
+            root.display()
+        );
+    }
+}
+
+#[test]
+fn a_warm_cached_toolchain_that_misresolves_its_own_sysroot_is_refused_by_name() {
+    let fixture = scratch_dir_named("release-toolchain-sysroot");
+    let cache = fixture.path().join("cache");
+    let lock = fixture.path().join("release-toolchain.lock");
+    std::fs::write(&lock, "irrelevant\n").unwrap();
+    let root = warm_cache(
+        &cache,
+        &lock,
+        "aarch64-apple-darwin",
+        "echo /somewhere/else",
+    );
+
+    let result = ensure_toolchain(&cache, &lock, "aarch64-apple-darwin");
+    assert!(
+        !result.status.success(),
+        "a toolchain that cannot find its own sysroot was handed back"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("/somewhere/else") && stderr.contains(&root.display().to_string()),
+        "the refusal must name what rustc answered and what was expected: {stderr}"
+    );
+}
+
+#[test]
+fn an_operator_supplied_toolchain_that_misresolves_its_own_sysroot_is_refused_by_name() {
+    let fixture = scratch_dir_named("release-toolchain-override");
+    let supplied = fixture.path().join("supplied");
+    fake_toolchain(&supplied, "echo /somewhere/else");
+
+    let script = format!(
+        "source '{}'; ensure_release_toolchain aarch64-apple-darwin '{}' '{}' aarch64-apple-darwin",
+        repo_root().join("scripts/release-toolchain.sh").display(),
+        fixture.path().join("cache").display(),
+        fixture.path().join("missing.lock").display()
+    );
+    let result = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", &supplied)
+        .output()
+        .unwrap();
+
+    assert!(
+        !result.status.success(),
+        "an override is a claim about a toolchain, not an exemption from proving it"
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("/somewhere/else"),
+        "the refusal must name what rustc answered: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn a_toolchain_that_reports_no_sysroot_is_named_rather_than_read_as_the_working_directory() {
+    let fixture = scratch_dir_named("release-toolchain-silent");
+    let cache = fixture.path().join("cache");
+    let lock = fixture.path().join("release-toolchain.lock");
+    std::fs::write(&lock, "irrelevant\n").unwrap();
+    warm_cache(&cache, &lock, "aarch64-apple-darwin", "true");
+
+    let result = ensure_toolchain(&cache, &lock, "aarch64-apple-darwin");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("reported no sysroot at all"),
+        "an empty answer must be reported as one — `cd \"\"` succeeds and stays put, \
+         so resolving it would name the caller's own directory as rustc's answer: {stderr}"
+    );
+}
+
+#[test]
+fn a_warm_cached_toolchain_that_resolves_its_own_sysroot_is_handed_back() {
+    let fixture = scratch_dir_named("release-toolchain-honest");
+    let cache = fixture.path().join("cache");
+    let lock = fixture.path().join("release-toolchain.lock");
+    std::fs::write(&lock, "irrelevant\n").unwrap();
+    let root = warm_cache(&cache, &lock, "aarch64-apple-darwin", HONEST_SYSROOT);
+
+    let result = ensure_toolchain(&cache, &lock, "aarch64-apple-darwin");
+    assert!(
+        result.status.success(),
+        "an honest toolchain must still be usable: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let handed_back = PathBuf::from(String::from_utf8(result.stdout).unwrap().trim().to_string());
+    assert_eq!(
+        std::fs::canonicalize(&handed_back).unwrap(),
+        std::fs::canonicalize(&root).unwrap()
     );
 }
