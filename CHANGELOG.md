@@ -3,6 +3,118 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.4.1] - 2026-09-06
+
+### Added
+- allow an ungated public release, asked for twice (ec3a0a923)
+- show Full Auto lane chips (7879a7b8f)
+- add persistent Full Auto alert dialog (47652ca93)
+- add Full Auto lifecycle controls (58cc74ac9)
+- support Codex Astra (f87f44c62)
+
+### Fixed
+- bump with execute, which does not gather (6f1386430)
+- install the cross C runtimes the guest linkers need (d33fcd86c)
+- resolve the guest cache root against the guest home (0f0438e71)
+- let the pinned toolchain find its own sysroot (edb559872)
+- sync SH-569 roadmap template (269c32946)
+- sync SH-570 roadmap template (5cb91102a)
+- sync SH-573 roadmap template (caabab2d6)
+- record dispatch resources (SH-490) (2d8a356af)
+- acknowledge Claude plan approval (SH-570) (546c24671)
+- render deleted story references (SH-506) (8bb09c03d)
+- acknowledge Codex plan approval (SH-570) (4133420a2)
+- scope the closed filter to one status (dba9a538d)
+- halt infrastructure incidents (SH-573) (090747c57)
+- bind autonomous Codex hooks (3b49a86b6)
+- isolate fixture git environments (SH-572) (14bec9a28)
+- keep AGENTS template in sync (050563fc9)
+- bind managed Claude launches (a01af0b2b)
+- isolate speculative git administration (SH-563) (668ae0a0f)
+- build artifacts from pinned local capabilities (0da1b66a0)
+- fail safe on unreadable pidfile (92b39b3a5)
+- pause notice clocks while unfocused (SH-325) (f47db5551)
+- detect PTY child exit directly (SH-221) (ac3013b77)
+- tolerate absent Claude plugin (5f1598ebb)
+- initialize private HEAD from commit (SH-556) (c0d0ca5e6)
+- drain immediate stop before restart (eeb7593b4)
+- drain active gate before restart (3505e8ef0)
+- skip absent label arrays (f1827a4ba)
+- unify label combobox behavior (6d7b3def0)
+- canonicalize labels as lowercase (b6a87191d)
+
+### Changed
+- Merge pull request #664 from mikeydotio/fix/SH-580-bump-execute (877008aad)
+- Merge pull request #663 from mikeydotio/chore/SH-579-ungated-release-hatch (cc7b239e4)
+- Merge pull request #662 from mikeydotio/fix/SH-578-guest-release-cache-root (316922364)
+- Merge pull request #661 from mikeydotio/fix/SH-576-release-toolchain-sysroot (78c2bde0c)
+- Merge pull request #658 from mikeydotio/worktree-SH-569 (cea6ec6d1)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-569 (d9998ad4a)
+- Merge pull request #650 from mikeydotio/worktree-SH-567 (c4c03e9d4)
+- reconcile SH-567 with SH-568 alert surface (db052e77a)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-569 (0b5656e08)
+- Merge pull request #651 from mikeydotio/worktree-SH-568 (2d8dd34d3)
+- reconcile SH-567 with current main again (c549bc47e)
+- Merge pull request #660 from mikeydotio/worktree-SH-490 (64c2b256f)
+- reconcile SH-568 with current main (e83c7797a)
+- reconcile SH-567 with current main (33511667b)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-569 (d2fc81ddf)
+- reconcile SH-490 with current main again (0da806695)
+- Merge pull request #659 from mikeydotio/worktree-SH-570 (a396b3e9a)
+- Merge pull request #656 from mikeydotio/worktree-SH-551 (d0f524284)
+- reconcile SH-490 with latest main (b4a731be3)
+- reconcile SH-570 with verifier incident handling (7ada3d79e)
+- Merge pull request #655 from mikeydotio/worktree-SH-573 (29c238e30)
+- Merge pull request #657 from mikeydotio/worktree-SH-506 (29ae6a252)
+- reconcile SH-573 with current main (c9024df19)
+- reconcile SH-490 with current main (739b1d886)
+- reconcile SH-570 with Codex hook binding (fe068f47f)
+- Merge pull request #654 from mikeydotio/worktree-SH-571 (96417b9a3)
+- reconcile SH-570 with current main (4d2ca3751)
+- Merge pull request #653 from mikeydotio/worktree-SH-572 (7364e0204)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-569 (4d175b215)
+- reconcile SH-571 with current main (e5fd82acc)
+- Merge pull request #647 from mikeydotio/worktree-SH-325 (ebedde948)
+- reconcile SH-573 with origin/main (a2c07dc91)
+- Merge pull request #645 from mikeydotio/worktree-SH-563 (31c7be615)
+- Merge pull request #649 from mikeydotio/worktree-SH-564 (ef2c266bc)
+- Merge pull request #646 from mikeydotio/worktree-SH-221 (aef7ea802)
+- remove disproven lease isolation (SH-563) (f61b984c6)
+- reconcile SH-564 with current main (63f529bcf)
+- Merge pull request #648 from mikeydotio/worktree-SH-562 (df1351520)
+- Merge pull request #636 from mikeydotio/worktree-SH-204 (e0fd24ec6)
+- reconcile SH-204 with current main (9887115af)
+- Merge pull request #643 from mikeydotio/worktree-SH-556 (e00733a9b)
+- Merge remote-tracking branch 'origin/main' into worktree-SH-556 (14b10530f)
+- Merge pull request #644 from mikeydotio/worktree-SH-561 (0aed480b0)
+- integrate SH-549 into SH-556 (98f10e2c4)
+- Merge pull request #642 from mikeydotio/release/v2.4.0 (e67be121a)
+
+### Documentation
+- record SH-569 verifier repair (5699aeb17)
+- record SH-569 main reconciliation (9450307cc)
+- record acknowledged plan watchers (SH-570) (fc5143716)
+- update SH-569 handoff and roadmap (952fd67b4)
+- record Codex hook binding (ceffa4786)
+- update SH-567 handoff and roadmap (f94d1c671)
+- record Claude dispatch dependency (46858590a)
+- record SH-204 verification handoff (40cfe62fe)
+
+### Testing
+- restore claim-conflict fixture (SH-490) (bc8e3e6d8)
+- isolate SH-570 resilience fixtures (500dc1395)
+- cover verification acknowledgement (SH-573) (8e896f4ba)
+- restore daemon containment in git fixture probe (SH-572) (0ae00ced3)
+- isolate hook deadline fixtures (af6740bf1)
+- expect lowercase label diagnosis (91c163220)
+
+### Maintenance
+- merge current main into label PR (79bd4d280)
+- merge current main before SH-204 resubmission (4223ce122)
+- merge current main into SH-204 PR (d7876913d)
+
+_[manual]_
+
 ## [v2.4.0] - 2026-09-04
 
 ### Added
