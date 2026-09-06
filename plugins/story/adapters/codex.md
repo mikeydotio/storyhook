@@ -34,10 +34,12 @@ bracketed paste, and Tab submission. Do not repeat those side effects.
 
 With `--auto`, the helper adds `--approve-for-me` and
 `--dangerously-bypass-hook-trust`, and gives the child
-`STORYHOOK_AUTO=<story-id>`. After confirming Plan mode, it arms a pane-lifetime
-watcher that sends Return only when Codex's exact three-option plan review is
-visible with “Yes, implement this plan” selected. Automatic workspace-write
-review handles later tool approvals; the trusted packaged hook refuses
+`STORYHOOK_AUTO=<story-id>`. After confirming Plan mode, it arms a watcher bound
+to the original live pane PID. The watcher sends Return only when Codex's exact
+three-option plan review is visible with “Yes, implement this plan” selected;
+it retries bounded tmux/TUI failures and completes only after a settled capture
+confirms that dialog disappeared. Automatic workspace-write review handles
+later tool approvals; the trusted packaged hook refuses
 `request_user_input` so the unattended session cannot wait for a person. A
 custom `STORY_LAUNCH_CMD` remains wholesale and is reported as potentially
 weakening that guarantee. Before arming the watcher or delivering the prompt,
