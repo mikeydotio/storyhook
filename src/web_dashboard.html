@@ -8360,6 +8360,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return (state.data && state.data.stories || []).filter(function(v) { return v.story.id === id; })[0] || null;
   }
 
+  /** Whether `id` still names any story in the project's exhaustive `/data`
+   * arrays. Drafts remain deliberately absent from findStory(): they have no
+   * board card or drawer navigation target, but their absence must never be
+   * mistaken for deletion. */
+  function storyReferenceExists(id) {
+    if (findStory(id)) return true;
+    return (state.data && state.data.drafts || []).some(function(v) { return v.story.id === id; });
+  }
+
   /** The story id a block-reason prompt is currently open for, or null. */
   var dropBlockedReasonMoveId = null;
 
@@ -8585,12 +8594,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * alphanumerics, no hyphen) -- rather than requiring a server field
    * just for this.
    *
-   * Two cases are deliberately left as plain text, not a light: `selfId`
-   * itself (a self-reference names nothing to navigate to), and an id
-   * this project's loaded stories can't resolve (`findStory` returns
-   * null) -- linking it would render storyLight()'s "unknown" ring for
-   * what may simply be a typo or a reference to another project, which
-   * reads as this feature being broken rather than as an honest gap. */
+   * A self-reference stays plain because it names nothing to navigate to.
+   * An unresolved canonical id becomes `<DELETED>` only when the project's
+   * allocation watermark proves it was minted; malformed and future ids stay
+   * plain. Older daemon responses carry no watermark and therefore degrade to
+   * that same conservative plain-text behavior. */
   function linkifyStoryIds(text, selfId) {
     var prefixMatch = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(selfId || "");
     if (!prefixMatch) return [text];
@@ -8602,7 +8610,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var id = match[2];
       var idStart = match.index + match[1].length;
       parts.push(text.slice(lastIndex, idStart));
-      parts.push(id === selfId || !findStory(id) ? id : storyRef(id));
+      var story = findStory(id);
+      var rawNumber = id.slice(prefixMatch[1].length + 1);
+      var storyNumber = Number(rawNumber);
+      var highestStoryNumber = state.data && state.data.highest_story_number;
+      var canonical = Number.isSafeInteger(storyNumber) && storyNumber >= 1 && String(storyNumber) === rawNumber;
+      var watermarkIsSafe = Number.isSafeInteger(highestStoryNumber) && highestStoryNumber >= 0;
+      var deleted = canonical && watermarkIsSafe && storyNumber <= highestStoryNumber && !storyReferenceExists(id);
+      parts.push(id === selfId ? id : story ? storyRef(id) : deleted ? "<DELETED>" : id);
       lastIndex = idStart + id.length;
       re.lastIndex = lastIndex;
     }
