@@ -29,7 +29,6 @@ use std::path::PathBuf;
 
 use crate::daemon::http1::{Header, Method};
 use crate::daemon::verification::VerificationActivity;
-use crate::daemon::verification_progress::status_snapshot;
 
 use crate::api::http::{
     Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
@@ -44,7 +43,7 @@ use crate::error::AppError;
 use crate::invoke::dispatch;
 use crate::output::{ReportData, Response, render_response};
 use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
-use crate::store::{ProjectId, ReadOps, Store};
+use crate::store::{ProjectId, ReadOps, Store, WriteOps};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
@@ -188,6 +187,7 @@ pub(crate) fn mutating(method: &Method) -> bool {
 fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
         ProjectRoute::Data => "data",
+        ProjectRoute::VerificationAck => "verification-ack",
         ProjectRoute::StoryCreate => "new",
         ProjectRoute::StoryShow { .. } => "show",
         ProjectRoute::StoryPatch { .. } => "set-fields",
@@ -361,6 +361,9 @@ fn route_project<S: Store>(
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
+        ProjectRoute::VerificationAck => guarded(headers, trusted_hosts, body, |b| {
+            route_ack_verification(ctx, b)
+        }),
         // Answered by [`crate::api::engine::intercept`] in the per-connection
         // worker so a stop-now helper can call back into the daemon without
         // occupying this fixed store pool.
@@ -774,9 +777,11 @@ fn project_data_json<S: Store>(
                 .next_story_no
                 - 1;
             let active = verification_activity.active();
-            let verification = status_snapshot(
+            let incident = tx.verification_incident()?;
+            let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
                 &crate::service::verification::ordered_candidates(tx)?,
                 active.as_ref(),
+                incident.as_ref(),
                 ctx.env(),
                 &now,
             );
@@ -821,6 +826,27 @@ fn project_data_json<S: Store>(
 
             let drafts_json = dashboard_drafts_json(&data);
 
+            let incident_json = incident
+                .as_ref()
+                .map(|incident| -> Result<serde_json::Value, AppError> {
+                    let owner = tx.project(incident.project)?.ok_or_else(|| {
+                        AppError::NotFound(format!("project {}", incident.project.get()))
+                    })?;
+                    Ok(serde_json::json!({
+                        "incident_id": incident.incident_id,
+                        "project": owner.slug,
+                        "story_id": incident.story.to_id(&owner.prefix),
+                        "generation": incident.generation,
+                        "disposition": incident.disposition,
+                        "halted": incident.halted,
+                        "attempts": incident.attempts,
+                        "detail": incident.detail,
+                        "first_failed_at": incident.first_failed_at,
+                        "last_failed_at": incident.last_failed_at,
+                    }))
+                })
+                .transpose()?;
+
             let response = serde_json::json!({
                 "summary": data.summary,
                 "stories": stories_json,
@@ -830,10 +856,45 @@ fn project_data_json<S: Store>(
                 "next_ids": data.next_ids,
                 "highest_story_number": highest_story_number,
                 "meta": meta_json(tx, project, &data)?,
+                "verification_incident": incident_json,
             });
             to_json(&response)
         })())
     })?
+}
+
+/// Acknowledges exactly the halted incident the browser displayed.
+fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let expected = require_str(&obj, "incident_id")?;
+        let current = ctx.store().read(|tx| tx.verification_incident())?;
+        let Some(current) = current else {
+            return Err(AppError::Validation(
+                "no verification incident is active".into(),
+            ));
+        };
+        if !current.halted {
+            return Err(AppError::Validation(
+                "the verification incident is still retrying".into(),
+            ));
+        }
+        if current.incident_id != expected {
+            return Err(AppError::Validation(format!(
+                "verification incident `{expected}` is stale; current incident is `{}`",
+                current.incident_id
+            )));
+        }
+        ctx.store().write(|tx| {
+            tx.clear_verification_incident(expected)?;
+            Ok(())
+        })?;
+        Ok(json_reply(
+            200,
+            serde_json::json!({"acknowledged": expected}).to_string(),
+        ))
+    })()
+    .unwrap_or_else(|error| error_reply(&error))
 }
 
 /// The `meta` object describing the project's configuration — states in
