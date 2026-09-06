@@ -37,6 +37,21 @@
 - Engine shell units initially exceeded their existing 3-second deadlines;
   isolated and serial reruns passed. Timing cause remains unverified.
 
+## Verifier remediation
+
+- PR 668 and PR 669 failed shared-checkout preparation before tests, then
+  callbacks queried the daemon starter's unrelated tmux server.
+- Additional fixes pin speculative Git refs, preserve tracked edits, classify
+  preparation/restoration separately from test failures, retain tmux lookup
+  diagnostics, and use Codex Tab / Claude Enter for remediation.
+- RCA: docs/rca/verifier-remediation-context.md.
+- Preserved dirty verifier at .git/storyhook/verification-recovery-SH-584-20260906;
+  both modified files intact. Same installed v2.4.2 restarted at PID 94452,
+  port 3456, without TMUX/TMUX_PANE. No installed artifact changed.
+- Remediation verification: merge-gate 24, verifier queue 44, real tmux 3,
+  notification lookup and
+  provider-key regressions plus directly impacted shell tests passed.
+
 ## Submission boundary
 
 One PR on worktree-SH-584 is linked to SH-584, then the story moves to verifying.

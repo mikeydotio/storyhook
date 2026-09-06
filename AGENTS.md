@@ -189,8 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-584's daemon dispatch targeting, Codex plugin freshness,
-  and absorbed SH-583 Astra propagation through the centralized verifier.
+- Current: verify SH-584's dispatch/Astra fixes and verifier preparation,
+  restoration, and remediation-delivery repairs through the centralized verifier.
 - Next: SH-585 independently owns the installed-path guard correction.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
