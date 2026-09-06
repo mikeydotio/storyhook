@@ -10,6 +10,14 @@ if ! [ -t 0 ]; then
   stdin_json=$(cat)
 fi
 
+# The hook's own canonical package root is the only identity the dispatcher
+# can trust here. Provider environment variables describe registration, not
+# necessarily the script that actually executed. Add it to the payload before
+# the CLI publishes the sentinel; malformed provider JSON stays malformed and
+# therefore fails a later autonomous identity check closed.
+HOOK_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "$stdin_json" ]; then story_payload=$(printf '%s' "$stdin_json" | jq -c --arg root "$HOOK_PLUGIN_ROOT" '. + {storyhook_plugin_root: $root}' 2>/dev/null) || story_payload="$stdin_json"; else story_payload=$(jq -cn --arg root "$HOOK_PLUGIN_ROOT" '{storyhook_plugin_root: $root}' 2>/dev/null) || story_payload=""; fi
+
 # Extract cwd from stdin JSON and cd to it.
 if [[ -n "$stdin_json" ]]; then
   cwd=$(printf '%s' "$stdin_json" | sed -n 's/.*"cwd" *: *"\([^"]*\)".*/\1/p')
@@ -59,7 +67,7 @@ fi
 # more field. Piping an empty string when nothing arrived is a no-op — an
 # immediately-closed stdin reads as "".
 if command -v story &>/dev/null; then
-  if [ -n "${STORYHOOK_DISPATCH:-}" ]; then out=$(printf '%s' "$stdin_json" | story --deadline 20 session-start 2>/dev/null) || out=""; else out=$(printf '%s' "$stdin_json" | story --deadline 3 session-start 2>/dev/null) || out=""; fi
+  if [ -n "${STORYHOOK_DISPATCH:-}" ]; then out=$(printf '%s' "$story_payload" | story --deadline 20 session-start 2>/dev/null) || out=""; else out=$(printf '%s' "$story_payload" | story --deadline 3 session-start 2>/dev/null) || out=""; fi
   case "$out" in "{"*) printf '%s' "$out" ;; *) printf '{}' ;; esac
 else
   printf '{}'
