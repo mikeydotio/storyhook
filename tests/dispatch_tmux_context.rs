@@ -362,3 +362,161 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
         "engine must monitor and kill default @1 while preserving unrelated @1: observed={observed}, default={default_windows:?}, unrelated={unrelated_windows:?}"
     );
 }
+
+#[test]
+fn verification_callback_delivers_only_to_the_default_server_agent() {
+    use storyhook::daemon::verification::{ShellVerificationActuator, VerificationActuator};
+    use storyhook::domain::Priority;
+    use storyhook::service::{VerificationCandidate, VerificationProblem};
+    use storyhook::store::ProjectId;
+
+    const RESULT_ENV: &str = "STORY_CALLBACK_RESULT";
+    if let Some(result_path) = std::env::var_os(RESULT_ENV) {
+        let env = TestEnv::isolated();
+        let candidate = VerificationCandidate {
+            project: ProjectId::new(1),
+            project_slug: "fixture".into(),
+            story_id: "SH-CALLBACK-1".into(),
+            title: "isolated callback".into(),
+            priority: Priority::High,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            verifying_since: None,
+            verifying_generation: None,
+            checkout: env.home().to_path_buf(),
+            cleanup_lease: None,
+            pull_request: Err(VerificationProblem::MissingPullRequest),
+        };
+        let actuator = ShellVerificationActuator::with_paths(
+            env.environment(),
+            std::env::var_os("STORY_CALLBACK_HELPER")
+                .expect("callback helper")
+                .into(),
+            storyhook_test_support::story_binary().to_path_buf(),
+        );
+        let result = actuator.notify(
+            &candidate,
+            &std::env::var("STORY_CALLBACK_MESSAGE").expect("fixture message"),
+        );
+        std::fs::write(
+            result_path,
+            serde_json::json!({"error": result.err().map(|error| error.to_string())}).to_string(),
+        )
+        .expect("callback result");
+        return;
+    }
+
+    let scratch = scratch_dir();
+    let tmux_root = scratch.path().join("sockets");
+    let uid = scratch.path().metadata().expect("fixture directory").uid();
+    let socket_dir = tmux_root.join(format!("tmux-{uid}"));
+    std::fs::create_dir_all(&socket_dir).expect("socket directory");
+    std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("private socket directory");
+    let default_socket = socket_dir.join("default");
+    let unrelated_socket = socket_dir.join("unrelated");
+    let _default_server = server(&default_socket);
+    let _unrelated_server = server(&unrelated_socket);
+    for socket in [&default_socket, &unrelated_socket] {
+        tmux(
+            socket,
+            &["new-window", "-d", "-n", "SH-CALLBACK-1", "/bin/cat"],
+        );
+        tmux(
+            socket,
+            &["set-option", "-w", "-t", "@1", "@storyhook-agent", "codex"],
+        );
+        tmux(
+            socket,
+            &["set-option", "-w", "-t", "@1", "automatic-rename", "off"],
+        );
+    }
+    let inherited_tmux = tmux(
+        &unrelated_socket,
+        &["display-message", "-p", "#{socket_path},#{pid},0"],
+    );
+    let inherited_pane = tmux(&unrelated_socket, &["display-message", "-p", "#{pane_id}"]);
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|directory| directory.join("tmux"))
+        .find(|path| path.is_file())
+        .expect("tmux installed");
+    let bin = scratch.path().join("bin");
+    std::fs::create_dir(&bin).expect("adapter directory");
+    let adapter = bin.join("tmux");
+    std::fs::write(
+        &adapter,
+        format!(
+            "#!/bin/sh\nexport TMUX_TMPDIR='{}'\nexec '{}' \"$@\"\n",
+            tmux_root.display(),
+            real_tmux.display()
+        ),
+    )
+    .expect("namespace adapter");
+    std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755))
+        .expect("executable adapter");
+    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
+    // Reintroduce the old inherited environment only in a fixture wrapper;
+    // both cases still execute production notify and real tmux operations.
+    let legacy_helper = scratch.path().join("legacy-environment.sh");
+    std::fs::write(&legacy_helper, format!("export TMUX=\"$STORY_CALLBACK_INHERITED_TMUX\"\nexport TMUX_PANE=\"$STORY_CALLBACK_INHERITED_PANE\"\nexec bash '{}' \"$@\"\n", helper.display())).expect("legacy environment control");
+
+    for (mode, selected_helper, expected_socket, other_socket) in [
+        ("current", &helper, &default_socket, &unrelated_socket),
+        ("legacy", &legacy_helper, &unrelated_socket, &default_socket),
+    ] {
+        let marker = format!("CALLBACK_FIXTURE_ONLY_584_{mode}");
+        let result_path = scratch.path().join(format!("{mode}.json"));
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "verification_callback_delivers_only_to_the_default_server_agent",
+                "--nocapture",
+            ])
+            .env(RESULT_ENV, &result_path)
+            .env("STORY_CALLBACK_HELPER", selected_helper)
+            .env("STORY_CALLBACK_MESSAGE", &marker)
+            .env("STORY_CALLBACK_INHERITED_TMUX", inherited_tmux.trim())
+            .env("STORY_CALLBACK_INHERITED_PANE", inherited_pane.trim())
+            .env("TMUX", inherited_tmux.trim())
+            .env("TMUX_PANE", inherited_pane.trim())
+            .env("STORY_READY_PROCESS_PATTERN", "^cat$")
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH")),
+            );
+        let output = ChildGuard::spawn_with_output(&mut command)
+            .expect("callback subprocess")
+            .wait_with_output_within(STORY_COMMAND_DEADLINE.saturating_mul(2), || {
+                "callback probe did not finish".into()
+            });
+        assert!(
+            output.status.success(),
+            "callback subprocess: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(result_path).expect("callback result"))
+                .expect("callback JSON");
+        assert!(
+            result["error"].is_null(),
+            "{mode} production notification failed: {result}"
+        );
+        let deadline = Instant::now() + STARTUP_DEADLINE;
+        loop {
+            let transcript = tmux(expected_socket, &["capture-pane", "-p", "-t", "@1"]);
+            if transcript.contains(&marker) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{mode} callback never arrived: {transcript}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let other = tmux(other_socket, &["capture-pane", "-p", "-t", "@1"]);
+        assert!(
+            !other.contains(&marker),
+            "{mode} callback reached the wrong server: {other}"
+        );
+    }
+}
