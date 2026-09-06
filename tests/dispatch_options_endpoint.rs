@@ -213,6 +213,49 @@ fn a_repeated_request_is_served_from_cache_without_rerunning_the_helper() {
     );
 }
 
+/// A refreshed helper must replace a cached catalog before the TTL expires.
+#[test]
+fn replacing_the_helper_refreshes_cached_models_immediately() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let hits_dir = scratch_dir();
+    let hits_file = hits_dir.path().join("hits");
+    let original = capabilities_stub(&hits_file);
+    let stub = write_script(&original);
+    let info = start_with_stub(&env, stub.path());
+    let first = body_json(get_options(&info, &info.token).expect("original catalog"));
+    assert_eq!(first["codex"]["models"][0]["id"], "gpt-5.6-sol");
+    std::fs::write(stub.path(), original.replace("gpt-5.6-sol", "gpt-6-astra"))
+        .expect("refresh installed helper");
+    let refreshed = body_json(get_options(&info, &info.token).expect("refreshed catalog"));
+    assert_eq!(refreshed["codex"]["models"][0]["id"], "gpt-6-astra");
+    assert_eq!(
+        std::fs::read_to_string(hits_file).unwrap().lines().count(),
+        4
+    );
+}
+
+/// A missing helper cannot keep advertising a catalog the launcher cannot use.
+#[test]
+fn removing_the_helper_invalidates_cached_capabilities() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let hits_dir = scratch_dir();
+    let stub = write_script(&capabilities_stub(&hits_dir.path().join("hits")));
+    let info = start_with_stub(&env, stub.path());
+    let first = body_json(get_options(&info, &info.token).expect("original catalog"));
+    assert_eq!(first["codex"]["ok"], true);
+    std::fs::remove_file(stub.path()).expect("remove fixture helper");
+    let missing = body_json(get_options(&info, &info.token).expect("missing helper catalog"));
+    assert_eq!(missing["codex"]["ok"], false);
+    assert!(
+        missing["codex"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a file")
+    );
+}
+
 /// A helper that has no `capabilities` verb at all (an installed plugin
 /// predating SH-517) must degrade that one provider's slot to a well-formed
 /// refusal, not break the endpoint or the other provider's slot.
