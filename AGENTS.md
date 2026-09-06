@@ -191,6 +191,7 @@ project it is looking at.
 
 - Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
 - Complete: SH-585 installed-launcher reader exception merged (#669).
+- Complete: SH-581 extracted-source guest build fix merged (#670).
 - Current: validate SH-577 coordinate-driven browser regressions through the
   centralized verifier; dispatch coverage is already repaired by SH-584.
 - Next: audit verifier behavior end to end (SH-560).
