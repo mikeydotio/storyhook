@@ -699,19 +699,30 @@ pub fn bind_preferred(
     }
 }
 
+fn enter_stable_working_directory(env: &Environment) -> Result<(), AppError> {
+    std::env::set_current_dir(env.home()).map_err(|error| {
+        AppError::Storage(format!(
+            "failed to set the daemon working directory to {}: {error}",
+            env.home().display()
+        ))
+    })
+}
+
 /// Runs the daemon in this process, until it is asked to stop.
 ///
 /// The order is the contract: install the panic hook (so nothing this process
-/// does from here on can panic unrecorded), take the lifetime lock (so a
-/// second daemon cannot start), harvest whatever residue that lock's previous
-/// holder left (SH-287 — the portfile still names *them*, and `write_info`
-/// below is about to overwrite it), bind loopback (so the port is real),
-/// publish the portfile (so a client can find it), then serve — and only
-/// from a background thread inside `serve`, after all of that, does anything
-/// ever probe the tailnet (SH-186). No step before `serve` waits on
-/// `tailscale` in any way.
+/// does from here on can panic unrecorded), enter the environment's stable home
+/// directory (so no child can inherit the request that started the daemon's
+/// working directory), take the lifetime lock (so a second daemon cannot
+/// start), harvest whatever residue that lock's previous holder left (SH-287 —
+/// the portfile still names *them*, and `write_info` below is about to overwrite
+/// it), bind loopback (so the port is real), publish the portfile (so a client
+/// can find it), then serve — and only from a background thread inside `serve`,
+/// after all of that, does anything ever probe the tailnet (SH-186). No step
+/// before `serve` waits on `tailscale` in any way.
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     crate::daemon::crash::install_panic_hook(env);
+    enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     crate::daemon::crash::harvest(env);
     let (listeners, bound) = bind_preferred(env)?;
