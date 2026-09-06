@@ -212,8 +212,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-582's stable daemon and verifier-pane working-directory
-  ownership through the centralized verifier.
+- Current: verify SH-585's narrow installed-launcher reader exception through
+  the centralized verifier; SH-584 owns dispatch and plugin freshness.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).

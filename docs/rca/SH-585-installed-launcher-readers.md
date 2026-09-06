@@ -86,3 +86,14 @@ does not mistake inert data for a shell substitution.
 The approved plan and subsequent decisions are recorded on SH-585. The
 read-only challenger reviewed the helper side effects and exception grammar.
 No installed plugin, override, release, or version was changed.
+
+## Central verification return
+
+The verifier passed the behavioral suite but caught roadmap drift in
+`scope_rubric::this_repos_agents_md_is_what_the_template_generates`.
+SH-585 updated generated AGENTS.md without updating its source template.
+Reproduced that existing regression RED, then synchronized the roadmap in
+`src/service/templates.rs`. The exact-output contract remains intact;
+separating project roadmap ownership from the shared template remains SH-557.
+The repair is a follow-up commit on PR #669 with focused rubric/scaffold
+validation; published history is preserved.
