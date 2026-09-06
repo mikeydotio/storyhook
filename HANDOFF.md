@@ -1,45 +1,49 @@
-# SH-585 Handoff
+# SH-574 Handoff
 
 ## Current work
 
-- PR #669 on `worktree-SH-585`: exact installer-produced Codex launcher plus
-  five narrow reader argv contracts; no general Bash or compound exemption.
-- Real launcher/helper/CLI tests preserve story data, global events and
-  installed artifact bytes. Unsupported shell safety has an honest diagnosis.
-- Verifier repairs synchronize the AGENTS.md source template and use
-  `TestEnv::raw_story` for the older reinstall fixture. Actual environment
-  assertions cover containment, isolated paths, provider PATH and cwd.
-- RCA: `docs/rca/SH-585-installed-launcher-readers.md`.
+- Branch: `worktree-SH-574`; base version v2.4.2, unchanged.
+- Approved plan is posted verbatim on SH-574. Decisions, reproduction and
+  mutation evidence are in subsequent comments.
+- `docs/spec/commit-identity.md` defines the policy and its limits.
+- One Bash helper checks effective author/committer before commit and stored
+  metadata before push. Explicit alternatives require a role and reason.
+- The push check precedes the receipt bypass, preserves all stdin records,
+  and scans the full outgoing range. Existing published ancestors remain
+  visible through the read-only audit.
+- Five existing Git-hook fixture suites explicitly approve their fixture
+  identity through a shared sanitized test helper. No production bypass.
+- Identity tests are grouped into policy and push/audit modules.
 
-## Reconciled main
+## Verification
 
-SH-584 merged as PR #668. Its changes are preserved:
+- Initial isolated regression accepted an incorrect local email before the fix.
+- Disposable mutation controls kill both missing detection and overrestriction.
+- Full audit: 2,657 reachable commits, 792 requiring review against current
+  global identity, including the five fixture-identity commits. Historical
+  contributors and GitHub committers are differences, not proven corruption.
+- All 22 new identity tests pass; final targeted batch: 134 tests passed,
+  plus 10 browser-gate tests. Targeted Clippy denies warnings; ShellCheck,
+  Bash syntax, formatting and whitespace checks pass. PR URL is on SH-574.
+- Run only new/directly impacted tests in this lane. Central verification owns
+  full-suite testing, merge, completion and worktree cleanup.
 
-- Daemon dispatch and engine monitoring exclude ambient tmux identity while
-  interactive and explicit cleanup-lease addressing remain intact.
-- Installer verifies the enabled plugin's complete release payload; provider
-  fixtures now materialize that payload. Capabilities track helper content.
-- Verifier preparation/restoration preserve tracked edits and speculative
-  refs; remediation retains tmux diagnostics and provider-specific keys.
-- Context: `docs/rca/web-dispatch-tmux-and-stale-catalog.md` and
-  `docs/rca/verifier-remediation-context.md`. SH-583 was absorbed into SH-584.
-- SH-584 preserved a dirty verifier at
-  `.git/storyhook/verification-recovery-SH-584-20260906`; do not remove it.
+## Prior context to preserve
 
-## Reconciliation validation
-
-- Keep main's provider payload fixtures with SH-585's shared command builder
-  and containment regression. Keep generated AGENTS.md equal to its template.
-- Run installer/freshness/reinstall, launcher/guard, containment and scaffold
-  contracts; targeted Clippy, formatting and diff checks. Final results are
-  recorded on SH-585 and PR #669.
+- SH-585: installed-launcher reader exceptions; PR #669 and
+  `docs/rca/SH-585-installed-launcher-readers.md` carry its record.
+- SH-584 merged as #668. Preserve daemon dispatch environment isolation,
+  installer payload validation and verifier restoration/remediation behavior.
+- The dirty verifier preserved at
+  `.git/storyhook/verification-recovery-SH-584-20260906` must not be removed.
+- AGENTS.md remains synchronized with `src/service/templates.rs`; SH-557 owns
+  separating project roadmap data from generated instructions.
+- Next: verifier lifecycle audit SH-560; attachment work SH-315 remains later.
 
 ## Submission boundary
 
-Merge current origin/main into the existing branch, preserving published
-history. Push to PR #669; no new PR, rebase or force-push. Record final context,
-then make `story move SH-585 verifying` the absolute final action.
-
-Central verification owns the full suite, merge, completion and cleanup.
-No full-suite, release, version or deployment operation from this worktree.
-SH-557 remains responsible for separating roadmap data from the template.
+Commit and push without rewriting history. Open exactly one PR with SH-574 in
+its title and body; link it and comment results on the story. Make
+`story move SH-574 verifying` the absolute last action, then stop.
+Repair the same PR if verification returns it. No full-suite, version, release,
+deployment, merge or cleanup operation from this worktree.
