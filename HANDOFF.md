@@ -54,6 +54,11 @@
 
 ## Submission boundary
 
+The subsequent verifier return reached this agent successfully. Its sole newly
+red contract was AGENTS.md/template byte equality: the roadmap update missed
+src/service/templates.rs. The template now carries the same current roadmap;
+SH-557 still owns separating project roadmap data from generated instructions.
+
 One PR on worktree-SH-584 is linked to SH-584, then the story moves to verifying.
 Central verification owns the full suite, merge, completion, and lane cleanup.
 Do not version, release, deploy, merge, or remove this worktree. Repair the same
