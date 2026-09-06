@@ -89,16 +89,21 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// Runs `scripts/verify-window.sh <args...>` with `tmux_dir` prepended to
-/// `PATH` — nothing else on `PATH` is disturbed, so `bash`, `printf`, etc.
-/// resolve normally.
+/// `PATH` and the fixture's stable home exported as `HOME` — nothing else on
+/// `PATH` is disturbed, so `bash`, `printf`, etc. resolve normally.
 fn run_window(tmux_dir: &Path, args: &[&str]) -> Output {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut path = std::ffi::OsString::from(tmux_dir.as_os_str());
     path.push(":");
     path.push(&existing);
+    let home = tmux_dir
+        .parent()
+        .expect("fixture tmux directory must have a parent")
+        .join("stable home");
     Command::new("bash")
         .arg(checkout().join("scripts/verify-window.sh"))
         .args(args)
+        .env("HOME", home)
         .env("PATH", path)
         .env_remove("STORYHOOK_VERIFIER_MIRROR")
         .output()
@@ -114,6 +119,7 @@ impl Fixture {
         let root = scratch_dir();
         let tmux_dir = root.path().join("bin");
         std::fs::create_dir(&tmux_dir).unwrap();
+        std::fs::create_dir(root.path().join("stable home")).unwrap();
         stub_tmux(
             &tmux_dir.join("tmux"),
             &root.path().join("calls.log"),
@@ -126,6 +132,10 @@ impl Fixture {
         self.root.path().join("bin")
     }
 
+    fn home(&self) -> PathBuf {
+        self.root.path().join("stable home")
+    }
+
     fn calls(&self) -> String {
         std::fs::read_to_string(self.root.path().join("calls.log")).unwrap_or_default()
     }
@@ -133,6 +143,29 @@ impl Fixture {
     fn calls_exist(&self) -> bool {
         self.root.path().join("calls.log").exists()
     }
+}
+
+fn tmux_calls(log: &str) -> Vec<Vec<&str>> {
+    let mut calls = Vec::new();
+    let mut call = Vec::new();
+    for line in log.lines() {
+        if line == "---" {
+            calls.push(std::mem::take(&mut call));
+        } else {
+            call.push(line);
+        }
+    }
+    calls
+}
+
+fn assert_stable_home_cwd(call: &[&str], home: &Path, log: &str) {
+    let expected = home.display().to_string();
+    assert!(
+        call.windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == expected),
+        "{} must receive `-c` and stable HOME as distinct argv elements; calls:\n{log}",
+        call.first().copied().unwrap_or("tmux invocation")
+    );
 }
 
 #[test]
@@ -317,4 +350,75 @@ fn ensure_creates_a_session_only_when_none_exists() {
         !calls.contains("new-session"),
         "an existing session (has-session succeeding) must never be recreated; calls:\n{calls}"
     );
+}
+
+#[test]
+fn a_new_session_and_its_banner_respawn_use_the_stable_home_cwd() {
+    let fixture = Fixture::new(false);
+    let out = run_window(&fixture.tmux_dir(), &["banner", "first ever call"]);
+    assert!(out.status.success(), "banner should succeed: {out:?}");
+
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.first() == Some(&"new-session")),
+        "a missing session must exercise new-session; calls:\n{log}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.first() == Some(&"respawn-pane")),
+        "the banner must exercise respawn-pane; calls:\n{log}"
+    );
+    for call in calls.iter().filter(|call| {
+        matches!(
+            call.first(),
+            Some(&"new-session" | &"new-window" | &"respawn-pane")
+        )
+    }) {
+        assert_stable_home_cwd(call, &fixture.home(), &log);
+    }
+}
+
+#[test]
+fn existing_session_banner_and_tail_respawns_use_the_stable_home_cwd() {
+    let fixture = Fixture::new(true);
+    let banner = run_window(&fixture.tmux_dir(), &["banner", "existing session"]);
+    let tail = run_window(&fixture.tmux_dir(), &["tail", "/tmp/verification.log"]);
+    assert!(banner.status.success(), "banner should succeed: {banner:?}");
+    assert!(tail.status.success(), "tail should succeed: {tail:?}");
+
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    let respawns: Vec<_> = calls
+        .iter()
+        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .collect();
+    assert_eq!(
+        respawns.len(),
+        2,
+        "banner and tail must each exercise respawn-pane; calls:\n{log}"
+    );
+    assert!(
+        respawns.iter().any(|call| call.contains(&"bash")),
+        "the banner respawn must be present; calls:\n{log}"
+    );
+    assert!(
+        respawns.iter().any(|call| call.contains(&"tail")),
+        "the tail respawn must be present; calls:\n{log}"
+    );
+    assert!(
+        calls.iter().any(|call| call.first() == Some(&"new-window")),
+        "the existing-session fixture must exercise new-window; calls:\n{log}"
+    );
+    for call in calls.iter().filter(|call| {
+        matches!(
+            call.first(),
+            Some(&"new-session" | &"new-window" | &"respawn-pane")
+        )
+    }) {
+        assert_stable_home_cwd(call, &fixture.home(), &log);
+    }
 }
