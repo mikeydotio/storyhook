@@ -48,4 +48,16 @@ assert_eq "$claimed_state" "in-progress" "next-mode happy: story CLI itself conf
 low_state=$(cd "$repo" && story show "$low_id" --json | jq -r '.story.story.state')
 assert_eq "$low_state" "todo" "next-mode happy: the lower-priority story was left untouched"
 
+comments=$(cd "$repo" && story show "$high_id" --json \
+  | jq -c '[.story.story.comments[].text]')
+repo_real=$(cd "$repo" && pwd -P)
+assert_eq "$comments" \
+  "[\"Dispatched to tmux window story-session:$high_id, worktree $repo_real/.claude/worktrees/$high_id, branch worktree-$high_id.\"]" \
+  "next-mode happy: the post-handoff comment records every created resource"
+
+comment_command=$(cd "$repo" && story log "$high_id" --json \
+  | jq -r '[.log[] | select(.kind == "StoryCommentAdded") | .command] | join(",")')
+assert_eq "$comment_command" "comment" \
+  "next-mode happy: the resource record is post-hoc, not part of the claim"
+
 finish

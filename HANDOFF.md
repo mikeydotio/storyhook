@@ -33,19 +33,22 @@
 
 ## Reconciliation
 
-- Current `origin/main` at `a396b3e9a` is merged additively; published SH-567
-  history remains unchanged.
+- The first reconciliation merged `origin/main` at `a396b3e9a` additively.
+- The second reconciliation merges `origin/main` at `64c2b256f` additively;
+  published SH-567 history remains unchanged.
 - Main's verification-incident dashboard and Full Auto specification changes
   merge with SH-567 automatically.
+- Main's dispatch-resource persistence changes do not overlap the dashboard
+  lifecycle controls.
 - AGENTS.md and its canonical template keep the SH-567 verifier roadmap in
   sync; this handoff remains scoped to the active story.
 
 ## Focused verification
 
-- Reconciled engine E2E: 19 Chromium, 18 WebKit plus 1 documented skip, 19
-  mobile Chromium, and 18 mobile WebKit plus 1 documented skip passed.
-- One initial Chromium real-daemon lane interruption under peak host load did
-  not reproduce; its isolated 19-case Chromium rerun passed.
+- Second-reconciliation engine E2E: 19 Chromium, 18 WebKit plus 1 documented
+  skip, 19 mobile Chromium, and 18 mobile WebKit plus 1 documented skip passed.
+- The prior first-reconciliation Chromium interruption did not recur in this
+  clean full-matrix run.
 - Web template, dashboard error-reporting, focus-coverage, and roadmap-template
   tests: 251 passed.
 
