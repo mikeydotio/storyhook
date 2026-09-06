@@ -501,8 +501,8 @@ wait_ready() {
   return 1
 }
 
-# wait_ready_sentinel <pane> <captured-pid> <worktree-path> — poll until a
-# Claude Code SessionStart hook has published a dispatch sentinel INSIDE
+# wait_ready_sentinel <pane> <captured-pid> <worktree-path> [expected-plugin-root]
+# — poll until a SessionStart hook has published a dispatch sentinel INSIDE
 # <worktree-path> (SH-231, replacing the screen-scrape above for
 # `cmd_dispatch`'s launch, which — since SH-230 — execs straight into the
 # launch binary rather than typing it, so <captured-pid> is that binary's own
@@ -532,7 +532,9 @@ wait_ready() {
 #      <worktree-path>/.claude/dispatch-sentinel.json, AND `pane_runs` — the
 #      SAME process-table fact `wait_ready` gates on above — still matches
 #      READY_PROCESS_PATTERN. A sentinel with the right pid dead or a live pid
-#      that is not actually running the launch binary are both refused.
+#      that is not actually running the launch binary are both refused. When
+#      [expected-plugin-root] is non-empty, its protocol-2 `plugin_root` must
+#      exactly match too; this binds autonomous Codex to the helper's hooks.
 #
 # Existence alone is NEVER sufficient (council verdict on SH-231): a sentinel
 # is not a secret, and nothing stops a second,
@@ -556,6 +558,10 @@ wait_ready() {
 #   no-sentinel  — timed out with the pane alive and correct throughout, but
 #                  no sentinel ever appeared (SessionStart hook missing,
 #                  disabled, or never fired).
+#   hook-identity-missing — a sentinel appeared without a non-empty protocol-2
+#                  plugin root; FAILS FAST because it cannot prove binding.
+#   hook-identity-mismatch — a sentinel names a different plugin root; FAILS
+#                  FAST because a different hook package definitely ran.
 #
 # WAIT_READY_COMMAND is the last observed occupant, refreshed every
 # iteration regardless of which branch it ends up in — a launch that never
@@ -565,7 +571,7 @@ WAIT_READY_TIER="none"
 WAIT_READY_COMMAND=""
 WAIT_READY_REASON="timeout"
 wait_ready_sentinel() {
-  local pane="$1" captured_pid="$2" worktree="$3" attempt=0
+  local pane="$1" captured_pid="$2" worktree="$3" expected_plugin_root="${4:-}" attempt=0
   local sentinel_path="$worktree/.claude/dispatch-sentinel.json"
   WAIT_READY_TIER="none"
   WAIT_READY_COMMAND=""
@@ -591,6 +597,20 @@ wait_ready_sentinel() {
       return 1
     fi
     if [ -f "$sentinel_path" ]; then
+      if [ -n "$expected_plugin_root" ]; then
+        local actual_plugin_root
+        actual_plugin_root=$(jq -er \
+          'select(.protocol_version == 2) | .plugin_root | select(type == "string" and length > 0)' \
+          "$sentinel_path" 2>/dev/null || printf '')
+        if [ -z "$actual_plugin_root" ]; then
+          WAIT_READY_REASON="hook-identity-missing"
+          return 1
+        fi
+        if [ "$actual_plugin_root" != "$expected_plugin_root" ]; then
+          WAIT_READY_REASON="hook-identity-mismatch"
+          return 1
+        fi
+      fi
       if pane_runs "$pane"; then
         WAIT_READY_TIER="sentinel"
         WAIT_READY_REASON="ok"
