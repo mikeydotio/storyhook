@@ -25,10 +25,22 @@ use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
 };
-use crate::store::{GlobalSeq, PrLink, ProjectId, ReadOps, Store};
+use crate::store::{
+    GlobalSeq, PrLink, ProjectId, ReadOps, Store, VerificationFailureDisposition,
+    VerificationIncident, WriteOps,
+};
 
 /// Infrastructure recovery cadence when no store event arrives.
 const RECOVERY_WAKE: Duration = Duration::from_secs(30);
+
+/// Attempts admitted inside one progress-freshness window: now, +30s, +60s.
+pub const INFRASTRUCTURE_RETRY_ATTEMPTS: u32 = super::verification_progress::PUBLISH_INTERVAL
+    .as_secs() as u32
+    / RECOVERY_WAKE.as_secs() as u32
+    + 1;
+
+/// Marker for the one edited infrastructure evidence comment.
+pub const INFRASTRUCTURE_COMMENT_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
 /// One verification generation currently owned by this daemon's serialized
 /// verifier. Queue rank is deliberately absent: priority may change while an
@@ -152,7 +164,12 @@ pub enum VerificationOutcome {
     },
     /// GitHub, git, credentials, or the verifier process failed independently
     /// of the submitted code.
-    InfrastructureFailure { detail: String },
+    InfrastructureFailure {
+        /// Latest diagnosis.
+        detail: String,
+        /// Whether retrying unchanged can recover.
+        disposition: VerificationFailureDisposition,
+    },
 }
 
 /// Process boundary for repository verification and agent-session control.
@@ -456,16 +473,19 @@ impl VerificationActuator for ShellVerificationActuator {
             Err(CaptureError::Stage(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not stage scripts/verify-pr.sh output: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Spawn(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not start scripts/verify-pr.sh: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Wait(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not wait for scripts/verify-pr.sh: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Timeout(termination)) => {
@@ -485,6 +505,7 @@ impl VerificationActuator for ShellVerificationActuator {
                         "scripts/verify-pr.sh did not finish within {:?}; {termination}",
                         self.verification_timeout
                     ),
+                    disposition: VerificationFailureDisposition::Permanent,
                 };
             }
         };
@@ -496,6 +517,7 @@ impl VerificationActuator for ShellVerificationActuator {
                         "scripts/verify-pr.sh returned invalid JSON: {}",
                         String::from_utf8_lossy(&captured.stderr).trim()
                     ),
+                    disposition: VerificationFailureDisposition::Permanent,
                 };
             }
         };
@@ -579,6 +601,10 @@ enum WireOutcome {
     },
     InfrastructureFailure {
         detail: String,
+        disposition: VerificationFailureDisposition,
+    },
+    InvalidSubmission {
+        detail: String,
     },
 }
 
@@ -590,7 +616,14 @@ impl From<WireOutcome> for VerificationOutcome {
             WireOutcome::TestsFailed { tree, log, detail } => {
                 Self::TestsFailed { tree, log, detail }
             }
-            WireOutcome::InfrastructureFailure { detail } => Self::InfrastructureFailure { detail },
+            WireOutcome::InfrastructureFailure {
+                detail,
+                disposition,
+            } => Self::InfrastructureFailure {
+                detail,
+                disposition,
+            },
+            WireOutcome::InvalidSubmission { detail } => Self::InvalidSubmission { detail },
         }
     }
 }
@@ -606,6 +639,8 @@ pub enum TickResult {
     Returned,
     /// The highest-priority candidate waits on external infrastructure.
     RetryLater,
+    /// Durable infrastructure evidence has stopped the queue pending acknowledgement.
+    Halted,
 }
 
 /// Runs one verification attempt. Public for store-backed integration tests.
@@ -637,7 +672,25 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     inflight: &InFlight,
 ) -> Result<TickResult, AppError> {
     let queue = VerificationQueue::new(store);
-    let Some(candidate) = queue.next()? else {
+    let ordered = queue.ordered()?;
+    let incident = store.read(|tx| tx.verification_incident())?;
+    let incident_candidate = incident.as_ref().and_then(|incident| {
+        ordered
+            .iter()
+            .find(|candidate| incident_matches(incident, candidate))
+            .cloned()
+    });
+    if let Some(incident) = incident.as_ref() {
+        if incident_candidate.is_none() {
+            store.write(|tx| {
+                tx.clear_verification_incident(&incident.incident_id)?;
+                Ok(())
+            })?;
+        } else if incident.halted {
+            return Ok(TickResult::Halted);
+        }
+    }
+    let Some(candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
         let Some(candidate) = queue.next_cleanup()? else {
             return Ok(TickResult::Idle);
         };
@@ -669,15 +722,13 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     let pull_request = match &candidate.pull_request {
         Ok(pull_request) => pull_request.clone(),
         Err(VerificationProblem::MissingCheckout) => {
-            comment_once(
+            return_for_repair(
                 &ctx,
+                actuator,
                 &candidate,
-                &format!(
-                    "CENTRAL VERIFICATION CONFIGURATION REQUIRED — {}",
-                    VerificationProblem::MissingCheckout.message()
-                ),
+                &VerificationProblem::MissingCheckout.message(),
             )?;
-            return Ok(TickResult::RetryLater);
+            return Ok(TickResult::Returned);
         }
         Err(problem) => {
             return_for_repair(&ctx, actuator, &candidate, &problem.message())?;
@@ -705,6 +756,10 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     });
     let active = activity.acquire(&candidate, started_at);
     let outcome = actuator.verify(&candidate, &pull_request);
+
+    if !matches!(outcome, VerificationOutcome::InfrastructureFailure { .. }) {
+        clear_matching_incident(store, &candidate)?;
+    }
 
     match outcome {
         VerificationOutcome::Merged { tree, detail } => {
@@ -763,16 +818,117 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
             )?;
             Ok(TickResult::Returned)
         }
-        VerificationOutcome::InfrastructureFailure { detail } => {
-            comment_once(
-                &ctx,
-                &candidate,
-                &format!(
-                    "CENTRAL VERIFICATION INFRASTRUCTURE RETRY — the story remains verifying; its code was not classified red. {detail}"
-                ),
-            )?;
-            Ok(TickResult::RetryLater)
-        }
+        VerificationOutcome::InfrastructureFailure {
+            detail,
+            disposition,
+        } => record_infrastructure_failure(&ctx, &candidate, disposition, &detail),
+    }
+}
+
+fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCandidate) -> bool {
+    candidate.project == incident.project
+        && candidate.verifying_generation == Some(incident.generation)
+}
+
+fn clear_matching_incident(
+    store: &impl Store,
+    candidate: &VerificationCandidate,
+) -> Result<(), AppError> {
+    let incident = store.read(|tx| tx.verification_incident())?;
+    if let Some(incident) = incident.filter(|incident| incident_matches(incident, candidate)) {
+        store.write(|tx| {
+            tx.clear_verification_incident(&incident.incident_id)?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn record_infrastructure_failure(
+    ctx: &Ctx<'_, impl Store>,
+    candidate: &VerificationCandidate,
+    disposition: VerificationFailureDisposition,
+    detail: &str,
+) -> Result<TickResult, AppError> {
+    let generation = candidate.verifying_generation.ok_or_else(|| {
+        AppError::Storage(format!(
+            "{} has no verification generation",
+            candidate.story_id
+        ))
+    })?;
+    let project = ctx
+        .store()
+        .read(|tx| tx.project(candidate.project))?
+        .ok_or_else(|| AppError::NotFound(format!("project {}", candidate.project.get())))?;
+    let story = crate::store::StoryNo::parse_id(&project.prefix, &candidate.story_id)?;
+    let incident_id = format!("{}:{}", candidate.project.get(), generation.get());
+    let now = ctx.now();
+    let mut incident = ctx
+        .store()
+        .read(|tx| tx.verification_incident())?
+        .filter(|current| current.incident_id == incident_id)
+        .unwrap_or(VerificationIncident {
+            incident_id,
+            project: candidate.project,
+            story,
+            generation,
+            disposition,
+            halted: false,
+            attempts: 0,
+            detail: String::new(),
+            first_failed_at: now.clone(),
+            last_failed_at: now.clone(),
+        });
+    incident.attempts = incident.attempts.saturating_add(1);
+    incident.disposition = disposition;
+    incident.detail = detail.to_string();
+    incident.last_failed_at = now;
+    incident.halted = disposition == VerificationFailureDisposition::Permanent
+        || incident.attempts >= INFRASTRUCTURE_RETRY_ATTEMPTS;
+    ctx.store()
+        .write(|tx| tx.put_verification_incident(&incident))?;
+
+    let state = if incident.halted {
+        "HALTED"
+    } else {
+        "RETRYING"
+    };
+    let body = format!(
+        "{INFRASTRUCTURE_COMMENT_PREFIX} {state}\n\nAttempt {} of {}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n\n{}",
+        incident.attempts,
+        INFRASTRUCTURE_RETRY_ATTEMPTS,
+        incident.first_failed_at,
+        incident.last_failed_at,
+        incident.detail
+    );
+    StoryService::new(ctx).upsert_marked_comment(
+        &candidate.story_id,
+        INFRASTRUCTURE_COMMENT_PREFIX,
+        &body,
+    )?;
+    if incident.halted {
+        Ctx::new(
+            ctx.store(),
+            ctx.project(),
+            ctx.cwd().to_path_buf(),
+            ctx.env().clone(),
+        )
+        .fire_hook(
+            crate::event_hooks::HookEventType::VerificationHalted,
+            &serde_json::json!({
+                "event_type": "verification_halted",
+                "incident_id": incident.incident_id,
+                "project": candidate.project_slug,
+                "story_id": candidate.story_id,
+                "attempts": incident.attempts,
+                "first_failed_at": incident.first_failed_at,
+                "last_failed_at": incident.last_failed_at,
+                "detail": incident.detail,
+            }),
+        );
+        Ok(TickResult::Halted)
+    } else {
+        Ok(TickResult::RetryLater)
     }
 }
 
@@ -873,6 +1029,11 @@ pub(crate) fn poll_verification(
                     }
                     let _ = subscription.recv(remaining);
                 }
+            }
+            Ok(TickResult::Halted) => {
+                while matches!(subscription.recv(RECOVERY_WAKE), Some(Change::Ping))
+                    && !stop.load(Ordering::Relaxed)
+                {}
             }
             Err(error) => {
                 eprintln!("storyhook: centralized verification tick failed: {error}");

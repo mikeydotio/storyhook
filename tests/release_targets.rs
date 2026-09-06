@@ -1,10 +1,11 @@
 //! The supported release targets and the local assembly path (SH-540).
 //!
 //! `make test` is a macOS build, so it cannot compile Linux-only code. The
-//! release command closes that gap locally with `cross`, packages all four
-//! supported targets, verifies them, and uploads one draft. These tests pin
-//! the repository-level contracts around that expensive path without running
-//! a real release or reaching GitHub.
+//! release command closes that gap locally with a pinned private Rust
+//! toolchain and a Lima guest, packages all four supported targets, verifies
+//! them, and uploads one draft. These tests pin the repository-level contracts
+//! around that expensive path without running a real release or reaching
+//! GitHub.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -100,10 +101,10 @@ fn the_linux_keyring_dependency_picks_a_secret_service_runtime() {
 }
 
 /// The runtime has to be a pure-Rust one. `crypto-openssl` would put
-/// `openssl-sys` on the Linux path, and `aarch64-unknown-linux-gnu` is built
-/// under `cross` — cross-compiling a system OpenSSL is a second, worse version
-/// of the problem this test exists to prevent. The same reasoning already
-/// chose `zbus` over the `libdbus`-backed alternative.
+/// `openssl-sys` on the Linux path, and one Linux artifact is cross-compiled
+/// in Lima — cross-compiling a system OpenSSL is a second, worse version of
+/// the problem this test exists to prevent. The same reasoning already chose
+/// `zbus` over the `libdbus`-backed alternative.
 #[test]
 fn the_linux_secret_service_runtime_needs_no_system_library() {
     for (name, features) in linux_secret_service_dependencies() {
@@ -111,8 +112,8 @@ fn the_linux_secret_service_runtime_needs_no_system_library() {
             assert!(
                 feature.ends_with("-crypto-rust"),
                 "`{name}` selects `{feature}`, which links a system crypto \
-                 library; the aarch64 Linux artifact is cross-compiled and \
-                 cannot count on one. Pick the `-crypto-rust` variant."
+                 library; the cross-compiled Linux artifact cannot count on \
+                 one. Pick the `-crypto-rust` variant."
             );
         }
     }
@@ -185,6 +186,81 @@ fn release_sh_assembles_locally_and_never_delegates_to_actions() {
     );
 }
 
+#[test]
+fn release_builder_depends_on_capabilities_not_rustup_cross_or_docker() {
+    let builder = read("scripts/build-release-assets.sh");
+    let linux_runner = read("scripts/release-linux.sh");
+    let help = read("scripts/release.sh");
+
+    for obsolete in ["rustup", "cross +stable", "docker info"] {
+        assert!(
+            !builder.contains(obsolete),
+            "the release builder still requires the obsolete `{obsolete}` path"
+        );
+    }
+    for required in [
+        "scripts/release-toolchain.lock",
+        "limactl",
+        "CARGO_PROFILE_RELEASE_STRIP=symbols",
+        "glibc 2.31",
+    ] {
+        assert!(
+            builder.contains(required) || linux_runner.contains(required),
+            "the capability-based builder is missing `{required}`"
+        );
+    }
+    assert!(!help.contains("rustup stable"));
+    assert!(!help.contains("running Docker engine"));
+}
+
+#[test]
+fn release_toolchain_lock_pins_every_required_upstream_component() {
+    let lock = read("scripts/release-toolchain.lock");
+    let rows: Vec<Vec<&str>> = lock
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.split('\t').collect())
+        .collect();
+
+    assert_eq!(rows.len(), 12, "the lock must contain 12 component rows");
+    for row in &rows {
+        assert_eq!(
+            row.len(),
+            4,
+            "lock row must be component, target, URL, hash"
+        );
+        assert!(matches!(row[0], "cargo" | "rustc" | "rust-std"));
+        assert!(
+            release_targets().contains(&row[1].to_string()),
+            "{} is not a release platform",
+            row[1]
+        );
+        assert!(
+            row[2].starts_with("https://static.rust-lang.org/dist/2026-09-03/")
+                && row[2].contains("-1.98.1-"),
+            "component URL is not pinned to Rust 1.98.1: {}",
+            row[2]
+        );
+        assert_eq!(row[3].len(), 64, "component hash must be SHA-256");
+        assert!(row[3].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    for target in release_targets() {
+        assert!(
+            rows.iter()
+                .any(|row| row[0] == "rust-std" && row[1] == target),
+            "missing rust-std for {target}"
+        );
+        for host_component in ["cargo", "rustc"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row[0] == host_component && row[1] == target),
+                "missing {host_component} for possible host {target}"
+            );
+        }
+    }
+}
+
 fn write_executable(path: &Path, body: &str) {
     std::fs::write(path, body).expect("writing command shim");
     let mut permissions = path.metadata().unwrap().permissions();
@@ -192,50 +268,90 @@ fn write_executable(path: &Path, body: &str) {
     std::fs::set_permissions(path, permissions).unwrap();
 }
 
-fn release_tool_shims() -> (tempfile::TempDir, PathBuf, PathBuf) {
+fn release_tool_shims() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
     let fixture = scratch_dir_named("local-release");
     let bin = fixture.path().join("bin");
     let target = fixture.path().join("target");
+    let toolchain = fixture.path().join("toolchain");
+    let linux_runner = fixture.path().join("release-linux");
     std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(toolchain.join("bin")).unwrap();
 
-    write_executable(&bin.join("uname"), "#!/bin/bash\necho Darwin\n");
     write_executable(
-        &bin.join("docker"),
-        "#!/bin/bash\n[ \"$1\" = info ] || exit 2\nexit 0\n",
+        &bin.join("uname"),
+        "#!/bin/bash\ncase \"${1:-}\" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo Darwin ;; esac\n",
     );
+    write_executable(&bin.join("xcrun"), "#!/bin/bash\necho /usr/bin/clang\n");
     let builder = r#"#!/bin/bash
 set -eu
 echo "$(basename "$0") $*" >> "$RELEASE_TEST_LOG"
+echo "strip=${CARGO_PROFILE_RELEASE_STRIP:-} x86_linker=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-} rustc=${RUSTC:-}" >> "$RELEASE_TEST_LOG"
 target=""
+output=""
 previous=""
 for argument in "$@"; do
   if [ "$previous" = "--target" ]; then target="$argument"; fi
+  if [ "$previous" = "-o" ]; then output="$argument"; fi
   previous="$argument"
 done
 if [ -n "${RELEASE_FAIL_TARGET:-}" ] && [ "$target" = "$RELEASE_FAIL_TARGET" ]; then
   exit 42
 fi
-if [ -n "$target" ]; then
+if [ -n "$output" ]; then
+  mkdir -p "$(dirname "$output")"
+  printf '#!/bin/sh\nexit 0\n' > "$output"
+  chmod +x "$output"
+elif [ -n "$target" ]; then
   mkdir -p "$CARGO_TARGET_DIR/$target/release"
   printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/$target/release/story"
   chmod +x "$CARGO_TARGET_DIR/$target/release/story"
 fi
-if [ "$(basename "$0")" = rustup ] && [ "${1:-}" = target ]; then
-  printf 'x86_64-apple-darwin\naarch64-apple-darwin\n'
-fi
-if [ "$(basename "$0")" = rustup ] && [ "${3:-}" = rustc ]; then
-  echo 'rustc 1.test'
-fi
 "#;
-    write_executable(&bin.join("rustup"), builder);
-    write_executable(&bin.join("cross"), builder);
+    write_executable(&toolchain.join("bin/rustc"), builder);
+    write_executable(&toolchain.join("bin/cargo"), builder);
+    write_executable(&bin.join("cc"), "#!/bin/bash\nexit 0\n");
+    write_executable(&bin.join("x86_64-linux-gnu-gcc"), "#!/bin/bash\nexit 0\n");
+    write_executable(
+        &linux_runner,
+        r#"#!/bin/bash
+set -eu
+echo "lima $* CARGO_PROFILE_RELEASE_STRIP=symbols" >> "$RELEASE_TEST_LOG"
+[ "${1:-}" = --check ] && exit 0
+target=""
+output=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--target" ]; then target="$argument"; fi
+  if [ "$previous" = "--output" ]; then output="$argument"; fi
+  previous="$argument"
+done
+if [ -n "${RELEASE_FAIL_TARGET:-}" ] && [ "$target" = "$RELEASE_FAIL_TARGET" ]; then
+  exit 42
+fi
+mkdir -p "$(dirname "$output")"
+printf '#!/bin/sh\nexit 0\n' > "$output"
+chmod +x "$output"
+"#,
+    );
     write_executable(
         &bin.join("file"),
         r#"#!/bin/bash
 path="${@: -1}"
 case "$path" in
-  *x86_64-unknown-linux-gnu*) echo 'ELF 64-bit LSB executable, x86-64' ;;
-  *aarch64-unknown-linux-gnu*) echo 'ELF 64-bit LSB executable, ARM aarch64' ;;
+  *x86_64-unknown-linux-gnu*)
+    if [ "${RELEASE_UNSTRIPPED:-0}" = 1 ]; then
+      echo 'ELF 64-bit LSB executable, x86-64, not stripped'
+    else
+      echo 'ELF 64-bit LSB executable, x86-64, stripped'
+    fi
+    ;;
+  *aarch64-unknown-linux-gnu*)
+    if [ "${RELEASE_UNSTRIPPED:-0}" = 1 ]; then
+      echo 'ELF 64-bit LSB executable, ARM aarch64, not stripped'
+    else
+      echo 'ELF 64-bit LSB executable, ARM aarch64, stripped'
+    fi
+    ;;
   *x86_64-apple-darwin*) echo 'Mach-O 64-bit executable x86_64' ;;
   *aarch64-apple-darwin*) echo 'Mach-O 64-bit executable arm64' ;;
   *) echo 'ASCII text' ;;
@@ -253,11 +369,11 @@ exec /usr/bin/tar "$@"
 "#,
     );
 
-    (fixture, bin, target)
+    (fixture, bin, target, toolchain, linux_runner)
 }
 
 fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Output) {
-    let (fixture, bin, target) = release_tool_shims();
+    let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
     let output_dir = fixture.path().join("assets");
     let log = fixture.path().join("commands.log");
     let path = format!(
@@ -273,7 +389,9 @@ fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf,
         .arg(&output_dir)
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", target)
-        .env("RELEASE_TEST_LOG", log);
+        .env("RELEASE_TEST_LOG", log)
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", &toolchain)
+        .env("STORYHOOK_RELEASE_LINUX_RUNNER", linux_runner);
     for (key, value) in extra_env {
         command.env(key, value);
     }
@@ -292,15 +410,11 @@ fn local_builder_creates_and_checksums_all_four_archives() {
 
     let log = std::fs::read_to_string(fixture.path().join("commands.log")).unwrap();
     for target in release_targets() {
-        assert!(log.contains(&format!("--locked --release --target {target}")));
         if target.contains("linux") {
-            assert!(log.contains(&format!(
-                "cross +stable build --locked --release --target {target}"
-            )));
+            assert!(log.contains(&format!("lima --target {target}")));
+            assert!(log.contains("CARGO_PROFILE_RELEASE_STRIP=symbols"));
         } else {
-            assert!(log.contains(&format!(
-                "rustup run stable cargo build --locked --release --target {target}"
-            )));
+            assert!(log.contains(&format!("cargo build --locked --release --target {target}")));
         }
         let archive = output_dir.join(format!("story-{target}.tar.gz"));
         assert!(archive.is_file(), "missing {}", archive.display());
@@ -328,14 +442,14 @@ fn local_builder_creates_and_checksums_all_four_archives() {
 
 #[test]
 fn failed_target_removes_stale_assets_and_writes_no_complete_manifest() {
-    let (fixture, bin, target) = release_tool_shims();
+    let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
     let output_dir = fixture.path().join("assets");
     std::fs::create_dir_all(&output_dir).unwrap();
     for target in release_targets() {
         std::fs::write(output_dir.join(format!("story-{target}.tar.gz")), "stale").unwrap();
     }
     std::fs::write(output_dir.join("SHA256SUMS"), "stale").unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let path = format!("{}:/usr/bin:/bin", bin.display());
     let result = Command::new("/bin/bash")
         .current_dir(repo_root())
         .arg(repo_root().join("scripts/build-release-assets.sh"))
@@ -345,6 +459,8 @@ fn failed_target_removes_stale_assets_and_writes_no_complete_manifest() {
         .env("CARGO_TARGET_DIR", target)
         .env("RELEASE_TEST_LOG", fixture.path().join("commands.log"))
         .env("RELEASE_FAIL_TARGET", "x86_64-unknown-linux-gnu")
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", toolchain)
+        .env("STORYHOOK_RELEASE_LINUX_RUNNER", linux_runner)
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(42));
@@ -363,16 +479,351 @@ fn malformed_archive_is_refused_before_its_digest_is_accepted() {
 }
 
 #[test]
-fn builder_refuses_before_work_when_release_tools_are_missing() {
+fn check_proves_all_four_target_capabilities_without_creating_archives() {
+    let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
+    let log = fixture.path().join("commands.log");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = Command::new("/bin/bash")
         .current_dir(repo_root())
         .arg(repo_root().join("scripts/build-release-assets.sh"))
         .arg("--check")
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", target)
+        .env("RELEASE_TEST_LOG", &log)
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", toolchain)
+        .env("STORYHOOK_RELEASE_LINUX_RUNNER", linux_runner)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "preflight failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let calls = std::fs::read_to_string(log).unwrap();
+    for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+        assert!(calls.contains(&format!("rustc --target {target}")));
+    }
+    assert!(calls.contains("lima --check"));
+    assert!(!fixture.path().join("assets").exists());
+}
+
+#[test]
+fn linux_guest_probe_uses_native_and_cross_linkers_and_strips_symbols() {
+    let (fixture, bin, _target, toolchain, _linux_runner) = release_tool_shims();
+    let log = fixture.path().join("commands.log");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/release-linux.sh"))
+        .args([
+            "--guest-check",
+            "aarch64-unknown-linux-gnu",
+            fixture.path().join("cache").to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .env("RELEASE_TEST_LOG", &log)
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", &toolchain)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "guest probe failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert!(
+        calls.contains("rustc --target aarch64-unknown-linux-gnu -C linker=cc -C strip=symbols")
+    );
+    assert!(calls.contains(
+        "rustc --target x86_64-unknown-linux-gnu -C linker=x86_64-linux-gnu-gcc -C strip=symbols"
+    ));
+}
+
+#[test]
+fn linux_guest_build_uses_locked_cargo_and_exports_the_binary() {
+    let (fixture, bin, _target_dir, toolchain, _linux_runner) = release_tool_shims();
+    let source = fixture.path().join("source");
+    let archive = fixture.path().join("source.tar.gz");
+    let output = fixture.path().join("out/story");
+    let log = fixture.path().join("commands.log");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    let archived = Command::new("tar")
+        .args(["-czf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&source)
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(archived.success());
+
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/release-linux.sh"))
+        .args([
+            "--guest-build",
+            "aarch64-unknown-linux-gnu",
+            fixture.path().join("cache").to_str().unwrap(),
+            "x86_64-unknown-linux-gnu",
+            archive.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "0123456789ab",
+        ])
+        .env("PATH", path)
+        .env("RELEASE_TEST_LOG", &log)
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", &toolchain)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "guest build failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.is_file(), "guest build did not export its binary");
+
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert!(calls.contains("cargo build --locked --release --target x86_64-unknown-linux-gnu"));
+    assert!(calls.contains("strip=symbols"));
+    assert!(calls.contains("x86_linker=x86_64-linux-gnu-gcc"));
+    assert!(calls.contains(&format!("rustc={}", toolchain.join("bin/rustc").display())));
+}
+
+#[test]
+fn linux_runner_refuses_a_guest_above_the_glibc_compatibility_floor() {
+    let (fixture, bin, _target, _toolchain, _linux_runner) = release_tool_shims();
+    write_executable(
+        &bin.join("limactl"),
+        r#"#!/bin/bash
+set -eu
+case "$1" in
+  list) printf '{"status":"Stopped"}\n' ;;
+  start) ;;
+  shell)
+    case "$*" in
+      *' uname -m') echo aarch64 ;;
+      *' getconf GNU_LIBC_VERSION') echo "${RELEASE_GLIBC:-glibc 2.31}" ;;
+    esac
+    ;;
+  copy) ;;
+  *) exit 2 ;;
+esac
+"#,
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/release-linux.sh"))
+        .arg("--check")
+        .env("PATH", path)
+        .env("RELEASE_GLIBC", "glibc 2.35")
+        .env("RELEASE_TEST_LOG", fixture.path().join("commands.log"))
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("rustup is required"));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("must provide glibc 2.31; found glibc 2.35"),
+        "wrong glibc diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn unstripped_linux_binary_is_refused_before_packaging() {
+    let (_fixture, output_dir, result) = run_asset_builder(&[("RELEASE_UNSTRIPPED", "1")]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("wrong symbol state"));
+    assert!(!output_dir.join("SHA256SUMS").exists());
+}
+
+#[test]
+fn corrupt_cached_toolchain_component_is_refused_by_its_pinned_hash() {
+    let fixture = scratch_dir_named("release-toolchain-hash");
+    let lock = fixture.path().join("release-toolchain.lock");
+    let cache = fixture.path().join("cache");
+    let expected_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+    std::fs::create_dir_all(cache.join("downloads")).unwrap();
+    std::fs::write(
+        &lock,
+        format!(
+            "rustc\taarch64-apple-darwin\thttps://invalid.example/rustc.tar.gz\t{expected_hash}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        cache
+            .join("downloads")
+            .join(format!("{expected_hash}.tar.gz")),
+        "corrupt",
+    )
+    .unwrap();
+
+    let script = format!(
+        "source '{}'; ensure_release_toolchain aarch64-apple-darwin '{}' '{}' aarch64-apple-darwin",
+        repo_root().join("scripts/release-toolchain.sh").display(),
+        cache.display(),
+        lock.display()
+    );
+    let result = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .env_remove("STORYHOOK_RELEASE_TOOLCHAIN_DIR")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("cached rustc for aarch64-apple-darwin failed SHA-256"),
+        "wrong checksum diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn pinned_components_assemble_a_private_toolchain_without_global_installation() {
+    let fixture = scratch_dir_named("release-toolchain-install");
+    let package = fixture.path().join("package/component");
+    let archive = fixture.path().join("component.tar.gz");
+    let cache = fixture.path().join("cache");
+    let lock = fixture.path().join("release-toolchain.lock");
+    std::fs::create_dir_all(&package).unwrap();
+    write_executable(
+        &package.join("install.sh"),
+        r#"#!/bin/bash
+set -eu
+echo "$*" >> "$RELEASE_TEST_INSTALL_LOG"
+prefix=""
+for argument in "$@"; do
+  case "$argument" in --prefix=*) prefix="${argument#--prefix=}" ;; esac
+done
+mkdir -p "$prefix/bin"
+printf '#!/bin/bash\nexit 0\n' > "$prefix/bin/rustc"
+printf '#!/bin/bash\nexit 0\n' > "$prefix/bin/cargo"
+chmod +x "$prefix/bin/rustc" "$prefix/bin/cargo"
+"#,
+    );
+    let archived = Command::new("tar")
+        .args(["-czf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(fixture.path().join("package"))
+        .arg("component")
+        .status()
+        .unwrap();
+    assert!(archived.success());
+    let digest_output = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(&archive)
+        .output()
+        .unwrap();
+    assert!(digest_output.status.success());
+    let digest = String::from_utf8(digest_output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    std::fs::create_dir_all(cache.join("downloads")).unwrap();
+    std::fs::rename(
+        &archive,
+        cache.join("downloads").join(format!("{digest}.tar.gz")),
+    )
+    .unwrap();
+    let rows = [
+        ("rustc", "aarch64-apple-darwin"),
+        ("cargo", "aarch64-apple-darwin"),
+        ("rust-std", "aarch64-apple-darwin"),
+        ("rust-std", "x86_64-apple-darwin"),
+    ]
+    .map(|(component, target)| {
+        format!("{component}\t{target}\thttps://invalid.example/component.tar.gz\t{digest}\n")
+    })
+    .concat();
+    std::fs::write(&lock, rows).unwrap();
+
+    let script = format!(
+        "source '{}'; ensure_release_toolchain aarch64-apple-darwin '{}' '{}' aarch64-apple-darwin x86_64-apple-darwin",
+        repo_root().join("scripts/release-toolchain.sh").display(),
+        cache.display(),
+        lock.display()
+    );
+    let result = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .env_remove("STORYHOOK_RELEASE_TOOLCHAIN_DIR")
+        .env(
+            "RELEASE_TEST_INSTALL_LOG",
+            fixture.path().join("install.log"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "private install failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let installed = PathBuf::from(String::from_utf8(result.stdout).unwrap().trim());
+    assert!(installed.starts_with(&cache));
+    assert!(installed.join("bin/rustc").is_file());
+    assert!(installed.join("bin/cargo").is_file());
+    assert!(installed.join(".storyhook-release-toolchain").is_file());
+    let installs = std::fs::read_to_string(fixture.path().join("install.log")).unwrap();
+    for invocation in installs.lines() {
+        let arguments: Vec<&str> = invocation.split_whitespace().collect();
+        let prefix = arguments
+            .iter()
+            .find_map(|argument| argument.strip_prefix("--prefix="))
+            .unwrap();
+        assert!(Path::new(prefix).starts_with(&cache));
+        for destination in [
+            "bindir",
+            "libdir",
+            "sysconfdir",
+            "datadir",
+            "docdir",
+            "mandir",
+        ] {
+            let value = arguments
+                .iter()
+                .find_map(|argument| argument.strip_prefix(&format!("--{destination}=")))
+                .unwrap_or_else(|| panic!("missing {destination}: {invocation}"));
+            assert!(
+                Path::new(value).starts_with(prefix),
+                "{destination} escaped the private prefix: {invocation}"
+            );
+        }
+    }
+}
+
+#[test]
+fn builder_refuses_before_work_when_lima_capability_is_missing() {
+    let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
+    write_executable(
+        &linux_runner,
+        "#!/bin/bash\nprintf 'error: limactl is required for Linux release assembly\\n' >&2\nexit 1\n",
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        .current_dir(repo_root())
+        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .arg("--check")
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", target)
+        .env("RELEASE_TEST_LOG", fixture.path().join("commands.log"))
+        .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", toolchain)
+        .env("STORYHOOK_RELEASE_LINUX_RUNNER", linux_runner)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("limactl is required"),
+        "missing Lima diagnostic: {stderr}"
+    );
 }
 
 fn publish_fixture() -> (tempfile::TempDir, PathBuf) {

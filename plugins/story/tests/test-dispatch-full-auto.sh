@@ -76,7 +76,7 @@ assert_eq "$(jqf "$full_auto" .launch_source)" "builtin" \
 assert_eq "$(jqf "$full_auto" .launch_overridden)" "false" \
   "Full Auto builtin: not reported as overridden"
 assert_contains "$full_commands" \
-  "claude --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
   "Full Auto builtin: reuses SH-511's Claude Auto provider command"
 assert_contains "$(jqf "$full_auto" .display)" "Full Auto (--auto --full-auto)" \
   "Full Auto display: names the distinct engine mode"
@@ -100,7 +100,7 @@ ignored_general=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
   bash "$SCRIPT" dispatch "$id" --auto --full-auto 2>&1)
 ignored_commands=$(jqf "$ignored_general" '.commands|join(" ")')
 assert_contains "$ignored_commands" \
-  "claude --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
   "Full Auto: general override cannot replace the builtin"
 case "$ignored_commands" in
   *general-override*) fail_test "Full Auto obeyed STORY_LAUNCH_CMD" ;;
@@ -151,7 +151,7 @@ assert_contains "$codex_commands" \
 assert_contains "$codex_commands" \
   "env STORYHOOK_AUTO= STORYHOOK_FULL_AUTO=$id" \
   "Codex Full Auto: watcher receives the selected marker"
-assert_contains "$codex_commands" "--approve-codex-plan <pane>" \
+assert_contains "$codex_commands" "--approve-codex-plan <pane> <pane-pid>" \
   "Codex Full Auto: exact-pane watcher remains armed"
 
 # The fake-tmux path pins the same matrix at the actual new-window argv

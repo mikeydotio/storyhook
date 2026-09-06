@@ -81,6 +81,46 @@ STORYHOOK_VERIFIER_MIRROR any literal 0
 TABLE
 }
 
+# The ambient values a fixture `git` may inherit. This is the shell rendering
+# of `storyhook::env::git_env`'s allowlist, plus the test-environment table
+# above: Git itself needs the first set, while a managed hook it fires needs
+# the second set to remain inside the fixture store and daemon.
+_storyhook_git_environment() {
+    cat <<'NAMES'
+PATH
+HOME
+XDG_CONFIG_HOME
+GIT_CONFIG_GLOBAL
+GIT_CONFIG_SYSTEM
+GIT_CONFIG_NOSYSTEM
+TMPDIR
+TZ
+LANG
+LC_ALL
+NAMES
+    _storyhook_test_environment | while read -r _name _scope _kind _arg; do
+        [ "$_kind" = "clear" ] || printf '%s\n' "$_name"
+    done
+}
+
+# Runs fixture Git with a rebuilt environment. A denylist would only cover
+# variables known today; this excludes new Git controls by construction.
+storyhook_fixture_git() {
+    local -a _sfg_environment=("GIT_TERMINAL_PROMPT=0")
+    local _sfg_name
+
+    while read -r _sfg_name; do
+        [ -n "$_sfg_name" ] || continue
+        if [ -n "${!_sfg_name+x}" ]; then
+            _sfg_environment+=("$_sfg_name=${!_sfg_name}")
+        fi
+    done <<EOF
+$(_storyhook_git_environment)
+EOF
+
+    command env -i "${_sfg_environment[@]}" git "$@"
+}
+
 # Parses the shared options. Sets `_sti_root`, `_sti_home`, `_sti_pid`.
 _storyhook_isolate_args() {
     _sti_home=0

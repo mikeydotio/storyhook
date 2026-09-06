@@ -155,6 +155,8 @@ pub struct HooksConfig {
     pub on_engine_run_drained: Option<HookDef>,
     #[serde(default)]
     pub on_engine_lane_quarantined: Option<HookDef>,
+    #[serde(default)]
+    pub on_verification_halted: Option<HookDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +276,8 @@ pub enum HookEventType {
     EngineRunDrained,
     /// A Full Auto engine lane was quarantined by a hard stop (SH-472).
     EngineLaneQuarantined,
+    /// The centralized verifier halted on infrastructure (SH-573).
+    VerificationHalted,
 }
 
 impl HookEventType {
@@ -290,6 +294,7 @@ impl HookEventType {
             Self::EngineRunHalted => "engine_run_halted",
             Self::EngineRunDrained => "engine_run_drained",
             Self::EngineLaneQuarantined => "engine_lane_quarantined",
+            Self::VerificationHalted => "verification_halted",
         }
     }
 
@@ -308,6 +313,7 @@ impl HookEventType {
             "engine_lane_quarantined" | "engine-lane-quarantined" => {
                 Some(Self::EngineLaneQuarantined)
             }
+            "verification_halted" | "verification-halted" => Some(Self::VerificationHalted),
             _ => None,
         }
     }
@@ -406,7 +412,7 @@ fn load_hooks_config_result(root: &Path) -> Result<Option<HooksConfig>, String> 
 pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
     let config = load_hooks_config(root)?;
     let default = config.settings.timeout_seconds;
-    let slots: [Option<&HookDef>; 11] = [
+    let slots: [Option<&HookDef>; 12] = [
         config.on_create.as_ref(),
         config.on_state_change.as_ref(),
         config.on_close.as_ref(),
@@ -418,6 +424,7 @@ pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
         config.on_engine_run_halted.as_ref(),
         config.on_engine_run_drained.as_ref(),
         config.on_engine_lane_quarantined.as_ref(),
+        config.on_verification_halted.as_ref(),
     ];
     slots
         .into_iter()
@@ -467,6 +474,7 @@ fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&Hook
         HookEventType::EngineRunHalted => config.on_engine_run_halted.as_ref(),
         HookEventType::EngineRunDrained => config.on_engine_run_drained.as_ref(),
         HookEventType::EngineLaneQuarantined => config.on_engine_lane_quarantined.as_ref(),
+        HookEventType::VerificationHalted => config.on_verification_halted.as_ref(),
     }
 }
 
@@ -731,7 +739,7 @@ pub fn list_hooks(root: &Path) -> String {
         Ok(None) => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
         Ok(Some(config)) => {
             let mut lines = Vec::new();
-            let events: [(&str, &Option<HookDef>); 11] = [
+            let events: [(&str, &Option<HookDef>); 12] = [
                 ("on_create", &config.on_create),
                 ("on_state_change", &config.on_state_change),
                 ("on_close", &config.on_close),
@@ -746,6 +754,7 @@ pub fn list_hooks(root: &Path) -> String {
                     "on_engine_lane_quarantined",
                     &config.on_engine_lane_quarantined,
                 ),
+                ("on_verification_halted", &config.on_verification_halted),
             ];
             for (name, hook) in events {
                 if let Some(h) = hook {
@@ -774,7 +783,7 @@ pub fn list_hooks(root: &Path) -> String {
 pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::error::AppError> {
     let event_type = HookEventType::parse(event_type_str).ok_or_else(|| {
         crate::error::AppError::Validation(format!(
-            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change, engine_run_started, engine_run_halted, engine_run_drained, engine_lane_quarantined)"
+            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change, engine_run_started, engine_run_halted, engine_run_drained, engine_lane_quarantined, verification_halted)"
         ))
     })?;
 
@@ -1227,9 +1236,7 @@ mod tests {
 
     // --- engine event hooks (SH-472) ---------------------------------------
 
-    /// `HookEventType::parse` accepts both spellings for all four engine
-    /// variants, and round-trips through `as_str` — the "two existing facts
-    /// to respect" the story names explicitly.
+    /// Operational hook event types accept both spellings and round-trip.
     #[test]
     fn engine_hook_event_types_parse_snake_and_kebab_case() {
         let cases = [
@@ -1252,6 +1259,11 @@ mod tests {
                 HookEventType::EngineLaneQuarantined,
                 "engine_lane_quarantined",
                 "engine-lane-quarantined",
+            ),
+            (
+                HookEventType::VerificationHalted,
+                "verification_halted",
+                "verification-halted",
             ),
         ];
         for (variant, snake, kebab) in cases {

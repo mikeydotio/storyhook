@@ -93,7 +93,8 @@ pub use types::{
     EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, FeedEvent,
     LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord,
     ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
+    StoryRow, StorySort, UnknownEventDiagnostic, VerificationFailureDisposition,
+    VerificationIncident, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -283,6 +284,9 @@ pub trait ReadOps {
     /// trait: restart reconciliation and the machine lane budget must see all
     /// projects before either can make a safe decision.
     fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
+
+    /// The machine-wide verifier incident, if infrastructure owns the queue.
+    fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError>;
 
     /// Every lane belonging to a run, ordered by lane index.
     fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
@@ -510,6 +514,15 @@ pub trait WriteOps: ReadOps {
 
     /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;
+
+    /// Creates or replaces the one machine-wide verifier incident.
+    fn put_verification_incident(
+        &mut self,
+        incident: &VerificationIncident,
+    ) -> Result<(), StoreError>;
+
+    /// Clears the incident only when its identity still matches `incident_id`.
+    fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError>;
 
     /// Registers a git origin as belonging to this project.
     ///

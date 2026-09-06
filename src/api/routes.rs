@@ -127,6 +127,8 @@ impl EngineAction {
 pub enum ProjectRoute<'a> {
     /// `GET .../data` — the whole board in one request.
     Data,
+    /// `POST .../verification/ack` — acknowledge one exact halted incident.
+    VerificationAck,
     /// `GET|POST .../engine` — inspect or start Full Auto.
     Engine,
     /// `POST .../engine/{action}` — control one engine run.
@@ -301,6 +303,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Get => ProjectRoute::Data,
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["verification", "ack"] => match method {
+            Method::Post => ProjectRoute::VerificationAck,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["engine"] => match method {
             Method::Get | Method::Post => ProjectRoute::Engine,
             _ => ProjectRoute::MethodNotAllowed,
@@ -401,6 +407,7 @@ impl ProjectRoute<'_> {
     pub fn name(&self) -> &'static str {
         match self {
             ProjectRoute::Data => "Data",
+            ProjectRoute::VerificationAck => "VerificationAck",
             ProjectRoute::Engine => "Engine",
             ProjectRoute::EngineAction { .. } => "EngineAction",
             ProjectRoute::EngineActionUnknown => "EngineActionUnknown",

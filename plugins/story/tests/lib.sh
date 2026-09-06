@@ -12,10 +12,18 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 SCRIPT="$PLUGIN_ROOT/bin/story.sh"
 
-# Defensive: dispatch runs a real `git fetch`. If a fixture regression ever
-# points it at a real origin, this stops it from blocking on a credential
-# prompt -- it fails fast instead.
-export GIT_TERMINAL_PROMPT=0
+# Loaded unconditionally: run-tests.sh has already built the test environment,
+# but every Git this file and its callers run still needs the shared constructor.
+# shellcheck source=../../../scripts/test-env.sh
+. "$TESTS_DIR/../../../scripts/test-env.sh"
+
+# Every test file sources this library, so this one wrapper routes its fixture
+# setup, assertions, and mutations through the allowlisted constructor without
+# a hand-maintained list of call sites. Child Bash processes do not inherit the
+# function; the plugin under test therefore still exercises production Git.
+git() {
+  storyhook_fixture_git "$@"
+}
 
 _TMP_REPOS=()
 _TMP_REPOS_MANIFEST="$(mktemp /tmp/story-test-cleanup.XXXXXX)"
@@ -80,8 +88,6 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # with no isolation at all, which is how the leaked daemons were found -- and
   # that reason is answered by both call sites calling the same function rather
   # than by both carrying the same twenty lines.
-  # shellcheck source=../../../scripts/test-env.sh
-  . "$TESTS_DIR/../../../scripts/test-env.sh"
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress

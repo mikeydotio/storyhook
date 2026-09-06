@@ -337,8 +337,15 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 31,
+        name: "verification_incident",
+        sql: include_str!("schema/0031_verification_incident.sql"),
+        // One operational singleton table; story history is untouched.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 32,
         name: "engine_run_options",
-        sql: include_str!("schema/0031_engine_run_options.sql"),
+        sql: include_str!("schema/0032_engine_run_options.sql"),
         // Three nullable columns added in place to operational state. Existing
         // runs retain the honest fact that no explicit selection was stored.
         foreign_keys_off: false,

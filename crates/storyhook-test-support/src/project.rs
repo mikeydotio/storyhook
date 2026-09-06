@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -223,10 +222,11 @@ impl<'a> ProjectBuilder<'a> {
 /// long as the run lasts, which is the worst failure a test can have — see
 /// `HARDENING_PROGRESS.md` on supervising background work.
 pub fn git(env: &TestEnv, cwd: &Path, args: &[&str]) {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd);
+    let mut cmd = storyhook::env::git_env::command(cwd);
+    // The production allowlist deliberately knows nothing about test-only
+    // store and daemon containment. Put that environment back after its
+    // `env_clear`, so a managed hook fired by this git remains a fixture too.
     env.apply(&mut cmd);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.args(args);
     let out = cmd.output().expect("running git");
     assert!(
@@ -768,8 +768,7 @@ mod tests {
     }
 
     fn git_stdout(cwd: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .current_dir(cwd)
+        let out = storyhook::env::git_env::command(cwd)
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(args)
             .output()

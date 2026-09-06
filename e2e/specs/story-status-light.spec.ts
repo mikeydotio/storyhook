@@ -5,6 +5,7 @@ import {
   openProject,
   resolvedTokenColor,
   seedToken,
+  storiesInProject,
 } from "./support";
 
 /**
@@ -40,10 +41,12 @@ test.beforeEach(async ({ page }) => {
 async function createStory(
   page: import("@playwright/test").Page,
   title: string,
+  description?: string,
 ) {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
+  if (description) await page.locator("#create-description").fill(description);
   // Keep this fixture's priority explicit.
   await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
@@ -143,37 +146,78 @@ test("the Done column's own dot is green, proving the semantic palette rather th
   );
 });
 
-test("a comment naming a real story renders a lit link; an unresolvable id and a self-reference stay plain text", async ({
+test("deleted prose references render without misclassifying surviving or unminted IDs", async ({
   page,
+  request,
 }) => {
-  const source = "SH-203 status light — comment linkification source";
-  const target = "SH-203 status light — comment linkification target";
-  const sourceCard = await createStory(page, source);
+  const source = "SH-506 deleted-reference source";
+  const target = "SH-506 deleted-reference target";
+  const archived = "SH-506 archived-reference target";
+  const draft = "SH-506 draft-reference target";
   const targetCard = await createStory(page, target);
   const targetId = (await targetCard.getAttribute("data-id"))!;
+  const archivedCard = await createStory(page, archived);
+  const archivedId = (await archivedCard.getAttribute("data-id"))!;
+  await moveToState(page, archived, "done");
+
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-title").fill(draft);
+  await page.locator("#create-save-draft").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  const draftRow = page.locator("#drafts-list .drafts-row", { hasText: draft });
+  const draftId = (await draftRow.locator(".drafts-row-id").textContent())!;
+  await page.locator("#drafts-close").click();
+
+  const otherProjectId = (await storiesInProject(request, "Beta Project"))[0].id;
+  const futureId = `${targetId.split("-")[0]}-999999`;
+  const malformedId = `${targetId.split("-")[0]}-01`;
+  const description = `deleted ${targetId}; archived ${archivedId}`;
+  const sourceCard = await createStory(page, source, description);
 
   await sourceCard.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   const sourceId = (await page.locator("#drawer-id").textContent())!;
-  // Same prefix as a real id, but a number nothing in a fresh project ever
-  // reaches -- exercises the "resolves against the prefix, but not in
-  // state.data.stories" branch, distinct from a wrong-prefix string
-  // (which linkifyStoryIds' own regex would never even consider a match).
-  const unknownId = `${sourceId.split("-")[0]}-999999`;
 
   await page
     .locator('textarea[placeholder="Add a comment…"]')
-    .fill(`see ${targetId} and ${unknownId} and ${sourceId} itself`);
+    .fill(
+      `deleted ${targetId}; archived ${archivedId}; draft ${draftId}; ` +
+        `future ${futureId}; malformed ${malformedId}; self ${sourceId}; ` +
+        `other ${otherProjectId}`,
+    );
   await page.locator("#drawer-body .comment-add button").click();
 
   const commentText = page.locator(".comment-text").first();
-  await expect(commentText).toContainText(unknownId);
+  await expect(commentText).toContainText(futureId);
+  await expect(commentText).toContainText(malformedId);
+  await expect(commentText).toContainText(draftId);
   await expect(commentText).toContainText(sourceId);
+  await expect(commentText).toContainText(otherProjectId);
   const lit = commentText.locator(".rel-id");
-  await expect(lit).toHaveCount(1);
-  await expect(lit).toHaveText(targetId);
+  await expect(lit).toHaveCount(2);
+  await expect(lit).toHaveText([targetId, archivedId]);
+
+  await page.locator("#drawer-close").click();
+  await deleteStory(page, target);
+
+  await sourceCard.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expect(page.locator(".description-view")).toContainText(
+    `deleted <DELETED>; archived ${archivedId}`,
+  );
+  const refreshedComment = page.locator(".comment-text").first();
+  await expect(refreshedComment).toContainText("deleted <DELETED>");
+  await expect(refreshedComment).toContainText(futureId);
+  await expect(refreshedComment).toContainText(malformedId);
+  await expect(refreshedComment).toContainText(draftId);
+  await expect(refreshedComment).toContainText(sourceId);
+  await expect(refreshedComment).toContainText(otherProjectId);
+  await expect(refreshedComment.locator(".rel-id")).toHaveCount(1);
+  await expect(refreshedComment.locator(".rel-id")).toHaveText(archivedId);
 
   await page.locator("#drawer-close").click();
   await deleteStory(page, source);
-  await deleteStory(page, target);
 });

@@ -126,6 +126,44 @@ test("context-menu Close uses the shared modal and retains the story in closed",
   await expect(page.locator('.column[data-state="closed"] .card', { hasText: title })).toBeVisible();
 });
 
+test("SH-551 Show closed hides only the closed status", async ({ page }) => {
+  const completedTitle = `SH-551 completed ${Date.now()}`;
+  const closedTitle = `SH-551 closed ${Date.now()}`;
+  const completedId = await createStory(page, completedTitle);
+  const closedId = await createStory(page, closedTitle);
+
+  await todoCard(page, completedTitle).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-body select").first().selectOption("done");
+  await expect(
+    page.locator('.column[data-state="done"] .card', { hasText: completedTitle }),
+  ).toBeVisible();
+  await page.locator("#drawer-close").click();
+
+  await todoCard(page, closedTitle).click({ button: "right" });
+  await page
+    .locator('.ctxmenu[aria-label="Story actions"]')
+    .getByRole("menuitem", { name: "Close", exact: true })
+    .click();
+  await page.locator("#close-reason").fill("No longer needed");
+  await page.locator("#close-modal-submit").click();
+  await expect(
+    page.locator('.column[data-state="closed"] .card', { hasText: closedTitle }),
+  ).toBeVisible();
+
+  await openFilters(page);
+  await page.locator("#toggle-closed").uncheck();
+  await expect(page.locator(`.card[data-id="${closedId}"]`)).toHaveCount(0);
+  await expect(page.locator(`.card[data-id="${completedId}"]`)).toBeVisible();
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  await expect(page.locator(`tr[data-id="${closedId}"]`)).toHaveCount(0);
+  await expect(page.locator(`tr[data-id="${completedId}"]`)).toBeVisible();
+
+  await page.locator("#toggle-closed").check();
+  await expect(page.locator(`tr[data-id="${closedId}"]`)).toBeVisible();
+});
+
 test("Delete offers Close instead and never asks for a deletion reason", async ({ page }) => {
   const title = `SH-507 delete alternative ${Date.now()}`;
   const id = await createStory(page, title);

@@ -1,0 +1,26 @@
+minimumLimaVersion: 2.0.0
+
+base:
+  - template:ubuntu-20.04
+
+cpus: 8
+memory: 8GiB
+disk: 60GiB
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        file \
+        gcc-aarch64-linux-gnu \
+        gcc-x86-64-linux-gnu \
+        git \
+        tar
+

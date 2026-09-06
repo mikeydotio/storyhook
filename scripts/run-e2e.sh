@@ -345,12 +345,12 @@ WRAPPER
   # story.sh's own base-resolution tolerates that (falls back to HEAD), so
   # this is the minimum dispatch actually needs.
   init_git_repo() {
-    git init -q -b main
-    git config user.email "e2e@storyhook.test"
-    git config user.name "storyhook e2e"
+    storyhook_fixture_git init -q -b main
+    storyhook_fixture_git config user.email "e2e@storyhook.test"
+    storyhook_fixture_git config user.name "storyhook e2e"
     echo "# $(basename "$PWD")" >README.md
-    git add README.md
-    git commit -q -m "init"
+    storyhook_fixture_git add README.md
+    storyhook_fixture_git commit -q -m "init"
   }
 
   (

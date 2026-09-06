@@ -34,7 +34,7 @@ assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "exec-launch: readiness co
 
 # --- The launch never went through send-keys/paste_text -- it is new-window's
 #     OWN trailing argument, logged as part of that call and nowhere else. ---
-launch_line="claude --permission-mode plan --model opusplan"
+launch_line="claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan"
 case "$(cat "$FAKE_TMUX_STATE/new_window_args.log" 2>/dev/null || true)" in
   *"$launch_line"*)
     fail_test "exec-launch: the launch command must be stripped from the logged new-window args (it is consumed as the trailing exec argument, not a flag)"

@@ -7,7 +7,7 @@ source "$(dirname "$0")/lib.sh"
 cache=$(mktemp -d /tmp/story-plugin-cache.XXXXXX)
 unrelated=$(mktemp -d /tmp/story-plugin-cwd.XXXXXX)
 _TMP_REPOS+=("$cache" "$unrelated")
-installed="$cache/story/0.6.0+sh432"
+installed="$cache/story bundle's/0.6.0+sh432"
 mkdir -p "$installed"
 cp -R "$PLUGIN_ROOT/." "$installed/"
 
@@ -24,5 +24,20 @@ out=$(cd "$unrelated" && bash "$resolved_helper" 2>&1) || rc=$?
 [ "$rc" -ne 0 ] || fail_test "helper without a verb should return a usage refusal"
 assert_contains "$out" '"ok": false' "installed helper returned its JSON envelope"
 assert_contains "$out" 'usage: story.sh' "installed helper executed from unrelated cwd"
+
+repo=$(mk_story_repo PKG)
+id=$(new_story "$repo" "Relocated helper binds its own plugin")
+dispatch_out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$resolved_helper" dispatch "$id" 2>&1)
+assert_eq "$(jqf "$dispatch_out" .ok)" "true" \
+  "relocated helper: dry dispatch succeeds"
+
+quoted_installed=$(printf '%s' "$installed" | sed "s/'/'\\\\''/g")
+expected_binding="--plugin-dir '$quoted_installed' --permission-mode plan"
+commands=$(jqf "$dispatch_out" '.commands|join(" ")')
+assert_contains "$commands" "$expected_binding" \
+  "relocated helper: plugin root is one POSIX-quoted argument"
+case "$commands" in
+  *"$PLUGIN_ROOT"*) fail_test "relocated helper: launch leaked the source checkout's plugin root" ;;
+esac
 
 finish
