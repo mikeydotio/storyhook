@@ -12,6 +12,9 @@ use std::process::{Command, Output};
 use storyhook_test_support::{daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
+#[path = "support/protect_launcher.rs"]
+mod protect_launcher;
+
 const FAKE_CODEX: &str = r#"#!/bin/sh
 set -u
 printf '%s\n' "$*" >> "$HOME/codex-invocations"

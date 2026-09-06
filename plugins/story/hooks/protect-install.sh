@@ -73,7 +73,7 @@ done < "$manifest"
 # Only now is it worth parsing. The prefilter said a managed path appears
 # SOMEWHERE in the payload; this decides whether it is actually the target.
 STORYHOOK_MANIFEST="$manifest" python3 -c '
-import json, os, shlex, sys
+import json, os, re, shlex, stat, sys
 
 payload = json.load(sys.stdin)
 tool = payload.get("tool_name", "")
@@ -88,6 +88,74 @@ with open(manifest, encoding="utf-8") as handle:
         line = line.strip()
         if line and not line.startswith("#"):
             prefixes.append(line)
+
+# SH-585: this is an argv contract for ONE installed entry point, not a
+# general permission to run scripts. Keep it paired with the real installer
+# in tests/plugin_install.rs; a marker alone cannot prove executable contents.
+def launcher_only_reads(command):
+    # shlex is a lexer, not a shell parser. Reject even quoted occurrences of
+    # unsupported syntax instead of guessing whether expansion will occur.
+    if any(c in command for c in "\n\r;$`|&()<>{}*?[]~#"):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+
+    home = os.environ.get("HOME", "")
+    if not os.path.isabs(home):
+        return False
+    launcher = os.path.join(home, ".codex/storyhook/story.sh")
+    if os.path.dirname(launcher) not in prefixes:
+        return False
+    if words[:1] in (["bash"], ["/bin/bash"], ["/usr/bin/bash"]):
+        words = words[1:]
+    if words[:1] != [launcher]:
+        return False
+    args = words[1:]
+    # A read verb has no managed-file operand. Do not let a project selector
+    # or malformed argument confer permission on another installed path.
+    if any(prefix in arg for prefix in prefixes for arg in args):
+        return False
+    if args[:1] == ["--project"]:
+        if len(args) < 2 or not args[1] or args[1].startswith("-"):
+            return False
+        args = args[2:]
+    elif args and args[0].startswith("--project="):
+        if not args[0].removeprefix("--project="):
+            return False
+        args = args[1:]
+
+    valid = args in (
+        ["context"], ["context", "--full"], ["list"],
+        ["capabilities"], ["capabilities", "--agent=claude"],
+        ["capabilities", "--agent=codex"], ["ensure-cli"],
+    ) or (
+        len(args) == 2 and args[0] == "view"
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args[1]) is not None
+    )
+    if not valid:
+        return False
+
+    # HOME itself can have canonical macOS ancestry (/tmp -> /private/tmp).
+    # No component below it may redirect to a different installed identity.
+    expected_path = os.path.join(os.path.realpath(home), ".codex/storyhook/story.sh")
+    if os.path.realpath(launcher) != expected_path:
+        return False
+    expected = (
+        b"# storyhook-managed: codex-launcher-v1\n"
+        b"# Recreated by \x60story plugin install codex\x60; do not edit.\n"
+        b"exec story plugin run codex -- \"$@\"\n"
+    )
+    try:
+        # Bound the read and refuse special files: a FIFO must not spend the
+        # hook timeout waiting for a writer. Never execute anything to classify.
+        descriptor = os.open(launcher, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            return stat.S_ISREG(os.fstat(handle.fileno()).st_mode) and handle.read(len(expected) + 1) == expected
+    except OSError:
+        return False
+
 
 # A shell command is allowed only when every simple command that names a
 # managed path can be PROVEN to be a reader. This is deliberately not a shell
@@ -156,7 +224,7 @@ def shell_only_reads_managed_paths(command):
 
 if tool == "Bash":
     command = str(supplied.get("command", ""))
-    if shell_only_reads_managed_paths(command):
+    if launcher_only_reads(command) or shell_only_reads_managed_paths(command):
         sys.stdout.write("{}")
         raise SystemExit(0)
     haystacks = [command]
@@ -180,8 +248,13 @@ if target is None:
     sys.stdout.write("{}")
     raise SystemExit(0)
 
+decision = (
+    "storyhook: refusing to edit an installed release artifact.\n"
+    if tool != "Bash"
+    else "storyhook: cannot establish that this operation on an installed release artifact is read-only.\n"
+)
 reason = (
-    f"storyhook: refusing to edit an installed release artifact.\n"
+    decision +
     f"  {target} is written by the storyhook plugin installer, so an edit there\n"
     f"  is overwritten by the next install -- lost, unversioned and untested --\n"
     f"  and it drifts this machine away from the release it reports.\n"
