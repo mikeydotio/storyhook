@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, daemon_containment, scratch_dir, story_binary};
 use tempfile::TempDir;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
@@ -127,7 +127,10 @@ impl ReinstallFixture {
 
     fn story(&self, cwd: &Path) -> Command {
         let mut command = Command::new(story_binary());
-        command.current_dir(cwd).env_clear();
+        command
+            .current_dir(cwd)
+            .env_clear()
+            .envs(daemon_containment());
         self.env.apply(&mut command);
         command.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
         command
