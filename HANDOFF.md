@@ -19,18 +19,35 @@
 - Existing global focus-visible styling is sufficient; no SH-567-specific
   focus CSS was added.
 
-## Preserved state
+## Evidence
 
 - Branch: `worktree-SH-567`.
 - StoryHook version: 2.4.0.
 - Server lifecycle endpoints were already complete and remain unchanged.
 - The feature commit and PR are linked from SH-567.
 
+## Commits
+
+- `58cc74ac9` — `feat(dashboard): add Full Auto lifecycle controls`
+- `f94d1c671` — `docs: update SH-567 handoff and roadmap`
+
+## Reconciliation
+
+- Current `origin/main` at `a396b3e9a` is merged additively; published SH-567
+  history remains unchanged.
+- Main's verification-incident dashboard and Full Auto specification changes
+  merge with SH-567 automatically.
+- AGENTS.md and its canonical template keep the SH-567 verifier roadmap in
+  sync; this handoff remains scoped to the active story.
+
 ## Focused verification
 
-- Engine E2E: 19 Chromium, 18 WebKit plus 1 documented skip, 19 mobile
-  Chromium, and 18 mobile WebKit plus 1 documented skip passed.
-- Web template, dashboard error-reporting, and focus-coverage tests: 239 passed.
+- Reconciled engine E2E: 19 Chromium, 18 WebKit plus 1 documented skip, 19
+  mobile Chromium, and 18 mobile WebKit plus 1 documented skip passed.
+- One initial Chromium real-daemon lane interruption under peak host load did
+  not reproduce; its isolated 19-case Chromium rerun passed.
+- Web template, dashboard error-reporting, focus-coverage, and roadmap-template
+  tests: 251 passed.
 
 ## Submission boundary
 

@@ -85,7 +85,17 @@ exit 64
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 set -u
 printf '%s\n' "$*" >> "$HOME/claude-invocations"
+mode=""
+if [ -f "$HOME/claude-mode" ]; then IFS= read -r mode < "$HOME/claude-mode"; fi
 if [ "${1:-}" = "--version" ]; then echo 'Claude Code 1.2.3'; exit 0; fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = uninstall ]; then
+  if [ "$mode" = "plugin-absent" ]; then
+    echo 'Failed to uninstall plugin "story@storyhook": Plugin "story@storyhook" not found in installed plugins' >&2
+    exit 1
+  fi
+  [ "$mode" = "uninstall-fail" ] && { echo 'unrelated uninstall failure' >&2; exit 19; }
+  exit 0
+fi
 if [ "${1:-}" = plugin ]; then exit 0; fi
 echo "unexpected claude invocation: $*" >&2
 exit 64
@@ -143,6 +153,10 @@ impl Harness {
         fs::write(self.home.join("codex-mode"), mode).expect("writing Codex fake mode");
     }
 
+    fn set_claude_mode(&self, mode: &str) {
+        fs::write(self.home.join("claude-mode"), mode).expect("writing Claude fake mode");
+    }
+
     /// One `story` invocation against this fixture's isolated home.
     ///
     /// `env_clear` is the point of this harness — a provider CLI must be found
@@ -181,6 +195,10 @@ impl Harness {
 
     fn codex_log(&self) -> String {
         fs::read_to_string(self.home.join("codex-invocations")).unwrap_or_default()
+    }
+
+    fn claude_log(&self) -> String {
+        fs::read_to_string(self.home.join("claude-invocations")).unwrap_or_default()
     }
 
     fn codex_launcher(&self) -> PathBuf {
@@ -786,6 +804,41 @@ fn claude_command_sequence_and_success_guidance_use_the_canonical_target() {
     );
     assert!(message.contains("/story-context"), "{message}");
     assert!(!message.contains("deprecated"), "{message}");
+}
+
+#[test]
+fn claude_install_recovers_when_the_plugin_is_absent() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    harness.set_claude_mode("plugin-absent");
+    fs::create_dir_all(harness.home.join(".claude")).unwrap();
+
+    let output = harness.run(&["plugin", "install", "claude"]);
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let log = harness.claude_log();
+    assert!(log.contains("plugin marketplace remove storyhook"), "{log}");
+    assert!(log.contains("plugin marketplace add"), "{log}");
+    assert!(
+        log.contains("plugin install story@storyhook --scope user"),
+        "{log}"
+    );
+}
+
+#[test]
+fn unrelated_claude_uninstall_failures_stop_before_marketplace_replacement() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    harness.set_claude_mode("uninstall-fail");
+    fs::create_dir_all(harness.home.join(".claude")).unwrap();
+
+    let output = harness.run(&["plugin", "install", "claude"]);
+
+    assert!(!output.status.success());
+    assert!(combined(&output).contains("unrelated uninstall failure"));
+    let log = harness.claude_log();
+    assert!(!log.contains("plugin marketplace"), "{log}");
+    assert!(!log.contains("plugin install"), "{log}");
 }
 
 #[test]
