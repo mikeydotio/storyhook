@@ -9,13 +9,24 @@
 - A failed post-handoff audit write preserves the live claim and resources and
   returns `dispatch-comment-failed` with their identities.
 
+## Reconciliation
+
+- The published branch is additively merged with `origin/main` at `96417b9a3`;
+  SH-490 history remains unchanged.
+- Main's autonomous Codex dispatch changes auto-merge with SH-490's resource
+  comments, including their shared story helper and tmux fake.
+- AGENTS.md and its canonical template make SH-490 the current verifier item
+  while retaining main's forward roadmap.
+
 ## Focused verification
 
-- Dispatch comment failure, ID mode, NEXT mode/refusals, target/create session,
-  active-role, actor-label, resume, unclaim, and reset shell tests pass.
-- `bash -n` and `git diff --check` pass.
+- All 11 SH-490 dispatch/unclaim/reset shell files pass on the reconciled tree.
+- Four intersecting Codex dispatch/provider shell files also pass.
+- Plugin-skill determinism and scope/scaffold contracts pass: 16 Rust tests.
+- Shell syntax, Rust formatting, and staged/unstaged whitespace checks pass.
 
 ## Submission boundary
 
-The open SH-490 pull request is the only submission. The centralized verifier
-owns the full suite, merge, completion, and worktree cleanup.
+Push one additive merge commit to existing PR #660, comment final evidence,
+then move SH-490 to `verifying` as the absolute last action. Central
+verification owns the full suite, merge, completion, and worktree cleanup.

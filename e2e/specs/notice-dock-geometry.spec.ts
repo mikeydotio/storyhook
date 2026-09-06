@@ -663,10 +663,14 @@ test("Dismiss all cancels the clocks of the notices it removes", async ({
     await page.clock.runFor(30_000);
     await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 
-    // And the document-level listener went with it. A notice removed by a bulk
-    // clear never reaches `depart()`, so without an explicit teardown its
-    // `visibilitychange` listener would outlive the node for the whole session.
-    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    // And the document/window listeners went with it. A notice removed by a
+    // bulk clear never reaches `depart()`, so without explicit teardown its
+    // attention listeners would outlive the node for the whole session.
+    await page.evaluate(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
     await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
   });
 

@@ -189,12 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-204's lowercase label identity, SH-564's explicit Claude
-  dispatch binding, and SH-490's durable dispatch-resource trail through the
-  repaired, installed centralized verifier.
+- Current: verify SH-490's durable dispatch-resource trail.
 - Next: audit verifier behavior end to end (SH-560).
-- Later: reproduce and choose a provider-native Codex autonomous hook-binding
-  contract (SH-571).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work
