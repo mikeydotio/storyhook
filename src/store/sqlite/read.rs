@@ -27,7 +27,8 @@ use crate::store::types::{
     AttachmentBlobRow, EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord,
     EngineRunRecord, EngineRunState, EngineScope, FeedEvent, PrLink, ProjectRecord,
     ProjectRemoteRecord, ProjectSettings, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, parse_priority, parse_superstate,
+    StoryRow, StorySort, VerificationFailureDisposition, VerificationIncident, parse_priority,
+    parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -371,6 +372,75 @@ pub(super) fn live_engine_runs(conn: &Connection) -> Result<Vec<EngineRunRecord>
         &[],
         "reading live engine runs",
     )
+}
+
+pub(super) fn verification_incident(
+    conn: &Connection,
+) -> Result<Option<VerificationIncident>, StoreError> {
+    let raw = one(
+        conn,
+        "SELECT incident_id, project_id, story_no, generation, disposition, state, attempts, \
+                detail, first_failed_at, last_failed_at FROM verification_incident WHERE singleton = 1",
+        &[],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        },
+        "reading the verification incident",
+    )?;
+    raw.map(
+        |(
+            incident_id,
+            project,
+            story,
+            generation,
+            disposition,
+            state,
+            attempts,
+            detail,
+            first_failed_at,
+            last_failed_at,
+        )| {
+            let disposition =
+                VerificationFailureDisposition::parse(&disposition).ok_or_else(|| {
+                    StoreError::Corrupt(format!(
+                        "verification_incident.disposition holds unknown value `{disposition}`"
+                    ))
+                })?;
+            let halted = match state.as_str() {
+                "retrying" => false,
+                "halted" => true,
+                _ => {
+                    return Err(StoreError::Corrupt(format!(
+                        "verification_incident.state holds unknown value `{state}`"
+                    )));
+                }
+            };
+            Ok(VerificationIncident {
+                incident_id,
+                project: ProjectId::new(project),
+                story: StoryNo::new(story),
+                generation: GlobalSeq::new(generation),
+                disposition,
+                halted,
+                attempts: stored_u32(attempts, "verification_incident.attempts")?,
+                detail,
+                first_failed_at,
+                last_failed_at,
+            })
+        },
+    )
+    .transpose()
 }
 
 pub(super) fn engine_lanes(

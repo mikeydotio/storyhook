@@ -24,7 +24,8 @@ use storyhook::service::{
     VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ReadOps, Store, StoreError, StoryNo, WriteOps, partition_known,
+    ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
+    VerificationFailureDisposition, VerificationIncident, WriteOps, partition_known,
 };
 use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
@@ -400,6 +401,7 @@ fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
         (
             VerificationOutcome::InfrastructureFailure {
                 detail: "retry later".into(),
+                disposition: storyhook::store::VerificationFailureDisposition::Retryable,
             },
             TickResult::RetryLater,
         ),
@@ -504,6 +506,7 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
         observed_story: Mutex::new(None),
         outcome: Some(VerificationOutcome::InfrastructureFailure {
             detail: "retry later".into(),
+            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
         }),
     };
     let _fault = arm(
@@ -601,6 +604,26 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         selected.pull_request,
         Err(VerificationProblem::MissingCheckout)
     );
+
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Returned
+    );
+    let returned = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(returned.state, "in-progress");
 }
 
 #[test]
@@ -926,7 +949,7 @@ wait
     let outcome = actuator.verify(&candidate, &pull_request);
 
     let detail = match outcome {
-        VerificationOutcome::InfrastructureFailure { detail } => detail,
+        VerificationOutcome::InfrastructureFailure { detail, .. } => detail,
         other => panic!("a timed-out verifier is infrastructure failure, got {other:?}"),
     };
     assert!(detail.contains("100ms"), "{detail}");
@@ -1491,7 +1514,7 @@ fn an_unreachable_agent_is_marked_awaiting_instead_of_silently_retried() {
 }
 
 #[test]
-fn identical_infrastructure_failures_are_deduplicated_and_remain_verifying() {
+fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceiling() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "temporary outage", Priority::High, PR_ONE);
@@ -1499,6 +1522,7 @@ fn identical_infrastructure_failures_are_deduplicated_and_remain_verifying() {
     let actuator = FakeActuator {
         outcome: VerificationOutcome::InfrastructureFailure {
             detail: "GitHub unavailable".into(),
+            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -1506,8 +1530,22 @@ fn identical_infrastructure_failures_are_deduplicated_and_remain_verifying() {
     };
     let env = Environment::at(root.path());
 
-    tick_with(fixture.store(), &env, &actuator).unwrap();
-    tick_with(fixture.store(), &env, &actuator).unwrap();
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::RetryLater
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::RetryLater
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Halted
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Halted
+    );
     let row = fixture
         .store()
         .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
@@ -1515,6 +1553,255 @@ fn identical_infrastructure_failures_are_deduplicated_and_remain_verifying() {
         .unwrap();
     assert_eq!(row.state, "verifying");
     assert_eq!(row.snapshot.comments.len(), 1);
+    assert!(row.snapshot.comments[0].text.contains("Attempt 3 of 3"));
+    assert!(row.snapshot.comments[0].text.contains("HALTED"));
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident())
+        .unwrap()
+        .unwrap();
+    assert!(incident.halted);
+    assert_eq!(incident.attempts, 3);
+}
+
+#[test]
+fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::InfrastructureFailure {
+            detail: "not inside a git worktree".into(),
+            disposition: storyhook::store::VerificationFailureDisposition::Permanent,
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Halted
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident())
+        .unwrap()
+        .unwrap();
+    assert_eq!(incident.attempts, 1);
+    assert_eq!(incident.story.to_id("SH"), id);
+    let reopened = SqliteStore::open(fixture.store().path()).unwrap();
+    assert_eq!(
+        reopened
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .as_ref(),
+        Some(&incident),
+        "a fresh verifier process must inherit the durable halt"
+    );
+
+    let path = "/api/repos/fixture/data";
+    let data = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Get,
+        path,
+        &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+        "",
+        &TrustedHosts::default(),
+    );
+    let json: serde_json::Value = serde_json::from_str(data.reply.body()).unwrap();
+    assert_eq!(json["verification_incident"]["story_id"], id);
+    assert_eq!(json["verification_incident"]["attempts"], 1);
+
+    let ack_path = "/api/repos/fixture/verification/ack";
+    let ack_headers = [
+        Header::from_bytes("Host", "127.0.0.1:3456").unwrap(),
+        Header::from_bytes("X-Storyhook", "1").unwrap(),
+        Header::from_bytes("Content-Type", "application/json").unwrap(),
+    ];
+    let stale = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        ack_path,
+        &ack_headers,
+        r#"{"incident_id":"an-older-incident"}"#,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(stale.reply.status, 422, "{}", stale.reply.body());
+    assert!(stale.reply.body().contains("is stale"));
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .as_ref()
+            .map(|current| current.incident_id.as_str()),
+        Some(incident.incident_id.as_str())
+    );
+
+    let body = serde_json::json!({"incident_id": incident.incident_id}).to_string();
+    let ack = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        ack_path,
+        &ack_headers,
+        &body,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(ack.reply.status, 200, "{}", ack.reply.body());
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Halted,
+        "acknowledgement must make the still-current candidate eligible again"
+    );
+}
+
+#[test]
+fn a_halt_fires_one_post_commit_verification_hook() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
+        .unwrap();
+    fixture.write_hooks_toml(
+        "on_verification_halted = { command = \"cat >> hooks.log; echo >> hooks.log\" }\n",
+    );
+    submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::InfrastructureFailure {
+            detail: "jq is required".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Halted
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Halted
+    );
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(fixture.cwd().join("hooks.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["event_type"], "verification_halted");
+    assert_eq!(lines[0]["attempts"], 1);
+}
+
+#[test]
+fn a_recovered_attempt_clears_its_retrying_incident() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "recovered verifier", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let generation = candidate.verifying_generation.unwrap();
+    fixture
+        .store()
+        .write(|tx| {
+            tx.put_verification_incident(&VerificationIncident {
+                incident_id: format!("{}:{}", candidate.project.get(), generation.get()),
+                project: candidate.project,
+                story: StoryNo::parse_id("SH", &id).unwrap(),
+                generation,
+                disposition: VerificationFailureDisposition::Retryable,
+                halted: false,
+                attempts: 1,
+                detail: "GitHub unavailable".into(),
+                first_failed_at: FIXTURE_NOW.into(),
+                last_failed_at: FIXTURE_NOW.into(),
+            })
+        })
+        .unwrap();
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Conflict {
+            detail: "base changed after infrastructure recovered".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Returned
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "current generation", Priority::High, PR_ONE);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let stale_generation = GlobalSeq::new(candidate.verifying_generation.unwrap().get() + 1);
+    fixture
+        .store()
+        .write(|tx| {
+            tx.put_verification_incident(&VerificationIncident {
+                incident_id: format!("{}:{}", candidate.project.get(), stale_generation.get()),
+                project: candidate.project,
+                story: StoryNo::parse_id("SH", &id).unwrap(),
+                generation: stale_generation,
+                disposition: VerificationFailureDisposition::Permanent,
+                halted: true,
+                attempts: 1,
+                detail: "obsolete failure".into(),
+                first_failed_at: FIXTURE_NOW.into(),
+                last_failed_at: FIXTURE_NOW.into(),
+            })
+        })
+        .unwrap();
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Conflict {
+            detail: "current generation reached the actuator".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Returned
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -1575,6 +1862,7 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     let actuator = FakeActuator {
         outcome: VerificationOutcome::InfrastructureFailure {
             detail: "verification must not run for cleanup".into(),
+            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -1719,6 +2007,66 @@ fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
         queued_comment.contains("0 candidates of higher priority, 0 of equal priority and older"),
         "{queued_comment}"
     );
+}
+
+#[test]
+fn a_durable_incident_marks_the_head_and_keeps_every_stalled_timestamp_fixed() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let head = submitted(&fixture, "broken head", Priority::High, PR_ONE);
+    let tail = submitted(&fixture, "waiting tail", Priority::Low, PR_TWO);
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let incident = VerificationIncident {
+        incident_id: format!(
+            "{}:{}",
+            candidate.project.get(),
+            candidate.verifying_generation.unwrap().get()
+        ),
+        project: candidate.project,
+        story: StoryNo::parse_id("SH", &head).unwrap(),
+        generation: candidate.verifying_generation.unwrap(),
+        disposition: VerificationFailureDisposition::Permanent,
+        halted: true,
+        attempts: 1,
+        detail: "not inside a git worktree".into(),
+        first_failed_at: "2026-01-01T00:01:00Z".into(),
+        last_failed_at: "2026-01-01T00:01:00Z".into(),
+    };
+    fixture
+        .store()
+        .write(|tx| tx.put_verification_incident(&incident))
+        .unwrap();
+    let activity = VerificationActivity::new();
+
+    assert!(
+        publish_once(
+            fixture.store(),
+            fixture.env(),
+            "2026-01-01T00:02:00Z",
+            &activity
+        )
+        .unwrap()
+    );
+    let head_first = last_comment(&fixture, &head);
+    let tail_first = last_comment(&fixture, &tail);
+    assert!(head_first.contains("Verification — HALTED"), "{head_first}");
+    assert!(tail_first.contains("blocked by SH-1"), "{tail_first}");
+    assert!(head_first.contains("last evidence 2026-01-01T00:01:00Z"));
+
+    assert!(
+        !publish_once(
+            fixture.store(),
+            fixture.env(),
+            "2026-01-01T00:20:00Z",
+            &activity
+        )
+        .unwrap()
+    );
+    assert_eq!(last_comment(&fixture, &head), head_first);
+    assert_eq!(last_comment(&fixture, &tail), tail_first);
 }
 
 #[test]
