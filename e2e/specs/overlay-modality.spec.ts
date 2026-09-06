@@ -17,6 +17,13 @@ import { openProject, seedToken } from "./support";
  *
  * SH-554 later removed story detail from this registry entirely: it is now a
  * non-modal workspace peer, covered by `detail-panel.spec.ts`.
+ * SH-568 adds the converse exception: `#engine-alert-modal` uses this same
+ * inert-background and focus-trap machinery, but Escape and backdrop presses
+ * deliberately do not dismiss it. D13 requires an unacknowledged engine stop
+ * to remain an interruption rather than becoming a silent all-clear. Its
+ * exceptional dismissal contract is proved in `engine.spec.ts`, where the
+ * alert data required to open it can be supplied without weakening this
+ * file's read-only fixture promise.
  *
  * Everything here is read-only against the seeded fixtures: no story is
  * created, moved or deleted, so `tests/e2e_fixture_hygiene.rs`'s cleanup

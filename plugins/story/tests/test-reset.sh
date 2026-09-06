@@ -26,6 +26,7 @@ repo=$(mk_story_repo)
 slug=$(slug_for "$repo")
 
 state_of() { (cd "$repo" && story show "$1" --json | jq -r '.story.story.state'); }
+comments_of() { (cd "$repo" && story show "$1" --json | jq -r '[.story.story.comments[].text] | join("|")'); }
 claim_it() { (cd "$repo" && story claim "$1" --no-comment --json >/dev/null 2>&1); }
 wt_exists() { [ -d "$repo/.claude/worktrees/$1" ]; }
 br_exists() { (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$1"); }
@@ -50,6 +51,8 @@ assert_eq "$(jqf "$out" '.removed.worktree')" "true" "happy: worktree removed"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" "happy: branch removed"
 assert_eq "$(jqf "$out" .closed_window)" "true" "happy: window closed"
 assert_eq "$(state_of "$hp")" "todo" "happy: the REAL story really moved"
+assert_contains "$(comments_of "$hp")" "Unclaimed from" \
+  "happy: reset records its claim release by default"
 wt_exists "$whp" && fail_test "happy: worktree still on disk"
 br_exists "$whp" && fail_test "happy: branch still in git"
 

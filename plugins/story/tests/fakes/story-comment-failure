@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -u
+
+for arg in "$@"; do
+  if [ "$arg" = comment ]; then
+    printf '%s\n' '{"result":"error","error":"injected comment failure","exit_code":5}'
+    exit 5
+  fi
+done
+
+exec "$STORY_REAL_BIN" "$@"
