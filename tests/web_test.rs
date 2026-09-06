@@ -3365,6 +3365,66 @@ fn web_serve_api_data_with_stories() {
 }
 
 #[test]
+fn web_serve_api_data_carries_only_open_pr_links_per_story() {
+    use storyhook::domain::StoryEvent;
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::store::{ExpectedSeq, WriteOps};
+
+    let fixture = served();
+    fixture.seed(&["new", "Linked pull requests"]);
+    fixture.seed(&["new", "No pull requests"]);
+    fixture.seed(&["link-pr", "SH-1", "https://github.com/zeta/widgets/pull/3"]);
+    fixture.seed(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/9"]);
+    fixture.seed(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"]);
+    fixture
+        .store
+        .write(|tx| {
+            tx.append_events(
+                fixture.project,
+                StoryNo::new(1),
+                ExpectedSeq::Any,
+                &[StoryEvent::StoryPrClosed {
+                    at: "2026-01-02T00:00:00Z".into(),
+                    url: "https://github.com/acme/widgets/pull/9".into(),
+                }],
+                &Provenance::unrecorded(),
+            )
+        })
+        .unwrap();
+
+    let response = fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{}/api/repos/{}/data",
+            fixture.port, fixture.repo_id
+        ))
+        .call()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    let stories = json["stories"].as_array().unwrap();
+    let linked = stories
+        .iter()
+        .find(|view| view["story"]["id"] == "SH-1")
+        .unwrap();
+    let unlinked = stories
+        .iter()
+        .find(|view| view["story"]["id"] == "SH-2")
+        .unwrap();
+
+    let open_prs = linked["open_prs"].as_array().unwrap();
+    assert_eq!(open_prs.len(), 2, "unexpected dashboard payload: {json}");
+    assert_eq!(open_prs[0]["url"], "https://github.com/acme/widgets/pull/7");
+    assert_eq!(open_prs[0]["status"], "open");
+    assert_eq!(open_prs[1]["url"], "https://github.com/zeta/widgets/pull/3");
+    assert_eq!(open_prs[1]["status"], "open");
+    assert!(
+        unlinked.get("open_prs").is_none(),
+        "stories without an open PR must not grow an empty wire field: {json}"
+    );
+}
+
+#[test]
 fn web_serve_api_data_reports_queued_verification_and_omits_other_states() {
     use storyhook::domain::StoryEvent;
     use storyhook::domain::provenance::Provenance;
