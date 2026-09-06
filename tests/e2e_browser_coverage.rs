@@ -33,6 +33,9 @@
 //! 7. The fake-tmux one-writer guard rejects concurrent dispatches without
 //!    rejecting stop-now's deliberately overlapping `unclaim` --
 //!    `the_fake_tmux_writer_guard_applies_only_to_dispatch`.
+//! 8. An ambient reverse-proxy allowlist cannot leak into the browser harness
+//!    and silently withdraw localhost-only handoff authority --
+//!    `the_runner_neutralizes_an_ambient_proxy_allowlist_before_startup`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -746,4 +749,37 @@ fn the_fake_tmux_writer_guard_applies_only_to_dispatch() {
             "the dispatch-only guard must retain `{required}`"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 8. The browser harness owns the proxy-allowlist decision
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_runner_neutralizes_an_ambient_proxy_allowlist_before_startup() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+
+    let isolated = body
+        .find("storyhook_isolate \"$data_root\"")
+        .expect("run_one_project must enter the shared isolated environment");
+    let neutralized = body
+        .find("unset STORYHOOK_WEB_TRUSTED_HOSTS")
+        .expect("run_one_project must clear an inherited reverse-proxy allowlist");
+    let started = body
+        .find("start_output=\"$(\"$story_bin\" daemon start 2>&1)\"")
+        .expect("run_one_project must start its daemon");
+
+    assert!(
+        isolated < neutralized && neutralized < started,
+        "run_one_project must clear STORYHOOK_WEB_TRUSTED_HOSTS after isolation and before daemon \
+         startup; inherited proxy configuration withdraws local_request authority and breaks the \
+         handoff fixture"
+    );
 }
