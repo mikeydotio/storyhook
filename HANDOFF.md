@@ -1,45 +1,34 @@
-# SH-585 Handoff
+# SH-581 Handoff
 
-## Current work
+## Change
 
-- PR #669 on `worktree-SH-585`: exact installer-produced Codex launcher plus
-  five narrow reader argv contracts; no general Bash or compound exemption.
-- Real launcher/helper/CLI tests preserve story data, global events and
-  installed artifact bytes. Unsupported shell safety has an honest diagnosis.
-- Verifier repairs synchronize the AGENTS.md source template and use
-  `TestEnv::raw_story` for the older reinstall fixture. Actual environment
-  assertions cover containment, isolated paths, provider PATH and cwd.
-- RCA: `docs/rca/SH-585-installed-launcher-readers.md`.
+The Lima guest now runs Cargo in a subshell inside the extracted source tree.
+The caller's working directory remains available to the export phase.
+The regression exercises both Linux targets from a directory with no ancestor
+manifest and observes canonical cwd, archived manifest and marker contents,
+locked release arguments, pinned rustc, linker selection and executable export.
 
-## Reconciled main
+## Evidence
 
-SH-584 merged as PR #668. Its changes are preserved:
-
-- Daemon dispatch and engine monitoring exclude ambient tmux identity while
-  interactive and explicit cleanup-lease addressing remain intact.
-- Installer verifies the enabled plugin's complete release payload; provider
-  fixtures now materialize that payload. Capabilities track helper content.
-- Verifier preparation/restoration preserve tracked edits and speculative
-  refs; remediation retains tmux diagnostics and provider-specific keys.
-- Context: `docs/rca/web-dispatch-tmux-and-stale-catalog.md` and
-  `docs/rca/verifier-remediation-context.md`. SH-583 was absorbed into SH-584.
-- SH-584 preserved a dirty verifier at
-  `.git/storyhook/verification-recovery-SH-584-20260906`; do not remove it.
-
-## Reconciliation validation
-
-- Keep main's provider payload fixtures with SH-585's shared command builder
-  and containment regression. Keep generated AGENTS.md equal to its template.
-- Run installer/freshness/reinstall, launcher/guard, containment and scaffold
-  contracts; targeted Clippy, formatting and diff checks. Final results are
-  recorded on SH-585 and PR #669.
+- RED: the strengthened regression failed before the production change:
+  Cargo cwd was `no-manifest-here`, not the extracted source root.
+- GREEN: 59 tests passed across `release_targets`, `scaffold`, and `scope_rubric`.
+- Command: `bash scripts/run-tests.sh --only-no-doc release_targets scaffold scope_rubric -- --test-threads=4`.
+- Shell syntax, changed Rust formatting and whitespace checks passed.
+- Final Clippy result and PR URL are recorded on SH-581.
+- No real Lima build was run; Cargo/toolchain shims observe the real guest script.
 
 ## Submission boundary
 
-Merge current origin/main into the existing branch, preserving published
-history. Push to PR #669; no new PR, rebase or force-push. Record final context,
-then make `story move SH-585 verifying` the absolute final action.
+Use the single PR on `worktree-SH-581`. The story holds the approved plan,
+validation evidence and linked PR. Central verification owns the full suite,
+merge, completion and cleanup. If returned, add repair commits to that PR,
+run only new and impacted tests, push, record evidence, then make
+`story move SH-581 verifying` the last action. Never rewrite published history.
 
-Central verification owns the full suite, merge, completion and cleanup.
-No full-suite, release, version or deployment operation from this worktree.
-SH-557 remains responsible for separating roadmap data from the template.
+## Preserved context
+
+SH-584 and SH-585 merged as #668 and #669. Do not remove SH-584's preserved
+`.git/storyhook/verification-recovery-SH-584-20260906` recovery directory.
+SH-557 owns separating the project roadmap from the generated template;
+AGENTS.md and its template remain synchronized here.
