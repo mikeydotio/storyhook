@@ -212,8 +212,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-566's immutable Full Auto launch configuration and shared
-  project/epic dashboard modal through the centralized verifier.
+- Current: verify SH-582's stable daemon and verifier-pane working-directory
+  ownership through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
