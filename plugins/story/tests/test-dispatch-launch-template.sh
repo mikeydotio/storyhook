@@ -34,6 +34,8 @@ dispatch_and_capture() {
       && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+        FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
+        FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
         bash "$SCRIPT" dispatch "$id" "$@" 2>&1
   )
   [ "$(jqf "$out" .ok)" = "true" ] || fail_test "$prefix: dispatch itself failed: $out"
