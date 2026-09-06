@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
@@ -113,9 +113,7 @@ impl ReinstallFixture {
     }
 
     fn story(&self, cwd: &Path) -> Command {
-        let mut command = Command::new(story_binary());
-        command.current_dir(cwd).env_clear();
-        self.env.apply(&mut command);
+        let mut command = self.env.raw_story(cwd);
         command.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
         command
     }
@@ -179,6 +177,45 @@ fn combined(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+#[test]
+fn reinstall_command_preserves_shared_containment_and_fixture_provider_path() {
+    let fixture = ReinstallFixture::new("codex", FAKE_CODEX);
+    let command = fixture.story(&fixture.stable);
+    let environment: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+    for (key, expected) in storyhook_test_support::daemon_containment() {
+        assert_eq!(
+            environment
+                .get(std::ffi::OsStr::new(key))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new(&expected)),
+            "reinstall command must retain {key}",
+        );
+    }
+    for (key, expected) in [
+        ("HOME", fixture.env.home().to_path_buf()),
+        ("STORYHOOK_DATA_DIR", fixture.env.data_dir().to_path_buf()),
+    ] {
+        assert_eq!(
+            environment
+                .get(std::ffi::OsStr::new(key))
+                .copied()
+                .flatten(),
+            Some(expected.as_os_str()),
+        );
+    }
+    let expected_path = format!("{}:/usr/bin:/bin", fixture.bin.display());
+    assert_eq!(
+        environment
+            .get(std::ffi::OsStr::new("PATH"))
+            .copied()
+            .flatten(),
+        Some(std::ffi::OsStr::new(&expected_path)),
+        "provider resolution must remain confined to the fixture PATH",
+    );
+    assert_eq!(command.get_current_dir(), Some(fixture.stable.as_path()));
 }
 
 #[test]
