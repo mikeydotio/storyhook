@@ -212,7 +212,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-571's exact-hook binding for autonomous Codex dispatch.
+- Current: verify SH-571's exact-hook binding for autonomous Codex dispatch
+  plus SH-573's durable centralized-verifier infrastructure escalation.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
