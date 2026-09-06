@@ -214,6 +214,41 @@ run_one_project() {
   export FAKE_TMUX_STATE="$data_root/faketmux"
   mkdir -p "$FAKE_TMUX_STATE"
 
+  # SH-584: execute the exact Codex launch string at the terminal boundary
+  # against an argv recorder. The existing terminal double still supplies
+  # readiness/prompt responses; no real provider process can be launched.
+  provider_bin="$data_root/provider-bin"
+  mkdir -p "$provider_bin"
+  cat >"$provider_bin/codex" <<'PROVIDER'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 -c 'import json, os, sys; json.dump({"argv": sys.argv[1:], "cwd": os.getcwd()}, sys.stdout)' "$@" >"$FAKE_TMUX_STATE/provider-argv.json"
+PROVIDER
+  cat >"$provider_bin/tmux" <<'TERMINAL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = new-window ]; then
+  previous=""
+  launch=""
+  pane_cwd=""
+  for argument in "$@"; do
+    if [ "$argument" = ';' ]; then launch="$previous"; break; fi
+    if [ "$previous" = -c ]; then pane_cwd="$argument"; fi
+    previous="$argument"
+  done
+  case "$launch" in
+    codex\ *)
+      [ -n "$pane_cwd" ] || { echo 'Codex fixture launch has no cwd' >&2; exit 64; }
+      (cd "$pane_cwd" && bash -c "$launch")
+      ;;
+  esac
+fi
+exec "$FAKE_TMUX_IMPLEMENTATION" "$@"
+TERMINAL
+  chmod 700 "$provider_bin/codex" "$provider_bin/tmux"
+  export FAKE_TMUX_IMPLEMENTATION="$repo_root/plugins/story/tests/fakes/tmux"
+  export PATH="$provider_bin:$PATH"
+
   # Every FAKE_TMUX_* the harness has set, snapshotted one file per knob --
   # derived, so a knob added later crosses for free, and never interpolated
   # into the generated shell below, because a knob's value is data:

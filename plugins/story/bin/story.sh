@@ -3185,11 +3185,16 @@ cmd_notify() {
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  local wname pane buffer provider
+  local wname pane buffer provider server
   wname=$(resolve_wname "$id")
-  pane=$(pane_for_window "$wname") || pane=""
+  server="${TMUX:-}"
+  server="${server%%,*}"
+  server="${server:-default (TMUX_TMPDIR=${TMUX_TMPDIR:-/tmp})}"
+  if ! pane=$(pane_for_window "$wname" 2>&1); then
+    refuse "pane-query-failed" "could not query tmux window \`$wname\` on server \`$server\`: $pane; verification diagnostics remain on $id."
+  fi
   [ -n "$pane" ] \
-    || refuse "pane-unavailable" "no live tmux window named \`$wname\`; verification diagnostics remain on $id, which has been blocked for manual recovery."
+    || refuse "pane-unavailable" "no live tmux window named \`$wname\` on queried server \`$server\`; verification diagnostics remain on $id."
   provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null || printf '')
   case "$provider" in
   claude | codex) configure_agent "$provider" ;;
@@ -3201,7 +3206,7 @@ cmd_notify() {
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
-  tmux send-keys -t "$pane" Enter 2>/dev/null \
+  tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null \
     || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
   jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
     '{ok:true, id:$id, window_name:$window, pane:$pane,
