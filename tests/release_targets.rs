@@ -1435,6 +1435,21 @@ const HONEST_SYSROOT: &str = "cd \"$(dirname \"$0\")/..\" && pwd -P";
 
 /// Prepares a warm cache hit for `host_target` and returns its root.
 fn warm_cache(cache_root: &Path, lock: &Path, host_target: &str, answer: &str) -> PathBuf {
+    warm_cache_for(cache_root, lock, host_target, &[host_target], |root| {
+        fake_toolchain(root, answer)
+    })
+}
+
+/// Prepares a warm cache hit whose toolchain is written by `populate`, for the
+/// exact `required_targets` the caller will ask `ensure_release_toolchain` for
+/// — the marker has to match those verbatim or the cache is not a hit.
+fn warm_cache_for(
+    cache_root: &Path,
+    lock: &Path,
+    host_target: &str,
+    required_targets: &[&str],
+    populate: impl FnOnce(&Path),
+) -> PathBuf {
     let digest = Command::new("shasum")
         .args(["-a", "256"])
         .arg(lock)
@@ -1448,10 +1463,10 @@ fn warm_cache(cache_root: &Path, lock: &Path, host_target: &str, answer: &str) -
         .unwrap()
         .to_string();
     let root = toolchain_root_path(cache_root, &lock_hash, host_target);
-    fake_toolchain(&root, answer);
+    populate(&root);
     std::fs::write(
         root.join(".storyhook-release-toolchain"),
-        format!("{lock_hash} {host_target} {host_target}\n"),
+        format!("{lock_hash} {host_target} {}\n", required_targets.join(" ")),
     )
     .unwrap();
     root
@@ -1593,5 +1608,133 @@ fn a_warm_cached_toolchain_that_resolves_its_own_sysroot_is_handed_back() {
     assert_eq!(
         std::fs::canonicalize(&handed_back).unwrap(),
         std::fs::canonicalize(&root).unwrap()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The guest's cache root, and what happens when it cannot be written (SH-578)
+// ---------------------------------------------------------------------------
+//
+// `limactl shell` does not start in the guest home. It starts in the host's
+// working directory when that path is mounted, and otherwise falls back to the
+// host home — which Lima's default template mounts READ-ONLY. This checkout
+// lives outside every mount, so `$PWD` in the guest was `/Users/mikey`, and the
+// relative cache root resolved against it could not be created at all.
+//
+// The failure was reported as `could not download rustc ... from
+// https://static.rust-lang.org/...`: a network diagnosis for a filesystem
+// fault, because the `mkdir` two lines earlier printed its own error and was
+// not treated as fatal. `set -e` cannot catch that on its own — every caller
+// invokes `ensure_release_toolchain` as `x="$(...)" || ...`, and `set -e` is
+// suppressed inside a command substitution whose assignment is part of a `||`
+// list — so the check is written out.
+
+#[test]
+fn a_relative_guest_cache_root_resolves_against_the_guest_home_not_its_working_directory() {
+    let (fixture, bin, _target, toolchain, _runner) = release_tool_shims();
+    let home = fixture.path().join("guest-home");
+    let read_only_mount = fixture.path().join("read-only-mount");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&read_only_mount).unwrap();
+
+    // The cache the guest is meant to find: under its HOME, never under the
+    // directory limactl happened to start in.
+    let lock = repo_root().join("scripts/release-toolchain.lock");
+    warm_cache_for(
+        &home.join(".cache/storyhook-release"),
+        &lock,
+        "aarch64-unknown-linux-gnu",
+        &["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+        |root| {
+            std::fs::create_dir_all(root.join("bin")).unwrap();
+            for tool in ["rustc", "cargo"] {
+                std::fs::copy(
+                    toolchain.join("bin").join(tool),
+                    root.join("bin").join(tool),
+                )
+                .unwrap();
+            }
+        },
+    );
+
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let result = Command::new("/bin/bash")
+        // Stand where limactl actually leaves the guest: somewhere that is not
+        // the home, and on the real machine is not writable either.
+        .current_dir(&read_only_mount)
+        .arg(repo_root().join("scripts/release-linux.sh"))
+        .args([
+            "--guest-check",
+            "aarch64-unknown-linux-gnu",
+            ".cache/storyhook-release",
+        ])
+        .env("PATH", path)
+        .env("HOME", &home)
+        .env("RELEASE_TEST_LOG", fixture.path().join("commands.log"))
+        .env_remove("STORYHOOK_RELEASE_TOOLCHAIN_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        result.status.success(),
+        "the guest probe did not find the toolchain in its own home, so it fell \
+         through to assembling one — which on the real guest means writing to \
+         the read-only host-home mount (SH-578): {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn both_guest_phases_resolve_their_cache_root_through_the_one_function() {
+    let script = read("scripts/release-linux.sh");
+    assert_eq!(
+        script
+            .matches("guest_absolute_cache_root \"$guest_cache_root\"")
+            .count(),
+        2,
+        "--guest-check and --guest-build must both resolve through the shared \
+         function; they carried identical copies of the wrong normalization, \
+         which is how one fix could have missed the other half (SH-136)"
+    );
+    assert!(
+        !script.contains("guest_cache_root=\"$PWD/$guest_cache_root\""),
+        "the working-directory normalization is the defect and must not survive"
+    );
+}
+
+#[test]
+fn a_cache_root_that_cannot_be_created_is_refused_by_name_not_reported_as_a_download() {
+    let fixture = scratch_dir_named("release-toolchain-readonly");
+    let sealed = fixture.path().join("sealed");
+    let lock = fixture.path().join("release-toolchain.lock");
+    std::fs::create_dir_all(&sealed).unwrap();
+    std::fs::write(
+        &lock,
+        "rustc\taarch64-apple-darwin\thttps://invalid.example/rustc.tar.gz\t0000000000000000000000000000000000000000000000000000000000000000\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&sealed).unwrap().permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(&sealed, permissions).unwrap();
+
+    let result = ensure_toolchain(&sealed.join("cache"), &lock, "aarch64-apple-darwin");
+
+    // Restore write permission before any assertion, so a failure here still
+    // leaves the fixture removable.
+    let mut restored = std::fs::metadata(&sealed).unwrap().permissions();
+    restored.set_mode(0o755);
+    std::fs::set_permissions(&sealed, restored).unwrap();
+
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("could not create the release toolchain cache"),
+        "an unwritable cache root must name itself; it used to carry on and \
+         surface as a failed download from static.rust-lang.org: {stderr}"
+    );
+    assert!(
+        !stderr.contains("could not download"),
+        "the download is downstream of the real fault and must not be blamed \
+         for it: {stderr}"
     );
 }
