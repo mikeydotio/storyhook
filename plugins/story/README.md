@@ -74,9 +74,9 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; `--resume` preserves and reconstructs an abandoned dispatch, while `--force` only reuses an existing claim for a fresh dispatch |
+| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
-| `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
+| `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, then records its window, worktree, and branch after confirmed handoff |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
@@ -185,13 +185,23 @@ Worth knowing before changing anything here:
   story, so `dispatch` carries its own guard and `list` filters the
   active state out.
 - **The claim is a hard precondition, not a trailing best-effort.** Storyhook's
-  `state` *is* the claim marker, so `dispatch` claims via `--if-state` CAS
-  before any side effect, and rolls the claim back if a later step fails.
+  `state` *is* the claim marker, so `dispatch` claims through the atomic
+  `story claim` verb before any side effect and rolls the claim back if a later
+  step fails. A fresh named dispatch attaches its future tmux window as a
+  transactional intent comment. `--next` cannot know the window name until the
+  claim returns an id, so it comments with the tmux window, worktree path, and
+  branch only after handoff is confirmed. Forced and resumed dispatches use
+  that same post-handoff record because they create no claim transaction.
+- **Every claim change leaves a correction trail by default.** Dispatch's
+  rollback uses `story unclaim` without suppressing its canonical comment;
+  direct `unclaim` and `reset` do the same unless their caller explicitly asks
+  for `--no-comment`.
 - **Forced redispatch reuses a claim; it never rewrites or owns it.** `/story do
   <id> --force` is accepted only as the exception to the named story's
   already-claimed refusal. It skips the readiness lookup and redundant
   move for that one state, reports `reused_claim:true`/`claim_transitioned:false`,
-  and leaves the pre-existing state untouched if a later dispatch step fails.
+  records the reconstructed resources after confirmed handoff, and leaves the
+  pre-existing state untouched if a later dispatch step fails.
   Worktree, branch, tmux, provider-readiness and prompt-delivery checks remain
   unchanged; an existing worktree or branch returns `resume-available` rather
   than being treated as disposable.

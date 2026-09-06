@@ -3,9 +3,9 @@
 # process claiming the story a moment before story.sh's own claim lands) isn't
 # reproducible black-box without genuine concurrency, so this wrapper
 # simulates it deterministically: it proxies every invocation to the REAL
-# story binary (STORY_REAL_BIN, set by the test) EXCEPT one exact
-# `claim <id> --no-comment --json` call — identified by STORY_CONFLICT_ID —
-# which it answers with a canned {"result":"conflict",...} response instead.
+# story binary (STORY_REAL_BIN, set by the test) EXCEPT the one `claim <id>`
+# transaction identified by STORY_CONFLICT_ID, including its dispatch intent
+# comment, which it answers with a canned {"result":"conflict",...} response.
 # Every other subcommand (show, list, new, etc.) passes through unchanged, so
 # the fixture stays realistic everywhere except the one moment under test.
 #

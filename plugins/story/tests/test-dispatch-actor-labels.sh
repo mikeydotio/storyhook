@@ -65,13 +65,15 @@ fi
 log=$(cd "$repo" && story log "$id" --json)
 
 claim_actor=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor == "story.sh:dispatch")] | length')
-assert_eq "$claim_actor" "1" "the claim is labelled story.sh:dispatch"
+assert_eq "$claim_actor" "2" \
+  "the claim transition and transactional comment are labelled story.sh:dispatch"
 
 # The rollback only happens if the claim was made and dispatch then failed. If
 # a future change makes dispatch succeed against the fake, this assertion is the
 # thing that should be revisited — not deleted.
 rollback_actor=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor == "story.sh:dispatch-rollback")] | length')
-assert_eq "$rollback_actor" "1" "the claim-rollback is labelled story.sh:dispatch-rollback"
+assert_eq "$rollback_actor" "2" \
+  "the rollback transition and correcting comment are labelled story.sh:dispatch-rollback"
 
 # The point of the pair, and what changed under it (SH-484): the claim and its
 # rollback used to be the SAME command (`set-state`) with only the actor to
