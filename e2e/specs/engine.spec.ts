@@ -1,11 +1,15 @@
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
 import {
+  contrastRatio,
+  holdFetch,
   measureFocusIndicator,
   openProject,
+  parseColor,
   projectSlug,
   requiredEnv,
   seedToken,
+  THEMES,
 } from "./support";
 
 const ENGINE_PROJECT = "Engine Project";
@@ -150,6 +154,14 @@ async function fulfillRuns(route: Route, runs: EngineRun[]): Promise<void> {
 
 function engineStoryLane(page: Page, story: string) {
   return page.locator(".engine-lane-story").filter({ hasText: story });
+}
+
+function occupySecondLane(engineRun: EngineRun, story: string): void {
+  engineRun.lanes[1] = {
+    ...engineRun.lanes[0],
+    index: 1,
+    story,
+  };
 }
 
 async function expectCoarseEngineTargets(page: Page, selector: string): Promise<void> {
@@ -1313,6 +1325,141 @@ test("the safety poll reconciles engine state without an SSE event", async ({
   await page.clock.runFor(25_000);
   await expect.poll(() => gets).toBeGreaterThan(initialGets);
   await expect(engineStoryLane(page, "AA-SAFETY")).toHaveText("AA-SAFETY");
+});
+
+test("lane chips identify live Full Auto work and clear through the view press gate", async ({
+  page,
+}) => {
+  await installTestEventSource(page);
+  let current = run("alpha", "AA-1");
+  let gets = 0;
+  let project = "";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    const segments = new URL(route.request().url()).pathname.split("/");
+    project = decodeURIComponent(segments[3]);
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const firstCard = page.locator('.card[data-id="AA-1"]');
+  const secondCard = page.locator('.card[data-id="AA-2"]');
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+  await expect(firstCard).toHaveAccessibleName(/Full Auto: Lane 1/);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveCount(0);
+
+  occupySecondLane(current, "AA-2");
+  const twoLaneFetch = gets + 1;
+  await page.evaluate((repo) => {
+    (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+  await expect.poll(() => gets).toBeGreaterThanOrEqual(twoLaneFetch);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const appearance = await firstCard.locator(".engine-lane-chip").evaluate((node) => {
+      const chip = getComputedStyle(node);
+      const root = getComputedStyle(document.documentElement);
+      return {
+        color: chip.color,
+        background: chip.backgroundColor,
+        neutralColor: root.getPropertyValue("--fg-muted").trim(),
+        neutralBackground: root.getPropertyValue("--bg-sunken").trim(),
+        reservedColor: root.getPropertyValue("--warn").trim(),
+        reservedBackground: root.getPropertyValue("--warn-soft").trim(),
+      };
+    });
+    expect(
+      contrastRatio(parseColor(appearance.color), parseColor(appearance.background)),
+      `${theme.name}: the lane chip must remain readable`,
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(appearance.color, `${theme.name}: lane and ordinary chip ink must differ`).not.toBe(
+      appearance.neutralColor,
+    );
+    expect(
+      appearance.background,
+      `${theme.name}: lane and ordinary chip backgrounds must differ`,
+    ).not.toBe(appearance.neutralBackground);
+    expect(appearance.color, `${theme.name}: lane and reserved chip ink must differ`).not.toBe(
+      appearance.reservedColor,
+    );
+    expect(
+      appearance.background,
+      `${theme.name}: lane and reserved chip backgrounds must differ`,
+    ).not.toBe(appearance.reservedBackground);
+  }
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  const firstRow = page.locator('tr[data-id="AA-1"]');
+  const secondRow = page.locator('tr[data-id="AA-2"]');
+  await expect(firstRow.locator(".col-title .engine-lane-chip")).toHaveText(
+    "Full Auto: Lane 1",
+  );
+  await expect(secondRow.locator(".col-title .engine-lane-chip")).toHaveText(
+    "Full Auto: Lane 2",
+  );
+  await expect(firstRow).toHaveAccessibleName(/Full Auto: Lane 1/);
+
+  for (const state of ["paused", "draining"] as const) {
+    current = { ...current, state };
+    const stateFetch = gets + 1;
+    await page.evaluate((repo) => {
+      (window as unknown as {
+        __testEventSource: { emit(name: string, data: string): void };
+      }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+    }, project);
+    await expect.poll(() => gets).toBeGreaterThanOrEqual(stateFetch);
+    await expect(firstRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+    await expect(secondRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
+  }
+
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  const box = await firstCard.boundingBox();
+  expect(box).not.toBeNull();
+  const heldData = await holdFetch<unknown>(
+    page,
+    (url) => url.pathname.endsWith("/data"),
+    () => true,
+  );
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+
+  current = {
+    ...current,
+    lanes: current.lanes.map((lane) => ({
+      ...lane,
+      state: "idle",
+      story: null,
+      dispatched_at: null,
+    })),
+  };
+  const clearFetch = gets + 1;
+  await page.evaluate((repo) => {
+    (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+  await heldData.taken;
+  await expect.poll(() => gets).toBeGreaterThanOrEqual(clearFetch);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __storyhookPressGate: { deferred: string[] } })
+          .__storyhookPressGate.deferred.includes("view"),
+      ),
+    )
+    .toBe(true);
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+
+  await page.mouse.up();
+  await heldData.deliver();
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveCount(0);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveCount(0);
 });
 
 test("an alert repaint waits until a held acknowledgement can dispatch its click", async ({
