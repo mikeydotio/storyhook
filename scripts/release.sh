@@ -36,9 +36,11 @@
 #     STORYHOOK_RELEASE_ALLOW_WORKTREE=1 if you genuinely mean it.
 #   - Push to `main` directly, or force-push anything, ever.
 #   - Squash or rebase-merge. The org allows merge commits only.
-#   - Skip the gate in public mode. `--skip-gate` is accepted ONLY with
-#     --local-only, because an unreleased build you are dogfooding is yours to
-#     break and a published one is not. When the gate does run, it is the FULL
+#   - Skip the gate in public mode on the flag alone. `--skip-gate` is accepted
+#     with --local-only, because an unreleased build you are dogfooding is
+#     yours to break and a published one is not; for a public release it
+#     additionally requires STORYHOOK_RELEASE_UNGATED=1, so shipping untested
+#     bytes is asked for twice and never by accident. When the gate does run, it is the FULL
 #     battery -- `make test-full`, browser suite included (SH-394) -- because
 #     this script is the one place that battery is meant to run at all; the
 #     ordinary merge gate, `make test`, deliberately does not.
@@ -187,7 +189,9 @@ Options:
   --local-only      Rebuild and reinstall the checked-out tree. Nothing is
                     tagged, pushed or published.
   --no-install      With --bump: cut the version but do not install it here.
-  --skip-gate       Skip `make test-full`. Only permitted with --local-only.
+  --skip-gate       Skip `make test-full`. Permitted with --local-only, or
+                    for a public release only when STORYHOOK_RELEASE_UNGATED=1
+                    is also set. No receipt is minted either way.
   --skip-plugin     Local mode: leave the Claude Code plugin alone.
   --skip-daemon     Local mode: do not stop or start the daemon.
   --dry-run         Print every command instead of running it.
@@ -196,6 +200,8 @@ Options:
 
 Environment:
   STORYHOOK_RELEASE_ALLOW_WORKTREE=1   Permit running from a linked worktree.
+  STORYHOOK_RELEASE_UNGATED=1          With --skip-gate, permit an ungated
+                                       PUBLIC release. Both are required.
   INSTALL_DIR                          Passed through to `make install`.
 
 Public release requirements:
@@ -258,7 +264,25 @@ if [ "$local_only" = 0 ] && [ "$do_publish" = 0 ] && [ -z "$bump" ]; then
 fi
 
 if [ "$skip_gate" = 1 ] && [ "$local_only" = 0 ] && [ "$do_publish" = 0 ]; then
-  die "--skip-gate is only allowed with --local-only. A version that will be shipped runs the full battery (make test-full)."
+  # The flag alone is not enough, and the env var alone does nothing: an
+  # ungated public release has to be asked for twice, in two different ways,
+  # the same shape STORYHOOK_RELEASE_ALLOW_WORKTREE already takes above. What
+  # this buys is that it cannot happen by tab-completion or by a stale shell
+  # history entry, which for a flag that ships untested bytes to every user of
+  # `story update` is the whole point.
+  #
+  # Nothing downstream is told the battery passed. The gate is SKIPPED, so
+  # `gate-receipt.sh postlude` never runs and no receipt is minted -- least of
+  # all a `tier full` one. `browser-status` therefore keeps reporting exactly
+  # what it reported before, and an ungated release leaves the detection layer
+  # telling the truth (SH-306: a gate's silence must never read as a pass).
+  if [ "${STORYHOOK_RELEASE_UNGATED:-0}" != "1" ]; then
+    die "--skip-gate is only allowed with --local-only. A version that will be shipped runs the full battery (make test-full).
+    If you genuinely mean to ship untested bytes, say so twice: re-run with
+    STORYHOOK_RELEASE_UNGATED=1 as well. Nothing will claim the battery ran."
+  fi
+  warn "shipping an UNGATED release because STORYHOOK_RELEASE_UNGATED=1"
+  warn "\`make test-full\` will not run. No receipt is minted, so nothing will claim it did."
 fi
 
 # ---------------------------------------------------------------------------
