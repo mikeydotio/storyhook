@@ -78,11 +78,11 @@ verifier_window_ensure() {
     verifier_window_enabled || return 1
     command -v tmux >/dev/null 2>&1 || return 1
     if ! tmux has-session -t "$VERIFIER_WINDOW_SESSION" 2>/dev/null; then
-        tmux new-session -d -s "$VERIFIER_WINDOW_SESSION" -n "$VERIFIER_WINDOW_NAME" \
+        tmux new-session -d -c "$HOME" -s "$VERIFIER_WINDOW_SESSION" -n "$VERIFIER_WINDOW_NAME" \
             'sleep 2147483647' 2>/dev/null || return 1
     elif ! tmux list-windows -t "$VERIFIER_WINDOW_SESSION" -F '#{window_name}' 2>/dev/null \
             | grep -qx "$VERIFIER_WINDOW_NAME"; then
-        tmux new-window -d -t "${VERIFIER_WINDOW_SESSION}:" -n "$VERIFIER_WINDOW_NAME" \
+        tmux new-window -d -c "$HOME" -t "${VERIFIER_WINDOW_SESSION}:" -n "$VERIFIER_WINDOW_NAME" \
             'sleep 2147483647' 2>/dev/null || return 1
     fi
     tmux set-window-option -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
@@ -102,7 +102,7 @@ verifier_window_ensure() {
 verifier_window_tail() {
     local log="$1"
     verifier_window_ensure || return 1
-    tmux respawn-pane -k -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
+    tmux respawn-pane -k -c "$HOME" -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
         tail -n +1 -F "$log" 2>/dev/null || return 1
 }
 
@@ -118,7 +118,7 @@ verifier_window_banner() {
     # shellcheck disable=SC2016 # deliberate: $1 must NOT expand here -- it
     # is bash -c's own positional parameter, populated at exec time from
     # the argv element that follows, never from this shell's own $1.
-    tmux respawn-pane -k -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
+    tmux respawn-pane -k -c "$HOME" -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
         bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" \
         2>/dev/null || return 1
 }
