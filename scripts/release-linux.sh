@@ -101,15 +101,20 @@ guest_build() {
   tar -xzf "$source_archive" -C "$work_dir"
 
   info "building $target in Lima (glibc 2.31, linker $linker)"
-  env \
-    "PATH=$toolchain/bin:$PATH" \
-    "RUSTC=$toolchain/bin/rustc" \
-    "CARGO_HOME=$guest_cache_root/cargo" \
-    "CARGO_TARGET_DIR=$work_dir/target" \
-    "CARGO_TARGET_${linker_env_target}_LINKER=$linker" \
-    CARGO_PROFILE_RELEASE_STRIP=symbols \
-    "STORYHOOK_BUILD_ID=$build_id" \
-    "$toolchain/bin/cargo" build --locked --release --target "$target"
+  # Lima can start in a host mount without a manifest. Build the extracted
+  # source, confining the directory change so export keeps its caller's cwd.
+  (
+    cd "$work_dir" || die "could not enter the extracted source at $work_dir"
+    env \
+      "PATH=$toolchain/bin:$PATH" \
+      "RUSTC=$toolchain/bin/rustc" \
+      "CARGO_HOME=$guest_cache_root/cargo" \
+      "CARGO_TARGET_DIR=$work_dir/target" \
+      "CARGO_TARGET_${linker_env_target}_LINKER=$linker" \
+      CARGO_PROFILE_RELEASE_STRIP=symbols \
+      "STORYHOOK_BUILD_ID=$build_id" \
+      "$toolchain/bin/cargo" build --locked --release --target "$target"
+  )
   binary="$work_dir/target/$target/release/story"
   [ -x "$binary" ] || die "Lima cargo did not produce an executable at $binary"
   mkdir -p "$(dirname "$output")"
