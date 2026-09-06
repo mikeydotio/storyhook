@@ -522,3 +522,54 @@ fn an_ungated_public_release_needs_the_flag_and_the_environment_variable() {
          gate's silence reading as a pass is the SH-306 shape: {err}"
     );
 }
+
+/// Neither bump call site may use `semver-cli bump run` (SH-580).
+///
+/// `run` is "gather then execute in one call when no questions apply", and
+/// gather raises `wrong_branch` on any branch that is not semver's configured
+/// `target_branch`. The public path deliberately creates and switches to
+/// `release/<version>` first — it must, because the org's `protect-main`
+/// ruleset forbids committing the bump to `main` — so a question always
+/// applied, and `--non-interactive` turned it into an abort. The command could
+/// never complete, on any repository configured the way this one is.
+///
+/// This is a wiring fence and says so: it proves the script asks for the
+/// subcommand that does not gather, never that semver still behaves this way.
+/// The behaviour was measured rather than assumed — `bump gather patch` and
+/// `bump gather patch --force` both return `questions: [wrong_branch]`, and
+/// the question carries no flag mapping — but pinning it here would make this
+/// suite depend on a plugin binary resolved outside the checkout.
+#[test]
+fn no_bump_call_site_uses_the_subcommand_that_gathers() {
+    let src = std::fs::read_to_string(checkout().join("scripts/release.sh"))
+        .expect("reading scripts/release.sh");
+
+    let invocations: Vec<&str> = src
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && line.contains("$SEMVER_CLI\" bump "))
+        .collect();
+
+    assert!(
+        !invocations.is_empty(),
+        "expected release.sh to invoke a semver bump at all"
+    );
+    for invocation in &invocations {
+        assert!(
+            !invocation.contains("bump run"),
+            "`bump run` gathers, and gather refuses on any branch that is not \
+             semver's target — which the release branch always is. Use `bump \
+             execute`, which never asks (SH-580). Found: {invocation}"
+        );
+        assert!(
+            invocation.contains("bump execute"),
+            "a bump call site must name a subcommand this script can actually \
+             complete: {invocation}"
+        );
+        assert!(
+            invocation.contains("--skip-tag"),
+            "the tag must name the merge commit that lands on main, not this \
+             branch's commit — it is created after the merge: {invocation}"
+        );
+    }
+}
