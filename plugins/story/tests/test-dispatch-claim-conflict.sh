@@ -3,11 +3,11 @@
 # with reason:"claim-conflict" and create NO worktree/window — never silently
 # retried or overwritten. Not reproducible black-box with genuine concurrency
 # in a sequential test script, so this uses fakes/story-conflict/story: a thin
-# wrapper that proxies every call to the REAL story binary except one exact
-# `claim <id> --no-comment --json`, which it answers with a canned conflict
-# response instead — simulating another dispatch having just won the race a
-# moment before story.sh's own claim attempt runs. Deliberately kept in its
-# OWN subdirectory, not alongside fakes/tmux: prepending a directory
+# wrapper that proxies every call to the REAL story binary except the one
+# `claim <id> --comment <intent> --json` transaction, which it answers with a
+# canned conflict response — simulating another dispatch having just won the
+# race a moment before story.sh's own claim attempt runs. Deliberately kept in
+# its OWN subdirectory, not alongside fakes/tmux: prepending a directory
 # containing a file literally named `story` to PATH would shadow the real
 # binary for every OTHER test that also wants the fake tmux but needs a
 # genuine `story` CLI underneath it.
@@ -29,7 +29,7 @@ out=$(
     && PATH="$TESTS_DIR/fakes/story-conflict:$PATH" \
       STORY_REAL_BIN="$real_story" \
       STORY_CONFLICT_ID="$id" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      STORY_TARGET_SESSION="conflict-room" \
       bash "$SCRIPT" dispatch "$id" 2>&1
 )
 assert_eq "$(jqf "$out" .ok)" "false" "conflict: ok:false"

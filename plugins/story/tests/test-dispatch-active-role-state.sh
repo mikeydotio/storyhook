@@ -107,7 +107,8 @@ esac
 dry_id=$(new_story "$repo" "Dry-run preview names the verb, not a target")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dry_id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
-assert_eq "$(jqf "$out" '.commands[0]')" "story claim $dry_id --no-comment" \
+assert_eq "$(jqf "$out" '.commands[0]')" \
+  "story claim $dry_id --comment \"Dispatching to tmux window <current-session>:$dry_id.\"" \
   "dry-run: previewed claim command is the verb"
 case "$(jqf "$out" '.commands[0]')" in
   *in-progress* | *doing* | *--if-state*)
