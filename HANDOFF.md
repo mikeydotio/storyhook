@@ -12,6 +12,8 @@ execution. SH-584 transferred guard ownership and reproduction evidence here.
   contracts; no wrapper, compound-command or general Bash exemption.
 - Unknown shell safety is distinguished from structured artifact edits.
 - Installer-backed classification and real helper/domain immutability tests.
+- Verifier-return repair synchronizes the generated AGENTS.md roadmap with
+  `src/service/templates.rs`; its byte-equality regression reproduced RED.
 
 ## RCA
 
@@ -24,6 +26,8 @@ execution. SH-584 transferred guard ownership and reproduction evidence here.
 - Run plugin_install, protect_install_hook, hook_budgets and hook_bounds.
 - Run targeted Clippy with warnings denied, rustfmt, Bash/Python syntax and
   diff checks. Exact final results are recorded on SH-585 and its PR.
+- Return repair: scope_rubric, priority_rubric, service_system, new_command,
+  and engine_labels cover the template and generated scaffold contracts.
 
 ## Submission boundary
 
