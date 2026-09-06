@@ -482,7 +482,11 @@ impl ShellDispatcher {
     }
 
     fn tmux(&self) -> Command {
-        Command::new(&self.tmux_program)
+        let mut command = Command::new(&self.tmux_program);
+        // Monitoring and stop must address the same server as dispatch,
+        // independent of the terminal that originally started the daemon.
+        apply_dispatch_allowlist(&mut command);
+        command
     }
 }
 
@@ -2398,7 +2402,11 @@ mod tests {
             .kill_window("@exact")
             .unwrap_err();
         assert_eq!(
-            std::fs::read_to_string(log).unwrap().trim(),
+            std::fs::read_to_string(log)
+                .unwrap_or_else(|failure| panic!(
+                    "tmux fixture produced no argv: {failure}; {error}"
+                ))
+                .trim(),
             "kill-window -t @exact"
         );
         assert!(

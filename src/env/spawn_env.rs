@@ -32,8 +32,13 @@
 //! `story.sh` reads roughly fifty environment variables — the great majority
 //! under its own `STORY_`/`STORYHOOK_` prefix, the tuning knobs
 //! (`STORY_READY_ATTEMPTS`, `STORY_CONFIRM_DELAY`, `STORY_PROMPT`, …) that are
-//! its whole designed configuration surface — plus `TMPDIR`, `TMUX` and
-//! `TMUX_PANE` for its tmux session work. Provider marketplace/install/
+//! its whole designed configuration surface — plus `TMPDIR` for scratch
+//! work. A daemon's inherited `TMUX` and `TMUX_PANE` belong to whichever
+//! terminal started it, not to a later dashboard dispatch. Excluding them
+//! makes daemon-owned helper work use the default server. Direct interactive
+//! helper invocation does not cross this Rust boundary and retains its
+//! caller's context; cleanup leases carry their exact socket separately.
+//! Provider marketplace/install/
 //! uninstall commands ([`crate::plugin`]) need none of that: they are a
 //! narrow, local plugin-management call with no `STORY_` surface and no tmux
 //! session of its own. Handing it `story.sh`'s list would be unjustified
@@ -99,11 +104,6 @@ const COMMON_MAY_SEE: [&str; 9] = [
     "PATH", "HOME", "TMPDIR", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
 ];
 
-/// Additional names only `story.sh`'s dispatch child may see: its own tmux
-/// session handles, needed because dispatch's whole job is finding or
-/// creating a tmux session and pane.
-const DISPATCH_EXTRA_MAY_SEE: [&str; 2] = ["TMUX", "TMUX_PANE"];
-
 /// Prefixes of `story.sh`'s own designed configuration surface — every
 /// `STORY_*`/`STORYHOOK_*` tuning knob it reads, passed through by prefix
 /// rather than enumerated by name so a new one story.sh grows does not
@@ -127,7 +127,6 @@ const VERIFICATION_EXTRA_MAY_SEE: [&str; 5] = [
 /// True if `name` is one `story.sh`'s dispatch child is allowed to see.
 fn dispatch_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
-        || DISPATCH_EXTRA_MAY_SEE.contains(&name)
         || DISPATCH_MAY_SEE_PREFIXES
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -165,6 +164,8 @@ fn apply_allowlist(command: &mut Command, permits: impl Fn(&str) -> bool) {
 /// dispatch child may see. Call before any of `run_child`'s own explicit
 /// `.env(...)` calls (`STORY_BIN`, `STORYHOOK_STORE_PATH`, …) — `env_clear`
 /// removes anything set before it runs, explicit values included.
+/// Ambient terminal handles are deliberately excluded: daemon-owned work
+/// targets the default tmux server, or an explicit cleanup-lease socket.
 pub fn apply_dispatch_allowlist(command: &mut Command) {
     apply_allowlist(command, dispatch_permits);
 }
@@ -270,12 +271,23 @@ mod tests {
         assert!(!dispatch_permits("STORYWRITER_ANYTHING"));
     }
 
+    #[test]
+    fn daemon_owned_helpers_do_not_inherit_terminal_identity() {
+        for name in ["TMUX", "TMUX_PANE"] {
+            assert!(!dispatch_permits(name), "dispatch inherited {name}");
+            assert!(!verification_permits(name), "verification inherited {name}");
+            assert!(
+                !plugin_cli_permits(name),
+                "plugin management inherited {name}"
+            );
+        }
+    }
+
     /// The narrower plugin-CLI list must reject what the dispatch list allows,
     /// proving the two are genuinely separate rather than one list reused.
     #[test]
     fn the_plugin_cli_allowlist_rejects_dispatch_only_names() {
-        assert!(!plugin_cli_permits("TMUX"));
-        assert!(!plugin_cli_permits("TMUX_PANE"));
         assert!(!plugin_cli_permits("STORY_READY_ATTEMPTS"));
+        assert!(!plugin_cli_permits("STORYHOOK_PROJECT"));
     }
 }
