@@ -2979,8 +2979,10 @@ fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
     );
 
     assert!(
-        body.contains(r#"el("td", { class: "col-title" }, [st.title])"#),
-        "populateListRow must mark the title cell as the text-wrapping exception"
+        body.contains(
+            r#"el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane)])"#
+        ),
+        "populateListRow must keep the title and its non-label lane chip in the text-wrapping cell"
     );
     assert!(
         body.contains(r#"var wrap = el("span", { class: "list-labels" }, []);"#),

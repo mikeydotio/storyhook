@@ -31,6 +31,12 @@
      as an ordinary label with no error anywhere.
      tests/dashboard_reserved_labels.rs fails on a block that omits it. */
   --warn-soft: #fff4e8;
+  /* Full Auto lane membership is operational state, not a label. Its purple
+     pair is independent of both neutral `.chip` and orange `.chip-reserved`
+     so the three meanings remain distinguishable (SH-569). Bare :root owns
+     light mode; both dark-resolution blocks below override it. */
+  --engine-chip: #6842b8;
+  --engine-chip-soft: #f1ebff;
   --shadow-sm: 0 1px 2px rgba(20, 24, 33, 0.06);
   --shadow-md: 0 6px 20px -4px rgba(20, 24, 33, 0.16), 0 2px 6px rgba(20, 24, 33, 0.08);
   --shadow-lg: 0 24px 60px -12px rgba(20, 24, 33, 0.35);
@@ -95,6 +101,8 @@
     --warn: #d97a1f;
     --warn-fg: #ffffff;
     --warn-soft: #2e1f10;
+    --engine-chip: #c4a7ff;
+    --engine-chip-soft: #2a1f40;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
     --shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.7);
@@ -111,6 +119,7 @@
   --accent: #5b7cff; --accent-fg: #ffffff; --accent-soft: #1a2140;
   --danger: #f2686d; --danger-soft: #3a1c1f; --success: #3fc47a; --success-soft: #163627;
   --warn: #d97a1f; --warn-fg: #ffffff; --warn-soft: #2e1f10;
+  --engine-chip: #c4a7ff; --engine-chip-soft: #2a1f40;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px -6px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
   --shadow-lg: 0 30px 70px -14px rgba(0,0,0,.7);
   --p-critical: #f2686d; --p-high: #ff9152; --p-medium: #f0bd3e; --p-low: #46d18a; --p-none: #656d7c;
@@ -725,6 +734,14 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   }
 }
 .card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
+.engine-lane-chip {
+  display: inline-flex; align-items: center; box-sizing: border-box;
+  padding: 0.0625rem 0.375rem; border: 1px solid var(--engine-chip); border-radius: 9999px;
+  background: var(--engine-chip-soft); color: var(--engine-chip); font-size: 0.625rem;
+  font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.35; white-space: nowrap;
+}
+.card > .engine-lane-chip { margin: 0 0 0.4375rem; }
+.col-title .engine-lane-chip { margin-left: 0.375rem; vertical-align: middle; }
 .verification-chip {
   display: block; width: 100%; box-sizing: border-box; margin: 0 0 0.4375rem;
   padding: 0.1875rem 0.4375rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -4698,6 +4715,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.engineRun = runs.filter(isLiveEngineRun)[0] || null;
   }
 
+  /** The occupied lane for `storyId` in the one live run. Paused and draining
+   * remain live because their in-flight lane work has not ended. */
+  function engineLaneForStory(storyId) {
+    if (!isLiveEngineRun(state.engineRun)) return null;
+    return (state.engineRun.lanes || []).filter(function(lane) {
+      return lane.story === storyId;
+    })[0] || null;
+  }
+
+  function engineLaneDescription(lane) {
+    return lane ? "Full Auto: Lane " + (lane.index + 1) : null;
+  }
+
+  function buildEngineLaneChip(lane) {
+    var description = engineLaneDescription(lane);
+    return description
+      ? el("span", { class: "engine-lane-chip", "aria-hidden": "true" }, [description])
+      : null;
+  }
+
   /** Every durable engine alert, newest first. A run's notification is data,
    * not the current-run slot: starting a later run cannot supersede an older
    * stop nobody acknowledged. */
@@ -5209,6 +5246,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         state.engineReadiness = "loaded";
         renderEngineControl();
         renderEngineAlert();
+        // Lane membership is rendered on cards and rows. Route the repaint
+        // through renderView so SH-401's press gate protects those nodes.
+        renderView();
         if (state.drawerId) renderDrawer();
       })
       .catch(function() {
@@ -8544,6 +8584,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `card-reposition-click-race.spec.ts`. */
   function populateCard(card, v, ready, blocked, isClosed) {
     var st = v.story;
+    var engineLane = engineLaneForStory(st.id);
+    var engineLaneDesc = engineLaneDescription(engineLane);
     var draggable = !isClosed && !state.pending[st.id];
     card.className = "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable");
     card.draggable = draggable;
@@ -8562,7 +8604,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `ariaText` is what makes "blocked by SH-308" (or "no reason
     // recorded") announced along with the rest of the card, not just shown
     // to a sighted mouse user on hover.
-    var baseAriaLabel = st.id + ": " + st.title + (flagDesc ? " — " + flagDesc.ariaText : "");
+    var baseAriaLabel = st.id + ": " + st.title
+      + (engineLaneDesc ? " — " + engineLaneDesc : "")
+      + (flagDesc ? " — " + flagDesc.ariaText : "");
     var verification = (v.display_state || st.state) === "verifying" ? v.verification : null;
     var verificationDesc = verificationDescription(verification);
     card.dataset.baseAriaLabel = baseAriaLabel;
@@ -8612,6 +8656,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ], { fill: "currentColor", stroke: "none" })]);
     next.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
     next.appendChild(el("div", { class: "card-title" }, [st.title]));
+    if (engineLane) next.appendChild(buildEngineLaneChip(engineLane));
     if (verificationDesc) {
       next.appendChild(el("span", {
         class: "verification-chip verification-chip-" + verification.status,
@@ -9821,9 +9866,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
+    var engineLane = engineLaneForStory(st.id);
+    var engineLaneDesc = engineLaneDescription(engineLane);
     var updated = (st.updated_at || "").slice(0, 10);
     var order = nextRank(st.id);
-    row.setAttribute("aria-label", st.id + ": " + st.title);
+    row.setAttribute(
+      "aria-label",
+      st.id + ": " + st.title + (engineLaneDesc ? " — " + engineLaneDesc : "")
+    );
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
 
     /* SH-425: build the candidate cells off-tree and destroy the live row's
@@ -9845,7 +9895,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var badge = buildTypeBadge(st.story_type);
     next.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     next.appendChild(el("td", { class: "col-order" }, [order === Infinity ? "—" : String(order + 1)]));
-    next.appendChild(el("td", { class: "col-title" }, [st.title]));
+    next.appendChild(el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane)]));
     next.appendChild(el("td", {}, [buildStatePill(v)]));
     next.appendChild(el("td", {}, [priorityDot(st.priority)]));
     next.appendChild(el("td", { class: "col-labels" }, [labelChips(st.labels)]));
