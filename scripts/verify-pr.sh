@@ -9,6 +9,8 @@
 
 set -uo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+
 die_json() {
     jq -n --arg detail "$1" \
         '{result:"infrastructure-failure", disposition:"permanent", detail:$detail}'
@@ -107,6 +109,42 @@ ensure_verifier_worktree() {
     fi
 }
 
+run_verification_gate() {
+    gate_pr="$1"
+    gate_tree="$2"
+    gate_base="$3"
+    gate_head="$4"
+    gate_worktree="$5"
+    shift 5
+    logs="$common_dir/storyhook/verification-logs"
+    mkdir -p "$logs" || die_json "could not create verification log directory"
+    log="$logs/pr-$gate_pr-$gate_tree.log"
+    gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
+        || die_json "could not create gate completion record"
+    verifier_window_tail "$log"
+    STORYHOOK_GATE_RESULT_FILE="$gate_result" \
+        bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
+        "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
+    gate_status=$?
+    completed_status="$(cat "$gate_result")" || completed_status=""
+    rm -f "$gate_result" || die_json "could not remove gate completion record $gate_result"
+    # Only a completed gate with successful restoration can blame tests.
+    # Preparation failures, signals and cleanup failures leave no record.
+    if [ "$completed_status" != "$gate_status" ]; then
+        tail_context="$(tail -n 40 "$log")"
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$tail_context
+Verification log: $log" \
+            '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
+        exit 0
+    fi
+    if [ "$gate_status" -ne 0 ]; then
+        tail_context="$(tail -n 40 "$log")"
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$tail_context" \
+            '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
+        exit 0
+    fi
+}
+
 classify_land() {
     land_status="$1"
     land_output="$2"
@@ -179,9 +217,21 @@ validate_metadata() {
         || invalid_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
 }
 
+# Real-Git gate seam: exercise preparation, command exit and restoration
+# classification without substituting GitHub or the speculative executor.
+if [ "${1:-}" = --run-gate ]; then
+    [ "$#" -ge 8 ] && [ "${7:-}" = -- ] \
+        || die_json "private usage: verify-pr.sh --run-gate <pr> <tree> <base> <head> <worktree> -- <command...>"
+    shift
+    gate_args=("$1" "$2" "$3" "$4" "$5")
+    shift 6
+    run_verification_gate "${gate_args[@]}" "$@"
+    jq -n '{result:"gate-passed"}'
+    exit 0
+fi
+
 # Metadata-validation seam. The production path supplies GitHub's JSON; tests
-# feed that same wire shape directly so boolean parsing is proven without a
-# fake GitHub service or any repository mutation.
+# feed that same wire shape directly without a fake GitHub service.
 if [ "${1:-}" = --validate-metadata ]; then
     [ "$#" -eq 2 ] \
         || die_json "private usage: verify-pr.sh --validate-metadata <json>"
@@ -272,17 +322,7 @@ case "$preflight_status" in
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
-    logs="$common_dir/storyhook/verification-logs"
-    mkdir -p "$logs" || die_json "could not create verification log directory"
-    log="$logs/pr-$pr-$tree.log"
-    verifier_window_tail "$log"
-    if ! bash scripts/merge-watch.sh --speculative-run "$tree" \
-        "$base_ref" "$head_ref" "$verifier_wt" -- make test >"$log" 2>&1; then
-        tail_context="$(tail -n 40 "$log")"
-        jq -n --arg tree "$tree" --arg log "$log" --arg detail "$tail_context" \
-            '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
-        exit 0
-    fi
+    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" make test
     ;;
 (*)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"

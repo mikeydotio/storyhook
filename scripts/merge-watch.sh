@@ -54,9 +54,24 @@ if [ "${1:-}" = "--speculative-run" ]; then
 
     base_commit="$(git rev-parse --verify "$base^{commit}" 2>/dev/null)" \
         || die "could not resolve speculative base $base to a commit"
+    head_commit="$(git rev-parse --verify "$head^{commit}" 2>/dev/null)" \
+        || die "could not resolve speculative head $head to a commit"
+    # A concurrent fetch may advance either ref while the gate runs. The
+    # private checkout must restore exactly the shared index we started with.
+    base="$base_commit"
+    head="$head_commit"
 
     [ -e "$poller_wt/.git" ] \
         || die "the speculative poller worktree at $poller_wt has no .git entry"
+    # Legacy interrupted runs can leave a missing private HEAD object. A
+    # repair is safe only if the index and files already equal our base.
+    poller_index_base=HEAD
+    if ! git -C "$poller_wt" cat-file -e 'HEAD^{commit}' 2>/dev/null; then
+        poller_index_base="$base"
+    fi
+    git -C "$poller_wt" diff --quiet \
+        && git -C "$poller_wt" diff --cached --quiet "$poller_index_base" -- \
+        || die "could not restore the shared poller worktree: tracked state is modified or unreadable at $poller_wt; preserving it for recovery"
     git -C "$poller_wt" checkout -q --detach "$base" \
         || die "could not restore the shared poller worktree to $base"
     shared_git_dir="$(cd "$(git -C "$poller_wt" rev-parse --absolute-git-dir)" && pwd -P)" \
@@ -114,6 +129,14 @@ if [ "${1:-}" = "--speculative-run" ]; then
 
     restore_poller() {
         [ "$poller_needs_restore" -eq 1 ] || return 0
+        # Git checkout can carry edits to unchanged paths across commits.
+        # Never disguise gate edits as changes against the restored index.
+        if ! git_private -C "$poller_wt" diff --quiet \
+            || ! git_private -C "$poller_wt" diff --cached --quiet; then
+            note "tracked state is modified or unreadable at $poller_wt; preserving private Git administration for recovery"
+            retain_lease=1
+            return 1
+        fi
         if git_private -C "$poller_wt" checkout -q --detach "$base"; then
             poller_needs_restore=0
             return 0
@@ -149,7 +172,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     cleanup() {
         if ! restore_speculative_state; then
             note "could not restore $poller_wt to $base and its shared Git administration; retaining private state at $lease for recovery"
-            return
+            return 1
         fi
         if [ -n "$gitlink_tmp" ]; then
             rm -f "$gitlink_tmp"
@@ -258,6 +281,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
         trap - HUP INT TERM
         cd "$poller_wt" || exit 1
         exec env -u GIT_OBJECT_DIRECTORY \
+            -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
             -u STORYHOOK_PROJECT \
             -u GH_TOKEN \
@@ -277,6 +301,10 @@ if [ "${1:-}" = "--speculative-run" ]; then
     cleanup \
         || die "the gate command finished, but its private-object lease could not be removed"
     trap - EXIT HUP INT TERM
+    if [ -n "${STORYHOOK_GATE_RESULT_FILE:-}" ]; then
+        printf '%s\n' "$command_status" > "$STORYHOOK_GATE_RESULT_FILE" \
+            || die "could not publish the completed gate command status"
+    fi
     exit "$command_status"
 fi
 

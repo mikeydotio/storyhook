@@ -72,6 +72,200 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
 
+/// A fetch during verification must not restore newer bytes under the old
+/// shared index when private Git administration is detached at gate exit.
+#[test]
+fn speculative_run_preserves_clean_shared_poller_when_base_ref_advances() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let next_base = repo.branch("next-base", "main", "f", "new base bytes\n");
+    let later_base = repo.branch("later-base", "next-base", "f", "later base bytes\n");
+    let base_ref = "refs/remotes/origin/main";
+    assert_ok(
+        &repo.git(&["update-ref", base_ref, &base]),
+        "publishing old base",
+    );
+    let expected_tree = stdout(&repo.preflight(base_ref, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let result = repo.speculative_run(
+        &expected_tree,
+        base_ref,
+        &head,
+        &poller,
+        &["git", "update-ref", base_ref, &next_base],
+    );
+    assert_ok(&result, "gate updates only a shared remote-tracking ref");
+    assert_eq!(repo.rev_parse(base_ref), next_base);
+    let first_status = stdout(&run(&poller, "git", &["status", "--porcelain"]));
+    assert_ok(
+        &repo.git(&["update-ref", base_ref, &later_base]),
+        "advancing base before next verification",
+    );
+    let next_tree = stdout(&repo.preflight(base_ref, &head));
+    let retry = repo.speculative_run(&next_tree, base_ref, &head, &poller, &["true"]);
+    assert_ok(
+        &retry,
+        "next verification must not fail restoring a shared poller dirtied by the prior run",
+    );
+    assert_eq!(
+        first_status, "",
+        "restoring the private checkout against a moving ref must not leave changed bytes beneath the original shared index",
+    );
+    assert_eq!(
+        fs::read_to_string(poller.join("f")).unwrap(),
+        "later base bytes\n"
+    );
+}
+
+/// A dirty poller is infrastructure evidence; candidate tests never start.
+#[test]
+fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let next_base = repo.branch("next-base", "main", "f", "new base bytes\n");
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    fs::write(poller.join("f"), "unclassified local edits\n").unwrap();
+    let expected_tree = stdout(&repo.preflight(&next_base, &head));
+    let script = checkout().join("scripts/verify-pr.sh");
+    let result = run(
+        repo.path(),
+        "bash",
+        &[
+            script.to_str().unwrap(),
+            "--run-gate",
+            "668",
+            &expected_tree,
+            &next_base,
+            &head,
+            poller.to_str().unwrap(),
+            "--",
+            "touch",
+            "gate-started",
+        ],
+    );
+    assert_ok(&result, "verifier emits classified JSON");
+    assert!(!poller.join("gate-started").exists());
+    assert_eq!(
+        fs::read_to_string(poller.join("f")).unwrap(),
+        "unclassified local edits\n"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent");
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains(payload["log"].as_str().unwrap())
+    );
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("could not restore")
+    );
+
+    // A separate clean poller proves the same path still identifies a real
+    // failing gate, and only reports success for a successful gate.
+    let clean_container = repo.poller(&next_base);
+    let clean = clean_container.path().join("poller");
+    for (command, expected) in [("exit 7", "tests-failed"), ("exit 0", "gate-passed")] {
+        let outcome = run(
+            repo.path(),
+            "bash",
+            &[
+                script.to_str().unwrap(),
+                "--run-gate",
+                "668",
+                &expected_tree,
+                &next_base,
+                &head,
+                clean.to_str().unwrap(),
+                "--",
+                "bash",
+                "-c",
+                command,
+            ],
+        );
+        assert_ok(&outcome, "classifying an actual completed gate");
+        let result: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert_eq!(result["result"], expected, "{result}");
+    }
+}
+
+/// Neither pre-existing nor gate-created tracked edits may be discarded or
+/// accidentally certified because checkout carries unchanged paths forward.
+#[test]
+fn verifier_preserves_tracked_edits_before_and_during_the_gate() {
+    for during_gate in [false, true] {
+        for staged in [false, true] {
+            let repo = MergeRepo::new();
+            let base = repo.rev_parse("main");
+            let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+            let tree = stdout(&repo.preflight(&base, &head));
+            let poller_container = repo.poller(&base);
+            let poller = poller_container.path().join("poller");
+            let original_gitlink = fs::read(poller.join(".git")).unwrap();
+            if !during_gate {
+                fs::write(poller.join("f"), "preserve these edits\n").unwrap();
+                if staged {
+                    assert_ok(&run(&poller, "git", &["add", "f"]), "stage existing edits");
+                }
+            }
+            let command = if during_gate {
+                if staged {
+                    "touch gate-started; printf 'preserve these edits\\n' > f; git add f"
+                } else {
+                    "touch gate-started; printf 'preserve these edits\\n' > f"
+                }
+            } else {
+                "touch gate-started"
+            };
+            let result = run(
+                repo.path(),
+                "bash",
+                &[
+                    checkout().join("scripts/verify-pr.sh").to_str().unwrap(),
+                    "--run-gate",
+                    "668",
+                    &tree,
+                    &base,
+                    &head,
+                    poller.to_str().unwrap(),
+                    "--",
+                    "bash",
+                    "-c",
+                    command,
+                ],
+            );
+            assert_ok(&result, "classify tracked edits");
+            let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(
+                payload["result"], "infrastructure-failure",
+                "during_gate={during_gate}, staged={staged}: {payload}"
+            );
+            assert_eq!(
+                fs::read_to_string(poller.join("f")).unwrap(),
+                "preserve these edits\n"
+            );
+            assert_eq!(poller.join("gate-started").exists(), during_gate);
+            if during_gate {
+                assert_ne!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
+                assert!(
+                    !repo.merge_object_artifacts().is_empty(),
+                    "retain private recovery state"
+                );
+            } else {
+                assert_eq!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
+            }
+        }
+    }
+}
+
 /// The checkout under test — the tracked scripts and hooks live here.
 fn checkout() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
