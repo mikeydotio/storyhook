@@ -51,7 +51,7 @@ use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version}
 use crate::store::types::{
     AttachmentBlobRow, DeletedProject, EngineLaneRecord, EngineRunRecord, FeedEvent, LinkSource,
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
-    PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
 use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
 
@@ -806,6 +806,10 @@ macro_rules! impl_read_ops {
                 read::live_engine_runs(&self.conn)
             }
 
+            fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError> {
+                read::verification_incident(&self.conn)
+            }
+
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
                 read::engine_lanes(&self.conn, run_id)
             }
@@ -988,6 +992,17 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
         write::put_engine_lane(&self.conn, lane)
+    }
+
+    fn put_verification_incident(
+        &mut self,
+        incident: &VerificationIncident,
+    ) -> Result<(), StoreError> {
+        write::put_verification_incident(&self.conn, incident)
+    }
+
+    fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError> {
+        write::clear_verification_incident(&self.conn, incident_id)
     }
 
     fn allocate_story_no(&mut self, project: ProjectId) -> Result<StoryNo, StoreError> {

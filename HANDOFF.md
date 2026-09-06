@@ -13,6 +13,8 @@
 
 - The published branch is additively merged with `origin/main` at `96417b9a3`;
   SH-490 history remains unchanged.
+- A second additive reconciliation merges `origin/main` at `29c238e30` after
+  SH-573 and SH-506 landed; published history remains unchanged.
 - Main's autonomous Codex dispatch changes auto-merge with SH-490's resource
   comments, including their shared story helper and tmux fake.
 - AGENTS.md and its canonical template make SH-490 the current verifier item
@@ -20,7 +22,7 @@
 
 ## Focused verification
 
-- All 11 SH-490 dispatch/unclaim/reset shell files pass on the reconciled tree.
+- All 11 SH-490 dispatch/unclaim/reset shell files pass on the latest tree.
 - Four intersecting Codex dispatch/provider shell files also pass.
 - Plugin-skill determinism and scope/scaffold contracts pass: 16 Rust tests.
 - Shell syntax, Rust formatting, and staged/unstaged whitespace checks pass.
