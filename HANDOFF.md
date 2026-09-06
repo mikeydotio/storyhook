@@ -1,42 +1,65 @@
-# SH-490 Handoff
+# SH-567 Handoff
 
 ## Delivered
 
-- Fresh named dispatches record their intended tmux window in the atomic claim.
-- NEXT, forced, and resumed dispatches record tmux window, worktree, and branch
-  after confirmed handoff.
-- Dispatch rollbacks retain `story unclaim`'s transactional correction comment.
-- A failed post-handoff audit write preserves the live claim and resources and
-  returns `dispatch-comment-failed` with their identities.
+- Running Full Auto runs expose guarded Pause and Stop controls; paused runs
+  expose Resume and Stop; draining runs retain Stop-now escalation.
+- The accessible stop modal explains Drain and Stop-now consequences, locks
+  duplicate submissions, and restores focus to the logical live control.
+- Pending action labels join the engine fingerprint, and ambiguous transport
+  failures report uncertainty before reconciling through a fresh status GET.
+- The engine specification records the dashboard's as-built lifecycle contract.
+
+## Decisions
+
+- Draining disables the redundant Drain choice but keeps Stop now available as
+  an explicit escalation path.
+- The stop flow uses the dashboard's shared overlay stack, starts on Cancel,
+  and returns focus to Stop or Run Full Auto after state changes.
+- Existing global focus-visible styling is sufficient; no SH-567-specific
+  focus CSS was added.
+- SH-568's durable alert owns the top overlay after a confirmed Stop. The Stop
+  confirmation closes and focuses the logical lifecycle control first, so
+  acknowledgement returns focus to Stop (draining) or Run Full Auto.
+
+## Evidence
+
+- Branch: `worktree-SH-567`.
+- StoryHook version: 2.4.0.
+- Server lifecycle endpoints were already complete and remain unchanged.
+- The feature commit and PR are linked from SH-567.
+
+## Commits
+
+- `58cc74ac9` — `feat(dashboard): add Full Auto lifecycle controls`
+- `f94d1c671` — `docs: update SH-567 handoff and roadmap`
 
 ## Reconciliation
 
-- The published branch is additively merged with `origin/main` at `96417b9a3`;
-  SH-490 history remains unchanged.
-- A second additive reconciliation merges `origin/main` at `29c238e30` after
-  SH-573 and SH-506 landed; published history remains unchanged.
-- A third additive reconciliation merges `origin/main` at `a396b3e9a` after
-  SH-570 and SH-551 landed; published history remains unchanged.
-- Main's autonomous Codex dispatch changes auto-merge with SH-490's resource
-  comments, including its PID-bound plan watcher in the shared story helper.
-- AGENTS.md and its canonical template make SH-490 the current verifier item
-  while retaining main's forward roadmap.
+- The first reconciliation merged `origin/main` at `a396b3e9a` additively.
+- The second reconciliation merges `origin/main` at `64c2b256f` additively;
+  published SH-567 history remains unchanged.
+- The third reconciliation merges `origin/main` at `2d8dd34d3` additively;
+  published SH-567 history remains unchanged.
+- Main's verification-incident dashboard and Full Auto specification changes
+  merge with SH-567 automatically.
+- Main's dispatch-resource persistence changes do not overlap the dashboard
+  lifecycle controls.
+- Main's SH-568 alert surface and SH-567's lifecycle controls keep independent
+  request claims. Each Stop result opens the non-dismissable alert, and the
+  combined regression proves durable acknowledgement and focus restoration.
+- AGENTS.md and its canonical template keep the SH-567 verifier roadmap in
+  sync; this handoff remains scoped to the active story.
 
 ## Focused verification
 
-- Central verification exposed one stale fixture: the claim-conflict test used
-  fake caller tmux variables but could no longer reach the claim after SH-490's
-  truthful pre-claim session resolution. It now uses the existing named-target
-  seam and documents the transactional intent-comment claim.
-- The repaired claim-conflict test and eight adjacent ID-claim, session, and
-  conflict tests pass; shell syntax and whitespace checks pass.
-- All 11 SH-490 dispatch/unclaim/reset shell files pass on the latest tree.
-- Nine intersecting Codex/Claude dispatch and plan-watcher files also pass.
-- Plugin-skill determinism and scope/scaffold contracts pass: 16 Rust tests.
-- Shell syntax, Rust formatting, and staged/unstaged whitespace checks pass.
+- Third-reconciliation engine and overlay-modality E2E: 29 Chromium, 28 WebKit
+  plus 1 documented skip, 23 mobile Chromium, and 22 mobile WebKit plus 1
+  documented skip passed (102 passed, 2 skipped total).
+- Web template, dashboard error-reporting, focus-coverage, and roadmap-template
+  tests: 251 passed.
 
 ## Submission boundary
 
-Push one additive merge commit to existing PR #660, comment final evidence,
-then move SH-490 to `verifying` as the absolute last action. Central
-verification owns the full suite, merge, completion, and worktree cleanup.
+The centralized verifier owns the full suite, merge, completion, and worktree
+cleanup after SH-567 moves to `verifying`.

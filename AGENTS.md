@@ -189,7 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-490's durable dispatch-resource trail.
+- Current: verify SH-567's dashboard Pause, Resume, Drain, and Stop-now
+  controls through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
