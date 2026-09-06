@@ -531,6 +531,23 @@ plugin registry; Codex asks `codex plugin list --json` for the authoritative ena
 among stale cached versions. The development-checkout fallback remains the shared
 `plugins/story/bin/story.sh`, and the optional flag does not change dispatch protocol 1.
 
+## As built — SH-571 (autonomous Codex hook binding)
+
+**Resolving a helper does not prove Codex loaded that helper's hooks.** Codex has no
+session-scoped equivalent of Claude's `--plugin-dir`: hook trust can allow configured hooks
+to run, but it does not select or bind an enabled plugin version. A development helper could
+therefore pass screen readiness while Codex had no Storyhook hooks, receive the autonomous
+charter in Plan mode, call `request_user_input`, and wait forever before plan approval.
+
+The shared SessionStart hook now derives its canonical plugin root from its own file path and
+adds it to the protocol-2 dispatch sentinel. Auto and Full Auto Codex readiness requires the
+sentinel's `plugin_root` to exactly equal the canonical root that owns the running helper.
+No sentinel, a protocol-1 or malformed sentinel, and a different root all refuse and roll back
+before the plan watcher or prompt is delivered. Attended Codex remains screen-gated because a
+person is present; Claude retains its existing sentinel-and-pane gate without requiring root
+identity. The `request_user_input` denial remains defense in depth after this fail-closed
+handoff boundary.
+
 ## As built — SH-304 (the notification contract: routing by outcome)
 
 **SH-232's rule was right about the danger and wrong about the axis.** It sent every
@@ -1002,9 +1019,20 @@ strings. The load-bearing case: Claude's `--settings` flag is not repeatable, an
 the `--auto` template already carries one (`{"permissions":{"defaultMode":
 "acceptEdits"}}`). A `fast` selection under `--auto` merges `fastMode:true` into
 that SAME object rather than appending a second `--settings` flag, which the CLI
-would reject. Called with no selection at all, both compose functions reproduce
-the pre-SH-517 strings byte for byte — verified directly in
+would reject. Called with no selection at all, both compose functions preserve
+the provider's model, effort, and speed defaults — verified directly in
 `tests/dispatch_endpoint.rs`'s `an_unselected_dispatch_carries_no_model_effort_or_speed_flag`.
+
+**SH-564 makes Claude's provider integration an explicit launch dependency.**
+Resolving a protocol-compatible helper does not prove that Claude has registered
+the plugin containing that helper, while Claude readiness requires a sentinel
+published by the plugin's `SessionStart` hook. Every built-in Claude composition
+therefore adds `--plugin-dir <helper-owned-plugin-root>`, deriving the absolute root
+from `story.sh` itself and encoding it as one POSIX shell word. This applies equally
+to attended, Auto, Full Auto, selected, unselected, fresh, and resumed launches.
+Codex composition is unchanged. The wholesale override contract below is also
+unchanged: an operator-supplied command is not rewritten, so it owns any equivalent
+provider activation and retains the existing weakened-posture warning.
 
 **`$STORY_LAUNCH_CMD` and `$STORY_FULL_AUTO_LAUNCH_CMD` have no seam for a
 selector.** Both are wholesale operator overrides — an exact command line with

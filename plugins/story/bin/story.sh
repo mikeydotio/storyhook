@@ -162,6 +162,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -271,14 +272,23 @@ validate_agent_speed() {
 # which may be "" to mean "provider default". "full-auto" is not a MODE
 # here: it reuses "auto"'s composition exactly, the same sharing
 # DEFAULT_AUTO_LAUNCH_TPL and FULL_AUTO_LAUNCH_TPL already had before
-# SH-517. Called with all three empty, this reproduces the literal strings
-# DEFAULT_LAUNCH_TPL/DEFAULT_AUTO_LAUNCH_TPL held before SH-517, byte for
-# byte -- an unselected dispatch's argv must not change.
+# SH-517. Called with all three empty, this preserves each provider's model,
+# effort, and speed defaults. Claude additionally carries the helper-owned
+# plugin binding required by SH-564; Codex's unselected argv remains unchanged.
 compose_launch_tpl() {
   case "$AGENT" in
     claude) compose_claude_launch_tpl "$@" ;;
     codex) compose_codex_launch_tpl "$@" ;;
   esac
+}
+
+# posix_quote_word <value> -- render exactly one POSIX shell word. StoryHook's
+# plugin root is passed through a tmux command string, so valid whitespace and
+# apostrophes must not split or terminate the --plugin-dir argument.
+posix_quote_word() {
+  local value="$1"
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "$value"
 }
 
 # Claude's `--settings` flag is not repeatable. A fast selection MERGES
@@ -287,7 +297,7 @@ compose_launch_tpl() {
 # appending a second --settings flag, which the CLI would not accept.
 compose_claude_launch_tpl() {
   local mode="$1" model="${2:-opusplan}" effort="$3" speed="$4"
-  local cmd="claude --permission-mode plan --model $model"
+  local cmd="claude --plugin-dir $(posix_quote_word "$STORY_PLUGIN_ROOT") --permission-mode plan --model $model"
   [ -z "$effort" ] || cmd="$cmd --effort $effort"
   local settings=""
   [ "$mode" = "base" ] || settings='{"permissions":{"defaultMode":"acceptEdits"}}'
@@ -995,7 +1005,7 @@ schedule_plan_approval() {
   printf -v full_auto_q '%q' "$full_auto_marker"
   case "$AGENT" in
     claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
-    codex) approval_args="--approve-codex-plan $pane_q" ;;
+    codex) approval_args="--approve-codex-plan $pane_q $pid_q" ;;
     *) return 1 ;;
   esac
   tmux run-shell -b -t "$pane" \
@@ -1017,6 +1027,12 @@ dispatch_ready_note() {
       ;;
     no-sentinel)
       printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
+      ;;
+    hook-identity-missing)
+      printf 'its SessionStart hook published a legacy or malformed sentinel without protocol-2 plugin identity. Update or repair the enabled Storyhook plugin, then run `story doctor install`'
+      ;;
+    hook-identity-mismatch)
+      printf 'its SessionStart hook came from a different Storyhook plugin root than this helper. Remove the stale registration or launch the matching helper, then run `story doctor install`'
       ;;
     *)
       if [ -n "$WAIT_READY_COMMAND" ]; then
@@ -2024,7 +2040,7 @@ cmd_dispatch() {
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
               + (if $agent == "claude" then " --approve-claude-plan <pane> <pane-pid>"
-                 else " --approve-codex-plan <pane>" end))
+                 else " --approve-codex-plan <pane> <pane-pid>" end))
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
@@ -2258,7 +2274,10 @@ cmd_dispatch() {
   # immediate retry is not answered with "already dispatched?" (the collision
   # guard keys on worktree/branch). A forced pre-existing claim stays put.
   local provider_ready=false
-  if [ "$AGENT" = "codex" ]; then
+  if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
+    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" \
+      && provider_ready=true
+  elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
   else
     wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" && provider_ready=true
