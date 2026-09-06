@@ -57,6 +57,7 @@ use std::time::{Duration, Instant};
 use crate::daemon::http1::{Header, Method};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::api::admission::named_token_ok;
 use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
@@ -479,7 +480,15 @@ pub struct DispatchRegistry {
     /// [`Self::capabilities_for`]'s cache (SH-517) — separate from `inner`'s
     /// lock since a capabilities poll and a dispatch's own bookkeeping are
     /// unrelated concerns and need not contend for the same mutex.
-    capabilities: Mutex<HashMap<DispatchAgent, (Instant, serde_json::Value)>>,
+    capabilities: Mutex<HashMap<DispatchAgent, CachedCapabilities>>,
+}
+
+/// A catalog belongs to the exact helper that supplied it, not just a provider.
+struct CachedCapabilities {
+    script: PathBuf,
+    digest: [u8; 32],
+    fetched_at: Instant,
+    value: serde_json::Value,
 }
 
 impl DispatchRegistry {
@@ -791,17 +800,40 @@ impl DispatchRegistry {
     /// rather than propagating an error — a stale installed plugin must
     /// degrade the selector, never break dispatch itself.
     fn capabilities_for(&self, agent: DispatchAgent, env: &Environment) -> serde_json::Value {
+        let script = match resolve_dispatch_script(agent) {
+            Ok(script) => script,
+            Err(message) => {
+                return serde_json::json!({"ok": false, "agent": agent, "reason": message});
+            }
+        };
+        let digest: [u8; 32] = match std::fs::read(&script) {
+            Ok(bytes) => Sha256::digest(bytes).into(),
+            Err(error) => {
+                return serde_json::json!({"ok": false, "agent": agent,
+                    "reason": format!("could not read capabilities helper `{}`: {error}", script.display())});
+            }
+        };
         {
             let cache = self.capabilities.lock().expect("capabilities cache lock");
-            if let Some((fetched_at, value)) = cache.get(&agent)
-                && fetched_at.elapsed() < CAPABILITIES_CACHE_TTL
+            if let Some(entry) = cache.get(&agent)
+                && entry.script == script
+                && entry.digest == digest
+                && entry.fetched_at.elapsed() < CAPABILITIES_CACHE_TTL
             {
-                return value.clone();
+                return entry.value.clone();
             }
         }
-        let value = fetch_capabilities(agent, env);
+        let value = fetch_capabilities(&script, agent, env);
         let mut cache = self.capabilities.lock().expect("capabilities cache lock");
-        cache.insert(agent, (Instant::now(), value.clone()));
+        cache.insert(
+            agent,
+            CachedCapabilities {
+                script,
+                digest,
+                fetched_at: Instant::now(),
+                value: value.clone(),
+            },
+        );
         value
     }
 }
@@ -810,22 +842,16 @@ impl DispatchRegistry {
 /// before asking the helper again.
 const CAPABILITIES_CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// Resolves `agent`'s dispatch script and runs its `capabilities` verb,
+/// Runs the resolved dispatch script's `capabilities` verb,
 /// folding every failure mode into the same `{"ok": false, ...}` shape the
 /// helper's own refusals already use, so [`handle_options`] never has to
 /// special-case "the script could not be found" from "the script refused".
-fn fetch_capabilities(agent: DispatchAgent, env: &Environment) -> serde_json::Value {
-    let script = match resolve_dispatch_script(agent) {
-        Ok(script) => script,
-        Err(message) => {
-            return serde_json::json!({"ok": false, "agent": agent, "reason": message});
-        }
-    };
+fn fetch_capabilities(script: &Path, agent: DispatchAgent, env: &Environment) -> serde_json::Value {
     let engine_agent = match agent {
         DispatchAgent::Claude => EngineAgent::Claude,
         DispatchAgent::Codex => EngineAgent::Codex,
     };
-    match run_shell_capabilities(&script, engine_agent, env) {
+    match run_shell_capabilities(script, engine_agent, env) {
         Ok(outcome) => outcome.payload,
         Err(error) => {
             serde_json::json!({"ok": false, "agent": agent, "reason": error.to_string()})

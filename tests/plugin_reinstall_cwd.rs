@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, daemon_containment, scratch_dir, story_binary};
 use tempfile::TempDir;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
@@ -56,12 +56,25 @@ if [ "$*" = "plugin marketplace remove storyhook --json" ]; then
 fi
 
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "marketplace" ] && [ "${3:-}" = "add" ]; then
+  printf '%s\n' "$4" > "$HOME/codex-marketplace-source"
   printf '{"marketplaceName":"storyhook","installedRoot":"%s","alreadyAdded":false}\n' "$4"
   exit 0
 fi
 
 if [ "$*" = "plugin add story@storyhook --json" ]; then
-  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"current","installedPath":"%s/.codex/plugins/cache/storyhook/story/current","authPolicy":"ON_INSTALL"}\n' "$HOME"
+  IFS= read -r source < "$HOME/codex-marketplace-source"
+  version=$(basename "$source")
+  installed="$HOME/.codex/plugins/cache/storyhook/story/$version"
+  mkdir -p "$installed"
+  cp -Rp "$source/plugins/story/." "$installed/"
+  printf '%s\n' "$version" > "$HOME/codex-installed-version"
+  printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installedPath":"%s","authPolicy":"ON_INSTALL"}\n' "$version" "$installed"
+  exit 0
+fi
+
+if [ "$*" = "plugin list --json" ]; then
+  IFS= read -r version < "$HOME/codex-installed-version"
+  printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":true}]}\n' "$version"
   exit 0
 fi
 
@@ -114,7 +127,10 @@ impl ReinstallFixture {
 
     fn story(&self, cwd: &Path) -> Command {
         let mut command = Command::new(story_binary());
-        command.current_dir(cwd).env_clear();
+        command
+            .current_dir(cwd)
+            .env_clear()
+            .envs(daemon_containment());
         self.env.apply(&mut command);
         command.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
         command

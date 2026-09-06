@@ -687,12 +687,14 @@ paste_prompt() {
 # of the tmux window named <window-name>, searching every session on the server;
 # empty if no such window. Prefers the active pane, falling back to the first.
 pane_for_window() {
-  local wname="$1"
-  tmux list-panes -a -F '#{window_name}	#{pane_active}	#{pane_id}' 2>/dev/null \
-    | awk -F'\t' -v w="$wname" '
+  local wname="$1" panes
+  # A failed server query cannot establish window absence. Capture it before
+  # filtering so callers retain the exit status and the tmux diagnostic.
+  panes=$(tmux list-panes -a -F '#{window_name}	#{pane_active}	#{pane_id}') || return
+  awk -F'\t' -v w="$wname" '
         $1==w && $2==1 { print $3; found=1; exit }
         $1==w && !first { first=$3 }
-        END { if (!found && first) print first }'
+        END { if (!found && first) print first }' <<<"$panes"
 }
 
 # capture_pane_transcript <target> [lines] — READ-ONLY. Echo the rendered
