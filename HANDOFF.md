@@ -59,6 +59,10 @@ red contract was AGENTS.md/template byte equality: the roadmap update missed
 src/service/templates.rs. The template now carries the same current roadmap;
 SH-557 still owns separating project roadmap data from generated instructions.
 
+The next return exposed the reinstall fixture's missing explicit containment
+call after env_clear. It now calls daemon_containment directly, satisfying the
+source contract while retaining TestEnv isolation and provider PATH setup.
+
 One PR on worktree-SH-584 is linked to SH-584, then the story moves to verifying.
 Central verification owns the full suite, merge, completion, and lane cleanup.
 Do not version, release, deploy, merge, or remove this worktree. Repair the same
