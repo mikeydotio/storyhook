@@ -22,5 +22,7 @@ provision:
         gcc-aarch64-linux-gnu \
         gcc-x86-64-linux-gnu \
         git \
+        libc6-dev-amd64-cross \
+        libc6-dev-arm64-cross \
         tar
 

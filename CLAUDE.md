@@ -1307,6 +1307,29 @@ Standing rules for every wave:
   needs a real 500 MB toolchain, and `build-release-assets.sh --check` now runs the same
   verification against the real one on every release. Design of record: the module docs on
   `scripts/release-toolchain.sh`.
+- **`limactl shell` does not start in the guest home, and `set -e` does not fire inside
+  `x="$(...)" || ...`** (SH-578). Two faults, one incident, and the second is why the
+  first read as something else entirely. `release-linux.sh` handed the guest a *relative*
+  cache root and both guest phases resolved it against `$PWD`: limactl starts in the
+  host's working directory when that path is mounted and otherwise falls back to the host
+  home, which Lima's default template mounts **read-only** — and this checkout lives at
+  `/Volumes/Code`, which is mounted nowhere. So `$PWD` in the guest was `/Users/mikey`,
+  and the cache could not be created at all. `$HOME` is `/home/mikey.guest` and is
+  writable; a relative cache root now resolves against it, through one function both
+  phases call, because the two carried identical copies of the wrong normalization and a
+  fix to either alone would have looked complete (SH-136). The **reported** cause was
+  `could not download rustc ... from https://static.rust-lang.org/...` — a network
+  diagnosis for a filesystem fault — because `ensure_release_toolchain`'s `mkdir -p` was
+  unchecked and `set -e` cannot catch that: every caller invokes the function as
+  `toolchain="$(ensure_release_toolchain ...)" || exit 1`, and `set -e` is **suppressed
+  inside a command substitution whose assignment is part of a `||` list**. It printed
+  mkdir's own error, carried on, and blamed the download two steps later. The general
+  form is SH-576's one subsystem over, and worth stating on its own: **a diagnosis
+  produced downstream of an unchecked failure points at the wrong layer with full
+  confidence**, so in a `set -e` script every step whose failure the shell will not
+  notice is checked explicitly and refuses by name. Introduced by `0da1b66a0`, the same
+  commit as SH-576 and likewise after the v2.4.0 tag, so the Linux half of the pinned
+  toolchain had never assembled a release either.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

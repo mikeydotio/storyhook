@@ -32,16 +32,29 @@ linker_for_target() {
   fi
 }
 
+# Resolve a relative guest cache root against the guest's HOME, never its
+# working directory (SH-578).
+#
+# `limactl shell` does not start in the guest home. It starts in the host's
+# working directory when that path is mounted, and otherwise falls back to the
+# host home — which Lima's default template mounts READ-ONLY. This checkout
+# lives outside every mount, so `$PWD` in the guest was `/Users/mikey`, and a
+# cache root under it could not be created at all. `$HOME` is the guest's own,
+# writable, and does not depend on where limactl chose to put us.
+guest_absolute_cache_root() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "$HOME/$1" ;;
+  esac
+}
+
 guest_check() {
   local host_target="$1"
   local guest_cache_root="$2"
   local toolchain target linker probe_dir description
   local targets=(aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu)
 
-  case "$guest_cache_root" in
-    /*) ;;
-    *) guest_cache_root="$PWD/$guest_cache_root" ;;
-  esac
+  guest_cache_root="$(guest_absolute_cache_root "$guest_cache_root")"
 
   toolchain="$(ensure_release_toolchain "$host_target" "$guest_cache_root" "$lock_file" "${targets[@]}")" \
     || exit 1
@@ -77,10 +90,7 @@ guest_build() {
   local toolchain linker linker_env_target work_dir binary
   local targets=(aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu)
 
-  case "$guest_cache_root" in
-    /*) ;;
-    *) guest_cache_root="$PWD/$guest_cache_root" ;;
-  esac
+  guest_cache_root="$(guest_absolute_cache_root "$guest_cache_root")"
 
   toolchain="$(ensure_release_toolchain "$host_target" "$guest_cache_root" "$lock_file" "${targets[@]}")" \
     || exit 1
