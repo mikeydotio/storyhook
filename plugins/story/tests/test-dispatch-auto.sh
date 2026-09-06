@@ -65,8 +65,8 @@ assert_eq "$(jqf "$out" .launch_source)" "builtin" "auto: builtin launch source"
 assert_eq "$(jqf "$out" .launch_overridden)" "false" "auto: builtin launch is not overridden"
 commands=$(jqf "$out" '.commands|join(" ")')
 assert_contains "$commands" \
-  "claude --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
-  "auto: Claude keeps Plan mode and returns to acceptEdits"
+  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "auto: Claude binds StoryHook's plugin, keeps Plan mode, and returns to acceptEdits"
 assert_contains "$commands" "-e STORYHOOK_AUTO=$id" \
   "auto: tmux child receives the autonomous hook marker"
 assert_contains "$commands" "-e STORYHOOK_FULL_AUTO=" \

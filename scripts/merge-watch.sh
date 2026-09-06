@@ -199,7 +199,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     lease_is_valid "$lease" \
         || die "created object storage outside the expected private location"
     objects="$lease/objects"
-    private_git="$lease/git"
+    private_git="$lease/.git"
     original_gitlink="$lease/original-gitlink"
     private_gitlink="$lease/private-gitlink"
     mkdir -p "$objects" "$private_git" \

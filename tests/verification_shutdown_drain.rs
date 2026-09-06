@@ -60,6 +60,7 @@ impl VerificationActuator for BlockingActuator {
             .expect("the test must release the blocked verifier");
         VerificationOutcome::InfrastructureFailure {
             detail: "deterministic fixture outcome".into(),
+            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
         }
     }
 

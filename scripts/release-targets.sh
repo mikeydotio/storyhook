@@ -11,8 +11,8 @@ RELEASE_TARGETS=(
 )
 
 RELEASE_BUILDERS=(
-  "cross"
-  "cross"
+  "lima"
+  "lima"
   "cargo"
   "cargo"
 )

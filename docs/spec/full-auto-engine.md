@@ -43,7 +43,7 @@ being picked.
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
 | D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
-| D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. Each sends one Return to its provider's selected approval option. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard the only keystroke. A changed UI fails closed instead of receiving input. |
+| D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. A watcher retries bounded transport/TUI races and completes only after its exact dialog leaves the original live pane. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard every keystroke. A changed UI fails closed instead of receiving input; tmux command success alone is not provider acknowledgement (SH-570). |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
@@ -52,6 +52,7 @@ being picked.
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
 | D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
+| D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
 
 ## Assumptions recorded rather than asked
 
@@ -468,8 +469,8 @@ When active:
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
 | Plan tool (`PreToolUse: ExitPlanMode`) | allow | — |
-| Claude plan review (watcher armed by dispatch) | one exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only while the original dispatched pane process remains live. |
-| Codex plan review (watcher armed after confirmed Plan mode) | one exact-gated tmux Return | Selects the already-highlighted “Yes, implement this plan” only in the dispatched pane. |
+| Claude plan review (watcher armed by dispatch) | bounded exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only while the original dispatched pane process remains live, and confirms the dialog leaves that process. |
+| Codex plan review (watcher armed after confirmed Plan mode) | bounded exact-gated tmux Return | Selects the already-highlighted “Yes, implement this plan” only while the original dispatched pane process remains live, and confirms the dialog leaves that process. |
 | Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
 | Everything else | no decision | — |
 
@@ -1192,11 +1193,14 @@ The provider launch posture supplies what the hook does not. Claude keeps
 `--permission-mode plan` and sets `permissions.defaultMode` to `acceptEdits`.
 Codex keeps Storyhook's confirmed Shift+Tab transition into Plan mode and adds
 `--approve-for-me` plus `--dangerously-bypass-hook-trust`. A pane-lifetime
-watcher, armed after Plan confirmation, checks once per second for the exact
-three-option “Implement this plan?” UI and sends one Return to its selected first
-option. Codex 0.149.0 proved `--approve-for-me` does not accept that separate UI;
-it handles later workspace-write requests, while the trust flag prevents the
-packaged unattendedness hook from stalling on its own prompt.
+watcher, armed after Plan confirmation and bound to the original pane PID,
+checks once per second for the exact three-option “Implement this plan?” UI.
+It makes at most three exact-gated Return attempts, recovers up to three
+consecutive tmux observation failures, and finishes only after a settled capture
+confirms that the dialog left the same live process. Codex 0.149.0 proved
+`--approve-for-me` does not accept that separate UI; it handles later
+workspace-write requests, while the trust flag prevents the packaged
+unattendedness hook from stalling on its own prompt.
 
 `STORY_LAUNCH_CMD` remains a wholesale compatibility escape hatch. An Auto
 result with that override reports `launch_source: "STORY_LAUNCH_CMD"`,
