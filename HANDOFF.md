@@ -14,6 +14,8 @@ execution. SH-584 transferred guard ownership and reproduction evidence here.
 - Installer-backed classification and real helper/domain immutability tests.
 - Verifier-return repair synchronizes the generated AGENTS.md roadmap with
   `src/service/templates.rs`; its byte-equality regression reproduced RED.
+- Second verifier-return repair uses `TestEnv::raw_story` in the older plugin
+  reinstall fixture; direct environment assertions pin containment and PATH.
 
 ## RCA
 
@@ -28,6 +30,8 @@ execution. SH-584 transferred guard ownership and reproduction evidence here.
   diff checks. Exact final results are recorded on SH-585 and its PR.
 - Return repair: scope_rubric, priority_rubric, service_system, new_command,
   and engine_labels cover the template and generated scaffold contracts.
+- Second return: store_isolation and plugin_reinstall_cwd cover containment
+  contracts and real Claude/Codex reinstall after deletion of startup cwd.
 
 ## Submission boundary
 

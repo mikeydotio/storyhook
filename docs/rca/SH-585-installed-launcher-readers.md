@@ -97,3 +97,13 @@ Reproduced that existing regression RED, then synchronized the roadmap in
 separating project roadmap ownership from the shared template remains SH-557.
 The repair is a follow-up commit on PR #669 with focused rubric/scaffold
 validation; published history is preserved.
+
+The second verifier return exposed an older fixture-contract mismatch in
+`tests/plugin_reinstall_cwd.rs` (SH-582). Its manual `env_clear` followed by
+`TestEnv::apply` already restored containment, but the conservative source
+scanner required a direct containment call. The existing store-isolation
+regression reproduced RED. Replace the duplicate command builder with the
+established `TestEnv::raw_story` seam, retaining the fixture provider PATH.
+A new regression asserts the actual command environment: every shared
+containment value, isolated HOME/data directory, provider PATH and cwd.
+Keep the detector intact and validate the real Claude/Codex reinstall tests.
