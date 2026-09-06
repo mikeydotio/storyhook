@@ -149,8 +149,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/session.sh"
 # storyhook_pointer / read_plugin_config (the `[plugin]` table reader
 # hook_is_enabled already relies on) live in ../hooks/lib.sh. `enabled`, the
 # hooks kill switch, is the only key anything reads: `tracking` retired with
-# the `work` verb (SH-478), and its successor is `story claim --no-comment`,
-# a per-invocation choice rather than a standing preference.
+# the `work` verb (SH-478), and its successor is `story claim`'s explicit
+# per-invocation comment choice rather than a standing preference.
 # shellcheck source=../hooks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 
@@ -904,11 +904,11 @@ enter_checkout() {
 # had to fix here is now the CLI's own, and the destination is derived from the
 # story's own event log rather than carried around by this script — which means
 # the note reports where the story ACTUALLY landed, fallback included, instead
-# of where the caller assumed it would. `--no-comment` because dispatch's own
-# claim is silent in BOTH modes (`story claim --next --no-comment` and, since
-# SH-482, `story claim <id> --no-comment`): a dispatch that rolled itself back
-# cleanly did, in the end, nothing, and a comment saying otherwise would be the
-# only trace of a non-event.
+# of where the caller assumed it would. The release uses `story unclaim`'s
+# default comment (SH-490), so the transaction that restores the prior state
+# also corrects the dispatch record. This is load-bearing for ID MODE: its
+# claim already recorded the intended window, and a later failure must say
+# that intent did not become a live handoff.
 #
 # THE DIVERGENCE THIS DOC USED TO WARN ABOUT IS CLOSED (SH-482). Both halves of
 # the pair now go through a CLI verb, so both resolve the active-role state the
@@ -1051,7 +1051,7 @@ claim_rollback_note() {
     return 0
   fi
   local rb_json rb_result rb_to
-  rb_json=$(story_cli --actor dispatch-rollback unclaim "$id" --no-comment --json 2>/dev/null) || true
+  rb_json=$(story_cli --actor dispatch-rollback unclaim "$id" --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$rb_result" = "ok" ]; then
     rb_to=$(printf '%s' "$rb_json" | jq -r '.story.story.state // "?"' 2>/dev/null || printf '?')
@@ -1615,6 +1615,22 @@ cmd_dispatch() {
   enter_checkout
   local dir="$PROJECT_ROOT"
 
+  # The target SESSION is knowable before either claim mode runs even though
+  # NEXT MODE's window name is not. ID MODE needs it now for its transactional
+  # intent comment; NEXT MODE carries it forward to the post-handoff resource
+  # record. A dry-run outside tmux names the unresolved value symbolically — it
+  # performs no claim and therefore records no fabricated fact.
+  local dispatch_session="$TARGET_SESSION"
+  if [ -z "$dispatch_session" ]; then
+    if [ -n "$DRY_RUN" ]; then
+      dispatch_session="<current-session>"
+    else
+      dispatch_session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || printf '')
+      [ -n "$dispatch_session" ] \
+        || fail "cannot resolve the tmux session that would receive this dispatch — no claim was made."
+    fi
+  fi
+
   # Resume inventory runs before the claim gate and before every write. The
   # deterministic story identity gives all four expected resource names; any
   # disagreement is a safety refusal, never an invitation to overwrite it.
@@ -1820,14 +1836,11 @@ cmd_dispatch() {
       # transaction: this script no longer holds a second opinion about any of
       # them, which is the drift SH-481 was filed for.
       #
-      # --no-comment for the reason SH-477 gave NEXT MODE: `story claim`'s
-      # default sentence names the CALLING process's tmux window, which here is
-      # the DISPATCHER's, not the window this dispatch is about to open for the
-      # work. A claim that named it would be recording a window the work will
-      # not happen in, and SH-476's determination forbids a fabricated one
-      # outright. What dispatch should say once that window genuinely exists is
-      # SH-490's question, for both modes at once, and is deliberately not
-      # answered here.
+      # SH-490: unlike NEXT MODE, this mode already knows both parts of the
+      # future tmux identity. Record that INTENT with the claim in one write.
+      # Present tense would falsely claim the window already exists; the
+      # rollback's default unclaim comment corrects this record if a later
+      # worktree, window, readiness, or undelivered-handoff step fails.
       #
       # The precondition NARROWS, which is the whole behaviour delta of the
       # collapse and is stated rather than glossed. `--if-state` refused any
@@ -1841,11 +1854,12 @@ cmd_dispatch() {
       #
       # The forced pre-claimed path above never reaches this claim and therefore
       # never writes a redundant transition.
-      claim_cmd_desc="story claim $id --no-comment"
+      local claim_comment="Dispatching to tmux window $dispatch_session:$wname."
+      claim_cmd_desc="story claim $id --comment \"$claim_comment\""
 
       if [ -z "$DRY_RUN" ]; then
         local claim_json claim_result claim_error states
-        claim_json=$(story_cli --actor dispatch claim "$id" --no-comment --json 2>/dev/null) || true
+        claim_json=$(story_cli --actor dispatch claim "$id" --comment "$claim_comment" --json 2>/dev/null) || true
         claim_result=$(printf '%s' "$claim_json" | jq -r '.result // ""' 2>/dev/null || printf '')
         case "$claim_result" in
           ok)
@@ -1883,6 +1897,14 @@ cmd_dispatch() {
     resources_json=$(jq -n --arg path "$worktree_path" --arg branch "$worktree_branch" \
       '{worktree:"missing", branch:"missing", window:"missing",
         worktree_path:$path, branch_name:$branch}')
+  fi
+
+  # NEXT MODE cannot know its window name until its claim returns the id.
+  # A reused claim has no claim transaction in which to attach a fresh record.
+  # Both therefore comment only after the prompt handoff is confirmed.
+  local post_dispatch_comment=""
+  if [ -n "$want_next" ] || [ "$reused_claim" = true ]; then
+    post_dispatch_comment="Dispatched to tmux window $dispatch_session:$wname, worktree $worktree_path, branch $worktree_branch."
   fi
 
   # SH-219: --auto gets one of TWO charters, decided here rather than left to
@@ -2010,6 +2032,7 @@ cmd_dispatch() {
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" \
+      --arg dispatch_comment "$post_dispatch_comment" \
       --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
       {
         ok: true, dry_run: true,
@@ -2044,7 +2067,9 @@ cmd_dispatch() {
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
-          ("tmux send-keys -t <pane> " + $submit_key)
+          ("tmux send-keys -t <pane> " + $submit_key),
+          (if $dispatch_comment == "" then empty
+           else ("story comment " + $id + " \"" + $dispatch_comment + "\"") end)
         ]),
         display: ("[story] DRY RUN for " + $id + " (" + $title
                   + "): " + $claim_note + ", create worktree " + $wtpath + " (branch " + $wtbranch
@@ -2373,6 +2398,27 @@ cmd_dispatch() {
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, delivery_phase:"received-unsubmitted",
               pane_tail:$tail, claimed:true}')"
+  fi
+
+  # The prompt may now be in front of a live agent. A failed audit write is a
+  # failed dispatch postcondition, but rolling back would make the same story
+  # ready while that agent may be working. Refuse with the complete resource
+  # identity and preserve everything for a safe resume or explicit teardown.
+  if [ -n "$post_dispatch_comment" ]; then
+    local comment_json comment_result comment_error
+    comment_json=$(story_cli --actor dispatch comment "$id" "$post_dispatch_comment" --json 2>/dev/null) || true
+    comment_result=$(printf '%s' "$comment_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$comment_result" != ok ]; then
+      comment_error=$(printf '%s' "$comment_json" | jq -r '.error // "story comment emitted no result"' 2>/dev/null || printf 'story comment emitted no result')
+      refuse_with dispatch-comment-failed \
+        "[story] $id → the agent handoff succeeded, but its dispatch resource comment failed: $comment_error. The claim, worktree, and tmux window were left in place because the agent may already be working." \
+        "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+              --arg pane "$pane" --arg wtpath "$worktree_path" --arg branch "$worktree_branch" \
+              --arg error "$comment_error" \
+              '{id:$id, window:$window, window_name:$wname, pane:$pane,
+                worktree_path:$wtpath, worktree_branch:$branch,
+                claimed:true, dispatch_comment_recorded:false, error:$error}')"
+    fi
   fi
 
   # Result. Reaching here means BOTH readiness and submission were confirmed —
