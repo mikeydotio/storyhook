@@ -577,10 +577,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-stop-choice { display: flex; flex-direction: column; gap: 0.125rem; }
 .engine-stop-choice span { color: var(--fg-muted); font-size: 0.8125rem; }
 
-/* ---- Persistent Full Auto alerts (SH-471) ----
-   This is intentionally not a toast. The engine owns its lifetime through
-   `acknowledged_at`; no notice clock, bulk-dismiss control or preference can
-   make an uncollected halt look like an all-clear. */
+/* ---- Persistent central-verification alert (SH-573) ---- */
 .engine-banner-region {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1.25rem 0;
   flex-shrink: 0;
@@ -594,16 +591,35 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-banner-title { font-weight: 800; color: var(--warn); }
 .engine-banner-ack { margin-left: auto; flex: none; }
 .engine-banner-meta { display: flex; flex-wrap: wrap; gap: 0.375rem 1rem; color: var(--fg-muted); }
-.engine-banner-meta code, .engine-quarantine-item code { font-family: var(--mono); color: var(--fg); }
+.engine-banner-meta code { font-family: var(--mono); color: var(--fg); }
 .engine-banner-quarantines { display: flex; flex-direction: column; gap: 0.25rem; }
 .engine-banner-quarantines-title { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
-.engine-quarantine-list { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding-left: 1.25rem; }
-.engine-quarantine-item { padding-left: 0.125rem; overflow-wrap: anywhere; }
-.engine-quarantine-empty { color: var(--fg-muted); }
 .engine-banner-stale {
   padding: 0.5rem 0.75rem; border-left: 3px solid var(--warn);
   background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem;
 }
+
+/* ---- Persistent Full Auto alerts (SH-471/SH-568) ----
+   This is intentionally not a toast and intentionally cannot be dismissed.
+   The engine owns its lifetime through `acknowledged_at`; no notice clock,
+   Escape press, backdrop press, bulk-dismiss control or preference can make
+   an uncollected halt look like an all-clear. */
+.engine-alert-modal { width: min(38rem, 92vw); }
+.engine-alert-title { color: var(--warn); }
+.engine-alert-title:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.engine-alert-content { display: flex; flex-direction: column; gap: 0.75rem; }
+.engine-alert-meta { display: flex; flex-wrap: wrap; gap: 0.375rem 1rem; color: var(--fg-muted); }
+.engine-alert-meta code, .engine-quarantine-item code { font-family: var(--mono); color: var(--fg); }
+.engine-alert-quarantines { display: flex; flex-direction: column; gap: 0.25rem; }
+.engine-alert-quarantines-title { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
+.engine-quarantine-list { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding-left: 1.25rem; }
+.engine-quarantine-item { padding-left: 0.125rem; overflow-wrap: anywhere; }
+.engine-quarantine-empty { color: var(--fg-muted); }
+.engine-alert-stale {
+  padding: 0.5rem 0.75rem; border-left: 3px solid var(--warn);
+  background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem;
+}
+.engine-alert-impact { margin-right: auto; align-self: center; color: var(--fg-muted); font-size: 0.75rem; }
 
 /* ---- Board ---- */
 .board {
@@ -1473,6 +1489,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   .engine-banner-region { padding: 0.5rem 0.75rem 0; }
   .engine-banner-head { align-items: stretch; flex-direction: column; }
   .engine-banner-ack { align-self: flex-start; margin-left: 0; }
+  .engine-alert-modal .modal-footer { align-items: stretch; flex-direction: column; }
+  .engine-alert-impact { align-self: flex-start; }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
      project selector next to it -- the wordmark orients a reader arriving
      fresh; once a project is open, its name is what matters and the
@@ -1564,7 +1582,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   <div class="repo-workspace" id="repo-workspace">
   <div class="workspace-content" id="workspace-content">
-  <section class="engine-banner-region" id="engine-banner-region" aria-label="Full Auto alerts" aria-live="polite" hidden></section>
   <section class="engine-banner-region" id="verification-banner-region" aria-label="Verification alerts" aria-live="assertive" hidden></section>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
@@ -1780,6 +1797,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="delete-modal-cancel">Cancel</button>
     <button type="button" class="btn btn-danger-solid" id="delete-modal-submit">Delete</button>
+  </div>
+</div>
+
+<!-- SH-568: unlike every dismissible overlay above, this backdrop has no click
+     listener and the shared Escape handler explicitly yields while this is the
+     topmost surface. D13 requires an engine stop alert to remain visible until
+     the operator chooses one of its two durable outcomes. -->
+<div class="backdrop" id="engine-alert-backdrop" data-overlay="engine-alert-modal" hidden></div>
+<div class="modal engine-alert-modal" id="engine-alert-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="engine-alert-title">
+  <div class="modal-header engine-alert-title" id="engine-alert-title" tabindex="-1">Full Auto run needs acknowledgement</div>
+  <div class="modal-body engine-alert-content" id="engine-alert-content"></div>
+  <div class="modal-footer">
+    <span class="engine-alert-impact" id="engine-alert-impact" hidden>Immediately stops in-flight lane work, then acknowledges this alert.</span>
+    <button type="button" class="btn btn-danger-solid engine-alert-abandon" id="engine-alert-abandon" hidden>Abandon run</button>
+    <button type="button" class="btn btn-warn engine-alert-ack" id="engine-alert-ack">Acknowledge</button>
   </div>
 </div>
 
@@ -2455,9 +2487,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // mutation has no reply. The run is the server's arbitration unit, so
     // one claim prevents both repeat presses and conflicting controls.
     engineActions: Object.create(null),
-    // Run id -> project while an acknowledgement has no reply. Kept apart
-    // from launch claims because historical runs remain actionable while a
-    // newer run is live.
+    // Run id -> {project, action} while acknowledge or abandon has no reply.
+    // Kept apart from launch claims because historical runs remain actionable
+    // while a newer run is live, and because abandon owns a stop-then-ack
+    // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
     verificationAcknowledgement: null,
     engineLanes: 1,
@@ -3481,7 +3514,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * intrinsic height, so counting them then would reserve notice space for a
    * panel the reader cannot see. */
   var NOTICE_BAND_TOP = [
-    ".topbar", "#filter-bar", "#engine-banner-region", "#verification-banner-region", ".drawer-header"
+    ".topbar", "#filter-bar", "#verification-banner-region", ".drawer-header"
   ];
   var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
 
@@ -4685,6 +4718,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return state.engineActions[runId] || null;
   }
 
+  function engineAcknowledgementAction(runId) {
+    var pending = state.engineAcknowledgements[runId];
+    return pending ? pending.action : null;
+  }
+
   function engineQuarantineStory(lane) {
     if (lane.story) return lane.story;
     var detail = lane.outcome_detail;
@@ -4717,22 +4755,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }).slice(0, 3);
   }
 
-  function engineBannerFingerprint(runs) {
+  function engineAlertFingerprint(run) {
     return JSON.stringify({
       stale: state.engineReadiness === "failed",
-      runs: runs.map(function(run) {
-        return {
-          id: run.id,
-          state: run.state,
-          stop_reason: run.stop_reason,
-          acknowledged_at: run.acknowledged_at,
-          consecutive_hard_stops: run.consecutive_hard_stops,
-          recent_quarantines: run.recent_quarantines,
-          pending: engineAcknowledgementPending(run.id),
-          lanes: (run.lanes || []).map(function(lane) {
-            return [lane.index, lane.state, lane.story, lane.last_observed_at, lane.outcome, lane.outcome_detail];
-          })
-        };
+      id: run.id,
+      state: run.state,
+      stop_reason: run.stop_reason,
+      acknowledged_at: run.acknowledged_at,
+      consecutive_hard_stops: run.consecutive_hard_stops,
+      recent_quarantines: run.recent_quarantines,
+      action: engineAcknowledgementAction(run.id),
+      lanes: (run.lanes || []).map(function(lane) {
+        return [lane.index, lane.state, lane.story, lane.last_observed_at, lane.outcome, lane.outcome_detail];
       })
     });
   }
@@ -4747,61 +4781,85 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return el("li", { class: "engine-quarantine-item" }, children);
   }
 
-  function buildEngineBanner(run) {
+  function populateEngineAlert(run) {
     var quarantines = lastEngineQuarantines(run);
     var streak = Number(run.consecutive_hard_stops) || 0;
     var streakText = streak + " consecutive hard stop" + (streak === 1 ? "" : "s");
     var pending = engineAcknowledgementPending(run.id);
+    var action = engineAcknowledgementAction(run.id);
     var quarantineBody = quarantines.length
       ? el("ol", { class: "engine-quarantine-list" }, quarantines.map(buildEngineQuarantineItem))
       : el("div", { class: "engine-quarantine-empty" }, ["No quarantined stories"]);
-    return el("article", { class: "engine-banner", dataset: { runId: run.id } }, [
-      el("div", { class: "engine-banner-head" }, [
-        el("div", { class: "engine-banner-title" }, ["Full Auto run needs acknowledgement"]),
-        el("button", {
-          type: "button", class: "btn btn-warn engine-banner-ack", disabled: pending,
-          onClick: function() { acknowledgeEngineRun(run.id); }
-        }, [pending ? "Acknowledging…" : "Acknowledge"])
-      ]),
-      el("div", { class: "engine-banner-meta" }, [
+    var content = $("engine-alert-content");
+    clear(content);
+    if (state.engineReadiness === "failed") {
+      content.appendChild(el("div", { class: "engine-alert-stale" }, [
+        "Status refresh failed; showing the last confirmed alert."
+      ]));
+    }
+    content.appendChild(el("div", { class: "engine-alert-meta" }, [
         el("span", {}, ["Run ", el("code", {}, [run.id])]),
         el("span", {}, ["State ", el("code", {}, [run.state])]),
         el("span", {}, ["Stop reason ", el("code", {}, [run.stop_reason])]),
         el("span", {}, [streakText])
-      ]),
-      el("div", { class: "engine-banner-quarantines" }, [
-        el("div", { class: "engine-banner-quarantines-title" }, ["Last quarantines"]),
+      ]));
+    content.appendChild(el("div", { class: "engine-alert-quarantines" }, [
+        el("div", { class: "engine-alert-quarantines-title" }, ["Last quarantines"]),
         quarantineBody
-      ])
-    ]);
+      ]));
+
+    var live = isLiveEngineRun(run);
+    var abandon = $("engine-alert-abandon");
+    var impact = $("engine-alert-impact");
+    abandon.hidden = !live;
+    impact.hidden = !live;
+    abandon.disabled = pending;
+    abandon.textContent = action === "abandon" ? "Abandoning…" : "Abandon run";
+    var acknowledge = $("engine-alert-ack");
+    acknowledge.disabled = pending;
+    acknowledge.textContent = action === "acknowledge" ? "Acknowledging…" : "Acknowledge";
   }
 
-  /** Paints outside the notice dock because only the durable engine
-   * acknowledgement may remove this surface. A stable fingerprint avoids
-   * re-announcing output-identical alerts through the live region. */
-  function renderEngineBanners() {
-    if (pressDefer("engine-banner", renderEngineBanners)) return;
-    var mount = $("engine-banner-region");
+  /** Presents one durable alert at a time. The modal stays registered while
+   * the queue advances, so acknowledging one run cannot transiently uncover
+   * the app or lose the focus trap before the next run takes its place. */
+  function renderEngineAlert() {
+    if (pressDefer("engine-alert", renderEngineAlert)) return;
+    var modal = $("engine-alert-modal");
     var runs = state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
-    var visible = runs.length > 0;
-    mount.hidden = !visible;
-    if (!visible) {
-      if (mount.firstChild) clear(mount);
-      delete mount.dataset.fingerprint;
-      measureNoticeBands();
+    var run = runs[0] || null;
+    if (!run) {
+      delete modal.dataset.runId;
+      delete modal.dataset.fingerprint;
+      if (modal.classList.contains("open")) {
+        hideBackdrop("engine-alert-backdrop");
+        modal.classList.remove("open");
+        modal.setAttribute("aria-hidden", "true");
+        releaseOverlay("engine-alert-modal");
+      }
       return;
     }
-    var fingerprint = engineBannerFingerprint(runs);
-    if (mount.dataset.fingerprint === fingerprint) return;
-    clear(mount);
-    if (state.engineReadiness === "failed") {
-      mount.appendChild(el("div", { class: "engine-banner-stale" }, [
-        "Status refresh failed; showing the last confirmed alert."
-      ]));
+
+    var changedRun = modal.dataset.runId !== run.id;
+    var fingerprint = engineAlertFingerprint(run);
+    if (modal.dataset.fingerprint !== fingerprint) {
+      populateEngineAlert(run);
+      modal.dataset.runId = run.id;
+      modal.dataset.fingerprint = fingerprint;
     }
-    runs.forEach(function(run) { mount.appendChild(buildEngineBanner(run)); });
-    mount.dataset.fingerprint = fingerprint;
-    measureNoticeBands();
+    if (!modal.classList.contains("open")) {
+      var focused = document.activeElement;
+      var returnFocus = focused !== document.body && canTakeFocus(focused)
+        ? focused
+        : $("projsel-btn");
+      showBackdrop("engine-alert-backdrop");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      activateOverlay("engine-alert-modal", "engine-alert-title");
+      overlayReturnFocus["engine-alert-modal"] = returnFocus;
+    } else if (changedRun) {
+      $("engine-alert-title").focus();
+    }
   }
 
   /** Durable machine-wide verifier halt. It comes from `/data` so the banner
@@ -5142,7 +5200,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // to a disabled "Checking…" state on every poll.
     if (state.engineReadiness === "unasked") state.engineReadiness = "loading";
     renderEngineControl();
-    renderEngineBanners();
+    renderEngineAlert();
     api("GET", apiBase() + "/engine", null)
       .then(function(response) {
         if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
@@ -5150,14 +5208,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         applyEngineRuns(runs);
         state.engineReadiness = "loaded";
         renderEngineControl();
-        renderEngineBanners();
+        renderEngineAlert();
         if (state.drawerId) renderDrawer();
       })
       .catch(function() {
         if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
         state.engineReadiness = "failed";
         renderEngineControl();
-        renderEngineBanners();
+        renderEngineAlert();
         if (state.drawerId) renderDrawer();
       });
   }
@@ -5216,7 +5274,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Replaces one run from a confirmed mutation response, including runs a
    * status read has not yet observed. The collection remains the source of
-   * both the live slot and durable outcome banners. */
+   * both the live slot and durable outcome alerts. */
   function applyEngineRun(run) {
     var found = false;
     var runs = state.engineRuns.map(function(existing) {
@@ -5252,7 +5310,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         ? "Full Auto paused — current lane work continues"
         : "Full Auto resumed", "success");
       renderEngineControl();
-      renderEngineBanners();
+      renderEngineAlert();
       fetchEngineRuns();
     }).catch(function(err) {
       delete state.engineActions[runId];
@@ -5334,9 +5392,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       state.engineFetchTicket++;
       if (response.run) applyEngineRun(response.run);
       renderEngineControl();
-      renderEngineBanners();
       closeEngineStopModal();
       focusEngineControlAfterStop();
+      renderEngineAlert();
       fetchEngineRuns();
     }).catch(function(err) {
       delete state.engineActions[run.id];
@@ -5361,29 +5419,68 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function acknowledgeEngineRun(runId) {
     var project = state.repoId;
     if (!project || engineAcknowledgementPending(runId)) return;
-    state.engineAcknowledgements[runId] = project;
-    renderEngineBanners();
-    api("POST", apiBase() + "/engine/ack", { run: runId }).then(function(response) {
-      delete state.engineAcknowledgements[runId];
-      if (state.screen !== "repo" || state.repoId !== project) return;
-      // No GET that began before this confirmed write may reintroduce the
-      // alert. The reconciliation below takes the next ticket.
-      state.engineFetchTicket++;
-      if (response.run) {
-        applyEngineRuns(state.engineRuns.map(function(run) {
-          return run.id === response.run.id ? response.run : run;
+    state.engineAcknowledgements[runId] = { project: project, action: "acknowledge" };
+    renderEngineAlert();
+    api("POST", repoApiBase(project) + "/engine/ack", { run: runId })
+      .then(function(response) { finishEngineAcknowledgement(project, runId, response); })
+      .catch(function(err) { failEngineAcknowledgement(project, runId, err); });
+  }
+
+  /** Immediately ends a live run, then acknowledges the same durable alert.
+   * One claim covers both writes: neither action may interleave with the stop,
+   * and an ambiguous second response leaves the now-finished alert visible
+   * until the follow-up status read confirms acknowledgement. */
+  function abandonEngineRun(runId) {
+    var project = state.repoId;
+    var run = unacknowledgedEngineRuns().filter(function(candidate) {
+      return candidate.id === runId;
+    })[0];
+    if (!project || !isLiveEngineRun(run) || engineAcknowledgementPending(runId)) return;
+    state.engineAcknowledgements[runId] = { project: project, action: "abandon" };
+    renderEngineAlert();
+    var base = repoApiBase(project) + "/engine";
+    api("POST", base + "/stop", { run: runId, now: true }).then(function(response) {
+      if (state.screen === "repo" && state.repoId === project && response.run) {
+        // Abandon's button is about to disappear with the run's live state.
+        // Move focus first rather than letting a hidden focused control strand
+        // it on the document while acknowledgement is still outstanding.
+        $("engine-alert-title").focus();
+        applyEngineRuns(state.engineRuns.map(function(candidate) {
+          return candidate.id === response.run.id ? response.run : candidate;
         }));
+        renderEngineControl();
+        renderEngineAlert();
       }
-      renderEngineControl();
-      renderEngineBanners();
-      fetchEngineRuns();
+      return api("POST", base + "/ack", { run: runId });
+    }).then(function(response) {
+      finishEngineAcknowledgement(project, runId, response);
     }).catch(function(err) {
-      delete state.engineAcknowledgements[runId];
-      if (state.screen !== "repo" || state.repoId !== project) return;
-      toastError(err);
-      renderEngineBanners();
-      fetchEngineRuns();
+      failEngineAcknowledgement(project, runId, err);
     });
+  }
+
+  function finishEngineAcknowledgement(project, runId, response) {
+    delete state.engineAcknowledgements[runId];
+    if (state.screen !== "repo" || state.repoId !== project) return;
+    // No GET that began before this confirmed write may reintroduce the
+    // alert. The reconciliation below takes the next ticket.
+    state.engineFetchTicket++;
+    if (response.run) {
+      applyEngineRuns(state.engineRuns.map(function(run) {
+        return run.id === response.run.id ? response.run : run;
+      }));
+    }
+    renderEngineControl();
+    renderEngineAlert();
+    fetchEngineRuns();
+  }
+
+  function failEngineAcknowledgement(project, runId, err) {
+    delete state.engineAcknowledgements[runId];
+    if (state.screen !== "repo" || state.repoId !== project) return;
+    toastError(err);
+    renderEngineAlert();
+    fetchEngineRuns();
   }
 
   /** The drawer footer's one dispatch action. Configuration now belongs to
@@ -6943,7 +7040,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderFilterOptions();
     renderView();
     renderEngineControl();
-    renderEngineBanners();
+    renderEngineAlert();
     renderVerificationBanner();
     updateSubtitle();
     updateDraftsButton();
@@ -7102,7 +7199,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("new-story-btn").hidden = !isRepo;
     $("drafts-btn").hidden = false;
     renderEngineControl();
-    renderEngineBanners();
+    renderEngineAlert();
     // The chrome band just changed shape: `#filter-bar` is in it, and hiding it
     // is a `display: none` transition, which a `ResizeObserver` does not
     // reliably report (SH-323). The observer is the safety net for everything
@@ -13564,6 +13661,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
     bindEnterSubmit($("delete-confirmation"), submitDeleteStory);
     $("drawer-close").addEventListener("click", closeDrawer);
+    $("engine-alert-ack").addEventListener("click", function() {
+      acknowledgeEngineRun($("engine-alert-modal").dataset.runId);
+    });
+    $("engine-alert-abandon").addEventListener("click", function() {
+      abandonEngineRun($("engine-alert-modal").dataset.runId);
+    });
     $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
     $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);
     // One rule for every button in the dock, present and future (SH-339) --
@@ -13576,6 +13679,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
+        // SH-568's D13 exception: this alert must not disappear without a
+        // durable acknowledgement. Return before any dismissible surface so
+        // Escape cannot alter either this dialog or a surface behind it.
+        if (overlayStack[overlayStack.length - 1] === "engine-alert-modal") {
+          e.preventDefault();
+          return;
+        }
         // The Stop confirmation is dismissible until its mutation starts.
         // While outstanding, its controls and every dismissal path remain
         // locked around the one uncancelable request.
