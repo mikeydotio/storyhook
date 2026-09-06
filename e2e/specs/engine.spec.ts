@@ -1,6 +1,16 @@
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
-import { openProject, projectSlug, requiredEnv, seedToken } from "./support";
+import {
+  contrastRatio,
+  holdFetch,
+  measureFocusIndicator,
+  openProject,
+  parseColor,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+  THEMES,
+} from "./support";
 
 const ENGINE_PROJECT = "Engine Project";
 const ENGINE_STORY_ID = requiredEnv("DASHBOARD_ENGINE_STORY_ID");
@@ -101,7 +111,7 @@ function run(
 function stoppedRun(
   project: string,
   id: string,
-  state: "draining" | "halted" | "finished",
+  state: EngineRun["state"],
   reason: string,
   createdAt: string,
 ): EngineRun {
@@ -152,6 +162,35 @@ function engineStoryLane(page: Page, story: string) {
   return page.locator(".engine-lane-story").filter({ hasText: story });
 }
 
+function occupySecondLane(engineRun: EngineRun, story: string): void {
+  engineRun.lanes[1] = {
+    ...engineRun.lanes[0],
+    index: 1,
+    story,
+  };
+}
+
+async function expectCoarseEngineTargets(page: Page, selector: string): Promise<void> {
+  const undersized = await page.locator(selector).evaluateAll((nodes) => {
+    if (!matchMedia("(pointer: coarse)").matches) return [];
+    const minimum = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    );
+    return nodes.flatMap((node) => {
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return [];
+      // SH-420's float32 representation bound: a target at exactly the
+      // minimum must not fail because its two endpoints rounded differently.
+      const widthError = (Math.abs(rect.left) + Math.abs(rect.right)) * 2 ** -24;
+      const heightError = (Math.abs(rect.top) + Math.abs(rect.bottom)) * 2 ** -24;
+      return rect.width + widthError < minimum || rect.height + heightError < minimum
+        ? [`${node.tagName.toLowerCase()}.${node.className}: ${rect.width}x${rect.height}`]
+        : [];
+    });
+  });
+  expect(undersized).toEqual([]);
+}
+
 async function installTestEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class TestEventSource {
@@ -196,6 +235,216 @@ async function submitEngineModal(page: Page): Promise<void> {
   await page.locator("#engine-modal-submit").click();
   await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
 }
+
+test("engine alerts are non-dismissable queued dialogs with a live-run abandon action", async ({
+  page,
+}) => {
+  const live = stoppedRun(
+    "alpha",
+    "run-live-older",
+    "draining",
+    "operator-stopped",
+    "2026-08-30T08:30:00Z",
+  );
+  const halted = stoppedRun(
+    "alpha",
+    "run-halted-newer",
+    "halted",
+    "breaker-tripped",
+    "2026-08-30T09:00:00Z",
+  );
+  const runs = [live, halted];
+  const requests: Array<{ action: string; body: unknown }> = [];
+  let releaseStop!: () => void;
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/stop", async (route) => {
+    requests.push({ action: "stop", body: route.request().postDataJSON() });
+    await stopGate;
+    live.state = "finished";
+    live.stop_reason = "operator-stopped-now";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: live }),
+    });
+  });
+  await page.route("**/api/repos/*/engine/ack", async (route) => {
+    const body = route.request().postDataJSON() as { run: string };
+    requests.push({ action: "ack", body });
+    const acknowledged = runs.find((candidate) => candidate.id === body.run)!;
+    acknowledged.acknowledged_at = "2026-08-30T09:05:00Z";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: acknowledged }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, runs));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const modal = page.locator("#engine-alert-modal");
+  await expect(modal).toHaveClass(/open/);
+  await expect(modal).toHaveAttribute("role", "dialog");
+  await expect(modal).toHaveAttribute("aria-modal", "true");
+  await expect(page.locator("#app")).toHaveAttribute("inert", "");
+  await expect(page.locator("#engine-alert-title")).toBeFocused();
+  await expect(modal).toContainText("run-halted-newer");
+  await expect(page.locator(".engine-alert-abandon")).toBeHidden();
+
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveClass(/open/);
+  await page.locator("#engine-alert-backdrop").click({ position: { x: 5, y: 5 } });
+  await expect(modal).toHaveClass(/open/);
+
+  // WebKit follows macOS Full Keyboard Access and may omit buttons from its
+  // native Tab order. Programmatic focus puts the last control at the trap's
+  // boundary; both directions must still wrap inside the dialog in every
+  // engine, independent of that machine preference.
+  await page.locator(".engine-alert-ack").focus();
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".engine-alert-ack")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.locator(".engine-alert-ack")).toBeFocused();
+
+  await measureFocusIndicator(
+    page,
+    ".engine-alert-title:focus",
+    "the Full Auto alert heading",
+    async () => page.locator("#engine-alert-title").focus(),
+  );
+  await page.locator(".engine-alert-ack").click();
+  await expect(modal).toContainText("run-live-older");
+  await expect(modal).not.toContainText("run-halted-newer");
+  await expect(page.locator("#engine-alert-title")).toBeFocused();
+  await expect(page.locator(".engine-alert-abandon")).toContainText("Abandon run");
+  await expect(modal).toContainText("Immediately stops in-flight lane work");
+
+  const tapMinimum = await page.evaluate(() =>
+    Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    ),
+  );
+  for (const selector of [".engine-alert-abandon", ".engine-alert-ack"]) {
+    const bounds = await page.locator(selector).boundingBox();
+    expect(bounds, `${selector} must have rendered bounds`).not.toBeNull();
+    expect(bounds!.width).toBeGreaterThanOrEqual(tapMinimum);
+    expect(bounds!.height).toBeGreaterThanOrEqual(tapMinimum);
+  }
+
+  await page.evaluate(() => {
+    const button = document.querySelector(".engine-alert-abandon") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => requests.filter(({ action }) => action === "stop").length).toBe(1);
+  await expect(page.locator(".engine-alert-abandon")).toBeDisabled();
+  await expect(page.locator(".engine-alert-abandon")).toHaveText("Abandoning…");
+  await expect(page.locator(".engine-alert-ack")).toBeDisabled();
+  releaseStop();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(page.locator("#app")).not.toHaveAttribute("inert", "");
+  await expect(page.locator("#projsel-btn")).toBeFocused();
+  expect(requests).toEqual([
+    { action: "ack", body: { run: "run-halted-newer" } },
+    { action: "stop", body: { run: "run-live-older", now: true } },
+    { action: "ack", body: { run: "run-live-older" } },
+  ]);
+});
+
+test("running and paused alerts also offer Abandon", async ({ page }) => {
+  let current = stoppedRun(
+    "alpha",
+    "run-running",
+    "running",
+    "breaker-warning",
+    "2026-08-30T09:10:00Z",
+  );
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [current]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await expect(page.locator(".engine-alert-abandon")).toBeVisible();
+
+  current = stoppedRun(
+    "alpha",
+    "run-paused",
+    "paused",
+    "breaker-warning",
+    "2026-08-30T09:15:00Z",
+  );
+  await page.reload();
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-paused");
+  await expect(page.locator(".engine-alert-abandon")).toBeVisible();
+});
+
+test("an ambiguous Abandon stop retains the live alert and never acknowledges it", async ({
+  page,
+}) => {
+  const live = stoppedRun(
+    "alpha",
+    "run-ambiguous-stop",
+    "draining",
+    "operator-stopped",
+    "2026-08-30T09:20:00Z",
+  );
+  let acknowledgements = 0;
+  await page.route("**/api/repos/*/engine/stop", (route) => route.abort("failed"));
+  await page.route("**/api/repos/*/engine/ack", async (route) => {
+    acknowledgements++;
+    await route.abort("failed");
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [live]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator(".engine-alert-abandon").click();
+
+  await expect(page.locator("#toast-stack .toast.error")).toContainText(
+    "storyhook could not confirm whether this reached the daemon",
+  );
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-ambiguous-stop");
+  await expect(page.locator("#engine-alert-modal")).toHaveClass(/open/);
+  await expect(page.locator(".engine-alert-abandon")).toBeEnabled();
+  expect(acknowledgements).toBe(0);
+});
+
+test("an ambiguous Abandon acknowledgement retains the stopped alert", async ({ page }) => {
+  const live = stoppedRun(
+    "alpha",
+    "run-ambiguous-abandon-ack",
+    "draining",
+    "operator-stopped",
+    "2026-08-30T09:25:00Z",
+  );
+  await page.route("**/api/repos/*/engine/stop", async (route) => {
+    live.state = "finished";
+    live.stop_reason = "operator-stopped-now";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: live }),
+    });
+  });
+  await page.route("**/api/repos/*/engine/ack", (route) => route.abort("failed"));
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [live]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator(".engine-alert-abandon").click();
+
+  await expect(page.locator("#toast-stack .toast.error")).toContainText(
+    "storyhook could not confirm whether this reached the daemon",
+  );
+  await expect(page.locator("#engine-alert-modal")).toContainText("operator-stopped-now");
+  await expect(page.locator("#engine-alert-modal")).toHaveClass(/open/);
+  await expect(page.locator(".engine-alert-abandon")).toBeHidden();
+  await expect(page.locator(".engine-alert-ack")).toBeEnabled();
+});
 
 test("Full Auto claims through the real daemon and leaves a durable acknowledged outcome", async ({
   page,
@@ -257,15 +506,16 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
     true,
   );
 
-  const banner = page.locator(".engine-banner", { hasText: liveRun!.id });
-  await expect(banner).toHaveCount(1, { timeout: REAL_ENGINE_TIMEOUT });
-  await expect(banner).toContainText("operator-stopped-now");
-  await expect(banner).toContainText("finished");
-  await banner.locator(".engine-banner-ack").click();
-  await expect(banner).toHaveCount(0);
+  const alert = page.locator("#engine-alert-modal");
+  await expect(alert).toHaveClass(/open/, { timeout: REAL_ENGINE_TIMEOUT });
+  await expect(alert).toContainText(liveRun!.id);
+  await expect(alert).toContainText("operator-stopped-now");
+  await expect(alert).toContainText("finished");
+  await alert.locator(".engine-alert-ack").click();
+  await expect(alert).not.toHaveClass(/open/);
 });
 
-test("unacknowledged runs render newest-first with the last three linked quarantines", async ({
+test("unacknowledged runs advance newest-first with the last three linked quarantines", async ({
   page,
 }) => {
   const older = stoppedRun(
@@ -320,29 +570,30 @@ test("unacknowledged runs render newest-first with the last three linked quarant
   );
   acknowledged.acknowledged_at = "2026-08-30T10:01:00Z";
 
-  await page.route("**/api/repos/*/engine", (route) =>
-    fulfillRuns(route, [older, draining, halted, acknowledged]),
-  );
+  const alertRuns = [older, draining, halted, acknowledged];
+  await page.route("**/api/repos/*/engine/ack", async (route) => {
+    const body = route.request().postDataJSON() as { run: string };
+    const current = alertRuns.find((run) => run.id === body.run)!;
+    current.acknowledged_at = "2026-08-30T10:05:00Z";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, alertRuns));
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
-  const banners = page.locator(".engine-banner");
-  await expect(banners).toHaveCount(3);
-  await expect(banners.nth(0)).toContainText("run-halted-newer");
-  await expect(banners.nth(0)).toContainText("breaker-tripped");
-  await expect(banners.nth(0)).toContainText("halted");
-  await expect(banners.nth(0)).toContainText("4 consecutive hard stops");
-  await expect(banners.nth(1)).toContainText("run-draining");
-  await expect(banners.nth(1)).toContainText("operator-stopped");
-  await expect(banners.nth(1)).toContainText("draining");
-  await expect(banners.nth(2)).toContainText("run-drained-older");
-  await expect(banners.nth(2)).toContainText("queue-drained");
-  await expect(banners.nth(2)).toContainText("No quarantined stories");
-  await expect(page.locator("#engine-banner-region")).not.toContainText(
-    "run-already-acknowledged",
-  );
+  const alert = page.locator("#engine-alert-modal");
+  await expect(alert).toContainText("run-halted-newer");
+  await expect(alert).toContainText("breaker-tripped");
+  await expect(alert).toContainText("halted");
+  await expect(alert).toContainText("4 consecutive hard stops");
+  await expect(alert).not.toContainText("run-draining");
+  await expect(alert).not.toContainText("run-already-acknowledged");
 
-  const quarantines = banners.nth(0).locator(".engine-quarantine-item");
+  const quarantines = alert.locator(".engine-quarantine-item");
   await expect(quarantines).toHaveCount(3);
   await expect(quarantines.nth(0)).toContainText("AA-1");
   await expect(quarantines.nth(0)).toContainText("interrupted");
@@ -350,15 +601,23 @@ test("unacknowledged runs render newest-first with the last three linked quarant
   await expect(quarantines.nth(1)).toContainText("window-gone");
   await expect(quarantines.nth(2)).toContainText("AA-1");
   await expect(quarantines.nth(2)).toContainText("agent-blocked");
-  await expect(banners.nth(0).locator(".rel-id")).toHaveCount(3);
-  await expect(banners.nth(0)).not.toContainText("stalled");
+  await expect(alert.locator(".rel-id")).toHaveCount(3);
+  await expect(alert).not.toContainText("stalled");
 
-  await quarantines.nth(1).locator(".rel-id").click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await expect(page.locator("#drawer-id")).toHaveText("AA-2");
+  await alert.locator(".engine-alert-ack").click();
+  await expect(alert).toContainText("run-draining");
+  await expect(alert).toContainText("operator-stopped");
+  await expect(alert).toContainText("draining");
+  await expect(alert).not.toContainText("run-halted-newer");
+
+  await alert.locator(".engine-alert-ack").click();
+  await expect(alert).toContainText("run-drained-older");
+  await expect(alert).toContainText("queue-drained");
+  await expect(alert).toContainText("No quarantined stories");
+  await expect(alert).not.toContainText("run-draining");
 });
 
-test("a banner survives reload and notice dismissal until its run is acknowledged", async ({
+test("an alert modal survives reload and notice dismissal until its run is acknowledged", async ({
   page,
 }) => {
   await page.clock.install();
@@ -391,34 +650,34 @@ test("a banner survives reload and notice dismissal until its run is acknowledge
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await expect(page.locator(".engine-banner")).toContainText("run-durable");
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-durable");
   await page.reload();
-  await expect(page.locator(".engine-banner")).toContainText("run-durable");
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-durable");
 
   await page.clock.runFor(60_000);
   await page.evaluate(() =>
     (document.querySelector("#toast-dismiss-all") as HTMLButtonElement).click(),
   );
-  await expect(page.locator(".engine-banner")).toContainText("run-durable");
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-durable");
   expect(
-    await page.locator(".engine-banner").evaluate((node) => !!node.closest("#notice-dock")),
+    await page.locator("#engine-alert-modal").evaluate((node) => !!node.closest("#notice-dock")),
   ).toBe(false);
 
   await page.evaluate(() => {
-    const button = document.querySelector(".engine-banner-ack") as HTMLButtonElement;
+    const button = document.querySelector(".engine-alert-ack") as HTMLButtonElement;
     button.click();
     button.click();
   });
   await expect.poll(() => posts).toBe(1);
   expect(submitted).toEqual({ run: "run-durable" });
-  await expect(page.locator(".engine-banner-ack")).toBeDisabled();
-  await expect(page.locator(".engine-banner-ack")).toHaveText("Acknowledging…");
+  await expect(page.locator(".engine-alert-ack")).toBeDisabled();
+  await expect(page.locator(".engine-alert-ack")).toHaveText("Acknowledging…");
 
   releasePost();
-  await expect(page.locator(".engine-banner")).toHaveCount(0);
+  await expect(page.locator("#engine-alert-modal")).not.toHaveClass(/open/);
 });
 
-test("a status reply from before acknowledgement cannot resurrect its banner", async ({
+test("a status reply from before acknowledgement cannot resurrect its alert", async ({
   page,
 }) => {
   await installTestEventSource(page);
@@ -477,14 +736,14 @@ test("a status reply from before acknowledgement cannot resurrect its banner", a
   }, project);
   await started;
 
-  await page.locator(".engine-banner-ack").click();
-  await expect(page.locator(".engine-banner")).toHaveCount(0);
+  await page.locator(".engine-alert-ack").click();
+  await expect(page.locator("#engine-alert-modal")).not.toHaveClass(/open/);
   releaseOld();
   await finished;
-  await expect(page.locator(".engine-banner")).toHaveCount(0);
+  await expect(page.locator("#engine-alert-modal")).not.toHaveClass(/open/);
 });
 
-test("an ambiguous acknowledgement retains the banner until status confirms it", async ({
+test("an ambiguous acknowledgement retains the alert until status confirms it", async ({
   page,
 }) => {
   const halted = stoppedRun(
@@ -509,18 +768,18 @@ test("an ambiguous acknowledgement retains the banner until status confirms it",
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await page.locator(".engine-banner-ack").click();
+  await page.locator(".engine-alert-ack").click();
   await expect(page.locator("#toast-stack .toast.error")).toContainText(
     "storyhook could not confirm whether this reached the daemon",
   );
-  await expect(page.locator(".engine-banner")).toContainText("run-ambiguous-ack");
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-ambiguous-ack");
 
   halted.acknowledged_at = "2026-08-30T12:05:00Z";
   releaseReconcile();
-  await expect(page.locator(".engine-banner")).toHaveCount(0);
+  await expect(page.locator("#engine-alert-modal")).not.toHaveClass(/open/);
 });
 
-test("a failed refresh leaves the last-confirmed engine banner visibly stale", async ({
+test("a failed refresh leaves the last-confirmed engine alert visibly stale", async ({
   page,
 }) => {
   await page.clock.install();
@@ -543,11 +802,11 @@ test("a failed refresh leaves the last-confirmed engine banner visibly stale", a
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await expect(page.locator(".engine-banner")).toContainText("run-stale");
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-stale");
   await page.clock.runFor(25_000);
   await expect.poll(() => gets).toBeGreaterThan(1);
-  await expect(page.locator(".engine-banner")).toContainText("run-stale");
-  await expect(page.locator(".engine-banner-stale")).toContainText(
+  await expect(page.locator("#engine-alert-modal")).toContainText("run-stale");
+  await expect(page.locator(".engine-alert-stale")).toContainText(
     "Status refresh failed; showing the last confirmed alert.",
   );
 });
@@ -654,6 +913,257 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await page.clock.runFor(1_000);
   await expect(elapsed).not.toHaveText(beforeTick || "");
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
+});
+
+test("running and paused controls guard and reconcile pause and resume", async ({ page }) => {
+  let current = run("alpha", "AA-CONTROL");
+  let pausePosts = 0;
+  let resumePosts = 0;
+  let pauseBody: unknown = null;
+  let resumeBody: unknown = null;
+  let releasePause!: () => void;
+  let releaseResume!: () => void;
+  const pauseGate = new Promise<void>((resolve) => {
+    releasePause = resolve;
+  });
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    pausePosts++;
+    pauseBody = route.request().postDataJSON();
+    await pauseGate;
+    current.state = "paused";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine/resume", async (route) => {
+    resumePosts++;
+    resumeBody = route.request().postDataJSON();
+    await resumeGate;
+    current.state = "running";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [current]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const pause = page.locator(".engine-pause-btn");
+  await expect(pause).toHaveText("Pause new claims");
+  await expect(page.locator(".engine-resume-btn")).toHaveCount(0);
+  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+
+  await page.evaluate(() => {
+    const button = document.querySelector(".engine-pause-btn") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => pausePosts).toBe(1);
+  expect(pauseBody).toEqual({ run: current.id });
+  await expect(pause).toBeDisabled();
+  await expect(pause).toHaveText("Pausing…");
+
+  releasePause();
+  const resume = page.locator(".engine-resume-btn");
+  await expect(resume).toHaveText("Resume");
+  await expect(page.locator(".engine-pause-btn")).toHaveCount(0);
+  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+
+  await page.evaluate(() => {
+    const button = document.querySelector(".engine-resume-btn") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => resumePosts).toBe(1);
+  expect(resumeBody).toEqual({ run: current.id });
+  await expect(resume).toBeDisabled();
+  await expect(resume).toHaveText("Resuming…");
+
+  releaseResume();
+  await expect(page.locator(".engine-pause-btn")).toHaveText("Pause new claims");
+});
+
+test("Stop offers guarded Drain and Stop now with exact consequences", async ({ page }) => {
+  let current = run("alpha", "AA-STOP");
+  let stopPosts = 0;
+  let acknowledgements = 0;
+  const bodies: unknown[] = [];
+  let releaseDrain!: () => void;
+  let releaseNow!: () => void;
+  const drainGate = new Promise<void>((resolve) => {
+    releaseDrain = resolve;
+  });
+  const nowGate = new Promise<void>((resolve) => {
+    releaseNow = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/stop", async (route) => {
+    stopPosts++;
+    const body = route.request().postDataJSON() as { now: boolean };
+    bodies.push(body);
+    if (body.now) {
+      await nowGate;
+      current.state = "finished";
+      current.stop_reason = "operator-stopped-now";
+      current.acknowledged_at = null;
+    } else {
+      await drainGate;
+      current.state = "draining";
+      current.stop_reason = "operator-stopped";
+      current.acknowledged_at = null;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine/ack", async (route) => {
+    acknowledgements++;
+    expect(route.request().postDataJSON()).toEqual({ run: current.id });
+    current.acknowledged_at = `2026-09-05T12:0${acknowledgements}:00Z`;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", (route) => fulfillRuns(route, [current]));
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const stop = page.locator(".engine-stop-btn");
+  await stop.click();
+  const modal = page.locator("#engine-stop-modal");
+  await expect(modal).toHaveClass(/open/);
+  await expect(modal).toContainText(
+    "Occupied lanes finish, no new stories are claimed, and Run Full Auto returns after the last lane lands.",
+  );
+  await expect(modal).toContainText(
+    "Active claims are released and their windows are closed. Branches and worktrees are preserved.",
+  );
+  await expect(page.locator("#engine-stop-cancel")).toBeFocused();
+  await page.locator("#engine-stop-cancel").click();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+
+  await stop.click();
+  await page.keyboard.press("Escape");
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+  await stop.click();
+  await page.locator("#engine-stop-modal-backdrop").click({ position: { x: 1, y: 1 } });
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(stop).toBeFocused();
+
+  await stop.click();
+  await expectCoarseEngineTargets(page, "#engine-stop-modal button");
+  await page.evaluate(() => {
+    const button = document.querySelector("#engine-stop-drain") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => stopPosts).toBe(1);
+  expect(bodies[0]).toEqual({ run: current.id, now: false });
+  await expect(page.locator("#engine-stop-drain")).toBeDisabled();
+  await expect(page.locator("#engine-stop-drain")).toHaveText("Draining…");
+  await expect(page.locator("#engine-stop-now")).toBeDisabled();
+  await expect(page.locator("#engine-stop-cancel")).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveClass(/open/);
+
+  releaseDrain();
+  await expect(modal).not.toHaveClass(/open/);
+  const alert = page.locator("#engine-alert-modal");
+  await expect(alert).toHaveClass(/open/);
+  await expect(alert).toContainText("operator-stopped");
+  await expect(page.locator("#engine-alert-title")).toBeFocused();
+  const drainingStop = page.locator(".engine-stop-btn");
+  await expect(page.locator(".engine-pause-btn, .engine-resume-btn")).toHaveCount(0);
+  await expect(drainingStop).toHaveText("Stop (draining)");
+  await page.locator(".engine-alert-ack").click();
+  await expect(alert).not.toHaveClass(/open/);
+  await expect(drainingStop).toBeFocused();
+  await expectCoarseEngineTargets(page, ".engine-live button");
+
+  await drainingStop.click();
+  await expect(page.locator("#engine-stop-drain")).toBeDisabled();
+  await expect(page.locator("#engine-stop-drain")).toHaveText("Already draining");
+  await expect(page.locator("#engine-stop-now")).toBeEnabled();
+  await page.evaluate(() => {
+    const button = document.querySelector("#engine-stop-now") as HTMLButtonElement;
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => stopPosts).toBe(2);
+  expect(bodies[1]).toEqual({ run: current.id, now: true });
+  await expect(page.locator("#engine-stop-now")).toBeDisabled();
+  await expect(page.locator("#engine-stop-now")).toHaveText("Stopping…");
+
+  releaseNow();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(alert).toHaveClass(/open/);
+  await expect(alert).toContainText("operator-stopped-now");
+  await expect(page.locator("#engine-alert-title")).toBeFocused();
+  await page.locator(".engine-alert-ack").click();
+  await expect(alert).not.toHaveClass(/open/);
+  expect(acknowledgements).toBe(2);
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
+});
+
+test("a timed-out lifecycle mutation is reported as ambiguous and reconciled", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "webkit",
+    "WebKit never fires XMLHttpRequest.ontimeout on a request held by Playwright route interception -- measured, deterministic (SH-347)",
+  );
+  const timeoutMs = 300;
+  let current = run("alpha", "AA-TIMEOUT");
+  let gets = 0;
+  let routeDone!: () => void;
+  const done = new Promise<void>((resolve) => {
+    routeDone = resolve;
+  });
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    current.state = "paused";
+    await new Promise((resolve) => setTimeout(resolve, timeoutMs + 500));
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ result: "ok", run: current }),
+      });
+    } finally {
+      routeDone();
+    }
+  });
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto(`/?mutationTimeoutMs=${timeoutMs}`);
+  await openProject(page, "Alpha Project");
+  const before = gets;
+  await page.locator(".engine-pause-btn").click();
+
+  const notice = page.locator("#toast-stack .toast.error");
+  await expect(notice).toContainText("may or may not have gone through");
+  await expect(notice).not.toContainText("request timed out");
+  await expect.poll(() => gets).toBeGreaterThan(before);
+  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
+  await done;
 });
 
 test("the modal submits a changed lane count through a physical click", async ({
@@ -894,6 +1404,141 @@ test("the safety poll reconciles engine state without an SSE event", async ({
   await expect(engineStoryLane(page, "AA-SAFETY")).toHaveText("AA-SAFETY");
 });
 
+test("lane chips identify live Full Auto work and clear through the view press gate", async ({
+  page,
+}) => {
+  await installTestEventSource(page);
+  let current = run("alpha", "AA-1");
+  let gets = 0;
+  let project = "";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    const segments = new URL(route.request().url()).pathname.split("/");
+    project = decodeURIComponent(segments[3]);
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const firstCard = page.locator('.card[data-id="AA-1"]');
+  const secondCard = page.locator('.card[data-id="AA-2"]');
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+  await expect(firstCard).toHaveAccessibleName(/Full Auto: Lane 1/);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveCount(0);
+
+  occupySecondLane(current, "AA-2");
+  const twoLaneFetch = gets + 1;
+  await page.evaluate((repo) => {
+    (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+  await expect.poll(() => gets).toBeGreaterThanOrEqual(twoLaneFetch);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const appearance = await firstCard.locator(".engine-lane-chip").evaluate((node) => {
+      const chip = getComputedStyle(node);
+      const root = getComputedStyle(document.documentElement);
+      return {
+        color: chip.color,
+        background: chip.backgroundColor,
+        neutralColor: root.getPropertyValue("--fg-muted").trim(),
+        neutralBackground: root.getPropertyValue("--bg-sunken").trim(),
+        reservedColor: root.getPropertyValue("--warn").trim(),
+        reservedBackground: root.getPropertyValue("--warn-soft").trim(),
+      };
+    });
+    expect(
+      contrastRatio(parseColor(appearance.color), parseColor(appearance.background)),
+      `${theme.name}: the lane chip must remain readable`,
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(appearance.color, `${theme.name}: lane and ordinary chip ink must differ`).not.toBe(
+      appearance.neutralColor,
+    );
+    expect(
+      appearance.background,
+      `${theme.name}: lane and ordinary chip backgrounds must differ`,
+    ).not.toBe(appearance.neutralBackground);
+    expect(appearance.color, `${theme.name}: lane and reserved chip ink must differ`).not.toBe(
+      appearance.reservedColor,
+    );
+    expect(
+      appearance.background,
+      `${theme.name}: lane and reserved chip backgrounds must differ`,
+    ).not.toBe(appearance.reservedBackground);
+  }
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  const firstRow = page.locator('tr[data-id="AA-1"]');
+  const secondRow = page.locator('tr[data-id="AA-2"]');
+  await expect(firstRow.locator(".col-title .engine-lane-chip")).toHaveText(
+    "Full Auto: Lane 1",
+  );
+  await expect(secondRow.locator(".col-title .engine-lane-chip")).toHaveText(
+    "Full Auto: Lane 2",
+  );
+  await expect(firstRow).toHaveAccessibleName(/Full Auto: Lane 1/);
+
+  for (const state of ["paused", "draining"] as const) {
+    current = { ...current, state };
+    const stateFetch = gets + 1;
+    await page.evaluate((repo) => {
+      (window as unknown as {
+        __testEventSource: { emit(name: string, data: string): void };
+      }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+    }, project);
+    await expect.poll(() => gets).toBeGreaterThanOrEqual(stateFetch);
+    await expect(firstRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+    await expect(secondRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
+  }
+
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  const box = await firstCard.boundingBox();
+  expect(box).not.toBeNull();
+  const heldData = await holdFetch<unknown>(
+    page,
+    (url) => url.pathname.endsWith("/data"),
+    () => true,
+  );
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+
+  current = {
+    ...current,
+    lanes: current.lanes.map((lane) => ({
+      ...lane,
+      state: "idle",
+      story: null,
+      dispatched_at: null,
+    })),
+  };
+  const clearFetch = gets + 1;
+  await page.evaluate((repo) => {
+    (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+  await heldData.taken;
+  await expect.poll(() => gets).toBeGreaterThanOrEqual(clearFetch);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __storyhookPressGate: { deferred: string[] } })
+          .__storyhookPressGate.deferred.includes("view"),
+      ),
+    )
+    .toBe(true);
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+
+  await page.mouse.up();
+  await heldData.deliver();
+  await expect(firstCard.locator(".engine-lane-chip")).toHaveCount(0);
+  await expect(secondCard.locator(".engine-lane-chip")).toHaveCount(0);
+});
+
 test("an alert repaint waits until a held acknowledgement can dispatch its click", async ({
   page,
 }) => {
@@ -927,7 +1572,7 @@ test("an alert repaint waits until a held acknowledgement can dispatch its click
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  const acknowledge = page.locator(".engine-banner-ack");
+  const acknowledge = page.locator(".engine-alert-ack");
   await expect(acknowledge).toBeEnabled();
   const box = await acknowledge.boundingBox();
   expect(box).not.toBeNull();
@@ -944,7 +1589,7 @@ test("an alert repaint waits until a held acknowledgement can dispatch its click
     .poll(() =>
       page.evaluate(() =>
         (window as unknown as { __storyhookPressGate: { deferred: string[] } })
-          .__storyhookPressGate.deferred.includes("engine-banner"),
+          .__storyhookPressGate.deferred.includes("engine-alert"),
       ),
     )
     .toBe(true);
@@ -952,7 +1597,7 @@ test("an alert repaint waits until a held acknowledgement can dispatch its click
 
   await page.mouse.up();
   await expect.poll(() => posts).toBe(1);
-  await expect(page.locator(".engine-banner")).toHaveCount(0);
+  await expect(page.locator("#engine-alert-modal")).not.toHaveClass(/open/);
 });
 
 test("an engine repaint waits until a held press can dispatch its click", async ({
@@ -1011,4 +1656,58 @@ test("an engine repaint waits until a held press can dispatch its click", async 
     .toBe(1);
   await expect(page.locator("#engine-modal")).toHaveClass(/open/);
   await expect(engineStoryLane(page, "AA-PUSH")).toHaveText("AA-PUSH");
+});
+
+test("a live-control repaint waits until a held Pause press dispatches", async ({ page }) => {
+  await installTestEventSource(page);
+  const current = run("alpha", "AA-HELD-PAUSE");
+  let project = "";
+  let gets = 0;
+  let pausePosts = 0;
+
+  await page.route("**/api/repos/*/engine/pause", async (route) => {
+    pausePosts++;
+    current.state = "paused";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+  await page.route("**/api/repos/*/engine", async (route) => {
+    gets++;
+    const segments = new URL(route.request().url()).pathname.split("/");
+    project = decodeURIComponent(segments[3]);
+    if (gets > 1) current.lanes[1].state = "dispatching";
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const pause = page.locator(".engine-pause-btn");
+  await expect(pause).toBeEnabled();
+  const box = await pause.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.evaluate((repo) => {
+    const source = (window as unknown as {
+      __testEventSource: { emit(name: string, data: string): void };
+    }).__testEventSource;
+    source.emit("repo-changed", JSON.stringify({ repo_id: repo }));
+  }, project);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __storyhookPressGate: { deferred: string[] } })
+          .__storyhookPressGate.deferred.includes("engine"),
+      ),
+    )
+    .toBe(true);
+  await expect(pause).toBeAttached();
+
+  await page.mouse.up();
+  await expect.poll(() => pausePosts).toBe(1);
+  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
 });

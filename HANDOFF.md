@@ -3,54 +3,55 @@
 ## Delivered
 
 - Engine runs persist immutable agent, model, effort, and speed configuration.
-- Every initial and replacement lane dispatch reuses that configuration.
-- CLI, HTTP, human output, and JSON expose the fields with shared validation.
-- Project and epic starts use one Full Auto modal backed by dispatch
-  capabilities and provider preferences without changing attended Auto mode.
-- Live dashboard controls show the active configuration.
+- Initial and replacement lane dispatches reuse the stored configuration.
+- CLI, HTTP, human output, JSON, project starts, and epic starts expose the
+  configuration through one validated contract and one shared dashboard modal.
+- Current main's lifecycle controls, persistent alerts, and lane chips coexist
+  with the configured launch surface.
 
-## Evidence
+## Commits
 
-- Branch: `worktree-SH-566`.
-- Backend commit: `55605278` (`feat(engine): persist launch configuration`).
-- Dashboard commit: `d093d4d2` (`feat(dashboard): configure Full Auto launches`).
-- Documentation commit: `78eb9ace` (`docs(engine): describe configured Full
-  Auto runs`).
-- Store schema is version 32: main's verification incident is migration 31 and
-  SH-566's engine run options are migration 32.
-- Explicit standard speed preserves the historical lane argv; fast emits its
-  provider override.
+- `55605278`: backend persistence, service, CLI, and wire behavior.
+- `d093d4d2`: dashboard modal and browser coverage.
+- `78eb9ace`: documentation and original handoff.
+- `93769252`: verifier-found engine-status golden correction.
+- `29d427bb`: fake-tmux composite liveness probe repair for SH-575.
 
 ## Reconciliation
 
-- Current `origin/main` is merged additively; published SH-566 history remains
-  unchanged.
-- Main's verification incident store/API/dashboard behavior and SH-566's run
-  configuration behavior are both retained.
-- The append-only design ledger assigns D15 to verification incidents and D16
-  to immutable provider configuration.
-- AGENTS.md and its canonical scaffold template both name SH-566 as the current
-  verifier item.
-- Focused engine, CLI, wire, HTTP/dashboard, migration, verifier-incident, help,
-  README, and roadmap-contract Rust targets pass.
-- `specs/engine.spec.ts` passes 15/15 on Chromium, WebKit, mobile Chromium, and
-  mobile WebKit. `specs/verification-incident.spec.ts` passes on Chromium and
-  WebKit; it intentionally selects no mobile cases.
-- Formatting and workspace/all-target warnings-as-errors checks pass.
+- Published history remains unchanged; `origin/main` at `78c2bde0` is merged
+  additively into `worktree-SH-566`.
+- Main's verification incident is migration 31; engine run options are
+  migration 32.
+- D15 records verification incidents; D16 records immutable provider options.
+- AGENTS.md and its canonical template name SH-566 as the current verifier
+  item.
+- Dashboard overlay precedence is alert, stop confirmation, launch modal, then
+  older surfaces.
 
-## Verifier repair
+## Verifier repairs
 
-- Central verification found only `engine_status_human` and
-  `engine_status_json` newly red on merge tree `33b84e63`.
-- RCA confirmed that feature commit `55605278` added the approved status
-  fields but omitted both complete-output fixtures.
-- Fix commit `93769252` updates only those two snapshot bodies; production
-  output remains unchanged.
-- Each exact regression test passes with `INSTA_UPDATE=no`; the complete
-  `golden_cli` target passes 30/30.
+- Central verification found two stale complete-output snapshots. `93769252`
+  updates only those expected human and JSON outputs.
+- The desktop-Chromium engine project exposed a fake-tmux contract defect:
+  production requested pane pid, command, and dead state together, but the fake
+  returned only the first matching field. `29d427bb` renders the composite and
+  derives dead state from the placeholder process; its exact regression test
+  passed after reproducing RED.
+
+## Focused verification
+
+- Fake-tmux state regression: 1 passed.
+- Desktop Chromium `specs/engine.spec.ts`: 24 passed, including the formerly
+  repeatable real-daemon failure.
+- Desktop Chromium `specs/overlay-modality.spec.ts`: 6 passed.
+- Rust `web_test`: 219 passed.
+- Engine-status goldens: 2 passed with snapshot updates disabled.
+- AGENTS/template equality: 1 passed; `cargo fmt --check` passed.
 
 ## Submission boundary
 
-Push the verifier repair and this handoff to existing PR #652, comment final
-evidence, then move SH-566 to `verifying` as the absolute last action. Central
-verification owns the full suite, merge, completion, and worktree cleanup.
+Run only the new and directly impacted tests, push the additive merge to
+existing PR #652, record the evidence on SH-566, then move SH-566 to
+`verifying` as the absolute last action. Central verification owns the full
+suite, merge, completion, and worktree cleanup.
