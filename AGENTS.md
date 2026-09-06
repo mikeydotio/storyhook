@@ -189,12 +189,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: verify SH-204's lowercase label identity, SH-564's explicit Claude
-  dispatch binding, and Full Auto web improvements SH-567–SH-569 through the
-  repaired centralized verifier.
+- Current: verify SH-570's PID-bound provider plan watchers and SH-569's Full
+  Auto lane chips through the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
-- Later: reproduce and choose a provider-native Codex autonomous hook-binding
-  contract (SH-571).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).
 - Later: resume the attachment epic's authenticated serving and upload work

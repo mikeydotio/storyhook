@@ -523,7 +523,16 @@ fn hook_publishes_a_sentinel_carrying_the_piped_session_id() {
         .unwrap_or_else(|e| panic!("expected a sentinel at {}: {e}", sentinel_path.display()));
     let sentinel: serde_json::Value = serde_json::from_str(&raw).expect("sentinel is valid JSON");
     assert_eq!(sentinel["session_id"], "hook-sess-7");
-    assert_eq!(sentinel["protocol_version"], 1);
+    assert_eq!(sentinel["protocol_version"], 2);
+    let expected_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("plugins/story")
+        .canonicalize()
+        .expect("the repository plugin root exists");
+    assert_eq!(
+        sentinel["plugin_root"],
+        expected_root.to_string_lossy().as_ref(),
+        "the hook must attest to the exact plugin package that executed"
+    );
 }
 
 #[test]

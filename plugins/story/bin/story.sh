@@ -1005,7 +1005,7 @@ schedule_plan_approval() {
   printf -v full_auto_q '%q' "$full_auto_marker"
   case "$AGENT" in
     claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
-    codex) approval_args="--approve-codex-plan $pane_q" ;;
+    codex) approval_args="--approve-codex-plan $pane_q $pid_q" ;;
     *) return 1 ;;
   esac
   tmux run-shell -b -t "$pane" \
@@ -1027,6 +1027,12 @@ dispatch_ready_note() {
       ;;
     no-sentinel)
       printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
+      ;;
+    hook-identity-missing)
+      printf 'its SessionStart hook published a legacy or malformed sentinel without protocol-2 plugin identity. Update or repair the enabled Storyhook plugin, then run `story doctor install`'
+      ;;
+    hook-identity-mismatch)
+      printf 'its SessionStart hook came from a different Storyhook plugin root than this helper. Remove the stale registration or launch the matching helper, then run `story doctor install`'
       ;;
     *)
       if [ -n "$WAIT_READY_COMMAND" ]; then
@@ -2034,7 +2040,7 @@ cmd_dispatch() {
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
               + (if $agent == "claude" then " --approve-claude-plan <pane> <pane-pid>"
-                 else " --approve-codex-plan <pane>" end))
+                 else " --approve-codex-plan <pane> <pane-pid>" end))
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
@@ -2268,7 +2274,10 @@ cmd_dispatch() {
   # immediate retry is not answered with "already dispatched?" (the collision
   # guard keys on worktree/branch). A forced pre-existing claim stays put.
   local provider_ready=false
-  if [ "$AGENT" = "codex" ]; then
+  if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
+    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" \
+      && provider_ready=true
+  elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
   else
     wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" && provider_ready=true

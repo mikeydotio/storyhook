@@ -229,6 +229,62 @@ pub struct EngineRunRecord {
     pub updated_at: String,
 }
 
+/// Whether a verifier infrastructure failure can recover without local repair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationFailureDisposition {
+    /// A networked dependency can recover while the submission stays unchanged.
+    Retryable,
+    /// Local configuration or verifier machinery requires operator repair.
+    Permanent,
+}
+
+impl VerificationFailureDisposition {
+    /// The constrained store value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retryable => "retryable",
+            Self::Permanent => "permanent",
+        }
+    }
+
+    /// Parses a constrained store value.
+    #[must_use]
+    pub const fn parse(raw: &str) -> Option<Self> {
+        match raw.as_bytes() {
+            b"retryable" => Some(Self::Retryable),
+            b"permanent" => Some(Self::Permanent),
+            _ => None,
+        }
+    }
+}
+
+/// Durable evidence that infrastructure prevented the serialized verifier from running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationIncident {
+    /// Identity used by acknowledgement's stale-click guard.
+    pub incident_id: String,
+    /// Project containing the head candidate.
+    pub project: ProjectId,
+    /// Numeric story identity inside `project`.
+    pub story: StoryNo,
+    /// Exact transition into `verifying` that encountered the failure.
+    pub generation: GlobalSeq,
+    /// Whether unchanged retry is safe.
+    pub disposition: VerificationFailureDisposition,
+    /// True once retry policy has stopped the queue.
+    pub halted: bool,
+    /// Number of observed attempts in this incident.
+    pub attempts: u32,
+    /// Latest infrastructure diagnosis.
+    pub detail: String,
+    /// RFC3339 time of the first failed attempt.
+    pub first_failed_at: String,
+    /// RFC3339 time of the latest failed attempt.
+    pub last_failed_at: String,
+}
+
 /// One durable hard-stop diagnosis retained on its Full Auto run.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EngineQuarantineRecord {

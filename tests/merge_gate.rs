@@ -664,6 +664,36 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
     assert!(repo.merge_object_artifacts().is_empty());
 }
 
+#[test]
+fn speculative_git_directory_cannot_be_inferred_as_bare() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", &base, "g", "feature\n");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "private_git=$(git rev-parse --absolute-git-dir) && GIT_DIR=\"$private_git\" git init -q -b main && basename \"$private_git\"",
+        ],
+    );
+
+    assert_ok(&outcome, "reinitializing the private speculative git-dir");
+    assert_eq!(stdout(&outcome), ".git");
+    assert_eq!(
+        stdout(&repo.git(&["config", "--get", "core.bare"])),
+        "false",
+        "a leaked speculative GIT_DIR must not classify the shared repository as bare"
+    );
+}
+
 /// Production passes the fetched base ref, not its already-resolved object
 /// id. Private administration must still begin with a valid detached HEAD.
 #[test]
@@ -1455,7 +1485,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
     assert_eq!(accepted["number"], 42);
 
     let draft = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":true"));
-    assert_eq!(draft["result"], "infrastructure-failure");
+    assert_eq!(draft["result"], "invalid-submission");
     assert!(draft["detail"].as_str().unwrap().contains("is a draft"));
     assert!(
         !draft["detail"]
@@ -1466,7 +1496,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
 
     let fork =
         validate(&ready.replace("\"isCrossRepository\":false", "\"isCrossRepository\":true"));
-    assert_eq!(fork["result"], "infrastructure-failure");
+    assert_eq!(fork["result"], "invalid-submission");
     assert!(
         fork["detail"]
             .as_str()
@@ -1482,6 +1512,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
 
     let invalid = validate(&ready.replace("\"isDraft\":false", "\"isDraft\":\"false\""));
     assert_eq!(invalid["result"], "infrastructure-failure");
+    assert_eq!(invalid["disposition"], "permanent");
     assert!(
         invalid["detail"]
             .as_str()

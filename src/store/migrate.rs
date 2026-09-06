@@ -335,6 +335,13 @@ pub const MIGRATIONS: &[Migration] = &[
         // referenced table is rebuilt and historical events remain untouched.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 31,
+        name: "verification_incident",
+        sql: include_str!("schema/0031_verification_incident.sql"),
+        // One operational singleton table; story history is untouched.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

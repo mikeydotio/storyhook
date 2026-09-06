@@ -25,22 +25,28 @@ helper refuses and names the engine remedy. Never add the engine-private `--full
 marker here.
 
 - `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. The helper refuses before prompt delivery when the
-  story, worktree, Codex process, readiness screen, or Plan-mode footer is unsafe.
+  story, worktree, Codex process, readiness proof, or Plan-mode footer is unsafe.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
 The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` worktree,
-tmux window, `codex --no-alt-screen` launch, screen readiness, Shift+Tab transition into Plan
-mode, bracketed paste, and Tab submission. Do not repeat those side effects.
+tmux window, `codex --no-alt-screen` launch, readiness, Shift+Tab transition into Plan mode,
+bracketed paste, and Tab submission. Do not repeat those side effects.
 
 With `--auto`, the helper adds `--approve-for-me` and
 `--dangerously-bypass-hook-trust`, and gives the child
-`STORYHOOK_AUTO=<story-id>`. After confirming Plan mode, it arms a pane-lifetime
-watcher that sends Return only when Codex's exact three-option plan review is
-visible with “Yes, implement this plan” selected. Automatic workspace-write
-review handles later tool approvals; the trusted packaged hook refuses
+`STORYHOOK_AUTO=<story-id>`. After confirming Plan mode, it arms a watcher bound
+to the original live pane PID. The watcher sends Return only when Codex's exact
+three-option plan review is visible with “Yes, implement this plan” selected;
+it retries bounded tmux/TUI failures and completes only after a settled capture
+confirms that dialog disappeared. Automatic workspace-write review handles
+later tool approvals; the trusted packaged hook refuses
 `request_user_input` so the unattended session cannot wait for a person. A
 custom `STORY_LAUNCH_CMD` remains wholesale and is reported as potentially
-weakening that guarantee. Attended dispatch is unchanged.
+weakening that guarantee. Before arming the watcher or delivering the prompt,
+the helper requires a protocol-2 SessionStart sentinel whose `plugin_root`
+exactly matches the package that owns the helper. Missing, legacy, malformed,
+or mismatched hooks refuse and roll back. Attended dispatch is unchanged and
+continues to use screen readiness.
 
 Codex has no `ExitPlanMode` tool boundary corresponding to Claude's. Storyhook's built-in
 Codex prompts therefore require the plan presented for approval to make posting that exact
@@ -76,6 +82,9 @@ host rather than only in the shared router.
 Codex discovers this installed plugin's `hooks/hooks.json`. The SessionStart,
 PreToolUse, PostToolUse(Bash), and Stop hook protocol is shared with Claude Code. A locally
 installed, non-managed plugin may require explicit trust/review in Codex before its hooks run.
+Trust permits hooks to execute; it does not bind an independently resolved helper to the
+plugin version Codex loaded. The SessionStart identity sentinel supplies that binding for
+autonomous Codex dispatch.
 
 The autonomous entries are implemented by `hooks/full-auto.sh`. They are inert unless
 `STORYHOOK_AUTO` or `STORYHOOK_FULL_AUTO` is set. In an autonomous session they approve
