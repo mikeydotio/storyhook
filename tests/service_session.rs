@@ -284,7 +284,7 @@ fn dispatching_session_start_publishes_a_sentinel_beside_the_hook_envelope() {
     assert!(matches!(response, Response::RawJson(_)));
 
     let sentinel = read_sentinel(&fixture);
-    assert_eq!(sentinel["protocol_version"], 1);
+    assert_eq!(sentinel["protocol_version"], 2);
     assert_eq!(sentinel["written_at"], FIXTURE_NOW);
     assert_eq!(
         sentinel["story_id"],
@@ -299,18 +299,23 @@ fn dispatching_session_start_publishes_a_sentinel_beside_the_hook_envelope() {
         sentinel["session_id"].is_null(),
         "no stdin was piped, so session_id stays absent rather than guessed: {sentinel}"
     );
+    assert!(
+        sentinel["plugin_root"].is_null(),
+        "a direct CLI invocation has no hook identity to publish: {sentinel}"
+    );
 }
 
 #[test]
-fn the_sentinels_session_id_comes_from_the_piped_hook_payload() {
+fn the_sentinels_session_and_plugin_identity_come_from_the_piped_hook_payload() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx().with_stdin(Some(
-        r#"{"session_id":"sess-42","source":"startup"}"#.to_string(),
+        r#"{"session_id":"sess-42","source":"startup","storyhook_plugin_root":"/opt/storyhook/plugins/story"}"#.to_string(),
     ));
     SessionService::new(&ctx).publish_sentinel();
 
     let sentinel = read_sentinel(&fixture);
     assert_eq!(sentinel["session_id"], "sess-42");
+    assert_eq!(sentinel["plugin_root"], "/opt/storyhook/plugins/story");
 }
 
 #[test]

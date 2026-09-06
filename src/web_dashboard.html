@@ -4073,19 +4073,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
    *
-   * The clock is not a bare `setTimeout`, because two states stop it:
+   * The clock is not a bare `setTimeout`, because three states stop it:
    *
    *   - the pointer resting on the notice, which IS a request to keep
    *     reading, made in the only vocabulary a toast offers;
    *   - the tab being hidden, the one state in which "three seconds of
    *     being visible" definitively did not happen. A notice exists because
    *     nobody may be watching; letting its clock run down in a background
-   *     tab defeats the notice at exactly the moment it was needed.
+   *     tab defeats the notice at exactly the moment it was needed;
+   *   - the document lacking focus, which covers the different case where
+   *     its tab remains visible but the browser is behind another application
+   *     or another browser window. Page Visibility may still call that tab
+   *     visible, so `window` focus and `document.hasFocus()` are both needed:
+   *     the event catches a transition after the clock starts, and the state
+   *     check catches a notice created after the transition already happened.
    *
    * Pausing preserves what is left rather than restarting it, so a reader
    * who hovers twice does not get a fresh three seconds each time.
    *
-   * **Both are courtesies, and neither is this dashboard's WCAG conformance
+   * **All three are courtesies, and none is this dashboard's WCAG conformance
    * story** — a distinction this comment got wrong until SH-322, in a way
    * worth recording because it is easy to get wrong again. SC 2.2.1 (Timing
    * Adjustable) offers exactly three mechanisms — **Turn off, Adjust,
@@ -4131,6 +4137,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     function resume() {
       if (leaving || timer !== null) return;
       if (document.hidden) return;
+      if (!document.hasFocus()) return;
       if (node.matches(":hover")) return;
       startedAt = Date.now();
       timer = window.setTimeout(depart, remaining);
@@ -4140,6 +4147,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       leaving = true;
       timer = null;
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
       node.classList.add("leaving");
       // Removal is NOT gated on reduced motion, unlike the fade itself: a
       // reader who asked for less movement did not ask for notices that
@@ -4153,15 +4162,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", pause);
+    window.addEventListener("focus", resume);
     // The teardown this notice's own removal has to run (SH-323). `depart()`
-    // detaches the document-level listener on the path where the clock expires;
-    // a notice removed by "Dismiss all" never reaches `depart()`, so without a
-    // handle here its listener would outlive the node it belongs to, for the
-    // rest of the session, with nothing left able to release it.
+    // detaches the document/window listeners on the path where the clock
+    // expires; a notice removed by "Dismiss all" never reaches `depart()`, so
+    // without a handle here its listeners would outlive the node they belong
+    // to, for the rest of the session, with nothing left able to release them.
     node.cancelNoticeClock = function() {
       if (timer !== null) window.clearTimeout(timer);
       timer = null;
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", pause);
+      window.removeEventListener("focus", resume);
     };
     resume();
   }
