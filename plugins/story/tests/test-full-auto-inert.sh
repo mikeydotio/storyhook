@@ -71,7 +71,7 @@ done
 PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/unset: the Claude watcher never contacts tmux"
-PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/unset: the Codex watcher never contacts tmux"
 
@@ -91,7 +91,7 @@ done
 PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/empty: the Claude watcher never contacts tmux"
-PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 777 1
 assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
   "inert/empty: the Codex watcher never contacts tmux"
 unset STORYHOOK_FULL_AUTO
