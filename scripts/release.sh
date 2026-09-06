@@ -470,7 +470,7 @@ if [ -n "$bump" ]; then
         | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/    failing check: \1/p' >&2
       printf '%s\n' "$validation" \
         | sed -n 's/.*"detail"[[:space:]]*:[[:space:]]*"\(Tag [^"]*\)".*/    \1/p' >&2
-      die "semver-cli validation fails, so \`bump run\` will refuse.
+      die "semver-cli validation fails, so the bump will refuse.
     A missing tag for the CURRENT version is the usual cause: this repository
     bumps VERSION through a PR and tags afterwards, so a release that never
     finished leaves VERSION ahead of any tag. Fix that first, or pass
@@ -553,7 +553,12 @@ if [ "$local_only" = 1 ]; then
     # --skip-tag: a tag is a claim about a published release. Minting one for a
     # build that never leaves this machine would put a tag in the repository
     # that no GitHub release corresponds to.
-    run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
+    # `execute` for the same reason the public path uses it (SH-580): `run`
+    # would gather, and gather refuses on any branch that is not semver's
+    # target. Nothing requires --local-only to be run from `main`, so this
+    # aborted from a feature branch too -- the sibling of the reported defect,
+    # fixed here rather than left for the next person to rediscover.
+    run "$SEMVER_CLI" bump execute "$bump" --skip-tag
 
     # Verify the bump actually landed, rather than trusting the exit status.
     # `semver-cli` reports a refusal as a JSON body on stdout and STILL EXITS
@@ -599,12 +604,24 @@ step "Bumping the version on a release branch"
 # Never on main directly: the org's `protect-main` ruleset forbids it, and the
 # bump has to arrive through a PR like everything else.
 run git switch -c "$release_branch"
-# --skip-tag is load-bearing, not tidiness. `semver-cli bump run` tags by
-# default, and it would tag THIS branch's commit -- but the tag has to name the
-# merge commit that actually lands on `main`, or `install.sh` resolves a
-# release built from a commit that is not on the released branch. The tag is
-# created further down, after the merge.
-run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
+# --skip-tag is load-bearing, not tidiness. `semver-cli bump` tags by default,
+# and it would tag THIS branch's commit -- but the tag has to name the merge
+# commit that actually lands on `main`, or `install.sh` resolves a release
+# built from a commit that is not on the released branch. The tag is created
+# further down, after the merge.
+#
+# `execute`, never `run` (SH-580). `run` is documented as "gather then execute
+# in one call WHEN NO QUESTIONS APPLY", and gather raises `wrong_branch` on any
+# branch that is not semver's configured `target_branch` -- which is `main`,
+# and which the `git switch -c` above has just deliberately left. Under
+# `--non-interactive` that question became an abort, so these two lines could
+# never both be satisfied and this command could never complete. `execute` is
+# the half of the API that means "the decision gather would ask about has
+# already been made", which is exactly true here: bumping on a release branch
+# is this script's own design, for the protect-main reason stated above. It
+# takes no `--non-interactive` flag because it never asks, so nothing is traded
+# for it. `--force` was measured and does NOT clear the question.
+run "$SEMVER_CLI" bump execute "$bump" --skip-tag
 
 if [ "$dry_run" = 0 ]; then
   actual="$(tr -d '[:space:]' < VERSION)"
