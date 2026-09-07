@@ -24,6 +24,20 @@
   This is the documented policy mechanism, not a hook bypass.
 - Reconciliation test results and the merge commit are recorded on SH-574.
 
+## Latest reconciliation
+
+- Merge origin/main d81d21696, preserving published history and both fixes:
+  SH-342 (#674) silent plugin post-git sync and SH-577 (#672) browser gestures.
+- Incoming implementation and tests remain unchanged. Roadmap and template
+  record both completions while retaining SH-574 as current verification work.
+- SH-577 scrolls without focus/activation and checks the returned centre hit
+  target after animations. Its story records 70 passing browser executions
+  and later reconciliation runs; preserve the real-dashboard regressions.
+- Run Rust builds and browser tests sequentially: rebuilding target/debug/story
+  invalidates a running browser-test daemon. SH-577 preserves failure artifacts
+  under /tmp/SH-577-reconcile-failed-artifacts; the PID overlap cause is unproven.
+- Final targeted validation and merge commit are recorded on SH-574.
+
 ## Verifier repair
 
 - Merge-tree 406cb64 failed the store-isolation contract: the new identity
