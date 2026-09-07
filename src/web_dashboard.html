@@ -1313,13 +1313,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    while this panel had `overflow: visible` -- nothing ever asked which edge
    `scrollTop 0` meant. SH-323 gives it a height bound and a scroller, which is
    what makes the question load-bearing, and browsers have historically disagreed
-   on the answer for reverse-direction containers. This suite drives only
-   Chromium (`e2e/playwright.config.ts` -- both projects are Blink, because `make
-   e2e-install` installs chromium and nothing else), so that disagreement is not
-   something a test here could ever catch: pinning it would attest to one engine
-   while reading as a guarantee about all of them, which is the shape of evidence
-   SH-226 and SH-306 already cost this project. The dependency is removed instead
-   of pinned. Cost, accepted deliberately: the newest row now sits at this
+   on the answer for reverse-direction containers. The desktop suite now drives
+   Chromium and WebKit (`e2e/playwright.config.ts`, SH-335), so that disagreement
+   is observable in both engines. The dependency stays removed instead of growing
+   an engine branch. Cost, accepted deliberately: the newest row now sits at this
    panel's top edge rather than nearest the screen corner. What matters is that
    the row reporting a failed dispatch is visible on arrival without scrolling,
    and that is asserted directly rather than inferred from which edge it is on. */
