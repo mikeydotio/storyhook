@@ -9,6 +9,7 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
+  settledBoundingBox,
 } from "./support";
 
 /**
@@ -72,10 +73,6 @@ test("a /data reply landing between mousedown and mouseup does not swallow the c
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
-  const box = await card.boundingBox();
-  if (!box) {
-    throw new Error(`"${title}"'s card has no box to click`);
-  }
 
   // Gate the *next* `/data` reply so it lands exactly where the race needs
   // it -- between mousedown and mouseup -- rather than racing the machine's
@@ -109,6 +106,7 @@ test("a /data reply landing between mousedown and mouseup does not swallow the c
   }
   await held.taken;
 
+  const box = await settledBoundingBox(page.locator('.column[data-state="todo"] .column-cards'), card);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   // Releases the held reply -- `fetchData()`'s success handler runs
@@ -144,10 +142,7 @@ test("the same down/up choreography opens the drawer when nothing re-renders in 
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
-  const box = await card.boundingBox();
-  if (!box) {
-    throw new Error(`"${title}"'s card has no box to click`);
-  }
+  const box = await settledBoundingBox(page.locator('.column[data-state="todo"] .column-cards'), card);
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
