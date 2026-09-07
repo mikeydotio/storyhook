@@ -946,18 +946,24 @@ The existing "no wire-level distinction between wrong/expired/revoked" enumerati
 defense for *named* tokens is untouched — only the one value a caller could already prove
 they hold (by presenting it successfully at `/api/v1/*` elsewhere) gets a different answer.
 
-### Residual narrowed, not fully closed
+### Residual closed — SH-321
 
-**The non-trustworthy-origin leg is proven at the socket level and by hand, not yet by an
-automated browser.** `tests/token_exchange.rs` (new) exercises the exact HTTP contract —
-exchange, replay with `X-Storyhook` and no `Sec-Fetch-Site` at all, replay via the
-`Referer` fallback, a fresh connection ("new tab"), a second server over the same store
-("daemon restart") — and a live Chromium session (via Playwright, against this machine's
-real bound tailnet address) reproduced the failure and confirmed the fix across reload,
-new tab, and daemon restart by hand. Automating that last leg in `e2e/` turned out to need
-a *second, isolated* daemon (the shared one's `STORYHOOK_WEB_TRUSTED_HOSTS` lever would
-silently break `handoff.spec.ts`'s coupon-arming, which depends on `local_request` seeing
-no proxy allowlist configured) — filed as **SH-321** rather than rushed.
+The non-trustworthy-origin leg is now automated in
+`e2e/specs/untrusted-origin-cookie.spec.ts`. Its dedicated
+`untrusted-origin-chromium` project maps `storyhook.e2e.test` to loopback inside Chromium,
+while the runner gives that project alone an isolated daemon configured with
+`STORYHOOK_WEB_TRUSTED_HOSTS`. The browser proves the origin is not secure, exchanges a
+named token through the real modal, observes `X-Storyhook` with no `Sec-Fetch-Site` on the
+XHR read and the same-origin `Referer` fallback on native `EventSource`, then carries the
+resulting `HttpOnly` cookie through reload, a second tab, and a real daemon restart.
+
+The topology SH-319 said this required arrived independently before SH-321 was implemented:
+SH-335 changed `scripts/run-e2e.sh` to give *every* Playwright project its own store, daemon,
+seed and teardown. SH-321 therefore adds one specialized project to that existing isolation
+rather than managing two daemons concurrently. Ordinary projects explicitly clear an ambient
+`STORYHOOK_WEB_TRUSTED_HOSTS` before startup, so the special project's allowlist cannot leak
+into `handoff.spec.ts`; the structural guard in `tests/e2e_browser_coverage.rs` pins both the
+clear and the special opt-in before daemon startup.
 
 ### Verification
 
@@ -971,6 +977,9 @@ no proxy allowlist configured) — filed as **SH-321** rather than rushed.
 - `tests/token_exchange.rs` (new) — the whole contract over a real socket, including the
   restart and fresh-connection legs; each SH-319 case confirmed red against the pre-fix
   `admission.rs` before the fix landed.
+- `e2e/specs/untrusted-origin-cookie.spec.ts` (SH-321) — the same contract in real Chromium
+  on a resolver-mapped, non-trustworthy origin, including the browser's actual request headers,
+  cookie jar, reload, second-tab and daemon-restart behavior.
 
 ## As built — SH-186: the tailnet probe left the daemon's path to serving
 

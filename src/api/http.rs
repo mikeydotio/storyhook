@@ -391,6 +391,12 @@ pub struct LocalRequest(());
 ///    machine". Reading it from the `proxy` half alone is what stops a bound
 ///    tailnet interface — which is not an indirection — from withdrawing
 ///    locality on every Tailscale machine.
+///
+///    This also constrains test topology (SH-321): a browser fixture that sets
+///    `STORYHOOK_WEB_TRUSTED_HOSTS` to exercise a non-loopback `Host` must own a
+///    separate daemon environment. Sharing that daemon with handoff coverage
+///    would correctly make the handoff non-local and invalidate the fixture,
+///    not reveal a handoff defect.
 /// 3. **No [`FORWARDING_HEADERS`]** — see that constant.
 /// 4. **`Host` is a loopback literal** — [`host_is_loopback`], deliberately
 ///    *not* [`host_is_trusted`], which also matches the allowlists. A
