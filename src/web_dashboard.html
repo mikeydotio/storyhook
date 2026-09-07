@@ -8273,7 +8273,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         releaseExit();
         node.classList.remove("exiting");
       }
-      function finishExit() {
+      function finishExit(event) {
+        if (event && (event.target !== node || event.animationName !== "card-exit")) return;
         // A callback already queued when cancellation happened no longer owns
         // this node and must not complete a later card lifecycle.
         if (node.cancelCardExit !== cancelExit) return;
@@ -8283,7 +8284,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
       node.cancelCardExit = cancelExit;
       node.classList.add("exiting");
-      node.addEventListener("animationend", finishExit, { once: true });
+      node.addEventListener("animationend", finishExit);
       // Safety net: guarantee removal even if `animationend` never fires
       // (e.g. an ancestor is hidden mid-animation) so a stale card can
       // never linger indefinitely.
