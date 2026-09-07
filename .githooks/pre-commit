@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Check before creating the immutable object, then preserve managed hook chaining.
+set -uo pipefail
+
+hook_dir="$(cd "$(dirname "$0")" && pwd -P)" || exit 2
+bash "$hook_dir/../scripts/git-identity.sh" current || exit "$?"
+
+managed="$(git rev-parse --git-common-dir)/hooks/$(basename "$0")"
+[ -x "$managed" ] || exit 0
+exec "$managed" "$@"
