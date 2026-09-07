@@ -16,7 +16,7 @@
 //! keychain account. Before this, one label served every store, so installing
 //! a login agent for a named store silently replaced whichever agent — the
 //! default store's, or another named store's — happened to be at that one
-//! label. [`serves_the_login_default`] is the predicate that decides
+//! label. [`crate::env::StoreLocation::is_default_for_home`] is the predicate that decides
 //! bare-vs-keyed, and it is deliberately **not**
 //! [`crate::env::StoreLocation::is_default`] — see its own doc for why that
 //! substitution would have left the defect half-open.
@@ -68,33 +68,9 @@ use crate::path_identity;
 ///
 /// Reverse-DNS under the author's own domain, which is the convention every
 /// other bundle identifier in this ecosystem follows. The **bare** form,
-/// carried by the store [`serves_the_login_default`] reports true for — see
-/// [`label`] for the store-keyed form every other store gets.
+/// carried by the store [`StoreLocation::is_default_for_home`] reports true
+/// for — see [`label`] for the store-keyed form every other store gets.
 pub const LAUNCHD_LABEL: &str = "io.mikey.storyhook.daemon";
-
-/// Whether a launchd-started `story daemon --serve` — no flags, none of this
-/// process's environment — would open `env`'s store.
-///
-/// **Not** [`StoreLocation::is_default`]. That predicate is `self.path ==
-/// self.default_path`, and `default_path` is computed from whatever
-/// `$XDG_DATA_HOME` *this process* happens to have
-/// (`StoreLocation::resolve`), so `XDG_DATA_HOME=/scratch story daemon
-/// install`, run interactively, resolves a store at
-/// `/scratch/storyhook/store.db` with `is_default()` **true** — and a launchd
-/// child, which inherits none of this process's environment, would then open
-/// `$HOME/.local/share/storyhook/store.db` instead: a different store than
-/// the one just installed for. This is measured, not assumed — this project's
-/// own CLAUDE.md doctrine — by [`tests::a_store_reached_via_xdg_data_home_
-/// still_gets_its_own_label`], and it is a pre-existing gap in [`plist`]'s
-/// `--store-path` arm this same predicate closes, not a new one this fix
-/// introduces.
-///
-/// `StoreLocation::for_home` performs the identical resolution `resolve` does
-/// with no XDG override — precisely what launchd hands the agent.
-#[must_use]
-fn serves_the_login_default(env: &Environment) -> bool {
-    env.store_path() == StoreLocation::for_home(env.home()).path()
-}
 
 /// This store's launchd label: the bare [`LAUNCHD_LABEL`] for the store a
 /// login agent would open with no flags, [`LAUNCHD_LABEL`] plus this store's
@@ -106,7 +82,7 @@ fn serves_the_login_default(env: &Environment) -> bool {
 /// unchanged, byte-for-byte, from every plist this project has ever written.
 #[must_use]
 pub fn label(env: &Environment) -> String {
-    if serves_the_login_default(env) {
+    if env.store().is_default_for_home(env.home()) {
         LAUNCHD_LABEL.to_string()
     } else {
         format!("{LAUNCHD_LABEL}.{}", env.store().key())
@@ -159,7 +135,7 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
         // store's daemon while writing into another's directory. The same
         // predicate drives both this decision and `label`'s, so a plist can
         // never carry a bare label with a flag or a keyed label without one.
-        store = if serves_the_login_default(env) {
+        store = if env.store().is_default_for_home(env.home()) {
             String::new()
         } else {
             format!(
@@ -289,7 +265,7 @@ struct Reading {
 /// spellings of one store read as one store. Absence of `--store-path`
 /// resolves to the login-time default for `env`'s home, matching how a
 /// flagless launchd child would resolve it — the same doctrine
-/// [`serves_the_login_default`] states.
+/// [`StoreLocation::is_default_for_home`] states.
 fn served_store(text: &str, env: &Environment) -> PathBuf {
     match registered_store(text) {
         Some(claimed) => crate::env::canonical_ish(&claimed).unwrap_or(claimed),
@@ -753,8 +729,9 @@ mod tests {
     }
 
     /// The predicate a store reaches the login default through must not be
-    /// `StoreLocation::is_default()` — see [`serves_the_login_default`]'s own
-    /// doc. Measured here rather than only argued: a store named solely via
+    /// `StoreLocation::is_default()` — see
+    /// [`StoreLocation::is_default_for_home`]'s own doc. Measured here rather
+    /// than only argued: a store named solely via
     /// `$XDG_DATA_HOME` reads `is_default() == true` (both sides of that
     /// comparison are computed from the same overridden variable), yet a
     /// launchd child — which inherits none of this process's environment —
