@@ -17,9 +17,8 @@
 
 use crate::daemon::agent;
 use crate::daemon::install_guard;
-use std::path::PathBuf;
-use std::process::Output;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
