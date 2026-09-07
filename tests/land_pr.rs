@@ -49,6 +49,7 @@ impl LandRepo {
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "t@t"]);
         repo.git(&["config", "user.name", "t"]);
+        storyhook_test_support::approve_fixture_identity(repo.path(), "t", "t@t");
 
         std::fs::create_dir_all(repo.path().join("scripts"))
             .expect("fixture: creating scripts directory");

@@ -193,7 +193,10 @@ project it is looking at.
 - Complete: SH-585 installed-launcher reader exception merged (#669).
 - Complete: SH-581 extracted-source Lima guest build fix merged (#670).
 - Complete: SH-579 release tag/preflight observer and advisory merged (#671).
-- Complete: SH-577 coordinate-driven browser regressions merged (#672).
+- Complete: SH-342 silent plugin post-git sync merged (#674).
+- Complete: SH-577 reachable browser press coordinates merged (#672).
+- Complete: SH-574 commit/push identity detection and history audit merged
+  (#673).
 - Current: verify SH-321's automated untrusted-origin browser proof through
   the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
