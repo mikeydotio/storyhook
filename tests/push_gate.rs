@@ -128,6 +128,7 @@ impl GateRepo {
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "t@t"]);
         repo.git(&["config", "user.name", "t"]);
+        storyhook_test_support::approve_fixture_identity(repo.path(), "t", "t@t");
         repo.git(&[
             "remote",
             "add",

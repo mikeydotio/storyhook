@@ -97,6 +97,7 @@ impl SelectRepo {
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "t@t"]);
         repo.git(&["config", "user.name", "t"]);
+        storyhook_test_support::approve_fixture_identity(repo.path(), "t", "t@t");
         // `gate-receipt.sh preflight` refuses to enrol a worktree with no
         // `.githooks/pre-push` of its own — a symlink to the tracked
         // directory, the same fixture shape `tests/push_gate.rs` and
