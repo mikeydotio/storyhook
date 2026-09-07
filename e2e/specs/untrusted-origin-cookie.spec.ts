@@ -93,8 +93,15 @@ test("a named-token cookie survives reload, a new tab, and daemon restart on an 
     encoding: "utf8" as const,
     timeout: test.info().timeout,
   };
+  // Only this restart reuses a bound port. Keep the shared harness's ephemeral
+  // address intact for every other child and derive this one from its own URL.
+  const restartPort = new URL(requiredEnv("DASHBOARD_URL")).port;
+  expect(restartPort).not.toBe("");
   const stopped = execFileSync(STORY_BINARY, ["daemon", "stop"], commandOptions);
-  const started = execFileSync(STORY_BINARY, ["daemon", "start"], commandOptions);
+  const started = execFileSync(STORY_BINARY, ["daemon", "start"], {
+    ...commandOptions,
+    env: { ...process.env, STORYHOOK_DAEMON_ADDR: `127.0.0.1:${restartPort}` },
+  });
   const stoppedPid = stopped.match(/PID (\d+)/)?.[1];
   const startedPid = started.match(/PID (\d+)/)?.[1];
   expect(stoppedPid, stopped).toBeTruthy();
