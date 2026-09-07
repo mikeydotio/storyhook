@@ -1,34 +1,38 @@
-# SH-581 Handoff
+# SH-579 Handoff
 
-## Change
+## Implemented
 
-The Lima guest now runs Cargo in a subshell inside the extracted source tree.
-The caller's working directory remains available to the export phase.
-The regression exercises both Linux targets from a directory with no ancestor
-manifest and observes canonical cwd, archived manifest and marker contents,
-locked release arguments, pinned rustc, linker selection and executable export.
+- Independent remote tag audit and repeated real host/Lima preflight observer.
+- `make release-watch`, `make release-status`, and configuration-only
+  `make release-watch-plist`; no timer installed from this lane.
+- Atomic observation records distinguish missing, running, failed, stale and
+  successful results. All test tiers print the read-only advisory.
+- Historical tag mismatches remain visible; published tags are never repaired.
+- Design and optional durable-checkout setup: `docs/spec/release-observer.md`.
+- AGENTS.md and its source template remain synchronized. SH-557 owns their
+  eventual separation. SH-584 (#668) and SH-585 (#669) are preserved.
+- Reconciled origin/main d4b060e6e (SH-581 / #670) with a merge commit.
+  The Lima guest builds in the extracted source subshell and preserves the
+  caller cwd for export. Both Linux-target regression paths remain intact.
+  SH-581 records the original RED evidence and its 59 passing targeted tests.
 
-## Evidence
+## Validation and submission
 
-- RED: the strengthened regression failed before the production change:
-  Cargo cwd was `no-manifest-here`, not the extracted source root.
-- GREEN: 59 tests passed across `release_targets`, `scaffold`, and `scope_rubric`.
-- Command: `bash scripts/run-tests.sh --only-no-doc release_targets scaffold scope_rubric -- --test-threads=4`.
-- Shell syntax, changed Rust formatting and whitespace checks passed.
-- Final Clippy result and PR URL are recorded on SH-581.
-- No real Lima build was run; Cargo/toolchain shims observe the real guest script.
+- New contracts use real Git remotes, production locks and status code, with
+  only the external preflight represented by a fixture. No Lima starts.
+- Targeted runner: `release_observer release_tagging release_targets gate_tiers
+  scaffold`; reconciliation outcomes are recorded on SH-579 and PR #671.
+- Continue the existing PR: https://github.com/mikeydotio/storyhook/pull/671.
+  Preserve published history; no rebase, force-push, or additional PR.
+- Central verification owns the full suite, merge, completion and lane cleanup.
+- Repair the existing PR without rewriting history if verification returns it.
+- Do not run release/version/deployment commands from this worktree.
 
-## Submission boundary
+## Operational limits
 
-Use the single PR on `worktree-SH-581`. The story holds the approved plan,
-validation evidence and linked PR. Central verification owns the full suite,
-merge, completion and cleanup. If returned, add repair commits to that PR,
-run only new and impacted tests, push, record evidence, then make
-`story move SH-581 verifying` the last action. Never rewrite published history.
-
-## Preserved context
-
-SH-584 and SH-585 merged as #668 and #669. Do not remove SH-584's preserved
-`.git/storyhook/verification-recovery-SH-584-20260906` recovery directory.
-SH-557 owns separating the project roadmap from the generated template;
-AGENTS.md and its template remain synchronized here.
+- A preflight observation does not prove complete builds or artifact provenance.
+- Normal test output reports missing observations until the optional scheduler
+  is configured from a durable checkout after merge.
+- Do not run manual release assembly concurrently with the observer. Observer
+  passes share a machine lock; existing manual release commands do not.
+- Preserve `.git/storyhook/verification-recovery-SH-584-20260906`.
