@@ -192,8 +192,9 @@ project it is looking at.
 - Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
 - Complete: SH-585 installed-launcher reader exception merged (#669).
 - Complete: SH-581 extracted-source Lima guest build fix merged (#670).
-- Complete: SH-579 release tag/preflight observer and advisory status merged
-  (#671).
+- Complete: SH-579 release tag/preflight observer and advisory merged (#671).
+- Complete: SH-577 coordinate-driven browser regression fix merged (#672);
+  dispatch coverage was already repaired by SH-584.
 - Current: verify SH-328's durable dashboard field labels through the
   centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
