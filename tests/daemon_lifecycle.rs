@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification};
-use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_GRACE};
+use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, OwnedProcesses};
 use storyhook_test_support::{
     ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, path_without_tailscale, scratch_dir, story_binary,
 };
@@ -501,6 +501,175 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
         String::from_utf8_lossy(&cleared.stdout).contains("no abandoned"),
         "clearing --all must actually empty the ledger"
     );
+}
+
+/// Forced shutdown owns the verifier's whole process tree, not only the daemon
+/// thread that spawned it. The child ignores TERM so only the production hard
+/// kill can satisfy the assertion.
+#[cfg(unix)]
+#[test]
+fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
+    use std::os::unix::process::CommandExt;
+
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let daemon = start(&env);
+    let environment = env.environment();
+    let descendant_file = scratch_dir();
+    let descendant_path = descendant_file.path().join("descendant.pid");
+    let script = format!(
+        "trap '' TERM; sh -c 'trap \"\" TERM; while :; do sleep 1; done' & \
+         echo $! > '{}'; while :; do sleep 1; done",
+        descendant_path.display()
+    );
+    let mut command = std::process::Command::new("sh");
+    command.arg("-c").arg(script).process_group(0);
+    let mut verifier = ChildGuard::spawn(&mut command).expect("spawning the verifier group");
+    let verifier_pid = verifier.pid();
+    let verifier_start =
+        lifecycle::process_start_time(verifier_pid).expect("the verifier leader's native identity");
+    let registry = OwnedProcesses::new(environment.clone());
+    let _registration = registry
+        .register("verifier", verifier_pid, Some("verify:fixture:SH-1:1"))
+        .expect("publishing the verifier group");
+    wait_for("the verifier descendant pid", || descendant_path.exists());
+    let descendant_pid: u32 = std::fs::read_to_string(&descendant_path)
+        .expect("reading the descendant pid")
+        .trim()
+        .parse()
+        .expect("parsing the descendant pid");
+    let descendant_start = lifecycle::process_start_time(descendant_pid)
+        .expect("the verifier descendant's native identity");
+
+    let started = Instant::now();
+    env.story(descendant_file.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success();
+    let elapsed = started.elapsed();
+    let _ = verifier.wait_within(FORCE_DEADLINE, || {
+        "the verifier leader did not exit after forced shutdown".to_string()
+    });
+
+    assert!(
+        elapsed <= FORCE_DEADLINE,
+        "forced shutdown exceeded its end-to-end deadline: {elapsed:?}"
+    );
+    assert!(
+        !lifecycle::process_identity_is_live(verifier_pid, Some(&verifier_start)),
+        "the verifier leader survived forced shutdown"
+    );
+    wait_for("the verifier descendant to die", || {
+        !lifecycle::process_identity_is_live(descendant_pid, Some(&descendant_start))
+    });
+    assert!(
+        !lifecycle::process_identity_is_live(daemon.pid, None),
+        "the daemon survived forced shutdown"
+    );
+}
+
+/// The locked pidfile is the force-stop authority. The bearer-token portfile
+/// may be missing or unreadable precisely when the HTTP control path is lost.
+#[test]
+fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let daemon = start(&env);
+    let environment = env.environment();
+    std::fs::write(environment.daemon_file(), "not-json").expect("corrupting the daemon portfile");
+
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
+
+    assert!(!lifecycle::is_live(&environment));
+    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+}
+
+#[test]
+fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let daemon = start(&env);
+    let environment = env.environment();
+    std::fs::remove_file(environment.daemon_file()).expect("removing the daemon portfile");
+
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
+
+    assert!(!lifecycle::is_live(&environment));
+    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+}
+
+#[test]
+fn a_forced_stop_falls_back_to_the_portfile_for_a_legacy_empty_pidfile() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let daemon = start(&env);
+    let environment = env.environment();
+    std::fs::write(environment.daemon_pidfile(), "").expect("planting a legacy empty pidfile");
+
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
+
+    assert!(!lifecycle::is_live(&environment));
+    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_stop_reports_daemon_and_verifier_before_draining() {
+    use std::os::unix::process::CommandExt;
+
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let daemon = start(&env);
+    let environment = env.environment();
+    let mut command = std::process::Command::new("sleep");
+    command.arg("30").process_group(0);
+    let mut verifier = ChildGuard::spawn(&mut command).expect("spawning the verifier");
+    let verifier_pid = verifier.pid();
+    let registry = OwnedProcesses::new(environment.clone());
+    let registration = registry
+        .register("verifier", verifier_pid, Some("verify:fixture:SH-1:1"))
+        .expect("publishing the verifier");
+
+    let dir = scratch_dir();
+    let output = env
+        .story(dir.path())
+        .args(["daemon", "stop"])
+        .output()
+        .expect("stopping the daemon");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "ordinary stop failed: {stderr}");
+    assert!(
+        stderr.contains(&format!("daemon PID {}", daemon.pid)),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("verifier PID {verifier_pid}")),
+        "{stderr}"
+    );
+
+    drop(registration);
+    unsafe {
+        libc::kill(-(verifier_pid as i32), libc::SIGKILL);
+    }
+    let _ = verifier.wait_within(FORCE_DEADLINE, || {
+        "the ordinary-stop diagnostic fixture did not exit during cleanup".to_string()
+    });
 }
 
 /// The backups are reported by `daemon status` rather than by `doctor`: a

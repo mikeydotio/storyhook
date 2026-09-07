@@ -38,7 +38,10 @@ use std::net::TcpListener;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use storyhook::daemon::lifecycle::{self, DaemonInfo, SPAWN_LOCK_DEADLINE};
+use storyhook::daemon::lifecycle::{
+    self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, SPAWN_LOCK_DEADLINE,
+};
+use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
 /// refused TCP connection fails at the OS level in microseconds, so this is
@@ -163,6 +166,47 @@ fn request_shutdown_gives_up_on_a_peer_that_accepts_and_never_answers() {
         error.to_string().contains("shut down"),
         "the failure must say what it was asking: {error}"
     );
+}
+
+#[test]
+fn forced_stop_does_not_let_a_silent_control_peer_spend_its_kill_budget() {
+    struct Guard<'a>(&'a TestEnv);
+    impl Drop for Guard<'_> {
+        fn drop(&mut self) {
+            let _ = lifecycle::stop(&self.0.environment(), lifecycle::StopMode::Force);
+        }
+    }
+
+    let env = TestEnv::isolated();
+    let _guard = Guard(&env);
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let daemon = env.daemon().expect("the started daemon's portfile");
+    let peer = SilentPeer::bind();
+    let mut misleading_portfile = peer.as_daemon();
+    misleading_portfile.pid = daemon.pid;
+    std::fs::write(
+        env.environment().daemon_file(),
+        serde_json::to_vec(&misleading_portfile).expect("serializing the silent peer"),
+    )
+    .expect("redirecting the shutdown request to the silent peer");
+
+    let started = Instant::now();
+    env.story(dir.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed <= FORCE_DEADLINE + FORCE_GRACE,
+        "the silent control peer consumed the hard-kill budget: {elapsed:?}"
+    );
+    assert!(!lifecycle::is_live(&env.environment()));
+    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
 }
 
 /// A refused connection must stay fast and stay *distinguishable*. The timeout
