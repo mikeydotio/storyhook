@@ -18,7 +18,7 @@ follow the workflow below.
 - Commit the work. Push the latest commits and create a PR against `main`.
 - Link exactly one open PR: `story link-pr SH-<n> <pr-url>`.
 - Keep automatic closure enabled. Do not use `--no-close-on-merge`.
-- Record test results and final context: `story comment SH-<n> "<context>"`.
+- Record test results and final context: `story comment SH-<n> "<context>"`. Do not create `HANDOFF.md`.
 - Move the story to Verifying: `story move SH-<n> verifying`. Make this your last action.
 - Stop work. Do not merge, close the story, or remove the work lane yourself.
 - The verifier runs `make test` on the proposed merge.

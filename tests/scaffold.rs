@@ -22,6 +22,19 @@ fn scaffold_agents_md_contains_workflow_commands() {
 }
 
 #[test]
+fn scaffold_agents_md_keeps_durable_context_in_story_comments() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["scaffold", "agents-md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Record test results and final context: `story comment",
+        ))
+        .stdout(predicate::str::contains("Do not create `HANDOFF.md`."));
+}
+
+#[test]
 fn scaffold_agents_md_uses_project_prefix() {
     let dir = scratch_dir();
     story(dir.path())
