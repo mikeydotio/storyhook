@@ -216,8 +216,10 @@ project it is looking at.
 - Complete: SH-585 installed-launcher reader exception merged (#669).
 - Complete: SH-581 extracted-source Lima guest build fix merged (#670).
 - Complete: SH-579 release tag/preflight observer and advisory merged (#671).
-- Current: validate SH-577 coordinate-driven browser regressions through the
-  centralized verifier; dispatch coverage is already repaired by SH-584.
+- Complete: SH-342 silent plugin post-git sync merged (#674).
+- Complete: SH-577 reachable browser press coordinates merged (#672).
+- Complete: SH-574 commit/push identity detection merged (#673).
+- Current: retain verifier ownership through PR reconciliation (SH-587).
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).

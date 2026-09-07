@@ -42,6 +42,7 @@ pub mod command_reference;
 mod crash;
 mod engine;
 mod env;
+mod git_identity;
 mod github;
 mod hooks_manifest;
 mod legacy_tree;
@@ -58,6 +59,7 @@ mod tailnet;
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use engine::{DispatcherCall, DispatcherStep, FakeDispatcher};
 pub use env::{TestEnv, assert_the_binary_can_fire_faults, daemon_containment, story_binary};
+pub use git_identity::approve_fixture_identity;
 pub use github::{FakeGithubApiFactory, RecordedCall};
 pub use hooks_manifest::{
     DeclaredHook, HOOKS_MANIFEST, all_declared_hooks, declared_timeout, hook_script,
