@@ -355,6 +355,21 @@ unasked. Per-store labels also remove the accidental self-limiting collision a s
 label used to provide, so `agent::report` additionally enumerates every other storyhook
 login agent on the machine, named rather than left to accumulate invisibly.
 
+**SH-426 closes the temporary-store accumulation path at its origin.** An install is
+refused when the store is under a reclaimable temporary root but its plist under
+`~/Library/LaunchAgents` is durable: otherwise the store can disappear while the plist
+keeps launching its defunct daemon at every later login. The predicate compares both
+lifetimes rather than rejecting `is_under_temp(store)` alone. That distinction is
+load-bearing for the suite: `Environment::at` puts both its store and fake home under
+`/private/tmp`, so both artifacts disappear together and remain permitted. Durable named
+stores also remain permitted; multiple persistent stores are supported, not treated as
+leaks.
+
+Existing agents are not automatically reaped. A store whose path is absent may live on a
+volume that is only offline, and `story daemon status` remains a read-only observation.
+The enumeration above plus `story --store-path <path> daemon uninstall` is the explicit,
+recoverable cleanup path for an agent created before the guard existed.
+
 ### Later amendment — the daemon address became a port (SH-253)
 
 The `Environment` diagrammed above carried a `SocketAddr` whose IP nothing ever read:

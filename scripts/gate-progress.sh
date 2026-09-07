@@ -14,7 +14,7 @@
 # guess): the daemon is the only caller that sets the variable, and its
 # absence is what makes an interactive run inert.
 #
-# Two line shapes, both objects with a "kind" field:
+# Three line shapes, all objects with a "kind" field:
 #
 #   {"kind":"item","path":"release gate/fmt","status":"passed","at":"...",
 #    "seconds":2}
@@ -29,6 +29,10 @@
 #     the checklist's promises (a suite's live pass/fail counts) need
 #     per-case wall-clock resolution. Journal *file* mtime is what the
 #     Rust-side publisher reads for staleness, not any embedded timestamp.
+#   {"kind":"activity","path":"release gate/rust-contracts",
+#    "label":"waiting for gate lock","status":"running","at":"..."}
+#     Non-checklist work inside an item. Later activity lines for the same
+#     path replace its current activity without adding tests or gate legs.
 #
 # Status vocabulary an "item" line's "status" may hold:
 #   pending | running | passed | failed | skipped | reused
@@ -102,6 +106,23 @@ gate_progress_emit_case() {
         >>"$journal"
 }
 
+# Appends one non-checklist activity lifecycle event. No-op, silently, when
+# $STORYHOOK_GATE_PROGRESS is unset.
+gate_progress_emit_activity() {
+    local journal path label status
+    journal="$(gate_progress_journal)"
+    [ -n "$journal" ] || return 0
+    path="$1"
+    label="$2"
+    status="$3"
+    printf '{"kind":"activity","path":"%s","label":"%s","status":"%s","at":"%s"}\n' \
+        "$(gate_progress_json_escape "$path")" \
+        "$(gate_progress_json_escape "$label")" \
+        "$status" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >>"$journal"
+}
+
 # Direct-invocation form, for a caller that only needs a couple of lines and
 # would rather not source this file: `gate-progress.sh item <path> <status>
 # [key=value...]` or `gate-progress.sh case <path> <outcome>`.
@@ -116,8 +137,12 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         shift
         gate_progress_emit_case "$@"
         ;;
+    (activity)
+        shift
+        gate_progress_emit_activity "$@"
+        ;;
     (*)
-        echo "gate-progress.sh: usage: gate-progress.sh item <path> <status> [key=value...] | gate-progress.sh case <path> <outcome>" >&2
+        echo "gate-progress.sh: usage: gate-progress.sh item <path> <status> [key=value...] | gate-progress.sh case <path> <outcome> | gate-progress.sh activity <path> <label> <status>" >&2
         exit 1
         ;;
     esac

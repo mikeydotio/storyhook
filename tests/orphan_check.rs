@@ -173,12 +173,22 @@ impl Fixture {
         self.run_while_aged_global_process_is_leased(args)
     }
 
+    /// Builds a command for one phase so a case can inject a fixture-local
+    /// executable without changing the environment of concurrent tests.
+    fn phase_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("bash");
+        command
+            .arg(self.script())
+            .args(args)
+            .current_dir(self.path());
+        command
+    }
+
     /// Runs while this test already holds the aged-global-process write lease.
     fn run_while_aged_global_process_is_leased(&self, args: &[&str]) -> Output {
-        let script = self.script().display().to_string();
-        let mut full = vec![script.as_str()];
-        full.extend_from_slice(args);
-        run(self.path(), "bash", &full)
+        self.phase_command(args)
+            .output()
+            .unwrap_or_else(|e| panic!("running orphan phase {args:?}: {e}"))
     }
 
     /// Runs a command through the tracked unconditional-postlude wrapper.
@@ -199,6 +209,21 @@ impl Fixture {
             .output()
             .expect("running pgrep");
         out.status.success() && !out.stdout.is_empty()
+    }
+
+    /// Waits for a newly spawned matching process to become observable. The
+    /// deadline is the script's own SIGTERM allowance: failure inside that
+    /// span is a broken fixture, not a slow machine that deserves more sleep.
+    fn wait_for_match(&self) {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(orphan_kill_grace_secs());
+        while !self.anything_still_matches() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture: matching process never became observable"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// Best-effort sweep: kills anything still matching under this fixture,
@@ -586,10 +611,10 @@ fn an_unrecognized_phase_is_refused_with_a_usage_message() {
 /// working, and certifying a receipt over it would be exactly the silent
 /// failure SH-306 was filed against.
 ///
-/// Modeled with a small supervisor (`helper`, never itself matching the
-/// script's pattern) that keeps a fresh matching worker alive on a fixed
-/// schedule regardless of what gets killed — the worker's own self-expiry
-/// keeps this self-cleaning even if the fixture's own sweep did not run.
+/// Modeled with a fixture-local `pgrep` wrapper that introduces a real,
+/// correctly-shaped replacement immediately before the first observation of
+/// an empty tree. It does not manufacture finder output: it waits until the
+/// real `pgrep` can observe the replacement, then returns that real result.
 #[test]
 fn postlude_fails_when_a_survivor_outlives_sigkill() {
     let fixture = Fixture::new();
@@ -598,14 +623,8 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // poll, so a batch that all died together from an unignored SIGTERM could
     // hand the loop a lucky empty gap before the supervisor's next spawn and
     // let it declare victory without ever reaching SIGKILL. Ignoring TERM
-    // (but still self-expiring via `sleep`) keeps each worker alive on its
-    // own staggered schedule instead, so a captured batch cannot die as one
-    // synchronized event until SIGKILL actually reaches it.
-    //
-    // The lifespan is a knob rather than a constant because this fixture has
-    // to satisfy two requirements that pull in opposite directions, and it
-    // used to try to satisfy both with one number (SH-493).
-    let worker = fixture.shim("trap '' TERM\nsleep \"${SHIM_LIFETIME:-0.6}\"");
+    // and keeps the guarantor alive until SIGKILL actually reaches it.
+    let worker = fixture.shim("trap '' TERM\nwhile :; do sleep 1; done");
 
     // Requirement one: **something matching is alive at every instant** until
     // SIGKILL. The postlude's grace loop exits 0 on the first empty poll it
@@ -621,72 +640,67 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // requirement is met by construction instead: ONE worker, spawned once,
     // that outlives the whole scenario. It cannot gap, because nothing about
     // it depends on a loop keeping up.
-    let mut guarantor_command = Command::new(&worker);
-    guarantor_command
-        .args([
-            "--store-path",
-            &fixture.live_store().display().to_string(),
-            "daemon",
-            "--serve",
-            "--port",
-            "0",
-        ])
-        .env(
-            "SHIM_LIFETIME",
-            (orphan_grace_secs() + 3 * orphan_kill_grace_secs()).to_string(),
-        )
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let _guarantor =
-        ChildGuard::spawn(&mut guarantor_command).expect("fixture: spawning the continuous worker");
+    let store = fixture.live_store();
+    let _guarantor = spawn_matching(&worker, &store);
+    fixture.wait_for_match();
 
-    // Requirement two: **something matching is alive again within the 0.5s
-    // the script settles for after SIGKILL** — the one true race here, and
-    // the only thing the supervisor below is still needed for. Its workers
-    // keep their short lifespan, so the population stays around a dozen
-    // rather than a hundred.
-    // A wall-clock deadline rather than a fixed iteration count: what matters
-    // is covering the postlude's own worst case, not a specific spawn count,
-    // and this must keep respawning regardless of which individual workers the
-    // postlude manages to kill.
-    //
-    // Derived from the script's own two constants rather than written as a
-    // number (SH-394), because the worst case moved once already and a literal
-    // did not notice: SH-493 put an abandoned-class collection ahead of every
-    // phase's own question, which can itself spend a full SIGTERM wait before
-    // the grace loop below has even started. Three kill-graces is one for that
-    // collection, one for this phase's own SIGTERM wait, and one of margin so
-    // the supervisor is provably still respawning at the moment SIGKILL lands
-    // — which is the entire condition this case exists to construct.
-    // Runs as its OWN process, never under `target/debug/`, so it never
-    // matches the pattern itself — only the workers it spawns do. The 0.05s
-    // cadence against that 0.5s settle window is deliberately lopsided (~10
-    // fresh spawns expected in it, deterministically scheduled rather than
-    // left to chance).
-    let supervisor = fixture.helper(
-        "supervisor.sh",
-        &format!(
-            "deadline=$((SECONDS + {}))\nwhile [ \"$SECONDS\" -lt \"$deadline\" ]; do\n  \"{}\" --store-path \"{}\" daemon --serve --port 0 &\n  sleep 0.05\ndone",
-            orphan_grace_secs() + 3 * orphan_kill_grace_secs(),
-            worker.display(),
-            fixture.live_store().display()
-        ),
+    // Requirement two: **something matching is alive at the final
+    // verification after SIGKILL**. A timed supervisor cannot establish that
+    // under scheduler starvation: widening its cadence only moves the race.
+    // Interpose on this test's `pgrep` instead. When the real finder first
+    // observes the empty tree left by SIGKILL, the wrapper spawns one real
+    // replacement and does not return until the real finder sees it. The
+    // postlude therefore receives exactly the state this case claims to test.
+    let replacement_marker = fixture.path().join("replacement-spawned");
+    let real_pgrep = executable_on_path("pgrep");
+    let wrapper_dir = fixture.path().join("injected-bin");
+    fixture.helper(
+        "injected-bin/pgrep",
+        r#"
+if "$SH486_REAL_PGREP" "$@"; then
+    exit 0
+fi
+
+: >"$SH486_REPLACEMENT_MARKER"
+"$SH486_WORKER" --store-path "$SH486_STORE" daemon --serve --port 0 \
+    </dev/null >/dev/null 2>&1 &
+
+deadline=$((SECONDS + SH486_READY_DEADLINE_SECS))
+while ! "$SH486_REAL_PGREP" "$@" >/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "fixture: replacement never became visible to pgrep" >&2
+        exit 2
+    fi
+    sleep 0.01
+done
+exec "$SH486_REAL_PGREP" "$@"
+"#,
     );
-    let mut supervisor_command = Command::new(&supervisor);
-    supervisor_command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut supervisor_child =
-        ChildGuard::spawn(&mut supervisor_command).expect("fixture: spawning the supervisor");
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    let original_path = std::env::var_os("PATH").expect("fixture: PATH must be set");
+    let injected_path = std::env::join_paths(
+        std::iter::once(wrapper_dir).chain(std::env::split_paths(&original_path)),
+    )
+    .expect("fixture: injected PATH must be representable");
 
-    let out = fixture.run(&["postlude"]);
+    let out = fixture
+        .phase_command(&["postlude"])
+        .env("PATH", injected_path)
+        .env("SH486_REAL_PGREP", real_pgrep)
+        .env("SH486_REPLACEMENT_MARKER", &replacement_marker)
+        .env("SH486_WORKER", &worker)
+        .env("SH486_STORE", &store)
+        .env(
+            "SH486_READY_DEADLINE_SECS",
+            orphan_kill_grace_secs().to_string(),
+        )
+        .output()
+        .expect("fixture: running the postlude with synchronized replacement");
     let err = stderr(&out);
 
-    supervisor_child.kill_and_reap();
-
+    assert!(
+        replacement_marker.exists(),
+        "fixture: the synchronized replacement was never introduced\nstderr: {err}"
+    );
     assert!(
         !out.status.success(),
         "a survivor of SIGKILL must fail the postlude rather than certify a tree over \
@@ -699,6 +713,17 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     );
 
     fixture.sweep();
+}
+
+/// Resolves a fixture dependency before its `PATH` is interposed, so the
+/// wrapper can always delegate to the actual system executable.
+fn executable_on_path(name: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("fixture: {name} must exist on PATH"))
 }
 
 // ---------------------------------------------------------------------------

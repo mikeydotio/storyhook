@@ -5221,9 +5221,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         formatVerificationDuration(liveVerificationSeconds(verification.current_step.elapsed_seconds))
       );
     }
-    if (verification.tests && verification.tests.total > 0) {
-      var completed = verification.tests.completed;
-      var total = verification.tests.total;
+    // `tests` belongs only to current_step. The API deliberately omits it
+    // for lock, discovery, and result-ledger activities (SH-589), so a prior
+    // battery's completed count can never be presented as this step's work.
+    var currentStepTests = verification.tests;
+    if (currentStepTests && currentStepTests.total > 0) {
+      var completed = currentStepTests.completed;
+      var total = currentStepTests.total;
       running.push(
         completed + "/" + total + " tests (" + ((completed / total) * 100).toFixed(1) + "%)"
       );
