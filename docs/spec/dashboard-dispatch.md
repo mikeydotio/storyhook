@@ -853,20 +853,18 @@ as exactly `0` for a single discrete ArrowDown. The pin waits for four consecuti
 samples (`settledScrollTop`) and boxes the result, since `waitForFunction` reads a bare `0`
 as "keep waiting" and `0` is a legitimate answer.
 
-**What is NOT claimed, and it is more than usual here.** Five of `notice-autorepeat.
-spec.ts`'s six pins, this mutation battery's own subject, are quarantined under `webkit`
-for an unrelated harness gap (SH-374, a clipboard-default fixture issue, not an
-auto-repeat one) — so this battery itself speaks to Blink. `modal-enter-autorepeat.
-spec.ts` exercises the same `holdKey()` mechanism without that dependency and passes
-clean under `webkit` (12/12), which is why the mechanism, as opposed to this particular
-battery, is not believed to be Blink-specific. Nothing is said about Gecko either way.
-And Playwright sets the `repeat` bit itself on a second `keyboard.down` — so what these
-pins prove is Blink's half: that an un-prevented repeat keydown activates a button, and
-that cancelling it stops that. That a *physically* held key sets the flag rests on the UI
-Events spec and on a hand check, not on this suite; where an input stack does not set it,
-the guard is inert, which is the pre-fix
-behaviour and never worse. This is the SH-322/SH-327 precedent applied to an input event
-rather than to an utterance.
+**What is NOT claimed, and it is more than usual here.** Five of
+`notice-autorepeat.spec.ts`'s six pins run under Chromium and WebKit after installing a
+rejecting Clipboard API before the application loads instead of relying on the engines'
+different default permission postures (SH-374). The ArrowDown over-reach pin still depends
+on Chromium scrolling an ancestor when a descendant button has focus; WebKit does not, so
+the complete battery still speaks to Blink. Nothing is said about Gecko either way. And
+Playwright sets the `repeat` bit itself on a second `keyboard.down` — so what these pins
+prove is that an un-prevented repeat keydown activates a button, and that cancelling it
+stops that. That a *physically* held key sets the flag rests on the UI Events spec and on a
+hand check, not on this suite; where an input stack does not set it, the guard is inert,
+which is the pre-fix behaviour and never worse. This is the SH-322/SH-327 precedent applied
+to an input event rather than to an utterance.
 
 **Deliberately out of scope, and filed rather than argued away.** The guard fixes the
 *amplification*, not the *loss*: a durable error's content is still unrecoverable once
