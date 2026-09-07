@@ -41,7 +41,11 @@ if (loadGraceEnabled()) {
  * A spec whose subject is the phone — a coarse pointer, a narrow viewport,
  * `hasTouch` — rather than the dashboard's behavior in general. One
  * pattern, referenced by both pairs below, so ordinary specs stay exhaustive
- * and disjoint by construction: every spec file matches it or it doesn't.
+ * and disjoint by construction: every ordinary spec file matches it or it
+ * doesn't. SH-321's untrusted-origin spec is the one second partition: it
+ * needs daemon and browser configuration that would invalidate every ordinary
+ * project's fixture, so both desktop projects exclude it and one dedicated
+ * Chromium project selects it.
  * The Full Auto close-out is the one intentional cross-class spec: its
  * behavior spans desktop and phone layouts, so the mobile pair adds the exact
  * engine filename to this same base set instead of weakening the partition
@@ -50,6 +54,9 @@ if (loadGraceEnabled()) {
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
 const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];
+const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
+const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];
+const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
 
 export default defineConfig({
   testDir: "./specs",
@@ -104,7 +111,7 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: MOBILE_SPECS,
+      testIgnore: DESKTOP_EXCLUDED_SPECS,
     },
     {
       // The engine `chromium` cannot see (SH-335). `document.activeElement`
@@ -113,12 +120,13 @@ export default defineConfig({
       // see `src/web_dashboard.html`'s `armedDeleteSlug` comment), and that
       // gap let a real defect (half of SH-324, all of SH-334) pass a spec
       // asserting "survives a poll" on unfixed code, because Chrome held
-      // focus and the poll was skipped. Keyed off the same `MOBILE_SPECS`
-      // constant as `chromium` rather than a second glob, so this project's
-      // coverage can't be quietly narrowed by editing only one of the two.
+      // focus and the poll was skipped. Keyed off the same
+      // `DESKTOP_EXCLUDED_SPECS` constant as `chromium` rather than a second
+      // glob, so this project's coverage can't be quietly narrowed by editing
+      // only one of the two.
       name: "webkit",
       use: { ...devices["Desktop Safari"] },
-      testIgnore: MOBILE_SPECS,
+      testIgnore: DESKTOP_EXCLUDED_SPECS,
     },
     {
       // Chromium under mobile emulation, not a real phone. `devices["Pixel
@@ -169,6 +177,18 @@ export default defineConfig({
       name: "mobile-webkit",
       use: { ...devices["iPhone 15"] },
       testMatch: MOBILE_OR_ENGINE_SPECS,
+    },
+    {
+      // Chromium resolves a real non-loopback-looking hostname to this run's
+      // loopback-bound daemon without changing the request's Host header. Plain
+      // HTTP on that hostname is not a potentially trustworthy origin, so Blink
+      // omits Sec-Fetch-Site exactly as it does on the tailnet/LAN deployment
+      // SH-319 fixed. The runner gives this project alone a proxy allowlist and
+      // a dedicated daemon; sharing either would withdraw handoff locality from
+      // the ordinary projects (SH-321).
+      name: "untrusted-origin-chromium",
+      use: { ...devices["Desktop Chrome"], launchOptions: { args: [`--host-resolver-rules=MAP ${UNTRUSTED_ORIGIN_HOST} 127.0.0.1`] } },
+      testMatch: UNTRUSTED_ORIGIN_SPECS,
     },
   ],
 });
