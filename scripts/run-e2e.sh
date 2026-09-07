@@ -477,12 +477,6 @@ WRAPPER
     exit 1
   fi
 
-  # Pin the address children inherit to the port this daemon actually owns.
-  # The SH-321 spec uses the same binary and environment to stop and restart
-  # this isolated daemon, and a second `:0` bind would move the dashboard out
-  # from under the browser URL whose host-only cookie is being proved.
-  export STORYHOOK_DAEMON_ADDR="127.0.0.1:$port"
-
   probe_url="http://127.0.0.1:$port"
   base_url="$probe_url"
   if [ "$project" = "untrusted-origin-chromium" ]; then
