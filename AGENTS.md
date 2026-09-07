@@ -7,24 +7,22 @@ follow the workflow below.
 
 ## Session lifecycle
 
-1. **Start of session** — load project context:
-   ```
-   story load-context
-   ```
-2. **Pick the next task** — the highest-priority ready story:
-   ```
-   story next
-   ```
-3. **Claim it**: `story move SH-<n> in-progress`
-4. **Record progress as you go**: `story comment SH-<n> "what changed and why"`
-5. **Submit**: run new and directly impacted tests, push one PR, then link it:
-   ```
-   story link-pr SH-<n> <pr-url>
-   ```
-6. **Hand off to verification**: record all final context, then make
-   `story move SH-<n> verifying` your last action and stop. The daemon
-   runs the full suite, merges a green PR, moves the story to `done`,
-   and reaps the lane.
+- Run `story load-context`.
+- Use the assigned story, or select one with `story next`.
+- Use a feature branch in the assigned checkout.
+- Move the story to In Progress: `story move SH-<n> in-progress`.
+- Make the change. Add tests for new behavior and defects.
+- Run new and directly affected tests with direct test commands.
+- Leave the full suite and its lock to the central verifier.
+- Commit the work. Push the latest commits and create a PR against `main`.
+- Link exactly one open PR: `story link-pr SH-<n> <pr-url>`.
+- Keep automatic closure enabled. Do not use `--no-close-on-merge`.
+- Record test results and final context: `story comment SH-<n> "<context>"`.
+- Move the story to Verifying: `story move SH-<n> verifying`. Make this your last action.
+- Stop work. Do not merge, close the story, or remove the work lane yourself.
+- The verifier runs `make test` on the proposed merge.
+- If tests pass, it merges the PR and moves the story to `done`. It then removes the work lane.
+- If the story returns to In Progress, read its comments. Fix the same PR, test, push, and submit again.
 
 ## Planning
 
