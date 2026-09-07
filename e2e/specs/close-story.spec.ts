@@ -73,7 +73,7 @@ test("drawer Close requires a reason, records it as a comment, and leaves the cl
   // A story that is already CLOSED cannot be closed again, so its permanent
   // delete confirmation must not offer a dead-end "Close instead" action.
   await footer.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   await expect(page.locator("#delete-modal-alternative")).toBeHidden();
   await page.locator("#delete-modal-cancel").click();
 });
@@ -172,7 +172,7 @@ test("Delete offers Close instead and never asks for a deletion reason", async (
 
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
   await expect(page.locator("#delete-modal-cancel")).toBeFocused();
-  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   await expect(page.locator("#delete-reason")).toHaveCount(0);
   await expect(page.locator("#delete-modal-alternative")).toBeVisible();
   await page.locator("#delete-modal-close-instead").click();
