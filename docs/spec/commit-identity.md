@@ -127,3 +127,10 @@ The read-only repository audit inventoried 2,657 reachable commits and reported
 `t <t@t>` commits. Other differences include GitHub committers, Agentsmith and
 Claudac, which are not automatically classified as corruption or approved.
 The story carries the audit counts and decision record; published history is intact.
+
+Central verification subsequently exposed a fixture containment omission: clearing
+the identity test command's environment also removed the daemon safeguards needed
+by transitively executed managed hooks. The repair restores the shared
+`daemon_containment()` settings after clearing, while retaining private identity
+configuration. A real managed-hook child checks these values end to end; the
+existing store-isolation source contract is unchanged.

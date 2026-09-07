@@ -6,7 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use storyhook_test_support::{ChildGuard, EXPECT_TIMEOUT, scratch_dir};
+use storyhook_test_support::{ChildGuard, EXPECT_TIMEOUT, daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
 struct Repo {
@@ -44,6 +44,8 @@ impl Repo {
         let mut cmd = Command::new(program);
         cmd.current_dir(self.path())
             .env_clear()
+            // Managed Git hooks can transitively launch Storyhook children.
+            .envs(daemon_containment())
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("HOME", self.path().join("home"))
             .env("XDG_CONFIG_HOME", self.path().join("home/xdg"))

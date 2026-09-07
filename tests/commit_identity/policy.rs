@@ -3,6 +3,24 @@
 use super::*;
 
 #[test]
+fn managed_hook_children_retain_daemon_containment() {
+    let repo = Repo::new();
+    let hook = repo.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nenv > hook-environment\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    ok(&repo.commit());
+
+    let environment = fs::read_to_string(repo.path().join("hook-environment")).unwrap();
+    for (name, value) in storyhook_test_support::daemon_containment() {
+        let expected = format!("{name}={value}");
+        assert!(
+            environment.lines().any(|line| line == expected),
+            "managed hook lost required daemon containment: {name}"
+        );
+    }
+}
+
+#[test]
 fn local_and_command_scope_overrides_are_refused_before_commit() {
     for key in [
         "user.name",

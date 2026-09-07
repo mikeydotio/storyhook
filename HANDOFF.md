@@ -16,13 +16,23 @@
 ## Reconciliation
 
 - Central verification returned PR #673 for documentation/template conflicts.
-- Merge current origin/main f954df312, preserving published history.
+- Merged origin/main f954df312 as 7bf25b6c9, preserving published history.
 - Keep main's SH-585, SH-581 and SH-579 completions with SH-574's current work.
   AGENTS.md and `src/service/templates.rs` remain synchronized.
 - Preserve the GitHub committers on imported main merge commits; the repository
   records an explicit committer-only alternative derived from main's metadata.
   This is the documented policy mechanism, not a hook bypass.
 - Reconciliation test results and the merge commit are recorded on SH-574.
+
+## Verifier repair
+
+- Merge-tree 406cb64 failed the store-isolation contract: the new identity
+  fixture cleared its environment without restoring daemon containment.
+- Restore the shared `daemon_containment()` settings in its command builder.
+  Preserve private HOME/XDG identity configuration and the environment allowlist.
+- A real managed pre-commit hook now observes the required containment values;
+  the existing structural store-isolation check remains unchanged.
+- RED/GREEN evidence and final targeted results are recorded on SH-574.
 
 ## Verification evidence
 
@@ -58,7 +68,7 @@
 
 ## Submission boundary
 
-Continue PR #673. Commit the merge and push without rewriting history. Record
+Continue PR #673. Commit repairs and push without rewriting history. Record
 results on SH-574, then make `story move SH-574 verifying` the absolute last
 operation and stop. Repair this same PR if verification returns it again.
 No full-suite, release, version, deployment, landing or cleanup from this lane.
