@@ -27,6 +27,7 @@ git() {
 
 _TMP_REPOS=()
 _TMP_REPOS_MANIFEST="$(mktemp /tmp/story-test-cleanup.XXXXXX)"
+_TMP_TMUX_SESSIONS=()
 
 # A helper called through `path=$(helper)` runs in a subshell, so appending to
 # the caller's Bash array cannot register anything for its EXIT trap. This
@@ -38,8 +39,69 @@ _register_tmp() {
   done
 }
 
+# Register one test-owned tmux session for exact cleanup at process exit. The
+# namespace guard keeps a mistaken call from ever claiming a persistent user or
+# project session; callers still provide the concrete name so concurrent test
+# sessions cannot be caught by a broad prefix sweep.
+_register_tmp_tmux_session() {
+  local session
+  for session in "$@"; do
+    case "$session" in
+      story-test-*) _TMP_TMUX_SESSIONS+=("$session") ;;
+      *)
+        printf 'refusing to register unowned test tmux session: %s\n' "$session" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
 _cleanup() {
-  local d
+  local status=$? cleanup_failed=0 d session session_status
+  trap - EXIT
+
+  if [ "${#_TMP_TMUX_SESSIONS[@]}" -gt 0 ]; then
+    # The engine can still be between claiming a lane and creating its terminal.
+    # Stop it before reaping the registered sessions so cleanup cannot race a
+    # late creation after the absence check.
+    if ! story daemon stop --force >/dev/null 2>&1; then
+      printf 'failed to stop isolated test daemon before tmux cleanup\n' >&2
+      cleanup_failed=1
+    fi
+
+    for session in "${_TMP_TMUX_SESSIONS[@]}"; do
+      tmux has-session -t "=$session" 2>/dev/null
+      session_status=$?
+      case "$session_status" in
+        0)
+          if ! tmux kill-session -t "=$session" >/dev/null 2>&1; then
+            printf 'failed to kill registered test tmux session: %s\n' "$session" >&2
+            cleanup_failed=1
+          fi
+          ;;
+        1) : ;;
+        *)
+          printf 'failed to query registered test tmux session: %s\n' "$session" >&2
+          cleanup_failed=1
+          ;;
+      esac
+
+      tmux has-session -t "=$session" 2>/dev/null
+      session_status=$?
+      case "$session_status" in
+        0)
+          printf 'registered test tmux session survived cleanup: %s\n' "$session" >&2
+          cleanup_failed=1
+          ;;
+        1) : ;;
+        *)
+          printf 'could not verify test tmux session cleanup: %s\n' "$session" >&2
+          cleanup_failed=1
+          ;;
+      esac
+    done
+  fi
+
   for d in "${_TMP_REPOS[@]:-}"; do
     [ -n "$d" ] && rm -rf -- "$d"
   done
@@ -54,6 +116,9 @@ _cleanup() {
     esac
   done <"$_TMP_REPOS_MANIFEST"
   rm -f -- "$_TMP_REPOS_MANIFEST"
+
+  [ "$status" -eq 0 ] || exit "$status"
+  [ "$cleanup_failed" -eq 0 ] || exit 1
 }
 trap _cleanup EXIT
 
