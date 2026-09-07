@@ -100,6 +100,8 @@ pub struct CurrentRequest {
     /// configuration, so only the daemon can derive this honestly (SH-173). A
     /// client reads it rather than recomputing a guess, which is what makes
     /// the number the same whether the record is theirs or somebody else's.
+    /// Background `verify` work publishes its idle budget here: clients can
+    /// only be queued behind it, where this field already bounds silence.
     pub served_deadline_secs: u64,
     /// The client's own working directory, as it named it in the envelope.
     /// Empty for a REST/dashboard job, which has no directory of its own to
