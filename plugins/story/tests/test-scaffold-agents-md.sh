@@ -36,12 +36,19 @@ grep -qF 'user suffix' AGENTS.md || fail_test "user file: suffix was damaged"
 assert_eq "$(grep -cF "$BEGIN" AGENTS.md)" "1" "user file: one begin sentinel"
 assert_eq "$(grep -cF "$END" AGENTS.md)" "1" "user file: one end sentinel"
 
-# Refresh replaces only the delimited block.
-printf 'before\n%s\nSTALE\n%s\nafter\n' "$BEGIN" "$END" >AGENTS.md
+# Refresh replaces only the delimited block, preserving the local roadmap bytes.
+printf 'before\n%s\nSTALE\n%s\n\n## Mini-roadmap\n\n- Keep me byte-exact.  \n' \
+  "$BEGIN" "$END" >AGENTS.md
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
 assert_eq "$(jqf "$out" .action)" "replaced" "refresh: replaced"
-grep -qF 'before' AGENTS.md || fail_test "refresh: prefix was damaged"
-grep -qF 'after' AGENTS.md || fail_test "refresh: suffix was damaged"
+canonical=$(story scaffold agents-md)
+{
+  printf 'before\n%s\n%s\n%s\n\n## Mini-roadmap\n\n- Keep me byte-exact.  \n' \
+    "$BEGIN" "$canonical" "$END"
+} >/tmp/story-agents-refreshed.$$
+_TMP_REPOS+=("/tmp/story-agents-refreshed.$$")
+cmp -s AGENTS.md /tmp/story-agents-refreshed.$$ \
+  || fail_test "refresh: changed bytes outside the generated block"
 grep -qF 'STALE' AGENTS.md && fail_test "refresh: stale block survived"
 
 # A malformed sentinel is ambiguous user data: refuse and leave it byte-exact.
@@ -53,6 +60,22 @@ assert_eq "$(jqf "$out" .ok)" "false" "malformed: refused"
 assert_contains "$(jqf "$out" .display)" "malformed" "malformed: precise reason"
 cmp -s AGENTS.md /tmp/story-agents-malformed.$$ \
   || fail_test "malformed: helper rewrote the file despite refusing"
+
+printf 'keep me\n%s\nstray end\n' "$END" >AGENTS.md
+cp AGENTS.md /tmp/story-agents-missing-begin.$$
+_TMP_REPOS+=("/tmp/story-agents-missing-begin.$$")
+out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "missing begin: refused"
+cmp -s AGENTS.md /tmp/story-agents-missing-begin.$$ \
+  || fail_test "missing begin: helper rewrote the file despite refusing"
+
+printf '%s\none\n%s\n%s\ntwo\n%s\n' "$BEGIN" "$END" "$BEGIN" "$END" >AGENTS.md
+cp AGENTS.md /tmp/story-agents-duplicate.$$
+_TMP_REPOS+=("/tmp/story-agents-duplicate.$$")
+out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "duplicate sentinels: refused"
+cmp -s AGENTS.md /tmp/story-agents-duplicate.$$ \
+  || fail_test "duplicate sentinels: helper rewrote the file despite refusing"
 
 printf 'keep me\n%s\nwrong order\n%s\n' "$END" "$BEGIN" >AGENTS.md
 cp AGENTS.md /tmp/story-agents-reversed.$$
