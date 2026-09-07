@@ -442,15 +442,28 @@ impl Fixture {
 #[test]
 fn a_second_run_waits_for_the_gate_lock_and_names_its_holder() {
     let fixture = Fixture::new();
+    let journal = fixture.path().join("gate-progress.ndjson");
 
     let mut holder = fixture.spawn_gate_holder();
     let holder_pid = fixture.holder_pid();
 
-    let mut runner = fixture.spawn(&["--only-no-doc"]);
+    let mut command = fixture.command(&["--only-no-doc"]);
+    command
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .stdin(Stdio::null());
+    let mut runner =
+        Runner(ChildGuard::spawn_with_output(&mut command).expect("spawning journalled waiter"));
     std::thread::sleep(time_to_reach_the_lock());
     assert!(
         !runner.finished(),
         "the run must not have completed while the gate lock was held -- it did not serialize"
+    );
+    let waiting_progress = std::fs::read_to_string(&journal).expect("reading waiter progress");
+    assert!(
+        waiting_progress.contains(
+            r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"running"#,
+        ),
+        "the journal must name the actual wait rather than leaving the parent suite as current: {waiting_progress}"
     );
 
     signal(holder.pid(), "TERM");
@@ -466,6 +479,13 @@ fn a_second_run_waits_for_the_gate_lock_and_names_its_holder() {
     assert!(
         err.contains(&format!("pid {holder_pid}")),
         "the waiter must name the pid actually holding the lock ({holder_pid}), so a wedged machine can be traced to a process\nstderr: {err}"
+    );
+    let completed_progress = std::fs::read_to_string(&journal).expect("reading completed progress");
+    assert!(
+        completed_progress.contains(
+            r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"passed"#,
+        ),
+        "lock acquisition must terminate its activity before later work begins: {completed_progress}"
     );
 }
 
@@ -576,6 +596,21 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
         progress.contains(r#""total":1"#),
         "the journal must know the suite total before recording its completion: {progress}"
     );
+    let case = progress
+        .find(r#""kind":"case""#)
+        .expect("the fixture must record its completed test");
+    let ledger_start = progress
+        .find(r#""label":"recording test results","status":"running""#)
+        .unwrap_or_else(|| panic!("ledger work must replace the completed-test step: {progress}"));
+    let ledger_end = progress
+        .find(r#""label":"recording test results","status":"passed""#)
+        .unwrap_or_else(|| {
+            panic!("successful ledger work must terminate its activity: {progress}")
+        });
+    assert!(
+        case < ledger_start && ledger_start < ledger_end,
+        "ledger activity must cover the post-test interval: {progress}"
+    );
     assert!(
         !fixture.lock("gate").exists(),
         "a journalled run must release the gate normally"
@@ -653,6 +688,18 @@ esac
         total < first_case,
         "the exact total must be recorded before the first test finishes: {progress}"
     );
+    let discovery_start = progress
+        .find(r#""label":"discovering tests","status":"running""#)
+        .unwrap_or_else(|| {
+            panic!("test discovery must be visible while it calculates the total: {progress}")
+        });
+    let discovery_end = progress
+        .find(r#""label":"discovering tests","status":"passed""#)
+        .unwrap_or_else(|| panic!("successful discovery must terminate its activity: {progress}"));
+    assert!(
+        discovery_start < total && total < discovery_end && discovery_end < first_case,
+        "discovery must own the interval before exact execution starts: {progress}"
+    );
 }
 
 /// An unavailable denominator is a failed precondition, not permission to
@@ -684,6 +731,11 @@ fn failed_test_discovery_refuses_before_a_test_can_begin() {
     assert!(
         !began.exists(),
         "the real test command must not begin without an exact total"
+    );
+    let progress = std::fs::read_to_string(&journal).expect("reading failed discovery progress");
+    assert!(
+        progress.contains(r#""label":"discovering tests","status":"failed""#),
+        "the refusal must terminate the activity as failed: {progress}"
     );
 }
 
