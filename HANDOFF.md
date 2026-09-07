@@ -33,11 +33,17 @@
   passed on 1.63.0. The final probe uses a fixture document to avoid SSE buildup.
   Upgrade pinned Playwright to 1.63.0, carrying the upstream fix for
   microsoft/playwright#42385; existing retry and timeout policies remain.
-- Chromium passed all 15 affected cases, including the final navigation probe.
-  WebKit validation is blocked at startup: macOS reports no signed-in desktop
-  session; native logs show no WindowServer connection. Asked Mikey to sign in.
-  Both old and new WebKit fail at launch, so those runs are not navigation RED.
-- Next: after desktop sign-in, validate the final probe on both browser versions,
-  restore `npm ci` to 1.63.0, and run `make test-full`. Submit for verification
-  only after GREEN; then resume the patch release, packaged Codex plugin
-  installation and `$story do SH-560`.
+- Chromium and upgraded WebKit each passed all 15 affected cases, including
+  the final navigation probe. Desktop sign-in resolved the separate native
+  startup failure. With the desktop active, the old browser also passes the
+  fixture-document probe; that comparison is not new RED evidence.
+- PR #685 carries the follow-up. Both behavior commits independently pass
+  `make test`; full release validation belongs on SH-588. `npm ci` restored
+  the committed Playwright 1.63.0 dependency after the old-browser control.
+- Adopted release-order repair: gate the versioned tree before push/install.
+  Five real-script regressions reproduced certification of the old tree and
+  an unchecked push/install after the bump. Cover public and local paths,
+  successful and failed gates, and failed bumps against a disposable Git remote.
+- Next: complete `make test-full`, submit PR #685 for centralized verification,
+  then run the normal patch release and publication flow. Install the packaged
+  Codex plugin and retry `$story do SH-560` through its installed launcher.
