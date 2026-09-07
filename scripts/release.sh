@@ -532,14 +532,18 @@ fi
 # The gate
 # ---------------------------------------------------------------------------
 
-if [ "$skip_gate" = 1 ]; then
-  warn "skipping \`make test-full\`. This build is not gated."
-else
-  step "Gate — make test-full"
-  note "the full battery, including the browser suite (SH-394) -- this also \
+# Both paths call this after their optional version mutation. A receipt for
+# the pre-bump tree cannot certify the Cargo and plugin metadata being shipped.
+run_release_gate() {
+  if [ "$skip_gate" = 1 ]; then
+    warn "skipping \`make test-full\`. This build is not gated."
+  else
+    step "Gate — make test-full"
+    note "the full battery, including the browser suite (SH-394) -- this also \
 mints the push receipt .githooks/pre-push verifies"
-  run make test-full
-fi
+    run make test-full
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # LOCAL-ONLY
@@ -581,6 +585,7 @@ if [ "$local_only" = 1 ]; then
     fi
   fi
 
+  run_release_gate
   install_locally
 
   step "Local build installed"
@@ -640,6 +645,8 @@ if [ "$dry_run" = 0 ] && [ -n "$(git status --porcelain)" ]; then
   run git add VERSION CHANGELOG.md
   run git commit -m "chore: release $next_version"
 fi
+
+run_release_gate
 
 step "Opening the pull request"
 # HTTPS with the gh credential helper: SSH auth here goes through 1Password's
