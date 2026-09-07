@@ -2682,7 +2682,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     icon.dataset.direction = direction;
   }
 
+  /** The only two low-level DOM removal doors. The static half of SH-401's
+   * runtime removal observer (`tests/dashboard_dom_removal.rs`, SH-421) keeps
+   * every caller behind one of them. */
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function detach(node) { node.remove(); }
 
   /** Grows a `resize: none; overflow: hidden` textarea to fit its content —
    * called on `input` and once after any programmatic value change. */
@@ -2739,7 +2743,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     textarea.select();
     var ok = false;
     try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    textarea.remove();
+    detach(textarea);
     if (previouslyFocused && typeof previouslyFocused.focus === "function") previouslyFocused.focus();
     return ok;
   }
@@ -4104,7 +4108,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var hadRecoverable = !!stack.querySelector('[data-recoverable="dispatch"]');
     Array.prototype.slice.call(stack.children).forEach(function(node) {
       if (node.cancelNoticeClock) node.cancelNoticeClock();
-      node.remove();
+      detach(node);
     });
     syncNoticeDock();
     settleNoticeFocus(before, null);
@@ -4264,7 +4268,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // reader who asked for less movement did not ask for notices that
       // never leave. Under `prefers-reduced-motion` the class simply
       // animates nothing and the node is removed on the same schedule.
-      window.setTimeout(function() { node.remove(); syncNoticeDock(); }, TOAST_FADE_MS);
+      window.setTimeout(function() { detach(node); syncNoticeDock(); }, TOAST_FADE_MS);
     }
 
     function onVisibility() { if (document.hidden) pause(); else resume(); }
@@ -4360,7 +4364,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         onClick: function() {
           var before = noticeFocusIn($("toast-region"));
           var heir = adjacentNoticeControl(node, ".toast-dismiss");
-          node.remove();
+          detach(node);
           syncNoticeDock();
           settleNoticeFocus(before, heir);
           announceNoticeDismissal("Notice dismissed", durableNoticeCount(), "notices");
@@ -5988,7 +5992,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function dismissDispatchHistoryRow(node, key) {
     var before = noticeFocusIn($("dispatch-history-region"));
     var heir = adjacentNoticeControl(node, ".dispatch-history-dismiss");
-    node.remove();
+    detach(node);
     state.dispatchHistory = state.dispatchHistory.filter(function(entry) {
       return entry.key !== key;
     });
@@ -6394,7 +6398,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function removeStoryMenuNode() {
-    if (storyMenuNode && storyMenuNode.parentNode) storyMenuNode.parentNode.removeChild(storyMenuNode);
+    if (storyMenuNode && storyMenuNode.parentNode) detach(storyMenuNode);
     storyMenuNode = null;
     storyMenuFocusIndex = -1;
   }
@@ -6503,7 +6507,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function closeStorySubmenu() {
-    if (storySubmenuNode && storySubmenuNode.parentNode) storySubmenuNode.parentNode.removeChild(storySubmenuNode);
+    if (storySubmenuNode && storySubmenuNode.parentNode) detach(storySubmenuNode);
     storySubmenuNode = null;
     storySubmenuFocusIndex = -1;
     storySubmenuParentItem = null;
@@ -6657,7 +6661,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function removeColumnSortMenuNode() {
-    if (columnSortMenuNode && columnSortMenuNode.parentNode) columnSortMenuNode.parentNode.removeChild(columnSortMenuNode);
+    if (columnSortMenuNode && columnSortMenuNode.parentNode) detach(columnSortMenuNode);
     columnSortMenuNode = null;
     columnSortMenuFocusIndex = -1;
   }
@@ -6968,7 +6972,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /* What the browser suite reads back. `swallows` is the fence that matters: a
      removal that disconnects the LIVE press target is a swallowed click in
-     waiting, whatever function did it — `clear()`, a bare `.remove()`, or code
+     waiting, whatever function did it — `clear()`, `detach()`, or code
      written next year — so it is observed rather than derived from a list of
      call sites. Its limit is the mirror image of a static scan's and is stated
      rather than glossed: this is complete over removal MECHANISMS and incomplete
@@ -8192,7 +8196,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     var placeholder = cardsEl.querySelector(".column-empty");
-    if (placeholder) placeholder.remove();
+    if (placeholder) detach(placeholder);
 
     var cursor = cardsEl.firstElementChild;
     desiredCards.forEach(function(v) {
@@ -8231,7 +8235,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `reconcileColumnCards` via `appendChild`, so it's never "unclaimed").
    *
    * `syncRoving`'s own call at the end of `renderBoard` runs before any of
-   * this actually happens -- the exit animation defers the real `.remove()`
+   * this actually happens -- the exit animation defers the real `detach()`
    * by up to 600ms, so a card that's mid-exit is technically still in the
    * DOM (and, if it held focus, still focused) when that call is made.
    * `reclaimIfFocused` below is what catches focus at the moment the node
@@ -8242,7 +8246,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (claimed[id]) return;
       function reclaimIfFocused() {
         var wasFocused = document.activeElement === node;
-        node.remove();
+        detach(node);
         if (wasFocused) syncRoving(container, ".card[data-id]", id);
       }
       if (reduceMotion) {
@@ -9919,7 +9923,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
 
     Object.keys(existingById).forEach(function(id) {
-      if (!claimed[id]) existingById[id].remove();
+      if (!claimed[id]) detach(existingById[id]);
     });
     // List rows are removed immediately above (no exit animation, unlike
     // the board), so -- unlike `renderBoard` -- there is no deferred
@@ -10255,7 +10259,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // banner above it disappeared.
     Object.keys(existing).forEach(function(key) {
       if (desired[key]) return;
-      existing[key].remove();
+      detach(existing[key]);
       delete existing[key];
     });
 
@@ -11520,7 +11524,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
 
     Object.keys(existingById).forEach(function(id) {
-      if (!claimed[id]) existingById[id].remove();
+      if (!claimed[id]) detach(existingById[id]);
     });
   }
 
@@ -12970,7 +12974,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("create-project").disabled = !!story;
 
     var labelsField = $("create-labels-field");
-    while (labelsField.children.length > 1) labelsField.removeChild(labelsField.lastChild);
+    while (labelsField.children.length > 1) detach(labelsField.lastChild);
     // Suggestions start empty and are filled by `populateCreateVocabulary()`
     // just below -- the one place that reads a project's `m.labels`, so a
     // later project switch can refresh them through `setSuggestions()`
