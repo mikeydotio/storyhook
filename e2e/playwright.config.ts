@@ -53,10 +53,11 @@ if (loadGraceEnabled()) {
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
-const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];
+const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
 const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
 const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];
 const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
+const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];
 
 export default defineConfig({
   testDir: "./specs",
