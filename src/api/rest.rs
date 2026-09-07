@@ -25,6 +25,7 @@
 //! operation, validated by the same code, firing the same hooks, rather than two
 //! implementations that agree until one of them is edited.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::daemon::http1::{Header, Method};
@@ -771,11 +772,17 @@ fn project_data_json<S: Store>(
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
-            let highest_story_number = tx
+            let project_record = tx
                 .project(project)?
-                .ok_or_else(|| AppError::Storage(format!("project {project} does not exist")))?
-                .next_story_no
-                - 1;
+                .ok_or_else(|| AppError::Storage(format!("project {project} does not exist")))?;
+            let highest_story_number = project_record.next_story_no - 1;
+            let mut open_prs_by_story = BTreeMap::new();
+            for (story_no, link) in tx.open_pr_links(project)? {
+                open_prs_by_story
+                    .entry(story_no.to_id(&project_record.prefix))
+                    .or_insert_with(Vec::new)
+                    .push(link);
+            }
             let active = verification_activity.active();
             let incident = tx.verification_incident()?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
@@ -809,6 +816,12 @@ fn project_data_json<S: Store>(
                             "is_blocked".to_string(),
                             serde_json::Value::Bool(data.blocked_ids.contains(&view.story.id)),
                         );
+                        if let Some(open_prs) = open_prs_by_story.get(&view.story.id) {
+                            map.insert(
+                                "open_prs".to_string(),
+                                serde_json::to_value(open_prs).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
                         if let Some((_, _, status)) =
                             verification.iter().find(|(status_project, status_id, _)| {
                                 *status_project == project && status_id == &view.story.id
