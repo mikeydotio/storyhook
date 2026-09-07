@@ -114,3 +114,51 @@ test("a reclaimed card ignores its former exit animation completion", async ({
     "animation",
   );
 });
+
+test("a descendant animation cannot complete the card's exit", async ({ page }) => {
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: SEEDED_CARD_TITLE,
+  });
+  await expect(card).toBeVisible();
+  const originalNode = await card.elementHandle();
+  if (!originalNode) throw new Error("the seeded Alpha card has no element handle");
+
+  await originalNode.evaluate((node) => {
+    const clearedBlocker = document.createElement("span");
+    clearedBlocker.className = "blocker-cleared";
+    const statusLight = document.createElement("span");
+    statusLight.className = "story-light";
+    clearedBlocker.appendChild(statusLight);
+    node.appendChild(clearedBlocker);
+  });
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#search-input").fill("no Alpha story matches this query");
+    expect(
+      await originalNode.evaluate((node) => ({
+        connected: node.isConnected,
+        exiting: node.classList.contains("exiting"),
+      })),
+    ).toEqual({ connected: true, exiting: true });
+
+    await originalNode.evaluate((node) => {
+      node.querySelector(".story-light")?.dispatchEvent(
+        new AnimationEvent("animationend", {
+          animationName: "pulse-success",
+          bubbles: true,
+        }),
+      );
+    });
+    expect(await originalNode.evaluate((node) => node.isConnected)).toBe(true);
+
+    await originalNode.evaluate((node) => {
+      node.dispatchEvent(
+        new AnimationEvent("animationend", {
+          animationName: "card-exit",
+          bubbles: true,
+        }),
+      );
+    });
+    expect(await originalNode.evaluate((node) => node.isConnected)).toBe(false);
+  });
+});
