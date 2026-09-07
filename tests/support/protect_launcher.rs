@@ -1,4 +1,4 @@
-//! SH-585: classify installer-produced launchers, then execute real reader verbs.
+//! Classify installer-produced launchers, then execute real readers and dispatch.
 
 use super::*;
 use std::io::Write;
@@ -121,7 +121,6 @@ fn launcher_exception_rejects_mutation_and_ambiguous_shell_forms() {
     for args in [
         "",
         "create --title x",
-        "dispatch TST-1",
         "sync",
         "handoff",
         "triage",
@@ -188,6 +187,87 @@ fn launcher_exception_rejects_mutation_and_ambiguous_shell_forms() {
 }
 
 #[test]
+fn installed_launcher_dispatch_is_not_an_installed_artifact_edit() {
+    let harness = fixture();
+    let launcher = quoted(&harness.codex_launcher());
+    let provider_calls = harness.codex_log();
+    harness.install_fake(
+        "story",
+        "#!/bin/sh\nprintf invoked > \"$HOME/unexpected-story-call\"\nexit 99\n",
+    );
+    for prefix in ["", "bash ", "/bin/bash ", "/usr/bin/bash "] {
+        for selector in ["", "--project test ", "--project=test "] {
+            for args in [
+                "dispatch TST-1",
+                "dispatch TST-1 --agent=codex",
+                "dispatch --agent=claude TST-1",
+                "dispatch TST-1 --auto --resume",
+                "dispatch --next --auto --agent=codex",
+                "dispatch TST-1 --force",
+                "dispatch TST-1 --auto --full-auto",
+                "dispatch TST-1 --agent=codex --model=gpt-6-astra --effort=high --speed=fast",
+            ] {
+                let text = format!("{prefix}{launcher} {selector}{args}");
+                for codex in [false, true] {
+                    assert_eq!(ask(&harness, &text, codex), serde_json::json!({}), "{text}");
+                }
+            }
+        }
+    }
+    assert_eq!(harness.codex_log(), provider_calls);
+    assert!(!harness.home.join("unexpected-story-call").exists());
+}
+
+#[test]
+fn dispatch_exception_preserves_argument_shell_and_identity_guards() {
+    let harness = fixture();
+    let launcher = quoted(&harness.codex_launcher());
+    for args in [
+        "dispatch",
+        "dispatch --help",
+        "dispatch ../TST-1",
+        "dispatch TST-1 TST-2",
+        "dispatch TST-1 --unknown",
+        "dispatch TST-1 --agent other",
+        "dispatch TST-1 --agent=other",
+        "dispatch TST-1 --agent=codex --agent=claude",
+        "dispatch TST-1 --model=",
+        "dispatch TST-1 --effort=",
+        "dispatch TST-1 --speed=slow",
+        "dispatch TST-1 --auto --auto",
+        "dispatch TST-1 --force --resume",
+        "dispatch TST-1 --full-auto",
+        "dispatch TST-1 --next",
+        "dispatch --next --next",
+        "dispatch --next --force",
+        "dispatch --next --resume",
+        "dispatch --next --auto --full-auto",
+        "dispatch TST-1 --project other",
+    ] {
+        assert_denied(&harness, &format!("bash {launcher} {args}"));
+    }
+    for text in [
+        format!("bash {launcher} dispatch TST-1; rm {launcher}"),
+        format!("bash {launcher} dispatch TST-1 && story new x"),
+        format!("bash {launcher} dispatch TST-1\nrm {launcher}"),
+        format!("bash {launcher} dispatch TST-1 > {launcher}"),
+        format!("bash {launcher} dispatch TST-1 | cat"),
+        format!("bash {launcher} dispatch '$(touch /tmp/unwanted)'"),
+        format!("bash {launcher} --project {launcher} dispatch TST-1"),
+        format!("bash {launcher} dispatch TST-1 --model={launcher}"),
+        format!("bash -c {launcher} dispatch TST-1"),
+        format!("STORY_LAUNCH_CMD=bad bash {launcher} dispatch TST-1"),
+    ] {
+        assert_denied(&harness, &text);
+    }
+    fs::write(harness.codex_launcher(), "exec arbitrary-program\n").unwrap();
+    assert_denied(
+        &harness,
+        &format!("bash {launcher} dispatch TST-1 --agent=codex"),
+    );
+}
+
+#[test]
 fn launcher_identity_requires_the_installer_bytes_and_no_symlink() {
     let harness = fixture();
     let path = harness.codex_launcher();
@@ -232,6 +312,10 @@ fn unknown_operation_is_not_misreported_as_an_artifact_edit() {
         .as_str()
         .unwrap();
     assert!(reason.contains("cannot establish"), "{reason}");
+    assert!(
+        reason.contains("preserves installed release artifacts"),
+        "{reason}"
+    );
     assert!(!reason.contains("refusing to edit"), "{reason}");
     assert!(reason.contains("CHECKOUT"), "{reason}");
 }
@@ -241,21 +325,7 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
     let harness = fixture();
     // Only the provider installation boundary is simulated. Use the complete
     // shipped helper tree, real launcher, CLI and daemon for every read.
-    let cache = harness
-        .home
-        .join(".codex/plugins/cache/storyhook/story")
-        .join(env!("CARGO_PKG_VERSION"));
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story");
-    for (relative, (bytes, executable)) in regular_files(&source) {
-        let path = cache.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, bytes).unwrap();
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
-        )
-        .unwrap();
-    }
+    install_checkout_helpers(&harness);
     let created = harness.run(&[
         "project",
         "new",
@@ -353,4 +423,77 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
             "reader changed installed artifacts: {text}"
         );
     }
+}
+
+/// Replace the fixture release payload with this checkout's actual helper tree.
+fn install_checkout_helpers(harness: &Harness) -> PathBuf {
+    let cache = harness
+        .home
+        .join(".codex/plugins/cache/storyhook/story")
+        .join(env!("CARGO_PKG_VERSION"));
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story");
+    for (relative, (bytes, executable)) in regular_files(&source) {
+        let path = cache.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
+    }
+    cache
+}
+
+#[test]
+fn admitted_dispatch_claims_and_creates_worktree_without_editing_installed_artifacts() {
+    let harness = fixture();
+    let cache = install_checkout_helpers(&harness);
+    let artifacts = regular_files(&harness.home.join(".codex"));
+    let text = format!(
+        "bash {} dispatch TST-1 --agent=codex",
+        quoted(&harness.codex_launcher())
+    );
+    for codex in [false, true] {
+        assert_eq!(ask(&harness, &text, codex), serde_json::json!({}), "{text}");
+    }
+    // The existing terminal double models only the provider boundary. The
+    // launcher, helper, CLI, daemon, Git worktree and story claim are real.
+    let mut command = shell(&harness);
+    command
+        .args([
+            "-c",
+            r#"
+source "$2/plugins/story/tests/lib.sh"
+repo=$(mk_story_repo)
+id=$(new_story "$repo" "Installed launcher dispatch")
+cd "$repo" || exit 1
+export PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0
+export STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0
+export STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0
+export FAKE_TMUX_CAPTURE=marker FAKE_TMUX_CODEX_SENTINEL_MODE=identity
+out=$(bash "$1" dispatch "$id" --agent=codex)
+tmux kill-window -t "$id"
+assert_eq "$(jqf "$out" .ok)" true "installed dispatch succeeds"
+assert_eq "$(jqf "$out" .claimed)" true "installed dispatch claims"
+assert_eq "$(jqf "$out" .prompt_confirmed)" true "prompt was delivered"
+assert_eq "$(jqf "$out" .plan_mode_confirmed)" true "provider entered Plan mode"
+[ -d "$repo/.codex/worktrees/$id" ] || fail_test "missing worktree"
+git show-ref --verify --quiet "refs/heads/worktree-$id" || fail_test "missing branch"
+assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress "persisted claim"
+printf '%s\n' "$out"
+"#,
+            "installed-dispatch-test",
+        ])
+        .arg(harness.codex_launcher())
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .env("STORYHOOK_TEST_HOME", &harness.home)
+        .env("FAKE_TMUX_CODEX_PLUGIN_ROOT", cache);
+    let output = run_bounded(command, "real installed dispatch", STORY_COMMAND_DEADLINE);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(
+        regular_files(&harness.home.join(".codex")),
+        artifacts,
+        "dispatch changed installed artifacts"
+    );
 }

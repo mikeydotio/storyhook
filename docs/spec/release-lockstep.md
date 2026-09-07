@@ -161,3 +161,29 @@ release, unpinned Git source, or checkout.
   and `tests/corruption_recovery.rs` assert that it does. A guard there would
   make the store's own advice a dead end — the trap SH-404's module doc
   documented and SH-405 was filed for.
+
+## As built: launcher dispatch preserves the installation (SH-588)
+
+The installed-artifact guard distinguishes edits to the installation from
+story, worktree and terminal operations. SH-585's reader-only launcher
+exception explicitly rejected `dispatch`; this blocked the supported
+`$story do` route even though dispatch does not edit the installed helper.
+
+The exact, byte-verified Codex launcher also admits `dispatch` with one story
+ID or `--next` and the helper's supported provider, model, effort, speed and
+dispatch flags. Unknown/duplicate flags, invalid flag combinations, managed
+file operands, altered or redirected launchers, interpreter flags and shell
+composition retain their refusals. Catalog validation and readiness checks
+remain in the helper. The hook returns an inert response, leaving execution
+authorization to the host; other mutating helper verbs gain no exception.
+
+`plugin_install::protect_launcher` reproduces the original denial and covers
+the accepted/rejected command forms. Its installed-launcher integration runs
+real dispatch, checks the persisted claim and created Git worktree, and compares
+installed file bytes and modes before/after. Provider installation and terminal
+I/O are the existing fixture doubles; dispatch behavior is production code.
+
+The observed machine also had a stale 2.4.0 plugin with its 2.4.2 CLI. Updating
+that projection alone cannot repair the checkout's dispatch refusal. Ship the
+corrected hook in a release, then install its packaged plugin; do not patch a
+cache file or create an installed-edit override.

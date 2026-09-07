@@ -46,10 +46,9 @@ if (loadGraceEnabled()) {
  * needs daemon and browser configuration that would invalidate every ordinary
  * project's fixture, so both desktop projects exclude it and one dedicated
  * Chromium project selects it.
- * The Full Auto close-out is the one intentional cross-class spec: its
- * behavior spans desktop and phone layouts, so the mobile pair adds the exact
- * engine filename to this same base set instead of weakening the partition
- * with an independently maintained glob (SH-473).
+ * Full Auto close-out and the open-PR chip intentionally span desktop and
+ * phone layouts. The mobile pair adds those exact filenames to this same
+ * base set instead of maintaining independent per-engine globs (SH-473/SH-586).
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
