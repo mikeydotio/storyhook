@@ -81,6 +81,14 @@
 
 set -uo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+if [ -f "$script_dir/gate-progress.sh" ]; then
+    # shellcheck source=gate-progress.sh
+    . "$script_dir/gate-progress.sh"
+else
+    gate_progress_emit_activity() { :; }
+fi
+
 readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>"
 
 die() {
@@ -229,6 +237,8 @@ fi
 # this, wait on a lock its own process tree already holds — forever, since the
 # holder is provably alive. The name list travels in the environment because
 # that is exactly the boundary "this process tree" means.
+lock_activity_path="${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}"
+unset STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH
 held="${STORYHOOK_MACHINE_LOCKS:-}"
 case ":$held:" in
 (*":$name:"*)
@@ -236,6 +246,12 @@ case ":$held:" in
     exec "$@"
     ;;
 esac
+
+lock_activity_label="waiting for $name lock"
+emit_lock_activity() {
+    [ -n "$lock_activity_path" ] || return 0
+    gate_progress_emit_activity "$lock_activity_path" "$lock_activity_label" "$1"
+}
 
 # The identity half of "is this still the holder". Squeezed and trimmed so a
 # recorded value and a live one normalize identically; empty for a pid that no
@@ -245,6 +261,7 @@ process_started() {
 }
 
 mkdir -p "$lock_root" || die "could not create the lock root at $lock_root"
+emit_lock_activity running
 
 waited=0
 nameless=0
@@ -293,6 +310,7 @@ while :; do
 
     if [ -n "$max_wait" ] && [ "$waited" -ge "$max_wait" ]; then
         note "gave up after ${waited}s: the '$name' lock is still held by pid ${holder:-unknown} ($meta). The command did not run."
+        emit_lock_activity failed
         exit 75
     fi
 
@@ -358,16 +376,27 @@ on_signal() {
 }
 
 printf '%s\n' "$(process_started $$)" > "$lock/started" \
-    || die "could not record the holder's start time in $lock"
+    || {
+        emit_lock_activity failed
+        die "could not record the holder's start time in $lock"
+    }
 printf '%s %s -- %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$*" > "$lock/meta" \
-    || die "could not record the holder's description in $lock"
+    || {
+        emit_lock_activity failed
+        die "could not record the holder's description in $lock"
+    }
 printf '%s\n' "$$" > "$lock/pid" \
-    || die "could not record the holder's pid in $lock"
+    || {
+        emit_lock_activity failed
+        die "could not record the holder's pid in $lock"
+    }
 
 trap release EXIT
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
+
+emit_lock_activity passed
 
 if [ "$waited" -gt 0 ]; then
     note "took the '$name' lock after waiting ${waited}s"

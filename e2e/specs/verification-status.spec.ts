@@ -13,6 +13,7 @@ import {
  */
 
 const RUNNING_TITLE = "SH-549 active low priority";
+const ACTIVITY_TITLE = "SH-589 active lock wait";
 const QUEUED_TITLE = "SH-549 queued high priority";
 const STARTING_TITLE = "SH-549 active starting";
 const MOVED_TITLE = "SH-549 moved out of verifying";
@@ -56,6 +57,16 @@ async function injectVerificationCards(page: Page, slug: string): Promise<void> 
             elapsed_seconds: 724,
             current_step: { label: "rust-suite", elapsed_seconds: 182 },
             tests: { completed: 2234, total: 2250 },
+          },
+        },
+        {
+          id: "SH-94905",
+          title: ACTIVITY_TITLE,
+          priority: "low",
+          verification: {
+            status: "running",
+            elapsed_seconds: 1204,
+            current_step: { label: "waiting for gate lock", elapsed_seconds: 496 },
           },
         },
         {
@@ -126,6 +137,15 @@ test("cards distinguish active ownership from priority-sorted waiting work", asy
   await expect(running).toHaveAttribute(
     "aria-label",
     new RegExp("Verifying · 12m 4s total.*2234/2250 tests \\(99\\.3%\\)"),
+  );
+  const activity = card(page, ACTIVITY_TITLE);
+  await expect(activity.locator(".verification-chip")).toHaveText(
+    "Verifying · 20m 4s total · waiting for gate lock 8m 16s",
+  );
+  await expect(activity.locator(".verification-chip")).not.toContainText("tests");
+  await expect(activity).toHaveAttribute(
+    "aria-label",
+    /Verifying · 20m 4s total · waiting for gate lock 8m 16s$/,
   );
   await expect(queued).toHaveAttribute("aria-label", /Queued · 1h 4m · position 1/);
   const moved = page.locator('.column[data-state="todo"] .card', { hasText: MOVED_TITLE });

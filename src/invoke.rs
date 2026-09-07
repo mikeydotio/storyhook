@@ -1690,13 +1690,38 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
         }
         DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
         DaemonAction::Install { this_binary } => {
-            crate::daemon::commands::install(&env, this_binary).map(Response::Message)
+            crate::daemon::commands::install(&env, this_binary).map(login_agent_response)
         }
-        DaemonAction::Uninstall => crate::daemon::commands::uninstall(&env).map(Response::Message),
+        DaemonAction::Uninstall => {
+            crate::daemon::commands::uninstall(&env).map(login_agent_response)
+        }
         DaemonAction::Token => crate::daemon::commands::token(&env).map(Response::Message),
         DaemonAction::Serve { .. } => Err(AppError::Usage(
             "`story daemon --serve` is handled before dispatch".to_string(),
         )),
+    }
+}
+
+fn login_agent_response(report: crate::daemon::commands::LoginAgentReport) -> Response {
+    Response::MessageWithWarnings(report.message(), report.warnings())
+}
+
+#[cfg(test)]
+mod login_agent_response_tests {
+    use super::*;
+
+    #[test]
+    fn a_login_agent_warning_travels_as_structured_response_data() {
+        let response = login_agent_response(crate::daemon::commands::LoginAgentReport::new(
+            "removed the login agent".to_string(),
+            Some("launchctl refused bootout".to_string()),
+        ));
+
+        let Response::MessageWithWarnings(message, warnings) = response else {
+            panic!("a bootout warning must remain structured")
+        };
+        assert_eq!(message, "removed the login agent");
+        assert_eq!(warnings, vec!["launchctl refused bootout"]);
     }
 }
 
