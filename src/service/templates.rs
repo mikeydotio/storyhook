@@ -213,7 +213,11 @@ project it is looking at.
 ## Mini-roadmap
 
 - Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
-- Current: verify SH-585's narrow installed-launcher reader exception through
+- Complete: SH-585 installed-launcher reader exception merged (#669).
+- Complete: SH-581 extracted-source Lima guest build fix merged (#670).
+- Complete: SH-579 release tag/preflight observer and advisory merged (#671).
+- Complete: SH-577 coordinate-driven browser regressions merged (#672).
+- Current: verify SH-321's automated untrusted-origin browser proof through
   the centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
