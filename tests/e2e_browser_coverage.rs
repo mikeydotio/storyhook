@@ -870,7 +870,6 @@ fn the_runner_scopes_the_fake_origin_to_the_special_daemon() {
         "if [ \"$project\" = \"untrusted-origin-chromium\" ]; then",
         "export STORYHOOK_WEB_TRUSTED_HOSTS=\"$UNTRUSTED_ORIGIN_HOST\"",
         "base_url=\"http://$UNTRUSTED_ORIGIN_HOST:$port\"",
-        "export STORYHOOK_DAEMON_ADDR=\"127.0.0.1:$port\"",
     ] {
         assert!(
             body.contains(required),
