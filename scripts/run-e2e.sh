@@ -172,6 +172,19 @@ run_one_project() {
   . "$repo_root/scripts/test-env.sh"
   storyhook_isolate "$data_root"
 
+  # This is not a store-isolation parameter, so test-env.sh deliberately does
+  # not own it. It is still a browser-fixture input: an ambient proxy allowlist
+  # makes TrustedHosts::behind_a_proxy() true and withdraws local_request
+  # authority even from loopback, which makes handoff.spec.ts fail according to
+  # the developer's shell rather than this harness (SH-321). Start every
+  # project from the explicit no-proxy baseline; the one specialized project
+  # that needs an allowlist will opt in below.
+  unset STORYHOOK_WEB_TRUSTED_HOSTS
+  UNTRUSTED_ORIGIN_HOST="storyhook.e2e.test"
+  if [ "$project" = "untrusted-origin-chromium" ]; then
+    export STORYHOOK_WEB_TRUSTED_HOSTS="$UNTRUSTED_ORIGIN_HOST"
+  fi
+
   # --- Dispatch (SH-50): the daemon invokes this repo's own plugin script,
   # against the fake tmux the plugin test harness already uses -- no real
   # tmux server, no real claude, no network. Exported before `daemon start`
@@ -464,14 +477,24 @@ WRAPPER
     exit 1
   fi
 
-  base_url="http://127.0.0.1:$port"
+  # Pin the address children inherit to the port this daemon actually owns.
+  # The SH-321 spec uses the same binary and environment to stop and restart
+  # this isolated daemon, and a second `:0` bind would move the dashboard out
+  # from under the browser URL whose host-only cookie is being proved.
+  export STORYHOOK_DAEMON_ADDR="127.0.0.1:$port"
+
+  probe_url="http://127.0.0.1:$port"
+  base_url="$probe_url"
+  if [ "$project" = "untrusted-origin-chromium" ]; then
+    base_url="http://$UNTRUSTED_ORIGIN_HOST:$port"
+  fi
   deadline=$((SECONDS + 15))
   # `GET /` rather than `GET /api/repos` (SH-187: the latter now requires the
   # daemon's bearer token, which this probe has no reason to carry -- it is
   # asking "is the HTTP server up", not "is it authenticated").
-  until curl -sf -o /dev/null "$base_url/"; do
+  until curl -sf -o /dev/null "$probe_url/"; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "run-e2e.sh: $base_url never answered GET / within 15s" >&2
+      echo "run-e2e.sh: $probe_url never answered GET / within 15s" >&2
       exit 1
     fi
     sleep 0.2

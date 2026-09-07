@@ -1,9 +1,10 @@
 //! Fences the browser-coverage invariants SH-335 and SH-348 introduce.
 //!
-//! `e2e/playwright.config.ts` now names four projects -- two engine pairs,
+//! `e2e/playwright.config.ts` now names five projects -- two engine pairs,
 //! `chromium`/`webkit` (desktop) and `mobile-chromium`/`mobile-webkit`
-//! (mobile, SH-348) -- `Makefile`'s `e2e-install` installs the browsers those
-//! projects need, and a handful of specs quarantine an assertion WebKit
+//! (mobile, SH-348), plus SH-321's isolated untrusted-origin Chromium leg --
+//! `Makefile`'s `e2e-install` installs the browsers those projects need, and a
+//! handful of specs quarantine an assertion WebKit
 //! cannot satisfy on an unconfigured machine
 //! (`e2e/specs/support.ts::fullKeyboardAccess()`,
 //! story SH-335 carries the verdict). Three ways for that to
@@ -20,6 +21,8 @@
 //!    identically, quietly narrowing WebKit coverage relative to Chromium's,
 //!    or `engine.spec.ts` stops being the one explicit exception shared by all
 //!    four -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
+//!    SH-321's special spec is excluded from both pairs and selected only by
+//!    its own Chromium project -- `the_untrusted_origin_spec_has_one_project`.
 //! 4. A failed project stops the matrix or a later project's Playwright
 //!    invocation erases its failure artifacts --
 //!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
@@ -37,6 +40,9 @@
 //!    the suite drives only Chromium, both projects are Blink, or installation
 //!    fetches no other engine --
 //!    `dashboard_source_does_not_repeat_obsolete_chromium_only_claims`.
+//! 9. An ambient reverse-proxy allowlist cannot leak into the browser harness
+//!    and silently withdraw localhost-only handoff authority --
+//!    `the_runner_neutralizes_an_ambient_proxy_allowlist_before_startup`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -475,7 +481,8 @@ fn selector(block: &str) -> Option<(&'static str, String)> {
 /// desktop pair; SH-348 extends it to the mobile pair). Across the pairs,
 /// the selector KINDS remain opposite. The mobile pair's expression adds the
 /// one intentional cross-class file (`engine.spec.ts`) to `MOBILE_SPECS`;
-/// every other spec remains exhaustive and disjoint across the two pairs.
+/// the desktop pair additionally excludes SH-321's dedicated untrusted-origin
+/// spec, whose own project is pinned below.
 const ENGINE_PAIRS: [(&str, &str, &str, &str); 2] = [
     ("desktop", "chromium", "webkit", "testIgnore"),
     ("mobile", "mobile-chromium", "mobile-webkit", "testMatch"),
@@ -529,8 +536,8 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
 
     assert_eq!(
         pair_selectors[0].1.1.as_str(),
-        "MOBILE_SPECS",
-        "the desktop pair must exclude only phone-subject specs"
+        "DESKTOP_EXCLUDED_SPECS",
+        "the desktop pair must exclude phone-subject specs and the isolated untrusted-origin spec"
     );
     assert_eq!(
         pair_selectors[1].1.1.as_str(),
@@ -552,7 +559,13 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
     let names: Vec<&str> = blocks.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        vec!["chromium", "webkit", "mobile-chromium", "mobile-webkit"],
+        vec![
+            "chromium",
+            "webkit",
+            "mobile-chromium",
+            "mobile-webkit",
+            "untrusted-origin-chromium",
+        ],
         "project_blocks() parsed {names:?} out of the live config -- either a project was \
          added/removed/reordered, or the parser's anchor no longer matches the file's shape"
     );
@@ -575,6 +588,36 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
     assert_eq!(
         selector(match_block),
         Some(("testMatch", "MOBILE_OR_ENGINE_SPECS".to_string()))
+    );
+}
+
+#[test]
+fn the_untrusted_origin_spec_has_one_project() {
+    let config_text = read("e2e/playwright.config.ts");
+    let blocks = project_blocks(&config_text);
+    let special = blocks
+        .iter()
+        .find(|(name, _)| name == "untrusted-origin-chromium")
+        .unwrap_or_else(|| panic!("the config names no untrusted-origin-chromium project"));
+
+    assert_eq!(
+        selector(&special.1),
+        Some(("testMatch", "UNTRUSTED_ORIGIN_SPECS".to_string())),
+        "the untrusted-origin project must select only its dedicated spec"
+    );
+    assert!(
+        config_text
+            .contains("const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\\.spec\\.ts$/;")
+            && config_text
+                .contains("const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];"),
+        "the dedicated spec must be excluded from the ordinary desktop pair and selected from \
+         one shared expression"
+    );
+    assert!(
+        special
+            .1
+            .contains("--host-resolver-rules=MAP ${UNTRUSTED_ORIGIN_HOST} 127.0.0.1"),
+        "the special Chromium project must map the fake hostname to loopback in the browser"
     );
 }
 
@@ -772,4 +815,77 @@ fn the_fake_tmux_writer_guard_applies_only_to_dispatch() {
             "the dispatch-only guard must retain `{required}`"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 9. The browser harness owns the proxy-allowlist decision
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_runner_neutralizes_an_ambient_proxy_allowlist_before_startup() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+
+    let isolated = body
+        .find("storyhook_isolate \"$data_root\"")
+        .expect("run_one_project must enter the shared isolated environment");
+    let neutralized = body
+        .find("unset STORYHOOK_WEB_TRUSTED_HOSTS")
+        .expect("run_one_project must clear an inherited reverse-proxy allowlist");
+    let started = body
+        .find("start_output=\"$(\"$story_bin\" daemon start 2>&1)\"")
+        .expect("run_one_project must start its daemon");
+
+    assert!(
+        isolated < neutralized && neutralized < started,
+        "run_one_project must clear STORYHOOK_WEB_TRUSTED_HOSTS after isolation and before daemon \
+         startup; inherited proxy configuration withdraws local_request authority and breaks the \
+         handoff fixture"
+    );
+}
+
+#[test]
+fn the_runner_scopes_the_fake_origin_to_the_special_daemon() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+
+    for required in [
+        "UNTRUSTED_ORIGIN_HOST=\"storyhook.e2e.test\"",
+        "if [ \"$project\" = \"untrusted-origin-chromium\" ]; then",
+        "export STORYHOOK_WEB_TRUSTED_HOSTS=\"$UNTRUSTED_ORIGIN_HOST\"",
+        "base_url=\"http://$UNTRUSTED_ORIGIN_HOST:$port\"",
+        "export STORYHOOK_DAEMON_ADDR=\"127.0.0.1:$port\"",
+    ] {
+        assert!(
+            body.contains(required),
+            "specialized runner path lost `{required}`"
+        );
+    }
+
+    let neutralized = body
+        .find("unset STORYHOOK_WEB_TRUSTED_HOSTS")
+        .expect("the ambient allowlist must be cleared first");
+    let specialized = body
+        .find("export STORYHOOK_WEB_TRUSTED_HOSTS=\"$UNTRUSTED_ORIGIN_HOST\"")
+        .expect("the special project must opt back in");
+    let started = body
+        .find("start_output=\"$(\"$story_bin\" daemon start 2>&1)\"")
+        .expect("run_one_project must start its daemon");
+    assert!(
+        neutralized < specialized && specialized < started,
+        "the fake host must be admitted only after ambient state is cleared and before this \
+         project's isolated daemon starts"
+    );
 }
