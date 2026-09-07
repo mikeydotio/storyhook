@@ -1,7 +1,8 @@
 # SH-588 — Installed launcher dispatch guard
 
-- Hook fix and dialog readiness merged in PRs #683/#684.
-- Current follow-up: `fix/release-pointer-fixtures`.
+- Hook and browser/release validation fixes merged in PRs #683/#684/#685.
+- Current: submit `fix/daemon-portfile-exit` for centralized verification.
+- Preserve local `release/v2.4.3` and its version commit; do not bump again.
 - Failure: the installed-artifact guard explicitly denied `dispatch`, treating
   story/worktree mutations as if they edited the installed launcher.
 - Regression reproduced RED before the hook changed; targeted suites passed
@@ -13,7 +14,7 @@
   Provider installation and terminal behavior use the existing test doubles.
 - `story doctor install` found plugin 2.4.0 with binary 2.4.2. The fix must ship
   through the release/plugin installer before the live SH-560 retry can work.
-- No installed copies, override files or version metadata were changed.
+- Installed copies and override files remain unchanged.
 - Adopted baseline gate repair: the mobile-browser coverage assertion omitted
   the existing open-PR-chip exception. Preserve its coverage on both engines
   and update the stale assertion/comments. Core Rust battery passed 3703 tests.
@@ -37,13 +38,22 @@
   the final navigation probe. Desktop sign-in resolved the separate native
   startup failure. With the desktop active, the old browser also passes the
   fixture-document probe; that comparison is not new RED evidence.
-- PR #685 carries the follow-up. Both behavior commits independently pass
+- PR #685 merged the follow-up. Both behavior commits independently pass
   `make test`; full release validation belongs on SH-588. `npm ci` restored
   the committed Playwright 1.63.0 dependency after the old-browser control.
 - Adopted release-order repair: gate the versioned tree before push/install.
   Five real-script regressions reproduced certification of the old tree and
   an unchecked push/install after the bump. Cover public and local paths,
   successful and failed gates, and failed bumps against a disposable Git remote.
-- Next: complete `make test-full`, submit PR #685 for centralized verification,
-  then run the normal patch release and publication flow. Install the packaged
-  Codex plugin and retry `$story do SH-560` through its installed launcher.
+- The versioned release gate failed the orphan-portfile lifecycle test. The
+  exact panic was not retained; isolated and three complete target reruns passed.
+  A controlled child-process regression then reproduced late atomic publication
+  after orderly cleanup. Serialize publication with cleanup through process exit
+  for both parent loss and requested shutdown; no timeout changes.
+- After the fix merges, rebase the unpublished version commit onto main so its
+  tag includes the fix. Nothing is force-pushed.
+- Next: pass `make test-full` on the final v2.4.3 tree and submit the release PR.
+  Build all four archives from that tested tag target, verify uploaded digests,
+  install and publish the release, then install the packaged Codex plugin.
+  Retry `$story do SH-560` through the installed launcher; an old session hook
+  may require restarting Codex after installation.
