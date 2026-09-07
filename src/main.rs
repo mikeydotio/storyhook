@@ -100,29 +100,6 @@ fn run_with_deadline(
     }
 }
 
-#[cfg(test)]
-mod deadline_tests {
-    use super::*;
-
-    /// A worker that disappears cannot be reported as an elapsed deadline:
-    /// callers use exit 12 specifically as evidence that waiting consumed the
-    /// declared budget and further attempts should stop.
-    #[test]
-    fn a_disconnected_deadline_worker_is_a_storage_failure() {
-        let result = run_with_deadline(
-            || -> Result<Response, storyhook::error::AppError> {
-                panic!("the invocation worker stopped before sending")
-            },
-            std::time::Duration::from_secs(1),
-        );
-
-        assert!(
-            matches!(result, Err(storyhook::error::AppError::Storage(ref detail)) if detail.contains("worker stopped")),
-            "a disconnected worker is not proof that the deadline elapsed: {result:?}"
-        );
-    }
-}
-
 /// Refuses feature-gated environment instructions this build cannot honor.
 ///
 /// This call is the first statement in [`main`]. Gathering reads process state
@@ -910,5 +887,28 @@ fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
             action: WebAction::Serve { port },
         } => Some(*port),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    /// A worker that disappears cannot be reported as an elapsed deadline:
+    /// callers use exit 12 specifically as evidence that waiting consumed the
+    /// declared budget and further attempts should stop.
+    #[test]
+    fn a_disconnected_deadline_worker_is_a_storage_failure() {
+        let result = run_with_deadline(
+            || -> Result<Response, storyhook::error::AppError> {
+                panic!("the invocation worker stopped before sending")
+            },
+            std::time::Duration::from_secs(1),
+        );
+
+        assert!(
+            matches!(result, Err(storyhook::error::AppError::Storage(ref detail)) if detail.contains("worker stopped")),
+            "a disconnected worker is not proof that the deadline elapsed: {result:?}"
+        );
     }
 }
