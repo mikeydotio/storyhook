@@ -136,7 +136,7 @@ impl Environment {
 
         let preferred_port = match env_string("STORYHOOK_DAEMON_ADDR") {
             Some(raw) => parse_daemon_port(&raw)?,
-            None => default_daemon_port(store.is_default()),
+            None => default_daemon_port_for_store(&store, &home),
         };
 
         let busy_timeout = match env_string("STORYHOOK_BUSY_TIMEOUT_MS") {
@@ -587,11 +587,12 @@ fn parse_daemon_port(raw: &str) -> Result<u16, AppError> {
 
 /// The port a daemon prefers when nothing names one.
 ///
-/// The **default** store keeps [`DEFAULT_DAEMON_PORT`], so a bookmarked
-/// dashboard URL survives restarts and the launchd agent needs no change. Any
-/// other store binds port 0 and publishes what the kernel gave it, which is what
-/// makes two isolated stores unable to collide on a port — and therefore what
-/// makes a parallel test suite safe without the harness having to choose ports.
+/// The store designated as the home default keeps [`DEFAULT_DAEMON_PORT`], so
+/// a bookmarked dashboard URL survives restarts and the launchd agent needs no
+/// change. Any other store binds port 0 and publishes what the kernel gave it,
+/// which is what makes two isolated stores unable to collide on a port — and
+/// therefore what makes a parallel test suite safe without the harness having
+/// to choose ports.
 #[must_use]
 pub fn default_daemon_port(is_default_store: bool) -> u16 {
     if is_default_store {
@@ -599,6 +600,11 @@ pub fn default_daemon_port(is_default_store: bool) -> u16 {
     } else {
         0
     }
+}
+
+/// The port a resolved store prefers when no address overrides it.
+fn default_daemon_port_for_store(store: &StoreLocation, home: &Path) -> u16 {
+    default_daemon_port(store.is_default_for_home(home))
 }
 
 /// Where the store lives on this machine when nothing names one.
@@ -909,6 +915,44 @@ mod tests {
     fn only_the_default_store_prefers_the_production_port() {
         assert_eq!(default_daemon_port(true), DEFAULT_DAEMON_PORT);
         assert_eq!(default_daemon_port(false), 0);
+    }
+
+    /// `$XDG_DATA_HOME` changes this process's default, but not the store a
+    /// daemon launched later without that environment will serve. The relocated
+    /// store must therefore take an OS-assigned port instead of competing with
+    /// the login-time default for the stable dashboard port (SH-428).
+    #[test]
+    fn an_xdg_default_store_does_not_prefer_the_production_port() {
+        let home = Path::new("/tmp/storyhook-sh-428-home");
+        let login_default = StoreLocation::for_home(home);
+        let explicitly_named_login_default =
+            StoreLocation::resolve(Some(login_default.path()), &StoreVars::default(), home)
+                .expect("resolving the login default through an explicit path");
+        let store = StoreLocation::resolve(
+            None,
+            &StoreVars {
+                xdg_data_home: Some(home.join("xdg")),
+                ..StoreVars::default()
+            },
+            home,
+        )
+        .expect("resolving a store through XDG_DATA_HOME");
+
+        assert!(
+            store.is_default(),
+            "the regression requires the old predicate to be fooled"
+        );
+        assert!(!store.is_default_for_home(home));
+        assert_eq!(default_daemon_port_for_store(&store, home), 0);
+        assert!(login_default.is_default_for_home(home));
+        assert_eq!(
+            default_daemon_port_for_store(&login_default, home),
+            DEFAULT_DAEMON_PORT
+        );
+        assert_eq!(
+            default_daemon_port_for_store(&explicitly_named_login_default, home),
+            DEFAULT_DAEMON_PORT
+        );
     }
 
     /// The upgrade path reads one and writes the other. If they were ever the

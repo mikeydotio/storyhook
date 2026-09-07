@@ -150,14 +150,27 @@ impl StoreLocation {
         self.origin
     }
 
-    /// Whether this is the store a machine uses when nothing names one.
+    /// Whether this is the default store under the variables used to resolve
+    /// this location.
     ///
     /// Not the same question as "did anything name it": pointing
     /// `$STORYHOOK_DATA_DIR` at the place the store already lives selects the
-    /// default store, and it should keep the default store's port and the
-    /// default store's backups.
+    /// default store, and it should keep the default store's backups. Code
+    /// deciding what a process with no store-location overrides would open
+    /// must use [`Self::is_default_for_home`] instead.
     pub fn is_default(&self) -> bool {
         self.path == self.default_path
+    }
+
+    /// Whether this is the default store for `home` with no store-location
+    /// overrides.
+    ///
+    /// This differs from [`Self::is_default`] when `$XDG_DATA_HOME` selected
+    /// this location: `is_default` is relative to the variables used during
+    /// resolution, while this predicate describes what a later process with
+    /// only the same `HOME` would open.
+    pub(crate) fn is_default_for_home(&self, home: &Path) -> bool {
+        self.path == Self::for_home(home).path
     }
 
     /// The name of this store's state directory.
