@@ -827,10 +827,11 @@ named failure class. Bubble phase, because the handler only cancels a default ac
 nothing in the dock stops propagation.
 
 **Enter specifically, and the narrowness is the whole design.** A bare `if (event.repeat)`
-would also cancel held Arrow/Page scrolling from a focused dismiss button — the affordance
-`syncNoticeDock`'s conditional `tabindex` on `#toast-scroll` exists to provide — and would
-take it from exactly the people this story is written for. Space needs no guard: a button
-activates on Space *keyup*, so its auto-repeat never activated anything.
+would also cancel held Arrow/Page keydowns from a focused dismiss button. WebKit does not
+natively scroll the ancestor from that target, where Chromium does, so the pin observes the
+application boundary directly: every repeated ArrowDown reaches `window` uncancelled after
+the dock's bubbling listener. Space needs no guard: a button activates on Space *keyup*, so
+its auto-repeat never activated anything.
 
 **A suppressed repeat announces nothing, by decision.** The press that landed already spoke
 through `announceNoticeDismissal`; an utterance per repeat would arrive at the OS repeat rate
@@ -844,27 +845,21 @@ reliably dismiss exactly one notice.
 |---|---|
 | Unbind the listener from `#notice-dock` | both held-Enter pins red (toast stack and dispatch history); the four over-reach pins stay green, which is correct |
 | Drop the repeat check — `if (event.key !== "Enter") return` (Enter never activates) | the discrete-presses pin red, and both held-Enter pins red too, since with Enter inert the stack never loses its first notice either |
-| Drop the Enter check — bare `if (!event.repeat) return` | **survived.** The ArrowDown pin asserted `scrollTop > 0`, and a bare guard cancels only the *repeats* — the deliberate first keydown still scrolls one step, so the assertion held and the over-reach went unreported. The pin now measures one discrete press and requires the held press to beat it; against the mutant it fails `Expected: > 40, Received: 40`, one arrow step exactly |
+| Drop the Enter check — bare `if (!event.repeat) return` | **survived the first pin.** `scrollTop > 0` saw only the uncancelled first keydown. A one-step baseline killed the mutant in Chromium, but WebKit exposed that ancestor scrolling itself is engine-dependent (SH-374). The final pin observes `defaultPrevented` at `window`, after the dock listener, and catches all eight repeated ArrowDown events canceled by the mutant in either engine |
 | Add Space to the predicate | **survived, and correctly** — an equivalent mutant. A button activates on Space keyup and the first Space keydown is never `repeat: true`, so the repeats it would newly cancel were doing nothing. The council reasoned that guarding Space "would risk cancelling the one activation a held Space legitimately produces on release"; on Blink, measured, it does not. The Enter-only scope rests on the ArrowDown result above, not on this one |
 
-**Found while closing the first survivor:** Chromium **animates** keyboard scrolling, so a
-`scrollTop` read in the same tick as the keypress reports the pre-animation value — measured
-as exactly `0` for a single discrete ArrowDown. The pin waits for four consecutive equal
-samples (`settledScrollTop`) and boxes the result, since `waitForFunction` reads a bare `0`
-as "keep waiting" and `0` is a legitimate answer.
-
-**What is NOT claimed, and it is more than usual here.** Five of
-`notice-autorepeat.spec.ts`'s six pins run under Chromium and WebKit after installing a
-rejecting Clipboard API before the application loads instead of relying on the engines'
-different default permission postures (SH-374). The ArrowDown over-reach pin still depends
-on Chromium scrolling an ancestor when a descendant button has focus; WebKit does not, so
-the complete battery still speaks to Blink. Nothing is said about Gecko either way. And
-Playwright sets the `repeat` bit itself on a second `keyboard.down` — so what these pins
-prove is that an un-prevented repeat keydown activates a button, and that cancelling it
-stops that. That a *physically* held key sets the flag rests on the UI Events spec and on a
-hand check, not on this suite; where an input stack does not set it, the guard is inert,
-which is the pre-fix behaviour and never worse. This is the SH-322/SH-327 precedent applied
-to an input event rather than to an utterance.
+**What is NOT claimed, and it is more than usual here.** All six
+`notice-autorepeat.spec.ts` pins run under Chromium and WebKit. The five that need durable
+errors install a rejecting Clipboard API before the application loads instead of relying
+on the engines' different default permission postures (SH-374), and the ArrowDown pin
+asserts cancellation rather than an engine-specific scrolling default. Nothing is said
+about Gecko either way. Playwright sets the `repeat` bit itself on a second
+`keyboard.down`, so what these pins prove in both driven engines is that an un-prevented
+repeat keydown activates a button, and that cancelling it stops that. That a *physically*
+held key sets the flag rests on the UI Events spec and on a hand check, not on this suite;
+where an input stack does not set it, the guard is inert, which is the pre-fix behaviour and
+never worse. This is the SH-322/SH-327 precedent applied to an input event rather than to an
+utterance.
 
 **Deliberately out of scope, and filed rather than argued away.** The guard fixes the
 *amplification*, not the *loss*: a durable error's content is still unrecoverable once
