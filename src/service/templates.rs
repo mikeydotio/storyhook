@@ -212,9 +212,9 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: validate SH-588's installed-launcher dispatch guard correction.
-- Next: audit the story lifecycle end to end (SH-560).
-- Later: separate the project roadmap from generated instructions (SH-557).
+- Current: audit the story lifecycle end to end (SH-560) after installing
+  SH-588's hook repair and release validation fixes.
+- Next: separate the project roadmap from generated instructions (SH-557).
 - Later: resume authenticated attachment serving and upload (SH-315).
 "#,
         done_state = done_state,
