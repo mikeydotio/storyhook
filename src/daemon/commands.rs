@@ -17,7 +17,7 @@
 
 use crate::daemon::agent;
 use crate::daemon::install_guard;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
@@ -244,7 +244,8 @@ struct Plan {
 ///
 /// # Errors
 ///
-/// [`AppError::Usage`] when [`install_guard::decide`] refuses, or off macOS.
+/// [`AppError::Usage`] when [`install_guard::decide`] refuses, when a
+/// temporary store would leave a durable agent behind, or off macOS.
 /// [`AppError::Storage`] when the plist cannot be written or `launchctl`
 /// refuses it.
 pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError> {
@@ -274,15 +275,52 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError>
 ///
 /// # Errors
 ///
-/// [`AppError::Usage`] carrying [`install_guard::Refusal`]'s whole message.
+/// [`AppError::Usage`] when the executable gate refuses, or when a temporary
+/// store would leave a durable login agent behind.
 fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Plan, AppError> {
     let verdict =
         install_guard::decide(inputs).map_err(|refusal| AppError::Usage(refusal.to_string()))?;
+    let path = agent::path(env);
+    refuse_temporary_store_for_durable_agent(env.store_path(), &path)?;
     Ok(Plan {
         label: agent::label(env),
-        path: agent::path(env),
+        path,
         contents: agent::plist(&verdict.enthrone, env),
     })
+}
+
+/// Refuses a login agent that can outlive the store it serves (SH-426).
+///
+/// The mismatch is the defect, not either temporary path by itself. The test
+/// harness roots both its store and fake `~/Library/LaunchAgents` under
+/// `/private/tmp`; those artifacts disappear together and are safe. A plist
+/// in a durable home that names a temporary store instead survives after the
+/// operating system reclaims that store, so launchd retries a defunct daemon
+/// at every later login until somebody uninstalls it by hand.
+///
+/// Kept separate from [`install_guard`]: that module decides which executable
+/// may receive a permanent seat on the machine, while this function decides
+/// whether the seat itself can outlive the store. The executable decision runs
+/// first, preserving its root and path-identity refusal precedence.
+fn refuse_temporary_store_for_durable_agent(
+    store_path: &Path,
+    agent_path: &Path,
+) -> Result<(), AppError> {
+    if !crate::service::project::is_under_temp(store_path)
+        || crate::service::project::is_under_temp(agent_path)
+    {
+        return Ok(());
+    }
+    Err(AppError::Usage(format!(
+        "refusing to register a durable login agent at `{}` for the temporary store at `{}`.\n\n\
+         Nothing has been written. The operating system may reclaim that store while the agent \
+         remains, causing launchd to retry a defunct daemon at every later login. Move the store \
+         to a durable location and run `story daemon install` again. To run this store only for \
+         the current session, use `story --store-path {} daemon start`.",
+        agent_path.display(),
+        store_path.display(),
+        store_path.display(),
+    )))
 }
 
 /// Writes the plist and hands it to launchd.
@@ -621,6 +659,60 @@ mod tests {
             )
             .expect("resolving a named store"),
         )
+    }
+
+    /// SH-426: a store the operating system may reclaim must not leave a
+    /// login agent in a durable home. `--this-binary` answers which executable
+    /// to enthrone; it must not override the independent lifetime mismatch.
+    #[test]
+    fn a_temporary_store_cannot_create_a_durable_agent_even_with_this_binary() {
+        let temporary = scratch();
+        let home = storyhook_test_support::non_temporary_dir("sh426-durable-agent-home");
+        let env = named_store_env(&home, &temporary.path().join("store.db").to_string_lossy());
+        let mut inputs = permitting_inputs();
+        inputs.this_binary = true;
+
+        let refused = install_plan(&env, &inputs).expect_err("must refuse");
+
+        assert!(matches!(refused, AppError::Usage(_)), "{refused:?}");
+        assert!(refused.to_string().contains("temporary"), "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains(&env.store_path().display().to_string()),
+            "the refusal must name the temporary store: {refused}"
+        );
+        assert!(
+            refused
+                .to_string()
+                .contains(&agent::path(&env).display().to_string()),
+            "the refusal must name the durable plist: {refused}"
+        );
+        assert!(
+            !agent::path(&env).exists(),
+            "the lifetime guard must run before the plist is written"
+        );
+    }
+
+    /// The test harness deliberately puts both sides under `/private/tmp`.
+    /// That pair is self-cleaning, so refusing it would disable the tests that
+    /// prove installation without protecting a durable machine artifact.
+    #[test]
+    fn a_temporary_store_may_create_a_temporary_agent() {
+        let dir = scratch();
+        let env = named_store_env(dir.path(), "named.db");
+
+        install_plan(&env, &permitting_inputs()).expect("both artifacts are temporary");
+    }
+
+    /// The positive production case: per-store agents remain supported when
+    /// both the store and its plist have durable locations.
+    #[test]
+    fn a_durable_named_store_may_create_a_durable_agent() {
+        let home = storyhook_test_support::non_temporary_dir("sh426-durable-store-home");
+        let env = named_store_env(&home, "named.db");
+
+        install_plan(&env, &permitting_inputs()).expect("both artifacts are durable");
     }
 
     /// **The defect this story exists to fix.** Before it: `agent::path`
