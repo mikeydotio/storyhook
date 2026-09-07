@@ -1162,22 +1162,44 @@ wait
         last_checked_at: None,
     };
     let env_root = scratch_dir();
+    let daemon_env = Environment::at(env_root.path());
     let actuator = ShellVerificationActuator::with_paths_and_timing(
-        Environment::at(env_root.path()),
+        daemon_env.clone(),
         checkout.path().join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
-        Duration::from_millis(100),
+        Duration::from_millis(500),
         Duration::from_secs(1),
         Duration::from_millis(100),
     );
 
-    let outcome = actuator.verify(&candidate, &pull_request);
+    let outcome = thread::scope(|scope| {
+        let running = scope.spawn(|| actuator.verify(&candidate, &pull_request));
+        let ready_by = Instant::now() + Duration::from_millis(250);
+        let active = loop {
+            let active = lifecycle::read_owned_processes(&daemon_env);
+            if !active.is_empty() || Instant::now() >= ready_by {
+                break active;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(active.len(), 1, "the verifier group was never registered");
+        assert_eq!(active[0].role, "verifier");
+        assert_eq!(
+            active[0].request_id.as_deref(),
+            Some("verify:fixture:SH-1:legacy")
+        );
+        running.join().expect("the verifier thread must not panic")
+    });
+    assert!(
+        lifecycle::read_owned_processes(&daemon_env).is_empty(),
+        "the reaped verifier must retract its process-group registration"
+    );
 
     let detail = match outcome {
         VerificationOutcome::InfrastructureFailure { detail, .. } => detail,
         other => panic!("a timed-out verifier is infrastructure failure, got {other:?}"),
     };
-    assert!(detail.contains("100ms"), "{detail}");
+    assert!(detail.contains("500ms"), "{detail}");
     assert!(detail.contains("SIGTERM"), "{detail}");
     assert!(detail.contains("SIGKILL"), "{detail}");
     assert!(checkout.path().join("cleanup-started").is_file());

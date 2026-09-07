@@ -30,6 +30,7 @@ pub(crate) enum CaptureError {
     Stage(std::io::Error),
     Spawn(std::io::Error),
     Wait(std::io::Error),
+    Track(String),
     Timeout(TimeoutTermination),
 }
 
@@ -38,6 +39,7 @@ impl CaptureError {
     pub(crate) fn detail(&self) -> String {
         match self {
             Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
+            Self::Track(error) => error.clone(),
             Self::Timeout(_) => "the process timed out".to_string(),
         }
     }
@@ -74,8 +76,19 @@ pub(crate) fn run_captured_with_termination(
     timeout: Duration,
     termination: TerminationPolicy,
 ) -> Result<Captured, CaptureError> {
+    run_captured_with_registration(command, timeout, termination, |_| Ok(()))
+}
+
+/// Runs a command with capture while retaining a caller-owned registration
+/// guard for the child's complete lifetime.
+pub(crate) fn run_captured_with_registration<G>(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, || {
+    run_captured_until(command, termination, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
 }
@@ -83,28 +96,32 @@ pub(crate) fn run_captured_with_termination(
 /// Runs a command until its append-only journal stops advancing for `timeout`.
 /// Output chatter is deliberately not progress. An unreadable or damaged
 /// journal fails closed with the caller's ordinary process-group cleanup.
-pub(crate) fn run_captured_with_progress(
+pub(crate) fn run_captured_with_progress_and_registration<G>(
     command: Command,
     timeout: Duration,
     termination: TerminationPolicy,
     journal: &std::path::Path,
+    register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let mut deadline =
         progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
     // Observe at least four times per idle window, capped to keep journal
     // activity responsive even for the production multi-minute budget.
     let poll = (timeout / 4).min(Duration::from_millis(100));
-    let captured = run_captured_until(command, termination, Some(poll), || deadline.remaining())?;
+    let captured = run_captured_until(command, termination, Some(poll), register, || {
+        deadline.remaining()
+    })?;
     // A child can damage the journal and exit inside one poll interval. Check
     // once more after reaping so a fast successful result cannot hide that.
     deadline.remaining().map_err(CaptureError::Wait)?;
     Ok(captured)
 }
 
-fn run_captured_until(
+fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
     poll: Option<Duration>,
+    register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
 ) -> Result<Captured, CaptureError> {
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
@@ -119,6 +136,14 @@ fn run_captured_until(
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
+    let _registration = match register(pid) {
+        Ok(registration) => registration,
+        Err(error) => {
+            kill_process_group(pid);
+            let _ = child.wait();
+            return Err(CaptureError::Track(error));
+        }
+    };
     let status = loop {
         let budget = match remaining() {
             Ok(budget) => budget,
@@ -135,7 +160,8 @@ fn run_captured_until(
                 return Err(CaptureError::Timeout(outcome));
             }
             Err(error) => {
-                terminate_timed_out(&mut child, pid, termination);
+                kill_process_group(pid);
+                let _ = child.wait();
                 return Err(CaptureError::Wait(error));
             }
         }
