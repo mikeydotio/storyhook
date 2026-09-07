@@ -233,6 +233,11 @@ pub fn status_for(error: &AppError) -> u16 {
         AppError::Validation(_) => 422,
         AppError::NotFound(_) => 404,
         AppError::LockTimeout(_) => 409,
+        // Client-originated: the daemon never constructs this. If it crosses
+        // this server boundary, 500 exposes the invariant breach; 408 would
+        // falsely say the request body never arrived, and 504 requires a
+        // gateway or proxy waiting on an upstream server (RFC 9110).
+        AppError::DeadlineExceeded(_) => 500,
         AppError::Integrity(_) | AppError::Storage(_) => 500,
         AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
         AppError::StateConflict(..) => 409,
@@ -733,6 +738,14 @@ pub fn carries_body(method: &Method) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DeadlineExceeded is a client-side condition. If it ever reaches the
+    /// daemon's HTTP renderer, expose the invariant breach rather than using
+    /// 408 or 504 with semantics this origin server does not satisfy.
+    #[test]
+    fn a_client_deadline_at_the_server_boundary_is_internal_error() {
+        assert_eq!(status_for(&AppError::DeadlineExceeded("late".into())), 500);
+    }
 
     #[test]
     fn a_reply_carries_no_cookie_by_default() {

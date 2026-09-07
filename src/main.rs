@@ -82,14 +82,22 @@ fn run_with_deadline(
     std::thread::spawn(move || {
         let _ = tx.send(invoke());
     });
-    rx.recv_timeout(deadline).unwrap_or_else(|_| {
-        Err(storyhook::error::AppError::Storage(format!(
-            "gave up after {}s waiting for storyhook, as --deadline asked. This command was \
+    match rx.recv_timeout(deadline) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(storyhook::error::AppError::DeadlineExceeded(format!(
+                "gave up after {}s waiting for storyhook, as --deadline asked. This command was \
              not cancelled: the daemon may still be running it, and storyhook will not repeat \
              it. Check with `story show` or `story list`, then try again if it did not.",
-            deadline.as_secs(),
-        )))
-    })
+                deadline.as_secs(),
+            )))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(storyhook::error::AppError::Storage(
+                "the storyhook invocation worker stopped before returning a result".to_string(),
+            ))
+        }
+    }
 }
 
 /// Refuses feature-gated environment instructions this build cannot honor.
@@ -879,5 +887,28 @@ fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
             action: WebAction::Serve { port },
         } => Some(*port),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    /// A worker that disappears cannot be reported as an elapsed deadline:
+    /// callers use exit 12 specifically as evidence that waiting consumed the
+    /// declared budget and further attempts should stop.
+    #[test]
+    fn a_disconnected_deadline_worker_is_a_storage_failure() {
+        let result = run_with_deadline(
+            || -> Result<Response, storyhook::error::AppError> {
+                panic!("the invocation worker stopped before sending")
+            },
+            std::time::Duration::from_secs(1),
+        );
+
+        assert!(
+            matches!(result, Err(storyhook::error::AppError::Storage(ref detail)) if detail.contains("worker stopped")),
+            "a disconnected worker is not proof that the deadline elapsed: {result:?}"
+        );
     }
 }
