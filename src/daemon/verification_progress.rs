@@ -76,7 +76,7 @@ pub struct VerificationBlocker {
     pub halted: bool,
 }
 
-/// Current explicit journal item for an active attempt.
+/// Current journal item or non-checklist activity for an active attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VerificationStep {
     /// Human-readable producer label for the active gate step.
@@ -85,7 +85,7 @@ pub struct VerificationStep {
     pub elapsed_seconds: u64,
 }
 
-/// Exact completed/planned test counts for an active attempt.
+/// Exact completed/planned test counts for the active current step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VerificationTests {
     /// Exact terminal case count observed in the current attempt.
@@ -158,17 +158,23 @@ pub fn status_snapshot_with_incident(
                 }
             } else if let Some(held) = active.filter(|held| owns(candidate, held)) {
                 let progress = matching_progress(env, candidate);
-                let current_step = progress.as_ref().and_then(|progress| {
-                    let step = progress.current_step()?;
-                    Some(VerificationStep {
-                        label: step.label,
-                        elapsed_seconds: elapsed_secs(&step.started_at, now)?,
-                    })
-                });
-                let tests = progress
+                let (current_step, tests) = progress
                     .as_ref()
-                    .and_then(gate_progress::GateProgress::exact_test_counts)
-                    .map(|(completed, total)| VerificationTests { completed, total });
+                    .and_then(gate_progress::GateProgress::current_step)
+                    .and_then(|step| {
+                        let elapsed_seconds = elapsed_secs(&step.started_at, now)?;
+                        let tests = step
+                            .tests
+                            .map(|(completed, total)| VerificationTests { completed, total });
+                        Some((
+                            Some(VerificationStep {
+                                label: step.label,
+                                elapsed_seconds,
+                            }),
+                            tests,
+                        ))
+                    })
+                    .unwrap_or((None, None));
                 VerificationStatus::Running {
                     elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
                     current_step,

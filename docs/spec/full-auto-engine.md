@@ -564,9 +564,14 @@ machine-wide lock, in the shape `browser-watch.sh`'s own lock already uses.
 Two names remain reserved, but lane agents no longer acquire either release
 gate themselves (SH-521).
 
-- **`gate`** — taken inside `scripts/run-tests.sh`. The one verification worker
-  invokes `make test` against the predicted merge tree in a persistent private
-  worktree; interactive callers still serialize with it.
+- **`gate`** — the verification worker takes it once around the complete
+  speculative `make test` run against the predicted merge tree. The two Rust
+  batteries still take it inside `scripts/run-tests.sh`, where the acquisition
+  is reentrant for centralized verification and continues to serialize every
+  interactive or direct caller. Holding it across the complete centralized
+  run prevents another verifier or developer suite from interleaving between
+  batteries and consuming a second lock-wait window inside the outer timeout
+  (SH-589).
 - **`merge`** — taken by `scripts/land-pr.sh <pr>`, which runs
   `merge-preflight.sh` for the PR, merges with `gh pr merge --merge`, verifies
   the merge landed, and deletes the branch. The verification worker invokes it
@@ -1565,7 +1570,8 @@ its own pair of variables, now repeating for a third one, which is the
 argument for a derived fence over a maintained list rather than evidence the
 fence is unnecessary.
 
-**Two kinds of leaf, rolled up uniformly.** A leg like `fmt`/`clippy`/`build`
+**Two kinds of checklist leaf, plus non-checklist activity.** A leg like
+`fmt`/`clippy`/`build`
 never receives a `case` line — it is a single pass/fail unit. A suite like
 `rust-suite`/`plugin`/an `e2e` project does, one per test.
 `ProgressItem::contribution` treats both the same way: a leaf with no
@@ -1575,7 +1581,12 @@ fraction (`release gate`'s own "N/7 legs", the top-level header's overall
 count) is a sum over whichever kind each child happens to be, and a parent
 never explicitly named in the journal (`release gate` itself, most of the
 time) derives its status from its children rather than needing its own
-emission.
+emission. An `activity` line names hidden work within a checklist path without
+contributing another leaf: machine-lock acquisition, Rust test discovery, and
+result-ledger recording use explicit running/passed/failed lifecycles. The
+newest live activity becomes the current step until it terminates, then its
+running parent resumes. This keeps those intervals visible without corrupting
+the release-gate rollup (SH-589).
 
 **Every suite denominator is exact before its first test starts.** Plugin and
 Playwright producers count their selected files/cases synchronously. Each Rust
@@ -1588,6 +1599,10 @@ are summed and emitted once before execution. Discovery failure refuses the
 run rather than falling back to the former `N/~N` seen-so-far display: a
 moving denominator made unfinished work look complete, defeating the progress
 surface precisely when an operator was deciding whether a gate had wedged.
+Dashboard test counts are scoped to that current test item. They are omitted
+for activities and never aggregate cases from a previously completed battery;
+otherwise a lock wait under `rust-contracts` can falsely display
+`rust-suite`'s completed denominator beside it (SH-589).
 
 **Queue order and active ownership are different facts (SH-549).** The
 verification worker is serial, but its ordered store query is live: a newly

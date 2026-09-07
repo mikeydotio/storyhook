@@ -2,8 +2,8 @@
 //!
 //! `scripts/gate-progress.sh` and its producers (`scripts/leg.sh`,
 //! `scripts/run-tests.sh`, `plugins/story/tests/run-tests.sh`,
-//! `scripts/run-e2e.sh`, `e2e/gate-progress-reporter.ts`,
-//! `scripts/verify-pr.sh`) append one JSON object per line to a journal file
+//! `scripts/run-e2e.sh`, `e2e/gate-progress-reporter.ts`, and
+//! `scripts/machine-lock.sh`) append one JSON object per line to a journal file
 //! named by `$STORYHOOK_GATE_PROGRESS`. [`fold`] turns that raw text into a
 //! tree of [`ProgressItem`]s; [`render`] turns the tree into the markdown
 //! checklist body the SH-524 progress comment carries. Both are pure — no
@@ -17,7 +17,7 @@
 //! `"release gate"` exists in the tree the moment any of its children does,
 //! even though nothing ever emits an `item` line naming it directly.
 //!
-//! # Two kinds of leaf
+//! # Checklist leaves and non-checklist activities
 //!
 //! A leg like `fmt`/`clippy`/`build` never gets a `case` line — it is a
 //! single pass/fail unit. A suite like `rust-suite`/`plugin`/an `e2e`
@@ -27,6 +27,10 @@
 //! `(0, 1)` otherwise, so a parent's rolled-up fraction (`release gate`'s
 //! "N/7 legs", the top-level header's overall count) is a sum over
 //! whichever kind each child happens to be.
+//!
+//! Activities name work within a checklist path without entering that tree
+//! or contributing a test or gate leg. The newest running item or activity is
+//! the current step; only a selected test item can carry test counts.
 
 use serde::Deserialize;
 
@@ -53,6 +57,13 @@ enum JournalLine {
     Case {
         path: String,
         outcome: String,
+    },
+    Activity {
+        path: String,
+        label: String,
+        status: String,
+        #[serde(default)]
+        at: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -249,10 +260,22 @@ impl ProgressItem {
 #[derive(Debug, Clone, Default)]
 pub struct GateProgress {
     pub items: Vec<ProgressItem>,
+    activities: Vec<ProgressActivity>,
     /// Verification generation and acquisition time that own this journal.
     /// Absent on journals written before SH-549 or while journal preparation
     /// failed; consumers must not reuse their progress for a later attempt.
     pub run: Option<GateRun>,
+}
+
+/// Non-checklist work performed within one checklist item. Activities are
+/// current-step evidence only: they never contribute tests or gate legs.
+#[derive(Debug, Clone)]
+struct ProgressActivity {
+    path: String,
+    label: String,
+    status: ItemStatus,
+    status_started_at: Option<String>,
+    status_order: usize,
 }
 
 /// Identity of the verification attempt that owns a journal.
@@ -271,12 +294,15 @@ pub struct CurrentStep {
     pub label: String,
     /// Time at which this item most recently entered `running`.
     pub started_at: String,
+    /// Exact completed/planned tests for this step alone. Non-test activities
+    /// and test suites that have not finished discovery carry no counts.
+    pub tests: Option<(u32, u32)>,
 }
 
 impl GateProgress {
-    /// Returns the most recently started explicit running item. An implied
-    /// parent is never a step; its child is the actionable unit shown to the
-    /// operator.
+    /// Returns the most recently started explicit running item or activity.
+    /// An implied parent is never a step. Counts belong only to the selected
+    /// item, so an earlier completed suite cannot appear beside later work.
     #[must_use]
     pub fn current_step(&self) -> Option<CurrentStep> {
         fn visit(item: &ProgressItem, best: &mut Option<(usize, CurrentStep)>) {
@@ -292,6 +318,10 @@ impl GateProgress {
                     CurrentStep {
                         label: item.label.clone(),
                         started_at: started_at.clone(),
+                        tests: item
+                            .counts
+                            .explicit_total
+                            .map(|total| (item.counts.seen().min(total), total)),
                     },
                 ));
             }
@@ -304,32 +334,24 @@ impl GateProgress {
         for item in &self.items {
             visit(item, &mut best);
         }
+        for activity in &self.activities {
+            if activity.status == ItemStatus::Running
+                && let Some(started_at) = &activity.status_started_at
+                && best
+                    .as_ref()
+                    .is_none_or(|(order, _)| activity.status_order > *order)
+            {
+                best = Some((
+                    activity.status_order,
+                    CurrentStep {
+                        label: activity.label.clone(),
+                        started_at: started_at.clone(),
+                        tests: None,
+                    },
+                ));
+            }
+        }
         best.map(|(_, step)| step)
-    }
-
-    /// Completed and planned test cases across leaves carrying an exact
-    /// producer-supplied denominator. Status-only gate legs are deliberately
-    /// excluded: the dashboard promises "tests", not heterogeneous units.
-    #[must_use]
-    pub fn exact_test_counts(&self) -> Option<(u32, u32)> {
-        fn add(item: &ProgressItem, counts: &mut (u32, u32)) {
-            if item.children.is_empty() {
-                if let Some(total) = item.counts.explicit_total {
-                    counts.0 += item.counts.seen().min(total);
-                    counts.1 += total;
-                }
-                return;
-            }
-            for child in &item.children {
-                add(child, counts);
-            }
-        }
-
-        let mut counts = (0, 0);
-        for item in &self.items {
-            add(item, &mut counts);
-        }
-        (counts.1 > 0).then_some(counts)
     }
 }
 
@@ -409,6 +431,41 @@ pub fn fold(journal_text: &str) -> GateProgress {
             }
             JournalLine::Case { path, outcome } => {
                 progress.item_mut(&path).counts.record(&outcome);
+            }
+            JournalLine::Activity {
+                path,
+                label,
+                status,
+                at,
+            } => {
+                let Some(status) = ItemStatus::parse(&status) else {
+                    continue;
+                };
+                let activity = match progress
+                    .activities
+                    .iter_mut()
+                    .find(|activity| activity.path == path)
+                {
+                    Some(activity) => activity,
+                    None => {
+                        progress.activities.push(ProgressActivity {
+                            path: path.clone(),
+                            label: label.clone(),
+                            status: ItemStatus::Pending,
+                            status_started_at: None,
+                            status_order: 0,
+                        });
+                        progress
+                            .activities
+                            .last_mut()
+                            .expect("an activity was just appended")
+                    }
+                };
+                activity.label = label;
+                activity.status = status;
+                activity.status_order = order;
+                activity.status_started_at =
+                    (status == ItemStatus::Running).then_some(at).flatten();
             }
             JournalLine::Unknown => {}
         }
@@ -651,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn attempt_identity_current_step_and_exact_test_counts_fold_together() {
+    fn attempt_identity_and_current_step_counts_fold_together() {
         let progress = fold(
             "{\"kind\":\"run\",\"generation\":42,\"at\":\"2026-01-01T00:00:00Z\"}\n\
              {\"kind\":\"item\",\"path\":\"release gate/fmt\",\"status\":\"passed\",\"at\":\"2026-01-01T00:00:01Z\"}\n\
@@ -672,9 +729,54 @@ mod tests {
             Some(CurrentStep {
                 label: "rust-suite".into(),
                 started_at: "2026-01-01T00:00:02Z".into(),
+                tests: Some((2, 4)),
             })
         );
-        assert_eq!(progress.exact_test_counts(), Some((2, 4)));
+    }
+
+    #[test]
+    fn a_live_activity_supersedes_its_running_parent_without_inheriting_prior_tests() {
+        let progress = fold(
+            "{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"passed\",\"at\":\"2026-01-01T00:00:01Z\",\"total\":3706}\n\
+             {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n\
+             {\"kind\":\"item\",\"path\":\"release gate/rust-contracts\",\"status\":\"running\",\"at\":\"2026-01-01T00:00:02Z\"}\n\
+             {\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"waiting for gate lock\",\"status\":\"running\",\"at\":\"2026-01-01T00:00:03Z\"}\n",
+        );
+
+        assert_eq!(
+            progress.current_step(),
+            Some(CurrentStep {
+                label: "waiting for gate lock".into(),
+                started_at: "2026-01-01T00:00:03Z".into(),
+                tests: None,
+            })
+        );
+        assert_eq!(
+            progress.items[0].contribution(),
+            (1, 3707, false),
+            "activities must not contribute fake checklist units"
+        );
+    }
+
+    #[test]
+    fn completing_an_activity_restores_the_running_parent_and_its_own_counts() {
+        let progress = fold(
+            "{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"passed\",\"at\":\"2026-01-01T00:00:01Z\",\"total\":4}\n\
+             {\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\n\
+             {\"kind\":\"item\",\"path\":\"release gate/rust-contracts\",\"status\":\"running\",\"at\":\"2026-01-01T00:00:02Z\",\"total\":3}\n\
+             {\"kind\":\"case\",\"path\":\"release gate/rust-contracts\",\"outcome\":\"pass\"}\n\
+             {\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"recording test results\",\"status\":\"running\",\"at\":\"2026-01-01T00:00:03Z\"}\n\
+             {\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"recording test results\",\"status\":\"passed\",\"at\":\"2026-01-01T00:00:04Z\"}\n",
+        );
+
+        assert_eq!(
+            progress.current_step(),
+            Some(CurrentStep {
+                label: "rust-contracts".into(),
+                started_at: "2026-01-01T00:00:02Z".into(),
+                tests: Some((1, 3)),
+            })
+        );
     }
 
     #[test]
