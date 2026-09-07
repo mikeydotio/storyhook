@@ -54,8 +54,8 @@ assert_eq "$(jq -r .storyhook_plugin_root "$STORY_HOOK_STDIN")" "$PLUGIN_ROOT" \
 : >"$STORY_HOOK_LOG"
 post_payload='{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git pull --ff-only"}}'
 out=$(run_codex_hook PostToolUse "$post_payload")
-assert_eq "$(printf '%s' "$out" | jq -r '.systemMessage')" "[storyhook] Git sync: synced" \
-  "PostToolUse: Bash command payload triggers sync"
+assert_eq "$out" "{}" \
+  "PostToolUse: successful background sync stays silent"
 assert_contains "$(cat "$STORY_HOOK_LOG")" "--deadline 8 commit-sync --since 1h --quiet" \
   "PostToolUse: bounded sync invocation"
 
