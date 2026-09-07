@@ -92,41 +92,52 @@ import {
  *
  * ## What is NOT claimed here
  *
- * **Blink is what this file's own tests actually exercise** -- five of its six
- * are quarantined under `webkit` for an unrelated harness gap (SH-374: this
- * file's `raiseDurableErrors()` needs an unpermitted clipboard write to fail,
- * which WebKit doesn't do by default), so nothing here says how WebKit's
- * *auto-repeat* behaves specifically -- see `modal-enter-autorepeat.spec.ts`
- * instead, which exercises the same `holdKey()` mechanism without depending
- * on the clipboard default and passes clean under `webkit` (confirming the
- * mechanism itself is engine-agnostic; this file's gap is its fixture's, not
- * the feature's). Nothing here says how Gecko behaves either way. Where an
- * engine or input stack does not set `KeyboardEvent.repeat` at all — an input
- * path that delivers repeats as discrete keydown/keyup pairs — the guard is
- * inert, which is the pre-fix behaviour and never worse than it.
+ * **Chromium runs all six tests; WebKit runs five.** The ArrowDown over-reach
+ * pin still depends on Chromium scrolling an ancestor when a descendant button
+ * has focus; WebKit does not, so SH-374 carries that newly exposed harness gap
+ * alongside the clipboard-default gap it was opened for. Nothing here says how
+ * Gecko behaves. Where an engine or input stack does not set
+ * `KeyboardEvent.repeat` at all — an input path that delivers repeats as
+ * discrete keydown/keyup pairs — the guard is inert, which is the pre-fix
+ * behaviour and never worse than it.
  *
  * **Playwright sets the `repeat` bit itself** on a second `keyboard.down` of a
- * key already down. So what these tests prove is Blink's half: that an
- * un-prevented repeat keydown activates a button, and that cancelling it stops
- * that. That a *physically* held key sets the flag rests on the UI Events spec
- * and on a hand check, and is not evidence this suite can produce — the
- * SH-322/SH-327 precedent, applied to an input event instead of an utterance.
+ * key already down. So the complete mutation battery still proves Blink's
+ * half: that an un-prevented repeat keydown activates a button, and that
+ * cancelling it stops that. That a *physically* held key sets the flag rests on
+ * the UI Events spec and on a hand check, and is not evidence this suite can
+ * produce — the SH-322/SH-327 precedent, applied to an input event instead of
+ * an utterance.
  */
 
 cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
-  // Clipboard permission is deliberately NOT granted: `copyText`'s `.catch`
-  // branch is what makes every Copy-* notice a durable ERROR, which is the
-  // variant this story is about. Load-bearing, so each test asserts the
-  // `.error` class rather than trusting it — a permission default that changed
-  // under us would otherwise silently reduce these to tests of self-clearing
-  // notices, which carry no dismiss control at all.
   await seedToken(page);
 });
 
+/** Makes every Clipboard API write reject before application code loads.
+ *
+ * `raiseDurableErrors` needs `copyText`'s rejection branch, but the default
+ * permission posture differs between Playwright's Chromium and WebKit builds.
+ * Installing the browser boundary directly keeps the fixture deterministic
+ * without granting, denying or otherwise depending on ambient permissions. */
+async function installRejectingClipboard(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new DOMException("Clipboard write denied by test fixture", "NotAllowedError");
+        },
+      },
+    });
+  });
+}
+
 /** Raises `count` durable error notices on a fresh story and returns its title. */
 async function raiseDurableErrors(page: Page, label: string, count: number): Promise<void> {
+  await installRejectingClipboard(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
   const title = `${label} ${Date.now()}`;
@@ -145,21 +156,7 @@ async function raiseDurableErrors(page: Page, label: string, count: number): Pro
 // The defect itself
 // ============================================================
 
-test("a held Enter on a toast's dismiss control clears exactly one notice", async ({
-  page,
-  browserName,
-}) => {
-  // `raiseDurableErrors()` needs an UNPERMITTED clipboard write to fail so
-  // `copyText()`'s `.catch` branch raises a durable error notice -- reliable
-  // under Chromium (denies by default), not under WebKit, whose default
-  // posture for an ungranted write appears to be the opposite. Not this
-  // test's own subject (held-key `event.repeat` handling) -- SH-374 owns
-  // the clipboard-default gap; `modal-enter-autorepeat.spec.ts` proves the
-  // held-key mechanism itself is fine cross-engine.
-  test.skip(
-    browserName === "webkit",
-    "raiseDurableErrors() needs an unpermitted clipboard write to fail, which WebKit doesn't do by default (SH-374)",
-  );
+test("a held Enter on a toast's dismiss control clears exactly one notice", async ({ page }) => {
   await raiseDurableErrors(page, "SH-339 — held Enter on a toast", 5);
 
   await page.locator("#toast-stack .toast-dismiss").first().focus();
@@ -204,13 +201,7 @@ test("a held Enter on a dispatch-history row clears exactly one row", async ({ p
 // Over-reach: the same guard must not suppress anything else
 // ============================================================
 
-test("discrete Enter presses still clear the whole stack", async ({ page, browserName }) => {
-  // Same gate as "a held Enter on a toast's dismiss control..." above --
-  // `raiseDurableErrors()`'s own setup, not this test's subject (SH-374).
-  test.skip(
-    browserName === "webkit",
-    "raiseDurableErrors() needs an unpermitted clipboard write to fail, which WebKit doesn't do by default (SH-374)",
-  );
+test("discrete Enter presses still clear the whole stack", async ({ page }) => {
   await raiseDurableErrors(page, "SH-339 — discrete presses", 5);
 
   await page.locator("#toast-stack .toast-dismiss").first().focus();
@@ -225,13 +216,7 @@ test("discrete Enter presses still clear the whole stack", async ({ page, browse
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 });
 
-test("a held Space still dismisses exactly one notice", async ({ page, browserName }) => {
-  // Same gate as "a held Enter on a toast's dismiss control..." above --
-  // `raiseDurableErrors()`'s own setup, not this test's subject (SH-374).
-  test.skip(
-    browserName === "webkit",
-    "raiseDurableErrors() needs an unpermitted clipboard write to fail, which WebKit doesn't do by default (SH-374)",
-  );
+test("a held Space still dismisses exactly one notice", async ({ page }) => {
   await raiseDurableErrors(page, "SH-339 — held Space", 3);
 
   await page.locator("#toast-stack .toast-dismiss").first().focus();
@@ -249,11 +234,9 @@ test("a held ArrowDown still scrolls an overflowing notice scroller", async ({
   page,
   browserName,
 }) => {
-  // Same gate as "a held Enter on a toast's dismiss control..." above --
-  // `raiseDurableErrors()`'s own setup, not this test's subject (SH-374).
   test.skip(
     browserName === "webkit",
-    "raiseDurableErrors() needs an unpermitted clipboard write to fail, which WebKit doesn't do by default (SH-374)",
+    "WebKit does not scroll the ancestor when ArrowDown targets its focused descendant button (SH-374)",
   );
   await raiseDurableErrors(page, "SH-339 — held ArrowDown", 12);
 
@@ -332,13 +315,7 @@ async function settledScrollTop(page: Page): Promise<number> {
   return value;
 }
 
-test("a synthesised click with no keydown still dismisses", async ({ page, browserName }) => {
-  // Same gate as "a held Enter on a toast's dismiss control..." above --
-  // `raiseDurableErrors()`'s own setup, not this test's subject (SH-374).
-  test.skip(
-    browserName === "webkit",
-    "raiseDurableErrors() needs an unpermitted clipboard write to fail, which WebKit doesn't do by default (SH-374)",
-  );
+test("a synthesised click with no keydown still dismisses", async ({ page }) => {
   await raiseDurableErrors(page, "SH-339 — synthesised click", 3);
 
   // The path assistive technology actually uses: AT dispatches a click, never a
