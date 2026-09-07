@@ -49,7 +49,8 @@ if (loadGraceEnabled()) {
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
-const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];
+const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
+const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];
 
 export default defineConfig({
   testDir: "./specs",
