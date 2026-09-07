@@ -17,6 +17,8 @@
 
 use crate::daemon::agent;
 use crate::daemon::install_guard;
+use std::path::PathBuf;
+use std::process::Output;
 use std::path::{Path, PathBuf};
 
 use crate::daemon::lifecycle::{self, DaemonInfo};
@@ -234,6 +236,37 @@ struct Plan {
     contents: String,
 }
 
+/// What a login-agent install or uninstall did, including non-fatal caveats.
+///
+/// Warnings remain separate from the success message so JSON callers receive
+/// them as data through [`crate::output::Response::MessageWithWarnings`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoginAgentReport {
+    message: String,
+    warnings: Vec<String>,
+}
+
+impl LoginAgentReport {
+    pub(crate) fn new(message: String, warning: Option<String>) -> Self {
+        Self {
+            message,
+            warnings: warning.into_iter().collect(),
+        }
+    }
+
+    /// The successful operation summary.
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+
+    /// Non-fatal failures encountered while completing the operation.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        self.warnings.clone()
+    }
+}
+
 /// Writes the launchd agent and loads it.
 ///
 /// Idempotent: an existing agent is replaced, because the common reason to run
@@ -248,7 +281,7 @@ struct Plan {
 /// temporary store would leave a durable agent behind, or off macOS.
 /// [`AppError::Storage`] when the plist cannot be written or `launchctl`
 /// refuses it.
-pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError> {
+pub fn install(env: &Environment, this_binary: bool) -> Result<LoginAgentReport, AppError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::Usage(
             "`story daemon install` registers a launchd agent, which is macOS only. \
@@ -260,15 +293,14 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError>
     let running = crate::path_identity::running_exe()
         .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
     let inputs = install_guard::gather(user_id(), this_binary, running);
-    let message = apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)?;
+    let mut report = apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)?;
     // Named at the moment a machine grows past one store, not only when
     // someone happens to run `status` later.
     let others = agent::describe_others(env);
-    Ok(if others.is_empty() {
-        message
-    } else {
-        format!("{message}\n\n{others}")
-    })
+    if !others.is_empty() {
+        report.message = format!("{}\n\n{others}", report.message);
+    }
+    Ok(report)
 }
 
 /// The gate, then the bytes. No side effects.
@@ -331,7 +363,10 @@ fn refuse_temporary_store_for_durable_agent(
 /// binary, under a label this project owns. It takes the whole [`Plan`],
 /// not just the path, because `bootstrap_via_launchctl` needs the label to
 /// boot out the *right* agent — never always the default store's.
-fn apply(plan: &Plan, load: &dyn Fn(&Plan) -> Result<(), AppError>) -> Result<String, AppError> {
+fn apply(
+    plan: &Plan,
+    load: &dyn Fn(&Plan) -> Result<Option<String>, AppError>,
+) -> Result<LoginAgentReport, AppError> {
     if let Some(parent) = plan.path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -342,10 +377,13 @@ fn apply(plan: &Plan, load: &dyn Fn(&Plan) -> Result<(), AppError>) -> Result<St
     std::fs::write(&plan.path, &plan.contents)
         .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", plan.path.display())))?;
     match load(plan) {
-        Ok(()) => Ok(format!(
-            "installed the storyhook daemon as a launchd agent ({})\n  {}",
-            plan.label,
-            plan.path.display()
+        Ok(warning) => Ok(LoginAgentReport::new(
+            format!(
+                "installed the storyhook daemon as a launchd agent ({})\n  {}",
+                plan.label,
+                plan.path.display()
+            ),
+            warning,
         )),
         Err(failure) => Err(undo(&plan.path, previous.as_deref(), failure)),
     }
@@ -353,27 +391,49 @@ fn apply(plan: &Plan, load: &dyn Fn(&Plan) -> Result<(), AppError>) -> Result<St
 
 /// `bootout` the old agent, then `bootstrap` the new one.
 ///
-/// `bootout` first so a reinstall replaces rather than conflicts; its failure is
-/// expected when nothing was loaded, so it is ignored. Both target `plan`'s own
-/// label — never [`agent::LAUNCHD_LABEL`] directly — so a non-default store's install
+/// `bootout` first so a reinstall replaces rather than conflicts. A missing
+/// service is expected; every other refusal is returned as a warning while
+/// bootstrap still gets its chance. Both operations target `plan`'s own label
+/// — never [`agent::LAUNCHD_LABEL`] directly — so a non-default store's install
 /// can never boot out the default store's running agent.
-fn bootstrap_via_launchctl(plan: &Plan) -> Result<(), AppError> {
+fn bootstrap_via_launchctl(plan: &Plan) -> Result<Option<String>, AppError> {
+    bootstrap_with_launchctl(plan, &|args| {
+        std::process::Command::new("launchctl").args(args).output()
+    })
+}
+
+fn bootstrap_with_launchctl(
+    plan: &Plan,
+    launchctl: &dyn Fn(&[&str]) -> std::io::Result<Output>,
+) -> Result<Option<String>, AppError> {
     let target = format!("gui/{}", user_id());
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("{target}/{}", plan.label)])
-        .output();
-    let loaded = std::process::Command::new("launchctl")
-        .args(["bootstrap", &target, &plan.path.to_string_lossy()])
-        .output()
-        .map_err(|e| AppError::Storage(format!("failed to run launchctl: {e}")))?;
+    let service_target = format!("{target}/{}", plan.label);
+    let warning = bootout_warning(&service_target, launchctl(&["bootout", &service_target]));
+    let path = plan.path.to_string_lossy();
+    let loaded = launchctl(&["bootstrap", &target, &path]).map_err(|e| {
+        AppError::Storage(with_prior_bootout(
+            format!("failed to run launchctl: {e}"),
+            warning.as_deref(),
+        ))
+    })?;
     if loaded.status.success() {
-        return Ok(());
+        return Ok(warning);
     }
-    Err(AppError::Storage(format!(
-        "launchctl refused to load {}: {}",
-        plan.path.display(),
-        String::from_utf8_lossy(&loaded.stderr).trim()
+    Err(AppError::Storage(with_prior_bootout(
+        format!(
+            "launchctl refused to load {}: {}",
+            plan.path.display(),
+            String::from_utf8_lossy(&loaded.stderr).trim()
+        ),
+        warning.as_deref(),
     )))
+}
+
+fn with_prior_bootout(message: String, warning: Option<&str>) -> String {
+    match warning {
+        Some(warning) => format!("{message}\n\nBefore this failure, {warning}"),
+        None => message,
+    }
 }
 
 /// Puts the machine back the way it was after `launchctl` refused, and says
@@ -416,7 +476,7 @@ fn undo(path: &std::path::Path, previous: Option<&[u8]>, failure: AppError) -> A
 }
 
 /// Unloads the launchd agent and removes its plist.
-pub fn uninstall(env: &Environment) -> Result<String, AppError> {
+pub fn uninstall(env: &Environment) -> Result<LoginAgentReport, AppError> {
     uninstall_with(env, &bootout_via_launchctl)
 }
 
@@ -428,10 +488,16 @@ pub fn uninstall(env: &Environment) -> Result<String, AppError> {
 /// ([`agent::health`]) — so a pre-SH-414 leftover (a bare-label agent
 /// actually serving a different store) is named rather than silently
 /// discarded under a report that only ever says "removed".
-fn uninstall_with(env: &Environment, unload: &dyn Fn(&str)) -> Result<String, AppError> {
+fn uninstall_with(
+    env: &Environment,
+    unload: &dyn Fn(&str) -> Option<String>,
+) -> Result<LoginAgentReport, AppError> {
     let path = agent::path(env);
     if !path.exists() {
-        return Ok("the storyhook daemon is not installed as a launchd agent".to_string());
+        return Ok(LoginAgentReport::new(
+            "the storyhook daemon is not installed as a launchd agent".to_string(),
+            None,
+        ));
     }
     let note = match agent::health(env) {
         agent::Health::ServesAnotherStore { serves, .. } => format!(
@@ -443,28 +509,84 @@ fn uninstall_with(env: &Environment, unload: &dyn Fn(&str)) -> Result<String, Ap
         _ => String::new(),
     };
     let label = agent::label(env);
-    unload(&label);
-    std::fs::remove_file(&path)
-        .map_err(|e| AppError::Storage(format!("failed to remove {}: {e}", path.display())))?;
+    let warning = unload(&label);
+    std::fs::remove_file(&path).map_err(|e| {
+        AppError::Storage(with_prior_bootout(
+            format!("failed to remove {}: {e}", path.display()),
+            warning.as_deref(),
+        ))
+    })?;
     let others = agent::describe_others(env);
     let others = if others.is_empty() {
         String::new()
     } else {
         format!("\n\n{others}")
     };
-    Ok(format!(
-        "removed the storyhook daemon's launchd agent\n  {}{}{}",
-        path.display(),
-        note,
-        others
+    Ok(LoginAgentReport::new(
+        format!(
+            "removed the storyhook daemon's launchd agent\n  {}{}{}",
+            path.display(),
+            note,
+            others
+        ),
+        warning,
     ))
 }
 
 /// `bootout` this store's own agent — never always the default store's.
-fn bootout_via_launchctl(label: &str) {
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{}/{label}", user_id())])
-        .output();
+fn bootout_via_launchctl(label: &str) -> Option<String> {
+    let target = format!("gui/{}/{label}", user_id());
+    bootout_warning(
+        &target,
+        std::process::Command::new("launchctl")
+            .args(["bootout", &target])
+            .output(),
+    )
+}
+
+/// launchctl maps its BOOTSTRAP_UNKNOWN_SERVICE result to process status 113.
+const LAUNCHCTL_SERVICE_NOT_FOUND: i32 = 113;
+
+fn bootout_warning(target: &str, result: std::io::Result<Output>) -> Option<String> {
+    let output = match result {
+        Ok(output)
+            if output.status.success()
+                || output.status.code() == Some(LAUNCHCTL_SERVICE_NOT_FOUND) =>
+        {
+            return None;
+        }
+        Ok(output) => output,
+        Err(error) => {
+            return Some(format!(
+                "failed to run `launchctl bootout {target}`: {error}; the login agent may still be loaded"
+            ));
+        }
+    };
+    let status = describe_failed_status(&output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostic = match (stderr.trim(), stdout.trim()) {
+        ("", "") => "no diagnostic output",
+        ("", stdout) => stdout,
+        (stderr, _) => stderr,
+    };
+    Some(format!(
+        "`launchctl bootout {target}` failed ({status}): {diagnostic}; the login agent may still be loaded"
+    ))
+}
+
+fn describe_failed_status(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("status {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+    "no exit status".to_string()
 }
 
 /// This process's user id, which names the launchd domain to load into.
@@ -485,6 +607,67 @@ pub fn user_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shell_output(script: &str) -> std::process::Output {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .output()
+            .expect("running the inert launchctl-output fixture")
+    }
+
+    #[test]
+    fn a_successful_or_absent_bootout_needs_no_warning() {
+        let target = "gui/501/io.mikey.storyhook.daemon";
+        assert_eq!(bootout_warning(target, Ok(shell_output("exit 0"))), None);
+        assert_eq!(
+            bootout_warning(target, Ok(shell_output("exit 113"))),
+            None,
+            "launchctl 113 means the service was not loaded, which is expected"
+        );
+    }
+
+    #[test]
+    fn a_refused_bootout_preserves_its_target_status_and_diagnostic() {
+        let target = "gui/501/io.mikey.storyhook.daemon";
+        let warning = bootout_warning(
+            target,
+            Ok(shell_output(
+                "printf 'operation not permitted' >&2; exit 77",
+            )),
+        )
+        .expect("a real refusal must be reported");
+
+        assert!(warning.contains(target), "{warning}");
+        assert!(warning.contains("77"), "{warning}");
+        assert!(warning.contains("operation not permitted"), "{warning}");
+    }
+
+    #[test]
+    fn an_unspawnable_bootout_preserves_its_target_and_io_error() {
+        let target = "gui/501/io.mikey.storyhook.daemon";
+        let warning = bootout_warning(
+            target,
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "launchctl vanished",
+            )),
+        )
+        .expect("a spawn failure must be reported");
+
+        assert!(warning.contains(target), "{warning}");
+        assert!(warning.contains("launchctl vanished"), "{warning}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_bootout_is_not_mistaken_for_an_absent_service() {
+        let target = "gui/501/io.mikey.storyhook.daemon";
+        let warning = bootout_warning(target, Ok(shell_output("kill -TERM $$")))
+            .expect("signal termination must be reported");
+
+        assert!(warning.contains(target), "{warning}");
+        assert!(warning.contains("signal"), "{warning}");
+    }
 
     fn scratch() -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -571,7 +754,7 @@ mod tests {
         let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
         apply(&plan, &|plan| {
             *handed.borrow_mut() = Some(plan.path.clone());
-            Ok(())
+            Ok(None)
         })
         .expect("install");
         assert!(agent::path(&env).exists());
@@ -585,6 +768,42 @@ mod tests {
             Some(PathBuf::from("/home/dev/.local/bin/story")),
             "the plist must name the path the gate enthroned"
         );
+    }
+
+    #[test]
+    fn a_bootout_warning_survives_a_successful_install() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
+        let report = apply(&plan, &|_| {
+            Ok(Some("launchctl refused the bootout".to_string()))
+        })
+        .expect("bootstrap still succeeded");
+
+        assert!(report.message().contains("installed"));
+        assert_eq!(
+            report.warnings(),
+            vec!["launchctl refused the bootout".to_string()]
+        );
+        assert!(agent::path(&env).exists());
+    }
+
+    #[test]
+    fn a_failed_bootstrap_keeps_the_earlier_bootout_diagnostic() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
+        let failed = bootstrap_with_launchctl(&plan, &|args| match args[0] {
+            "bootout" => Ok(shell_output("printf 'permission denied' >&2; exit 77")),
+            "bootstrap" => Ok(shell_output("printf 'bad plist' >&2; exit 78")),
+            other => panic!("unexpected launchctl action: {other}"),
+        })
+        .expect_err("bootstrap must fail");
+        let message = failed.to_string();
+
+        assert!(message.contains("bad plist"), "{message}");
+        assert!(message.contains("permission denied"), "{message}");
+        assert!(message.contains("bootout"), "{message}");
     }
 
     /// A failed `bootstrap` must not leave the machine holding a plist launchd
@@ -645,6 +864,7 @@ mod tests {
         assert!(
             uninstall(&env)
                 .expect("uninstall")
+                .message()
                 .contains("not installed")
         );
     }
@@ -725,12 +945,12 @@ mod tests {
         let dir = scratch();
         let env_a = Environment::at(dir.path());
         let plan_a = install_plan(&env_a, &permitting_inputs()).expect("must permit");
-        apply(&plan_a, &|_| Ok(())).expect("install a");
+        apply(&plan_a, &|_| Ok(None)).expect("install a");
         let bytes_a = std::fs::read(agent::path(&env_a)).expect("plist a");
 
         let env_b = named_store_env(dir.path(), "b.db");
         let plan_b = install_plan(&env_b, &permitting_inputs()).expect("must permit");
-        apply(&plan_b, &|_| Ok(())).expect("install b");
+        apply(&plan_b, &|_| Ok(None)).expect("install b");
 
         assert_ne!(
             agent::path(&env_a),
@@ -757,7 +977,7 @@ mod tests {
         let handed = std::cell::RefCell::new(None);
         apply(&plan_b, &|plan| {
             *handed.borrow_mut() = Some(plan.label.clone());
-            Ok(())
+            Ok(None)
         })
         .expect("install b");
         assert_eq!(handed.into_inner(), Some(plan_b.label.clone()));
@@ -771,14 +991,14 @@ mod tests {
         let dir = scratch();
         let env_a = Environment::at(dir.path());
         let plan_a = install_plan(&env_a, &permitting_inputs()).expect("must permit");
-        apply(&plan_a, &|_| Ok(())).expect("install a");
+        apply(&plan_a, &|_| Ok(None)).expect("install a");
         let bytes_a = std::fs::read(agent::path(&env_a)).expect("plist a");
 
         let env_b = named_store_env(dir.path(), "b.db");
         let plan_b = install_plan(&env_b, &permitting_inputs()).expect("must permit");
-        apply(&plan_b, &|_| Ok(())).expect("install b");
+        apply(&plan_b, &|_| Ok(None)).expect("install b");
 
-        uninstall_with(&env_b, &|_| {}).expect("uninstall b");
+        uninstall_with(&env_b, &|_| None).expect("uninstall b");
 
         assert!(
             !agent::path(&env_b).exists(),
@@ -789,6 +1009,60 @@ mod tests {
             std::fs::read(agent::path(&env_a)).expect("plist a still there"),
             bytes_a
         );
+    }
+
+    #[test]
+    fn a_bootout_warning_survives_uninstall_while_the_plist_is_removed() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let path = agent::path(&env);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("creating parent");
+        std::fs::write(&path, "a plist").expect("seeding the plist");
+
+        let report = uninstall_with(&env, &|_| Some("launchctl refused the bootout".to_string()))
+            .expect("uninstall");
+
+        assert!(report.message().contains("removed"));
+        assert_eq!(
+            report.warnings(),
+            vec!["launchctl refused the bootout".to_string()]
+        );
+        assert!(!path.exists(), "the plist removal remains successful");
+    }
+
+    #[test]
+    fn a_failed_plist_removal_keeps_the_earlier_bootout_diagnostic() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let path = agent::path(&env);
+        std::fs::create_dir_all(&path).expect("making the plist path unremovable as a file");
+
+        let failed = uninstall_with(&env, &|_| Some("launchctl refused the bootout".to_string()))
+            .expect_err("removing a directory as a file must fail");
+        let message = failed.to_string();
+
+        assert!(message.contains("failed to remove"), "{message}");
+        assert!(
+            message.contains("launchctl refused the bootout"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn uninstalling_without_a_plist_never_reaches_launchctl_or_warns() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let called = std::cell::Cell::new(false);
+
+        let report = uninstall_with(&env, &|_| {
+            called.set(true);
+            Some("must not exist".to_string())
+        })
+        .expect("uninstall");
+
+        assert!(!called.get(), "an absent plist needs no bootout");
+        assert!(report.warnings().is_empty());
+        assert!(report.message().contains("not installed"));
     }
 
     /// The migration seam a council found this fix must handle explicitly:
@@ -812,7 +1086,8 @@ mod tests {
         )
         .expect("planting a pre-fix leftover");
 
-        let reported = uninstall_with(&env_a, &|_| {}).expect("uninstall");
+        let reported = uninstall_with(&env_a, &|_| None).expect("uninstall");
+        let reported = reported.message();
         assert!(reported.contains("removed"), "{reported}");
         assert!(
             reported.contains(&other.display().to_string()),
