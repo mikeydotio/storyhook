@@ -176,10 +176,6 @@ const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 pub const VERIFICATION_IDLE_TIMEOUT: Duration =
     Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
 
-/// Compatibility name for the centralized verification idle timeout.
-#[deprecated(note = "use VERIFICATION_IDLE_TIMEOUT; the duration now bounds silence")]
-pub const VERIFICATION_TIMEOUT: Duration = VERIFICATION_IDLE_TIMEOUT;
-
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
