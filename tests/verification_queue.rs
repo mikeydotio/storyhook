@@ -7,6 +7,7 @@ use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
     ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
     VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
+    tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::provenance::Provenance;
@@ -30,6 +31,7 @@ use storyhook::store::{
 use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -369,7 +371,7 @@ impl VerificationActuator for ActivityObservingActuator {
 }
 
 #[test]
-fn every_verification_outcome_releases_ownership_after_the_blocking_call() {
+fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
     let cases = [
         (
             VerificationOutcome::Merged {
@@ -754,7 +756,7 @@ impl VerificationActuator for FakeActuator {
 }
 
 #[test]
-fn a_conflict_returns_the_story_to_its_associated_agent() {
+fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
@@ -790,6 +792,185 @@ fn a_conflict_returns_the_story_to_its_associated_agent() {
     );
     assert_eq!(actuator.notified.lock().unwrap().len(), 1);
     assert!(actuator.reaped.lock().unwrap().is_empty());
+}
+
+struct SequencedActuator {
+    outcomes: Mutex<VecDeque<VerificationOutcome>>,
+    verified: Mutex<Vec<String>>,
+    notified: Mutex<Vec<String>>,
+    reaped: Mutex<Vec<String>>,
+}
+
+impl VerificationActuator for SequencedActuator {
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.verified
+            .lock()
+            .unwrap()
+            .push(candidate.story_id.clone());
+        self.outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("every verification attempt must have a fixture outcome")
+    }
+
+    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        self.notified
+            .lock()
+            .unwrap()
+            .push(candidate.story_id.clone());
+        Ok(())
+    }
+
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        self.reaped.lock().unwrap().push(candidate.story_id.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let held = submitted(&fixture, "already under test", Priority::Low, PR_ONE);
+    let first_generation = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap()
+        .verifying_generation;
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = SequencedActuator {
+        outcomes: Mutex::new(VecDeque::from([
+            VerificationOutcome::Conflict {
+                detail: "both modified src/lib.rs".into(),
+            },
+            VerificationOutcome::Conflict {
+                detail: "main advanced again".into(),
+            },
+            VerificationOutcome::Merged {
+                tree: "abc123".into(),
+                detail: "landed after reconciliation".into(),
+            },
+        ])),
+        verified: Mutex::new(Vec::new()),
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    let waiting = Mutex::new(None);
+    let reserved_generations = Mutex::new(Vec::new());
+
+    let result = tick_with_reconciliation(
+        fixture.store(),
+        fixture.env(),
+        &actuator,
+        &activity,
+        &inflight,
+        |reserved| {
+            assert_eq!(reserved.story_id, held);
+            reserved_generations
+                .lock()
+                .unwrap()
+                .push(reserved.verifying_generation);
+            assert_eq!(
+                activity.active().as_ref().map(|active| &active.story_id),
+                Some(&held),
+                "process-local ownership must span reconciliation"
+            );
+            assert_eq!(
+                lifecycle::read_inflight(fixture.env()).len(),
+                1,
+                "shutdown ownership must span reconciliation"
+            );
+
+            let mut waiting = waiting.lock().unwrap();
+            let waiting = waiting.get_or_insert_with(|| {
+                submitted(
+                    &fixture,
+                    "higher priority arrival",
+                    Priority::Critical,
+                    PR_TWO,
+                )
+            });
+            StoryService::new(&fixture.ctx())
+                .set_state(&held, "verifying", None, Some("in-progress"), None)
+                .unwrap();
+            let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
+            assert_eq!(ordered[0].story_id, *waiting);
+            Ok(ordered
+                .into_iter()
+                .find(|candidate| candidate.story_id == held))
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Completed);
+    assert_eq!(
+        actuator.verified.lock().unwrap().as_slice(),
+        [held.as_str(), held.as_str(), held.as_str()],
+        "queue priority must not preempt a reconciliation reservation"
+    );
+    assert_eq!(
+        actuator.notified.lock().unwrap().as_slice(),
+        [held.as_str(), held.as_str()]
+    );
+    let generations = reserved_generations.lock().unwrap();
+    assert_eq!(generations.len(), 2);
+    assert_eq!(generations[0], first_generation);
+    assert_ne!(generations[0], generations[1]);
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [held.as_str()]);
+    assert_eq!(activity.active(), None);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+#[test]
+fn a_failed_conflict_notification_releases_the_reservation() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(
+        &fixture,
+        "unreachable reconciliation",
+        Priority::High,
+        PR_ONE,
+    );
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Conflict {
+            detail: "both modified src/lib.rs".into(),
+        },
+        notification_error: Some("pane unavailable".into()),
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            |_| panic!("a failed notification must not enter the reservation wait"),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    assert!(row.awaiting.unwrap().contains("pane unavailable"));
+    assert_eq!(activity.active(), None);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
 #[test]

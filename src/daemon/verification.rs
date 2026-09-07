@@ -23,7 +23,7 @@ use crate::process::{
 use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationProblem, VerificationQueue,
+    VerificationCandidate, VerificationQueue,
 };
 use crate::store::{
     GlobalSeq, PrLink, ProjectId, ReadOps, Store, VerificationFailureDisposition,
@@ -129,6 +129,34 @@ impl Drop for VerificationGuard {
         if slot.as_ref() == Some(&self.active) {
             *slot = None;
         }
+    }
+}
+
+impl VerificationGuard {
+    /// Transfers this worker's existing reservation to a newer verification
+    /// generation of the same story.
+    ///
+    /// Reconciliation temporarily removes the story from the queue, then
+    /// creates a new generation when the agent resubmits it. The serialized
+    /// worker still owns the story throughout, so replacing the generation is
+    /// one guarded mutation rather than a release followed by a new acquire.
+    fn replace(&mut self, candidate: &VerificationCandidate, started_at: String) {
+        assert_eq!(self.active.project, candidate.project);
+        assert_eq!(self.active.story_id, candidate.story_id);
+        let replacement = ActiveVerification {
+            project: candidate.project,
+            story_id: candidate.story_id.clone(),
+            generation: candidate.verifying_generation,
+            started_at,
+        };
+        let mut slot = self
+            .registry
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(slot.as_ref(), Some(&self.active));
+        *slot = Some(replacement.clone());
+        self.active = replacement;
     }
 }
 
@@ -662,6 +690,10 @@ pub fn tick_with<S: Store, A: VerificationActuator>(
 /// Runs one verification attempt while publishing process-local ownership
 /// through `activity` and shutdown ownership through `inflight`.
 ///
+/// This single-attempt test seam supplies no reconciliation waiter, so a
+/// conflict returns after notification. Production uses
+/// [`tick_with_reconciliation`] and retains both guards.
+///
 /// Public for the blocking-actuator integration tests that prove queue
 /// reordering cannot steal either ownership signal (SH-549, SH-556).
 pub fn tick_with_activity<S: Store, A: VerificationActuator>(
@@ -671,6 +703,30 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     activity: &VerificationActivity,
     inflight: &InFlight,
 ) -> Result<TickResult, AppError> {
+    tick_with_reconciliation(store, env, actuator, activity, inflight, |_| Ok(None))
+}
+
+/// Runs one verification cycle while allowing a conflicted story to retain
+/// the serialized verifier until its next submission.
+///
+/// `wait_for_resubmission` owns only the wait mechanism. The verifier validates
+/// that the returned candidate is a newer generation of the reserved story,
+/// preventing a queue reorder or faulty observer from transferring ownership.
+/// Public for store-backed integration tests; production supplies the daemon's
+/// change-bus waiter.
+pub fn tick_with_reconciliation<S, A, W>(
+    store: &S,
+    env: &Environment,
+    actuator: &A,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    mut wait_for_resubmission: W,
+) -> Result<TickResult, AppError>
+where
+    S: Store,
+    A: VerificationActuator,
+    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+{
     let queue = VerificationQueue::new(store);
     let ordered = queue.ordered()?;
     let incident = store.read(|tx| tx.verification_incident())?;
@@ -690,7 +746,7 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
             return Ok(TickResult::Halted);
         }
     }
-    let Some(candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
+    let Some(mut candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
         let Some(candidate) = queue.next_cleanup()? else {
             return Ok(TickResult::Idle);
         };
@@ -712,36 +768,126 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
             }
         };
     };
-    let ctx = Ctx::new(
-        store,
-        candidate.project,
-        candidate.checkout.clone(),
-        env.clone(),
-    )
-    .no_hooks(true);
-    let pull_request = match &candidate.pull_request {
-        Ok(pull_request) => pull_request.clone(),
-        Err(VerificationProblem::MissingCheckout) => {
-            return_for_repair(
-                &ctx,
-                actuator,
-                &candidate,
-                &VerificationProblem::MissingCheckout.message(),
-            )?;
-            return Ok(TickResult::Returned);
-        }
-        Err(problem) => {
-            return_for_repair(&ctx, actuator, &candidate, &problem.message())?;
-            return Ok(TickResult::Returned);
-        }
-    };
-
     let started_at = env.now();
+    let lifecycle_entry = inflight.enter();
+    name_verification(&lifecycle_entry, &candidate, &started_at);
+    let mut active = activity.acquire(&candidate, started_at);
+
+    loop {
+        let ctx = Ctx::new(
+            store,
+            candidate.project,
+            candidate.checkout.clone(),
+            env.clone(),
+        )
+        .no_hooks(true);
+        let pull_request = match &candidate.pull_request {
+            Ok(pull_request) => pull_request.clone(),
+            Err(problem) => {
+                return_for_repair(&ctx, actuator, &candidate, &problem.message())?;
+                return Ok(TickResult::Returned);
+            }
+        };
+        let outcome = actuator.verify(&candidate, &pull_request);
+
+        if !matches!(outcome, VerificationOutcome::InfrastructureFailure { .. }) {
+            clear_matching_incident(store, &candidate)?;
+        }
+
+        match outcome {
+            VerificationOutcome::Merged { tree, detail } => {
+                StoryService::new(&ctx).comment(
+                &candidate.story_id,
+                &format!(
+                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `make test` and pull request {} landed. {detail}",
+                    pull_request.url
+                ),
+            )?;
+                queue.record_merged(&ctx, &candidate.story_id, &pull_request.url)?;
+                // Reaping is cleanup for work whose durable outcome is already
+                // recorded; it must not keep graceful shutdown waiting on the
+                // completed verification transaction.
+                drop(active);
+                drop(lifecycle_entry);
+                match actuator.reap(&candidate) {
+                    Ok(()) => record_cleanup_complete(&ctx, &candidate)?,
+                    Err(error) => record_cleanup_required(&ctx, &candidate, &error)?,
+                }
+                return Ok(TickResult::Completed);
+            }
+            VerificationOutcome::Conflict { detail } => {
+                let remediation_started = return_for_repair(
+                    &ctx,
+                    actuator,
+                    &candidate,
+                    &format!(
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into current origin/main. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        candidate.story_id
+                    ),
+                )?;
+                if !remediation_started {
+                    return Ok(TickResult::Returned);
+                }
+                let Some(resubmitted) = wait_for_resubmission(&candidate)? else {
+                    return Ok(TickResult::Returned);
+                };
+                if resubmitted.project != candidate.project
+                    || resubmitted.story_id != candidate.story_id
+                    || resubmitted.verifying_generation.is_none()
+                    || resubmitted.verifying_generation == candidate.verifying_generation
+                {
+                    return Err(AppError::Storage(format!(
+                        "reconciliation reservation for {} received the wrong verification candidate",
+                        candidate.story_id
+                    )));
+                }
+                let resumed_at = env.now();
+                active.replace(&resubmitted, resumed_at.clone());
+                name_verification(&lifecycle_entry, &resubmitted, &resumed_at);
+                candidate = resubmitted;
+                continue;
+            }
+            VerificationOutcome::InvalidSubmission { detail } => {
+                return_for_repair(
+                    &ctx,
+                    actuator,
+                    &candidate,
+                    &format!(
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Link the PR for this checkout's origin, push it, then move {} back to verifying.",
+                        candidate.story_id
+                    ),
+                )?;
+                return Ok(TickResult::Returned);
+            }
+            VerificationOutcome::TestsFailed { tree, log, detail } => {
+                return_for_repair(
+                    &ctx,
+                    actuator,
+                    &candidate,
+                    &format!(
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `make test`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        candidate.story_id
+                    ),
+                )?;
+                return Ok(TickResult::Returned);
+            }
+            VerificationOutcome::InfrastructureFailure {
+                detail,
+                disposition,
+            } => return record_infrastructure_failure(&ctx, &candidate, disposition, &detail),
+        }
+    }
+}
+
+fn name_verification(
+    lifecycle_entry: &crate::daemon::lifecycle::Entry<'_>,
+    candidate: &VerificationCandidate,
+    started_at: &str,
+) {
     let generation = candidate.verifying_generation.map_or_else(
         || "legacy".to_string(),
         |generation| generation.get().to_string(),
     );
-    let lifecycle_entry = inflight.enter();
     lifecycle_entry.name(CurrentRequest {
         request_id: format!(
             "verify:{}:{}:{generation}",
@@ -750,79 +896,10 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
         command: "verify".to_string(),
         project: Some(candidate.project_slug.clone()),
         pid: std::process::id(),
-        started_at: started_at.clone(),
+        started_at: started_at.to_string(),
         served_deadline_secs: VERIFICATION_TIMEOUT.as_secs(),
         cwd: candidate.checkout.clone(),
     });
-    let active = activity.acquire(&candidate, started_at);
-    let outcome = actuator.verify(&candidate, &pull_request);
-
-    if !matches!(outcome, VerificationOutcome::InfrastructureFailure { .. }) {
-        clear_matching_incident(store, &candidate)?;
-    }
-
-    match outcome {
-        VerificationOutcome::Merged { tree, detail } => {
-            StoryService::new(&ctx).comment(
-                &candidate.story_id,
-                &format!(
-                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `make test` and pull request {} landed. {detail}",
-                    pull_request.url
-                ),
-            )?;
-            queue.record_merged(&ctx, &candidate.story_id, &pull_request.url)?;
-            // Reaping is cleanup for work whose durable outcome is already
-            // recorded; it must not keep graceful shutdown waiting on the
-            // completed verification transaction.
-            drop(active);
-            drop(lifecycle_entry);
-            match actuator.reap(&candidate) {
-                Ok(()) => record_cleanup_complete(&ctx, &candidate)?,
-                Err(error) => record_cleanup_required(&ctx, &candidate, &error)?,
-            }
-            Ok(TickResult::Completed)
-        }
-        VerificationOutcome::Conflict { detail } => {
-            return_for_repair(
-                &ctx,
-                actuator,
-                &candidate,
-                &format!(
-                    "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into current origin/main. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
-                    candidate.story_id
-                ),
-            )?;
-            Ok(TickResult::Returned)
-        }
-        VerificationOutcome::InvalidSubmission { detail } => {
-            return_for_repair(
-                &ctx,
-                actuator,
-                &candidate,
-                &format!(
-                    "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Link the PR for this checkout's origin, push it, then move {} back to verifying.",
-                    candidate.story_id
-                ),
-            )?;
-            Ok(TickResult::Returned)
-        }
-        VerificationOutcome::TestsFailed { tree, log, detail } => {
-            return_for_repair(
-                &ctx,
-                actuator,
-                &candidate,
-                &format!(
-                    "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `make test`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
-                    candidate.story_id
-                ),
-            )?;
-            Ok(TickResult::Returned)
-        }
-        VerificationOutcome::InfrastructureFailure {
-            detail,
-            disposition,
-        } => record_infrastructure_failure(&ctx, &candidate, disposition, &detail),
-    }
 }
 
 fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCandidate) -> bool {
@@ -964,7 +1041,7 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
     actuator: &A,
     candidate: &VerificationCandidate,
     diagnosis: &str,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     StoryService::new(ctx).comment(&candidate.story_id, diagnosis)?;
     StoryService::new(ctx).set_state(
         &candidate.story_id,
@@ -978,8 +1055,9 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
             &candidate.story_id,
             &format!("verification remediation could not reach its agent: {error}"),
         )?;
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 
 fn comment_once(
@@ -1006,6 +1084,39 @@ fn comment_once(
     Ok(())
 }
 
+/// Waits until the reserved story creates a newer verification generation.
+///
+/// Other queue arrivals and coarse bus wakes only cause a fresh observation;
+/// they cannot transfer the reservation. A daemon stop ends the wait without
+/// manufacturing a candidate. Public for shutdown and event-order integration
+/// tests.
+pub fn wait_for_reconciled_candidate(
+    store: &impl Store,
+    subscription: &crate::daemon::bus::Subscription,
+    stop: &AtomicBool,
+    reserved: &VerificationCandidate,
+) -> Result<Option<VerificationCandidate>, AppError> {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if let Some(candidate) =
+            VerificationQueue::new(store)
+                .ordered()?
+                .into_iter()
+                .find(|candidate| {
+                    candidate.project == reserved.project
+                        && candidate.story_id == reserved.story_id
+                        && candidate.verifying_generation.is_some()
+                        && candidate.verifying_generation != reserved.verifying_generation
+                })
+        {
+            return Ok(Some(candidate));
+        }
+        let _ = subscription.recv(RECOVERY_WAKE);
+    }
+}
+
 /// Runs the event-driven verifier until daemon shutdown.
 pub(crate) fn poll_verification(
     store: &impl Store,
@@ -1018,7 +1129,9 @@ pub(crate) fn poll_verification(
     let subscription = bus.subscribe();
     let actuator = ShellVerificationActuator::new(env.clone());
     while !stop.load(Ordering::Relaxed) {
-        match tick_with_activity(store, env, &actuator, activity, inflight) {
+        match tick_with_reconciliation(store, env, &actuator, activity, inflight, |reserved| {
+            wait_for_reconciled_candidate(store, &subscription, stop, reserved)
+        }) {
             Ok(TickResult::Completed | TickResult::Returned) => continue,
             Ok(TickResult::RetryLater) => {
                 let retry_at = Instant::now() + RECOVERY_WAKE;

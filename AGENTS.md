@@ -195,8 +195,8 @@ project it is looking at.
 - Complete: SH-579 release tag/preflight observer and advisory merged (#671).
 - Complete: SH-342 silent plugin post-git sync merged (#674).
 - Complete: SH-577 reachable browser press coordinates merged (#672).
-- Current: centralized verification of SH-574 commit/push identity detection
-  and history audit.
+- Complete: SH-574 commit/push identity detection merged (#673).
+- Current: retain verifier ownership through PR reconciliation (SH-587).
 - Next: audit verifier behavior end to end (SH-560).
 - Later: separate the project-owned roadmap from generated agent instructions
   (SH-557).

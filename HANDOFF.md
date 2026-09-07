@@ -1,88 +1,64 @@
-# SH-574 Handoff
+# SH-587 Handoff
 
-## Current work
+## Defect and repair
 
-- PR #673: https://github.com/mikeydotio/storyhook/pull/673.
-- Branch: `worktree-SH-574`; version v2.4.2, unchanged.
-- Approved plan, decisions, reproduction and mutation evidence are on SH-574.
-- `docs/spec/commit-identity.md` defines the policy and its limits.
-- One Bash helper checks effective author/committer before commit and stored
-  metadata before push. Explicit alternatives require a role and reason.
-- Push checks precede receipt bypass, preserve stdin, and scan the full outgoing
-  range. Published ancestors remain visible through the read-only audit.
-- Five existing hook fixture suites explicitly approve their fixture identities
-  through a sanitized shared helper. No production bypass.
+- SH-577 was returned for PR reconciliation twice. Each conflict released
+  verifier ownership, so another story merged and invalidated SH-577 again.
+- `src/daemon/verification.rs` treated conflicts like red tests and invalid
+  submissions; the serialized worker had no reservation state.
+- A conflict still records its diagnosis, moves the story to `in-progress`,
+  and notifies the exact agent. The verifier now retains its activity and
+  shutdown-drain guards while waiting for that story's newer `verifying`
+  generation, then retries it immediately.
+- Queue changes and unrelated events cannot transfer the reservation. Repeated
+  conflicts preserve it; merge, red, invalid, and infrastructure paths do not.
+- Notification failure releases ownership with the existing `awaiting`
+  diagnosis, preventing an unreachable agent from deadlocking the queue.
+- Shutdown cancels the process-local wait. No lease, schema, CLI, or REST
+  change was added.
 
-## Reconciliation
+## Original validation
 
-- Central verification returned PR #673 for documentation/template conflicts.
-- Merged origin/main f954df312 as 7bf25b6c9, preserving published history.
-- Keep main's SH-585, SH-581 and SH-579 completions with SH-574's current work.
-  AGENTS.md and `src/service/templates.rs` remain synchronized.
-- Preserve the GitHub committers on imported main merge commits; the repository
-  records an explicit committer-only alternative derived from main's metadata.
-  This is the documented policy mechanism, not a hook bypass.
-- Reconciliation test results and the merge commit are recorded on SH-574.
+- RED: the reservation integration test failed to compile until the
+  reconciliation-aware cycle existed.
+- GREEN: `verification_queue` 46/46 and `verification_shutdown_drain` 3/3.
+- Scaffold and scope-rubric contracts passed 24/24. Timing-policy passed 5/5.
+- Targeted Clippy denied warnings; formatting and whitespace checks passed.
+- One sandboxed daemon-access denial was environmental; the identical
+  permitted run passed.
 
-## Latest reconciliation
+## Main reconciliation
 
-- Merge origin/main d81d21696, preserving published history and both fixes:
-  SH-342 (#674) silent plugin post-git sync and SH-577 (#672) browser gestures.
-- Incoming implementation and tests remain unchanged. Roadmap and template
-  record both completions while retaining SH-574 as current verification work.
-- SH-577 scrolls without focus/activation and checks the returned centre hit
-  target after animations. Its story records 70 passing browser executions
-  and later reconciliation runs; preserve the real-dashboard regressions.
-- Run Rust builds and browser tests sequentially: rebuilding target/debug/story
-  invalidates a running browser-test daemon. SH-577 preserves failure artifacts
-  under /tmp/SH-577-reconcile-failed-artifacts; the PID overlap cause is unproven.
-- Final targeted validation and merge commit are recorded on SH-574.
+- PR #682 conflicted after SH-574 merged as #673. Merge origin/main
+  `563ee7e7a` additively; never rewrite the published SH-587 history.
+- Preserve SH-574 unchanged: effective author/committer validation before
+  commit, stored outgoing identity validation before push, explicit role and
+  reason for alternatives, full outgoing-range checks, stdin preservation,
+  and checks before receipt bypass.
+- Preserve imported GitHub committers through SH-574's documented
+  committer-only alternative and keep daemon containment in identity fixtures.
+- Incoming identity implementation and tests had no SH-587 implementation
+  overlap. Resolve only the roadmap/template and this handoff.
+- Preserve SH-342 and SH-577 completion in both synchronized roadmaps, mark
+  SH-574 complete, and retain SH-587 as current.
+- Reconciliation validation passed all 78 SH-587 tests, all 96 identity and
+  hook/gate tests, and all 10 browser-gate tests. Targeted Clippy denied
+  warnings; ShellCheck, Bash syntax, formatting, and whitespace checks passed.
+- The additive merge commit and final evidence are recorded on SH-587.
 
-## Verifier repair
+## Operational constraints
 
-- Merge-tree 406cb64 failed the store-isolation contract: the new identity
-  fixture cleared its environment without restoring daemon containment.
-- Restore the shared `daemon_containment()` settings in its command builder.
-  Preserve private HOME/XDG identity configuration and the environment allowlist.
-- A real managed pre-commit hook now observes the required containment values;
-  the existing structural store-isolation check remains unchanged.
-- RED/GREEN evidence and final targeted results are recorded on SH-574.
-
-## Verification evidence
-
-- Original regression accepted an incorrect local email before the fix.
-- Disposable mutation controls kill missing detection and overrestriction.
-- Initial audit: 2,657 reachable commits, 792 requiring review, including all
-  five fixture-identity commits. Differences alone do not prove corruption.
-- Before reconciliation: all 22 new identity tests passed within a 134-test
-  targeted batch, plus 10 browser-gate tests. Clippy denied warnings; ShellCheck,
-  Bash syntax, formatting and whitespace checks passed.
-- Run only new/directly impacted tests here. Central verification owns the full
-  suite, merge, completion and worktree cleanup.
-
-## Main behavior and operational constraints to preserve
-
-- SH-579 (#671): independent remote tag audit and repeated host/Lima preflight
-  observer. Atomic results distinguish missing/running/failed/stale/successful;
-  every test tier reports the read-only advisory. No scheduler was installed.
-- Observer setup and design: `docs/spec/release-observer.md`. Observations do
-  not prove complete builds or artifact provenance. Historical tag mismatches
-  remain visible; never repair published tags.
-- Do not run manual release assembly concurrently with the observer: observer
-  passes share a lock; existing manual release commands do not.
-- SH-581 (#670): Lima builds in the extracted source subshell and preserves
-  caller cwd for export. Preserve both Linux-target regression paths.
-- SH-585 (#669): installed-launcher reader exceptions;
-  `docs/rca/SH-585-installed-launcher-readers.md` carries the record.
-- SH-584 (#668): preserve dispatch environment isolation, installer payload
-  validation and verifier restoration/remediation behavior.
+- SH-579's tag/preflight observer is advisory; do not repair published tags or
+  run manual release assembly concurrently with it.
+- SH-581 preserves extracted-source Lima builds and caller cwd. SH-585 owns
+  installed-launcher reader exceptions. SH-584 owns dispatch isolation,
+  installer validation, and verifier restoration/remediation behavior.
 - Preserve `.git/storyhook/verification-recovery-SH-584-20260906`.
-- SH-557 owns separating roadmap data from generated instructions; SH-560 is
-  the next verifier audit. Attachment work SH-315 remains later.
 
 ## Submission boundary
 
-Continue PR #673. Commit repairs and push without rewriting history. Record
-results on SH-574, then make `story move SH-574 verifying` the absolute last
-operation and stop. Repair this same PR if verification returns it again.
-No full-suite, release, version, deployment, landing or cleanup from this lane.
+Continue PR #682. Run only SH-587 and incoming identity/hook impacted tests,
+commit the additive merge, and push normally. Comment results on the PR and
+SH-587, then make `story move SH-587 verifying` the absolute last operation.
+The centralized verifier owns the full suite, merge, completion, and cleanup.
+Do not release, version, deploy, land, reap, or run the full suite here.
