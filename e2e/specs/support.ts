@@ -491,7 +491,7 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
   await expect(page.locator("#drawer-id")).toHaveText(id);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
@@ -525,7 +525,7 @@ export async function deleteBlockedStory(
   await expect(page.locator("#drawer-id")).toHaveText(id);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
@@ -1220,9 +1220,9 @@ function apiHeaders(): Record<string, string> {
   };
 }
 
-/** Opens the shared delete modal on `card` through the drawer footer, and types
- * its id when `confirmation` is non-empty (pass `""` to leave the field for
- * the caller to drive itself). */
+/** Opens the shared delete modal on `card`, waits for its server plan, and
+ * types its id when `confirmation` is non-empty (pass `""` to leave the field
+ * for the caller to drive itself). */
 export async function openDeleteModal(
   page: Page,
   card: Locator,
@@ -1232,9 +1232,11 @@ export async function openDeleteModal(
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  const id = (await card.getAttribute("data-id"))!;
+  // The loading summary already contains the ID. Only the server plan makes
+  // confirmation actionable, including programmatic focus and Enter events.
+  await expect(page.locator("#delete-modal-summary")).toContainText(`Type ${id} to confirm.`);
   if (confirmation) {
-    const id = (await card.getAttribute("data-id"))!;
-    await expect(page.locator("#delete-modal-summary")).toContainText(id);
     await page.locator("#delete-confirmation").fill(id);
   }
 }
