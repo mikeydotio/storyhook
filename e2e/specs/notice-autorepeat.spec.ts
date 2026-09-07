@@ -46,10 +46,9 @@ import {
  * Four of the six tests here exist for that: discrete presses still clear the
  * stack; a held Space still dismisses exactly one (a button activates on Space
  * *keyup*, so its repeat never activated anything and must not start being
- * cancelled); a held ArrowDown still scrolls an overflowing `#toast-scroll`
- * (which is why the guard names Enter instead of testing `event.repeat` alone —
- * a bare check would cancel the scrolling the dock's conditional `tabindex`
- * exists to serve, taking it from the very people this story is written for);
+ * cancelled); a held ArrowDown on a dismiss button remains uncancelled (which
+ * is why the guard names Enter instead of testing `event.repeat` alone — a bare
+ * check would cancel every repeated keydown from that button);
  * and a synthesised `click()` with no keydown still dismisses, which is the
  * path assistive technology actually uses.
  *
@@ -68,16 +67,15 @@ import {
  *   4. **Add Space to the predicate.** Predicted 4 fails. All six passed — and
  *      unlike (2) this one is correct, see below.
  *
- * **(2) was a real hole and this file was rewritten to close it.** The ArrowDown
- * test asserted `scrollTop > 0` after the held key. But a bare `event.repeat`
- * guard cancels only the *repeats*; the deliberate first keydown still scrolls
- * one step, so `scrollTop > 0` held and the over-reach went unreported. The test
- * now measures one discrete press first and requires the held press to beat it.
- * Against the mutant it fails `Expected: > 40, Received: 40` — one arrow step,
- * exactly — which names the defect in its own failure message. Closing it turned
- * up a second thing worth knowing: Chromium **animates** keyboard scrolling, so
- * a `scrollTop` read in the same tick as the keypress reports 0 (see
- * `settledScrollTop`).
+ * **(2) was a real hole and this file was rewritten twice to close it.** The
+ * first ArrowDown test asserted `scrollTop > 0` after the held key. But a bare
+ * `event.repeat` guard cancels only the *repeats*; the deliberate first keydown
+ * still scrolls one step in Chromium, so the over-reach went unreported. A
+ * one-step baseline killed that mutant there, but SH-374 exposed its own
+ * engine assumption: WebKit does not scroll this ancestor when its descendant
+ * button has focus. The test now observes each keydown at `window`, after the
+ * dock's bubbling listener, and requires every repeated ArrowDown to remain
+ * uncancelled. That pins the application boundary directly in both engines.
  *
  * **(4) is an equivalent mutant, not a gap.** Adding Space to the predicate
  * changes no observable behaviour on Blink, because a button activates on Space
@@ -92,18 +90,14 @@ import {
  *
  * ## What is NOT claimed here
  *
- * **Chromium runs all six tests; WebKit runs five.** The ArrowDown over-reach
- * pin still depends on Chromium scrolling an ancestor when a descendant button
- * has focus; WebKit does not, so SH-374 carries that newly exposed harness gap
- * alongside the clipboard-default gap it was opened for. Nothing here says how
- * Gecko behaves. Where an engine or input stack does not set
- * `KeyboardEvent.repeat` at all — an input path that delivers repeats as
- * discrete keydown/keyup pairs — the guard is inert, which is the pre-fix
- * behaviour and never worse than it.
+ * **Chromium and WebKit both run all six tests.** Nothing here says how Gecko
+ * behaves. Where an engine or input stack does not set `KeyboardEvent.repeat`
+ * at all — an input path that delivers repeats as discrete keydown/keyup pairs
+ * — the guard is inert, which is the pre-fix behaviour and never worse than it.
  *
  * **Playwright sets the `repeat` bit itself** on a second `keyboard.down` of a
- * key already down. So the complete mutation battery still proves Blink's
- * half: that an un-prevented repeat keydown activates a button, and that
+ * key already down. So the complete mutation battery proves in both driven
+ * engines that an un-prevented repeat keydown activates a button, and that
  * cancelling it stops that. That a *physically* held key sets the flag rests on
  * the UI Events spec and on a hand check, and is not evidence this suite can
  * produce — the SH-322/SH-327 precedent, applied to an input event instead of
@@ -230,90 +224,31 @@ test("a held Space still dismisses exactly one notice", async ({ page }) => {
   await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
 });
 
-test("a held ArrowDown still scrolls an overflowing notice scroller", async ({
-  page,
-  browserName,
-}) => {
-  test.skip(
-    browserName === "webkit",
-    "WebKit does not scroll the ancestor when ArrowDown targets its focused descendant button (SH-374)",
-  );
-  await raiseDurableErrors(page, "SH-339 — held ArrowDown", 12);
-
-  const scroll = page.locator("#toast-scroll");
-  const range = await scroll.evaluate((n) => n.scrollHeight - n.clientHeight);
-  expect(range, "twelve notices should overflow the bounded scroller").toBeGreaterThan(0);
-  expect(await scroll.evaluate((n) => n.scrollTop)).toBe(0);
-
+test("a held ArrowDown on a dismiss control remains uncancelled", async ({ page }) => {
+  await raiseDurableErrors(page, "SH-339 — held ArrowDown", 3);
   await page.locator("#toast-stack .toast-dismiss").first().focus();
 
-  // Measure one DISCRETE ArrowDown first, and require the held press to beat
-  // it. Without this baseline the test is vacuous, and that is not hypothetical:
-  // this assertion read `toBeGreaterThan(0)` and it SURVIVED the mutation it
-  // exists to kill. A guard written as a bare `if (!event.repeat) return`
-  // cancels every repeat but never the deliberate first keydown — so the
-  // scroller had still moved one step, `scrollTop > 0` held, and the over-reach
-  // went unreported. What has to be pinned is that the REPEATS scrolled, which
-  // only a comparison against one step can say.
-  await page.keyboard.press("ArrowDown");
-  const oneStep = await settledScrollTop(page);
-  expect(oneStep, "a single ArrowDown should scroll a focused control's scroller").toBeGreaterThan(0);
-  // The range has to exceed one step or the comparison below proves nothing: if
-  // one press already hit the bottom, a held key could not out-scroll it and
-  // this would fail for a reason about layout rather than about the guard.
-  expect(range, "the scroll range must exceed one arrow step").toBeGreaterThan(oneStep);
-  await scroll.evaluate((n) => { n.scrollTop = 0; });
+  await page.evaluate(() => {
+    const observed: Array<{ repeat: boolean; defaultPrevented: boolean }> = [];
+    (window as unknown as { __arrowDownEvents: typeof observed }).__arrowDownEvents = observed;
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowDown") return;
+      observed.push({ repeat: event.repeat, defaultPrevented: event.defaultPrevented });
+    });
+  });
 
   await holdKey(page, "ArrowDown", 8);
 
-  // This is why the guard names Enter rather than testing `event.repeat` alone.
-  // A bare repeat check would cancel these repeats too, and held-arrow
-  // scrolling is the affordance `syncNoticeDock`'s conditional `tabindex` on
-  // this element exists to provide — taken away from precisely the people this
-  // story was written for.
-  expect(await settledScrollTop(page)).toBeGreaterThan(oneStep);
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(12);
-});
-
-/** `#toast-scroll`'s `scrollTop` once it has stopped moving.
- *
- * Chromium **animates** keyboard scrolling, so a read taken in the same tick as
- * the keypress reports the value from before the animation — measured here as
- * exactly `0` for a single discrete ArrowDown, which is what made the first
- * version of the baseline above fail against an unmutated build. Waiting for
- * four consecutive equal samples is what makes the two measurements in that
- * test comparable rather than a race between an animation and a round trip.
- *
- * Returns the settled value wrapped in an object on the page side, because
- * `waitForFunction` treats a bare `0` as "keep waiting" — and `0` is a
- * legitimate answer here (it is what a cancelled scroll looks like, and
- * reporting it is the whole point). */
-async function settledScrollTop(page: Page): Promise<number> {
-  const handle = await page.waitForFunction(
-    () => {
-      const node = document.getElementById("toast-scroll");
-      if (!node) return false;
-      const w = window as unknown as { __settle?: { last: number; same: number } };
-      if (!w.__settle) {
-        w.__settle = { last: node.scrollTop, same: 0 };
-        return false;
-      }
-      if (node.scrollTop === w.__settle.last) w.__settle.same += 1;
-      else {
-        w.__settle.last = node.scrollTop;
-        w.__settle.same = 0;
-      }
-      return w.__settle.same >= 4 ? { value: node.scrollTop } : false;
-    },
-    undefined,
-    { polling: 50, timeout: 5000 },
+  const observed = await page.evaluate(
+    () =>
+      (window as unknown as {
+        __arrowDownEvents: Array<{ repeat: boolean; defaultPrevented: boolean }>;
+      }).__arrowDownEvents,
   );
-  const { value } = (await handle.jsonValue()) as { value: number };
-  await page.evaluate(() => {
-    delete (window as unknown as { __settle?: unknown }).__settle;
-  });
-  return value;
-}
+  expect(observed.map((event) => event.repeat)).toEqual([false, ...Array(8).fill(true)]);
+  expect(observed.map((event) => event.defaultPrevented)).toEqual(Array(9).fill(false));
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(3);
+});
 
 test("a synthesised click with no keydown still dismisses", async ({ page }) => {
   await raiseDurableErrors(page, "SH-339 — synthesised click", 3);

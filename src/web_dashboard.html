@@ -3862,14 +3862,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * arrives as a click with no keydown at all and never reaches this handler.
    *
    * **Enter specifically, and the narrowness is load-bearing.** A bare
-   * `if (event.repeat)` would also cancel held Arrow/Page scrolling from a
-   * focused dismiss button -- the exact affordance `syncNoticeDock`'s
-   * conditional `tabindex` on `#toast-scroll` exists to serve -- and it would
-   * take that away from the same people this guard is written for. Space needs
-   * no guard and must not have one: a button activates on Space **keyup**, so
-   * its auto-repeat never activated anything, and cancelling a repeated Space
-   * keydown would risk the one activation a held Space legitimately produces on
-   * release. `event.key === "Enter"` covers NumpadEnter.
+   * `if (event.repeat)` would also cancel held Arrow/Page keydowns from a
+   * focused dismiss button. WebKit does not natively scroll the ancestor from
+   * that target, where Chromium does, so the cross-engine pin observes the
+   * application boundary instead: every repeated ArrowDown reaches `window`
+   * uncancelled after this bubbling listener. Space needs no guard and must not
+   * have one: a button activates on Space **keyup**, so its auto-repeat never
+   * activated anything, and cancelling a repeated Space keydown would risk the
+   * one activation a held Space legitimately produces on release.
+   * `event.key === "Enter"` covers NumpadEnter.
    *
    * **One listener on `#notice-dock`**, the single common ancestor of both
    * regions and both "Dismiss all" bars, rather than four handlers at the four
@@ -3888,12 +3889,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * who this exists for: before it, they could not reliably dismiss exactly one
    * notice.
    *
-   * What is NOT claimed, because it was not measured: this is verified on Blink
-   * only (the suite is Chromium-only -- SH-335), and Playwright's `repeat` bit
-   * is set by the harness, so the run proves that Blink activates a button on
-   * every un-prevented repeat keydown and that cancelling it stops that. That a
-   * physically held key sets the flag at all rests on the UI Events spec and on
-   * a hand check, never on this suite. Where the flag is not set -- an input
+   * What is NOT claimed: Chromium and WebKit both verify what the page does with
+   * Playwright's harness-set `repeat` bit, but a physically held key setting the
+   * flag at all rests on the UI Events spec and on a hand check, never on this
+   * suite. Nothing here speaks to Gecko. Where the flag is not set -- an input
    * stack that delivers repeats as discrete keydown/keyup pairs -- this guard is
    * inert, which is today's behaviour and never worse than it.
    *
