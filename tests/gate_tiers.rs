@@ -87,6 +87,34 @@ fn make_dash_n_fails_on_an_unknown_target() {
     );
 }
 
+/// Every tier exposes the independent observer without turning it into a gate.
+#[test]
+fn release_observation_is_advisory_in_every_test_tier() {
+    for target in ["test", "test-changed", "test-full"] {
+        let lines = dry_run(target);
+        let advisory: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("scripts/release-status.sh"))
+            .collect();
+        assert_eq!(advisory.len(), 1, "{target}: {lines:#?}");
+        assert!(advisory[0].ends_with("|| true"), "{target}: {advisory:#?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("release-watch.sh")),
+            "test tiers must not start the host preflight"
+        );
+    }
+    assert!(
+        dry_run("release-watch")
+            .iter()
+            .any(|line| line.contains("scripts/release-watch.sh"))
+    );
+    assert!(
+        dry_run("release-status")
+            .iter()
+            .any(|line| line.contains("scripts/release-status.sh"))
+    );
+}
+
 /// `test-full` must reach the browser suite; `test` must not, and must say
 /// so loudly rather than silently covering less than a reader would assume
 /// (the SH-306 shape one layer up: a green run that answers a question
