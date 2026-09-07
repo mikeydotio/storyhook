@@ -480,7 +480,8 @@ fn selector(block: &str) -> Option<(&'static str, String)> {
 /// either project's own file saying so (SH-335 established this for the
 /// desktop pair; SH-348 extends it to the mobile pair). Across the pairs,
 /// the selector KINDS remain opposite. The mobile pair's expression adds the
-/// one intentional cross-class file (`engine.spec.ts`) to `MOBILE_SPECS`;
+/// intentional cross-class files (`engine.spec.ts` and `open-pr-chip.spec.ts`)
+/// to `MOBILE_SPECS`;
 /// the desktop pair additionally excludes SH-321's dedicated untrusted-origin
 /// spec, whose own project is pinned below.
 const ENGINE_PAIRS: [(&str, &str, &str, &str); 2] = [
@@ -542,13 +543,16 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     assert_eq!(
         pair_selectors[1].1.1.as_str(),
         "MOBILE_OR_ENGINE_SPECS",
-        "the mobile pair must add only the named cross-device engine spec to the phone set"
+        "the mobile pair must share the named cross-device specs and phone set"
     );
     assert!(
         config_text.contains("const ENGINE_SPECS = /engine\\.spec\\.ts$/;")
-            && config_text.contains("const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS];"),
-        "engine.spec.ts must be the one explicit shared exception, composed from the same \
-         MOBILE_SPECS constant rather than by widening either engine pair independently"
+            && config_text.contains("const OPEN_PR_CHIP_SPECS = /open-pr-chip\\.spec\\.ts$/;")
+            && config_text.contains(
+                "const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];"
+            ),
+        "engine.spec.ts and open-pr-chip.spec.ts must be the explicit shared exceptions, \
+         composed from the same MOBILE_SPECS constant for both mobile engines"
     );
 }
 
