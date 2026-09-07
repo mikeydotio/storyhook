@@ -300,6 +300,15 @@ impl Environment {
         self.daemon_state_dir().join("daemon.pid")
     }
 
+    /// The daemon-owned process-group registry used by forced shutdown.
+    ///
+    /// Entries carry native process-incarnation identities, so a stale PID can
+    /// never authorize signaling an unrelated process. The file is atomic
+    /// JSON, mode 0600, and absent when no child process group is active.
+    pub fn daemon_processes(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.processes.json")
+    }
+
     /// The lock a client takes while it decides to spawn a daemon, held through
     /// the spawn and the child's portfile write.
     pub fn daemon_spawn_lock(&self) -> PathBuf {

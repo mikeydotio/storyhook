@@ -35,7 +35,7 @@
 //! construction rather than a check — see `docs/spec/store-isolation.md`.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -78,8 +78,8 @@ static INFO_PUBLICATION: Mutex<()> = Mutex::new(());
 /// Every field answers one question the failure message has to answer.
 /// `request_id` says *is this mine*; `command` names the work;
 /// `served_deadline_secs` says how long this daemon commits to spending on
-/// it; `project` says whose; `pid` is the way out, because `story daemon
-/// stop` has no signal fallback; `started_at` says how long.
+/// it; `project` says whose; `pid` identifies the daemon serving it;
+/// `started_at` says how long.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CurrentRequest {
     /// The envelope's own id, which is how a client recognises its own request.
@@ -109,6 +109,166 @@ pub struct CurrentRequest {
     /// actually being migrated — is the only thing two concurrent instances
     /// can be compared by.
     pub cwd: PathBuf,
+}
+
+/// The process incarnation that owns the daemon's lifetime lock.
+///
+/// This record lives inside the locked pidfile rather than beside it: the lock
+/// and the identity therefore describe the same inode for the daemon's whole
+/// lifetime. Empty legacy pidfiles remain readable through the portfile
+/// fallback in [`stop`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonIdentity {
+    /// The daemon's process ID.
+    pub pid: u32,
+    /// The process group containing the daemon.
+    pub process_group: u32,
+    /// Native token identifying this exact PID incarnation.
+    pub start_time: Option<String>,
+}
+
+/// One external process group currently owned by the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnedProcess {
+    /// Human-readable lifecycle role, such as `verifier`.
+    pub role: String,
+    /// Process-group leader PID.
+    pub pid: u32,
+    /// Process group to terminate, normally equal to [`Self::pid`].
+    pub process_group: u32,
+    /// Native token identifying this exact leader incarnation.
+    pub start_time: Option<String>,
+    /// Durable work identity associated with the process, when one exists.
+    pub request_id: Option<String>,
+}
+
+/// Durable registry of process groups the daemon must not orphan.
+pub struct OwnedProcesses {
+    entries: std::sync::Mutex<std::collections::BTreeMap<u32, OwnedProcess>>,
+    env: Environment,
+}
+
+impl OwnedProcesses {
+    /// Opens the registry for `env`, retaining parseable residue from a daemon
+    /// that exited before its registration guards could drop. Signal-time
+    /// identity validation decides whether any such residue is still live.
+    #[must_use]
+    pub fn new(env: Environment) -> Self {
+        let entries = read_owned_processes(&env)
+            .into_iter()
+            .map(|entry| (entry.process_group, entry))
+            .collect();
+        Self {
+            entries: std::sync::Mutex::new(entries),
+            env,
+        }
+    }
+
+    /// Registers the dedicated process group led by `pid` until the returned
+    /// guard drops.
+    pub fn register<'a>(
+        &'a self,
+        role: &str,
+        pid: u32,
+        request_id: Option<&str>,
+    ) -> Result<OwnedProcessRegistration<'a>, AppError> {
+        let process_group = process_group(pid).ok_or_else(|| {
+            AppError::Storage(format!("could not read process group for {role} pid {pid}"))
+        })?;
+        if process_group != pid {
+            return Err(AppError::Storage(format!(
+                "refused to register {role} pid {pid}: process group {process_group} is not \
+                 dedicated to that leader"
+            )));
+        }
+        let start_time = process_start_time(pid).ok_or_else(|| {
+            AppError::Storage(format!("could not identify {role} pid {pid} after spawn"))
+        })?;
+        let entry = OwnedProcess {
+            role: role.to_string(),
+            pid,
+            process_group,
+            start_time: Some(start_time),
+            request_id: request_id.map(str::to_string),
+        };
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(process_group, entry.clone());
+        if let Err(error) = write_owned_processes(&self.env, entries.values()) {
+            entries.remove(&process_group);
+            return Err(error);
+        }
+        Ok(OwnedProcessRegistration {
+            registry: self,
+            process_group,
+            start_time: entry.start_time,
+        })
+    }
+
+    fn unregister(&self, process_group: u32, start_time: Option<&str>) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owns_entry = entries
+            .get(&process_group)
+            .is_some_and(|entry| entry.start_time.as_deref() == start_time);
+        if owns_entry {
+            entries.remove(&process_group);
+            if let Err(error) = write_owned_processes(&self.env, entries.values()) {
+                eprintln!("storyhook: could not retract process-group record: {error}");
+            }
+        }
+    }
+}
+
+/// RAII ownership of one durable daemon child-process record.
+pub struct OwnedProcessRegistration<'a> {
+    registry: &'a OwnedProcesses,
+    process_group: u32,
+    start_time: Option<String>,
+}
+
+impl Drop for OwnedProcessRegistration<'_> {
+    fn drop(&mut self) {
+        self.registry
+            .unregister(self.process_group, self.start_time.as_deref());
+    }
+}
+
+/// Reads the durable daemon-owned process-group registry.
+#[must_use]
+pub fn read_owned_processes(env: &Environment) -> Vec<OwnedProcess> {
+    let Ok(raw) = std::fs::read_to_string(env.daemon_processes()) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn write_owned_processes<'a>(
+    env: &Environment,
+    entries: impl IntoIterator<Item = &'a OwnedProcess>,
+) -> Result<(), AppError> {
+    let entries: Vec<&OwnedProcess> = entries.into_iter().collect();
+    let path = env.daemon_processes();
+    if entries.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    std::fs::create_dir_all(env.daemon_state_dir())?;
+    let temp = path.with_extension("json.tmp");
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&temp)?;
+    file.write_all(serde_json::to_string(&entries)?.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(temp, path)?;
+    Ok(())
 }
 
 /// Writes the file a daemon's clients read, from `entries` in the order
@@ -595,13 +755,19 @@ pub(crate) fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), App
 /// Opens the pidfile for locking, creating it and its directory if needed.
 fn open_pidfile(env: &Environment) -> Result<File, AppError> {
     std::fs::create_dir_all(env.daemon_state_dir())?;
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options
         .open(env.daemon_pidfile())
-        .map_err(|e| AppError::Storage(format!("failed to open the daemon pidfile: {e}")))
+        .map_err(|e| AppError::Storage(format!("failed to open the daemon pidfile: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 /// Whether a daemon may currently hold the pidfile lock.
@@ -631,13 +797,29 @@ pub fn is_live(env: &Environment) -> bool {
 /// Returned rather than dropped: the caller keeps it alive, and the lock is
 /// released when the process ends, however it ends.
 pub fn claim_pidfile(env: &Environment) -> Result<File, AppError> {
-    let file = open_pidfile(env)?;
+    let mut file = open_pidfile(env)?;
     file.try_lock_exclusive().map_err(|_| {
         AppError::Usage(
             "a storyhook daemon is already running. Run `story daemon stop` first.".to_string(),
         )
     })?;
+    let identity = DaemonIdentity {
+        pid: std::process::id(),
+        process_group: process_group(std::process::id()).unwrap_or(std::process::id()),
+        start_time: process_start_time(std::process::id()),
+    };
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(serde_json::to_string(&identity)?.as_bytes())?;
+    file.sync_all()?;
     Ok(file)
+}
+
+/// Reads the process identity protected by the daemon lifetime lock.
+#[must_use]
+pub fn read_daemon_identity(env: &Environment) -> Option<DaemonIdentity> {
+    let raw = std::fs::read_to_string(env.daemon_pidfile()).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// A fresh bearer token for one daemon's lifetime.
@@ -1365,7 +1547,10 @@ fn describe_exit(status: std::process::ExitStatus) -> String {
 
 /// Blocks until `ready` answers true, or `deadline` elapses.
 fn wait_until(deadline: Duration, ready: impl Fn() -> bool) -> bool {
-    let until = Instant::now() + deadline;
+    wait_until_instant(Instant::now() + deadline, ready)
+}
+
+fn wait_until_instant(until: Instant, ready: impl Fn() -> bool) -> bool {
     while Instant::now() < until {
         if ready() {
             return true;
@@ -1780,8 +1965,12 @@ pub fn verdict(seen: &Observed<'_>, override_bound: Option<ExchangeBound>) -> Ve
 /// the *answer* is the point and there is no legitimate slow case. The invoker's
 /// own request is bounded differently, and says why there.
 fn control_agent() -> ureq::Agent {
+    control_agent_with_timeout(CONTROL_DEADLINE)
+}
+
+fn control_agent_with_timeout(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
-        .timeout_global(Some(CONTROL_DEADLINE))
+        .timeout_global(Some(timeout))
         .build()
         .into()
 }
@@ -1999,8 +2188,12 @@ struct ListedNamedTokens {
 /// `wait_until` calls. This function was previously documented as waiting,
 /// which it never did (SH-345).
 pub fn request_shutdown(info: &DaemonInfo) -> Result<(), AppError> {
+    request_shutdown_with_timeout(info, CONTROL_DEADLINE)
+}
+
+fn request_shutdown_with_timeout(info: &DaemonInfo, timeout: Duration) -> Result<(), AppError> {
     let url = format!("http://127.0.0.1:{}/api/v1/shutdown", info.port);
-    control_agent()
+    control_agent_with_timeout(timeout)
         .post(&url)
         .header("X-Storyhook-Token", &info.token)
         .send_empty()
@@ -2015,20 +2208,23 @@ pub enum StopMode {
     /// takes. The default — `story daemon stop` with no flag — because
     /// nothing is abandoned this way.
     Graceful,
-    /// Give the daemon [`FORCE_GRACE`] to drain and exit on its own; past
-    /// that, signal its pid directly. Whatever the daemon was still serving
-    /// at that moment is abandoned — naming it is the caller's problem
-    /// (`story daemon stop --force`'s), not this function's.
+    /// Give the daemon [`FORCE_GRACE`] to drain and exit on its own; past that,
+    /// hard-kill the identity-validated daemon and every registered owned
+    /// process group. Whatever was still running at that moment is abandoned.
     Force,
 }
 
-/// How long [`StopMode::Force`] waits for an orderly exit before signalling.
+/// Absolute end-to-end budget for [`StopMode::Force`].
+pub const FORCE_DEADLINE: Duration = Duration::from_secs(2);
+
+/// The graceful share of [`FORCE_DEADLINE`].
 ///
 /// Short, deliberately: forcing is the caller saying they will not wait, and
 /// a daemon with nothing left in flight exits within one `SHUTDOWN_CHECK`
-/// (250ms, `crate::daemon::serve`) of answering the shutdown request — this
-/// is headroom for a handful of requests to finish, not a real drain window.
-pub const FORCE_GRACE: Duration = Duration::from_secs(2);
+/// (250ms, `crate::daemon::serve`) of answering the shutdown request. One
+/// quarter leaves most of the hard deadline for identity checks, group
+/// signaling, and observing the pidfile lock release.
+pub const FORCE_GRACE: Duration = Duration::from_millis(500);
 
 /// Stops the running daemon, if there is one.
 ///
@@ -2043,34 +2239,62 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
         // status` stops describing a process that is gone.
         crate::daemon::crash::harvest(env);
         let _ = std::fs::remove_file(env.daemon_file());
+        let _ = std::fs::remove_file(env.daemon_processes());
         return Ok(None);
     }
-    let Some(info) = read_info(env) else {
-        return Err(AppError::Storage(format!(
-            "a daemon holds {} but published no portfile, so there is no way to \
-             ask it to stop. Its pid is not knowable from here; kill it by hand.",
-            env.daemon_pidfile().display()
-        )));
-    };
-    request_shutdown(&info)?;
+    let info = read_info(env);
+    let daemon_identity = read_daemon_identity(env).or_else(|| {
+        info.as_ref().map(|info| DaemonIdentity {
+            pid: info.pid,
+            process_group: info.pid,
+            start_time: None,
+        })
+    });
     match mode {
-        StopMode::Graceful => wait_forever(env, &info),
+        StopMode::Graceful => {
+            let owned = read_owned_processes(env);
+            report_active_processes(daemon_identity.as_ref(), &owned);
+            let Some(info) = info.as_ref() else {
+                return Err(AppError::Storage(format!(
+                    "a daemon holds {} but published no readable portfile, so an orderly \
+                     shutdown request cannot be authenticated. Run `story daemon stop \
+                     --force` to use the identity in the locked pidfile.",
+                    env.daemon_pidfile().display()
+                )));
+            };
+            request_shutdown(info)?;
+            wait_forever(env, info);
+        }
         StopMode::Force => {
-            if !wait_until(FORCE_GRACE, || !is_live(env)) {
-                // Read before the signal, not after: once the daemon is dead
-                // this file is whatever it last wrote, which is exactly the
-                // set that never got to answer for itself.
-                let abandoned = read_inflight(env);
-                kill_pid(info.pid);
-                if !wait_until(SPAWN_DEADLINE, || !is_live(env)) {
-                    return Err(AppError::Storage(format!(
-                        "signalled pid {} and it still holds {} after {}s; it may be \
-                         unkillable (a zombie, or blocked in an uninterruptible wait)",
-                        info.pid,
-                        env.daemon_pidfile().display(),
-                        SPAWN_DEADLINE.as_secs()
-                    )));
+            let started = Instant::now();
+            let deadline = started + FORCE_DEADLINE;
+            let graceful_until = started + FORCE_GRACE;
+            let abandoned = read_inflight(env);
+            if let Some(info) = info.as_ref()
+                && let Err(error) = request_shutdown_with_timeout(info, FORCE_GRACE)
+            {
+                eprintln!("storyhook: graceful force-stop request failed: {error}");
+            }
+            let daemon_drained = wait_until_instant(graceful_until, || !is_live(env));
+            if !daemon_drained {
+                if let Some(identity) = daemon_identity.as_ref() {
+                    let daemon = OwnedProcess {
+                        role: "daemon".to_string(),
+                        pid: identity.pid,
+                        process_group: identity.process_group,
+                        start_time: identity.start_time.clone(),
+                        request_id: None,
+                    };
+                    report_signal_outcome(&daemon, hard_kill_owned_process(&daemon));
+                } else {
+                    eprintln!("storyhook: no identity-safe daemon PID was available to signal");
                 }
+            }
+            let owned = read_owned_processes(env);
+            for process in &owned {
+                report_signal_outcome(process, hard_kill_owned_process(process));
+            }
+            if !daemon_drained {
                 ledger_abandoned(
                     env,
                     &abandoned,
@@ -2078,10 +2302,101 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
                      within the grace period",
                 );
             }
+            let _ = wait_until_instant(deadline, || {
+                !is_live(env) && owned.iter().all(|process| !owned_process_is_live(process))
+            });
         }
     }
-    let _ = std::fs::remove_file(env.daemon_file());
-    Ok(Some(info))
+    if !is_live(env) {
+        let _ = std::fs::remove_file(env.daemon_file());
+        let _ = std::fs::remove_file(env.daemon_processes());
+    }
+    Ok(info)
+}
+
+fn report_active_processes(daemon: Option<&DaemonIdentity>, owned: &[OwnedProcess]) {
+    if let Some(daemon) = daemon
+        && process_identity_is_live(daemon.pid, daemon.start_time.as_deref())
+    {
+        eprintln!("storyhook: still running: daemon PID {}", daemon.pid);
+    }
+    for process in owned {
+        if owned_process_is_live(process) {
+            eprintln!(
+                "storyhook: still running: {} PID {}",
+                process.role, process.pid
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalOutcome {
+    Signalled,
+    AlreadyExited,
+    IdentityMismatch,
+    Refused(i32),
+}
+
+fn owned_process_is_live(process: &OwnedProcess) -> bool {
+    process_identity_is_live(process.pid, process.start_time.as_deref())
+        && process_group(process.pid) == Some(process.process_group)
+}
+
+fn hard_kill_owned_process(process: &OwnedProcess) -> SignalOutcome {
+    if !pid_is_live(process.pid) {
+        return SignalOutcome::AlreadyExited;
+    }
+    if !process_identity_is_live(process.pid, process.start_time.as_deref())
+        || process_group(process.pid) != Some(process.process_group)
+    {
+        return SignalOutcome::IdentityMismatch;
+    }
+    #[cfg(unix)]
+    {
+        let target = if process.process_group == process.pid {
+            -(process.process_group as i32)
+        } else if process.role == "daemon" {
+            process.pid as i32
+        } else {
+            return SignalOutcome::IdentityMismatch;
+        };
+        let result = unsafe {
+            // SAFETY: the native start token and current group were checked
+            // immediately above. A negative target is used only for a group
+            // whose leader owns its PGID, so no caller-owned group is hit.
+            libc::kill(target, libc::SIGKILL)
+        };
+        if result == 0 {
+            SignalOutcome::Signalled
+        } else {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno == libc::ESRCH {
+                SignalOutcome::AlreadyExited
+            } else {
+                SignalOutcome::Refused(errno)
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process;
+        SignalOutcome::IdentityMismatch
+    }
+}
+
+fn report_signal_outcome(process: &OwnedProcess, outcome: SignalOutcome) {
+    match outcome {
+        SignalOutcome::Signalled | SignalOutcome::AlreadyExited => {}
+        SignalOutcome::IdentityMismatch => eprintln!(
+            "storyhook: refused to signal stale or unsafe {} PID {}",
+            process.role, process.pid
+        ),
+        SignalOutcome::Refused(errno) => eprintln!(
+            "storyhook: the OS refused SIGKILL for {} PID {} (errno {errno})",
+            process.role, process.pid
+        ),
+    }
 }
 
 /// Waits for a daemon to release its pidfile with no deadline of its own —
@@ -2098,29 +2413,14 @@ fn wait_forever(env: &Environment, info: &DaemonInfo) {
             announced = true;
             eprintln!(
                 "storyhook: waiting for the daemon (pid {}) to finish what it is running \
-                 before it stops. `story daemon stop --force` gives it {}s more, then \
+                 before it stops. `story daemon stop --force` gives it {:?} more, then \
                  signals it directly.",
-                info.pid,
-                FORCE_GRACE.as_secs()
+                info.pid, FORCE_GRACE
             );
         }
         std::thread::sleep(SPAWN_POLL);
     }
 }
-
-/// Sends `pid` an unignorable kill signal. Best-effort: a pid that has
-/// already exited is not an error here, it is the outcome being asked for.
-#[cfg(unix)]
-fn kill_pid(pid: u32) {
-    // SAFETY: `kill` with a real signal affects only the target process's own
-    // lifecycle, and this process holds no lock or resource on its behalf.
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_pid(_pid: u32) {}
 
 /// Removes a portfile left by a stopped daemon, best-effort.
 pub fn clear_info(env: &Environment) {
@@ -2174,6 +2474,21 @@ pub fn parent_start_time() -> Option<String> {
 /// equivalent.
 pub fn process_start_time(pid: u32) -> Option<String> {
     platform_process_start_time(pid)
+}
+
+#[cfg(unix)]
+fn process_group(pid: u32) -> Option<u32> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let group = unsafe {
+        // SAFETY: `getpgid` only reads kernel process metadata for `pid`.
+        libc::getpgid(pid)
+    };
+    u32::try_from(group).ok()
+}
+
+#[cfg(not(unix))]
+fn process_group(pid: u32) -> Option<u32> {
+    Some(pid)
 }
 
 #[cfg(target_os = "macos")]
@@ -2339,6 +2654,124 @@ mod tests {
         let token = process_start_time(pid).expect("this platform exposes process start time");
         assert!(process_identity_is_live(pid, Some(&token)));
         assert!(!process_identity_is_live(pid, Some("not-this-process")));
+    }
+
+    #[test]
+    fn claiming_the_pidfile_publishes_the_lock_holders_native_identity() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon state directory");
+        std::fs::write(env.daemon_pidfile(), "legacy").expect("a legacy pidfile");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(env.daemon_pidfile(), std::fs::Permissions::from_mode(0o644))
+                .expect("making the legacy mode explicit");
+        }
+        let _held = claim_pidfile(&env).expect("claiming the pidfile");
+
+        let identity = read_daemon_identity(&env).expect("the daemon identity record");
+        assert_eq!(identity.pid, std::process::id());
+        assert_eq!(
+            identity.start_time,
+            process_start_time(std::process::id()),
+            "the persisted token must identify this process incarnation"
+        );
+        assert!(identity.process_group > 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(env.daemon_pidfile())
+                    .expect("the pidfile")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_owned_process_registry_is_atomic_private_and_raii_scoped() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut command = Command::new("sleep");
+        command.arg("30").process_group(0);
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("spawning an owned process-group leader");
+        let pid = child.pid();
+        let registry = OwnedProcesses::new(env.clone());
+
+        {
+            let _registration = registry
+                .register("verifier", pid, Some("verify:fixture:SH-1:1"))
+                .expect("registering the process group");
+            let records = read_owned_processes(&env);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].role, "verifier");
+            assert_eq!(records[0].pid, pid);
+            assert_eq!(records[0].process_group, pid);
+            assert_eq!(
+                records[0].request_id.as_deref(),
+                Some("verify:fixture:SH-1:1")
+            );
+            assert_eq!(
+                std::fs::metadata(env.daemon_processes())
+                    .expect("the registry file")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        assert!(
+            read_owned_processes(&env).is_empty(),
+            "dropping the registration must retract the durable process claim"
+        );
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        let _ = child.wait_within(FORCE_DEADLINE, || {
+            "the owned process leader did not exit after SIGKILL".to_string()
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mismatched_start_token_is_never_signalled() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sleep");
+        command.arg("30").process_group(0);
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("spawning a process that must not be signalled");
+        let pid = child.pid();
+        let record = OwnedProcess {
+            role: "verifier".to_string(),
+            pid,
+            process_group: pid,
+            start_time: Some("not-this-process".to_string()),
+            request_id: None,
+        };
+
+        assert_eq!(
+            hard_kill_owned_process(&record),
+            SignalOutcome::IdentityMismatch
+        );
+        assert!(pid_is_live(pid), "the unrelated process must remain alive");
+
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        let _ = child.wait_within(FORCE_DEADLINE, || {
+            "the identity-mismatch fixture did not exit during cleanup".to_string()
+        });
     }
 
     #[test]

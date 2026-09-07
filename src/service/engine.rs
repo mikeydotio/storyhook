@@ -1930,6 +1930,9 @@ pub(crate) fn run_shell_dispatch(
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the dispatch process: {detail}"))
         }
+        CaptureError::Track(detail) => {
+            AppError::Storage(format!("could not track the dispatch process: {detail}"))
+        }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
@@ -1977,6 +1980,9 @@ fn run_shell_unclaim(
         }
         CaptureError::Wait(detail) => {
             AppError::Storage(format!("could not wait for the unclaim helper: {detail}"))
+        }
+        CaptureError::Track(detail) => {
+            AppError::Storage(format!("could not track the unclaim helper: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
@@ -2072,6 +2078,9 @@ pub(crate) fn run_shell_capabilities(
         CaptureError::Wait(detail) => AppError::Storage(format!(
             "could not wait for the capabilities helper: {detail}"
         )),
+        CaptureError::Track(detail) => {
+            AppError::Storage(format!("could not track the capabilities helper: {detail}"))
+        }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "capabilities did not finish within {}s and was terminated",
             CAPABILITIES_TIMEOUT.as_secs()
