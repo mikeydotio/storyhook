@@ -189,8 +189,11 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Complete: SH-584 dispatch/Astra remediation (#668) and SH-585's installed-
-  launcher verifier exception (#669) merged.
+- Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
+- Complete: SH-585 installed-launcher reader exception merged (#669).
+- Complete: SH-581 extracted-source Lima guest build fix merged (#670).
+- Complete: SH-579 release tag/preflight observer and advisory status merged
+  (#671).
 - Current: verify SH-328's durable dashboard field labels through the
   centralized verifier.
 - Next: audit verifier behavior end to end (SH-560).
