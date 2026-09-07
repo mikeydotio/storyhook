@@ -2,48 +2,63 @@
 
 ## Current work
 
-- Branch: `worktree-SH-574`; base version v2.4.2, unchanged.
-- Approved plan is posted verbatim on SH-574. Decisions, reproduction and
-  mutation evidence are in subsequent comments.
+- PR #673: https://github.com/mikeydotio/storyhook/pull/673.
+- Branch: `worktree-SH-574`; version v2.4.2, unchanged.
+- Approved plan, decisions, reproduction and mutation evidence are on SH-574.
 - `docs/spec/commit-identity.md` defines the policy and its limits.
 - One Bash helper checks effective author/committer before commit and stored
   metadata before push. Explicit alternatives require a role and reason.
-- The push check precedes the receipt bypass, preserves all stdin records,
-  and scans the full outgoing range. Existing published ancestors remain
-  visible through the read-only audit.
-- Five existing Git-hook fixture suites explicitly approve their fixture
-  identity through a shared sanitized test helper. No production bypass.
-- Identity tests are grouped into policy and push/audit modules.
+- Push checks precede receipt bypass, preserve stdin, and scan the full outgoing
+  range. Published ancestors remain visible through the read-only audit.
+- Five existing hook fixture suites explicitly approve their fixture identities
+  through a sanitized shared helper. No production bypass.
 
-## Verification
+## Reconciliation
 
-- Initial isolated regression accepted an incorrect local email before the fix.
-- Disposable mutation controls kill both missing detection and overrestriction.
-- Full audit: 2,657 reachable commits, 792 requiring review against current
-  global identity, including the five fixture-identity commits. Historical
-  contributors and GitHub committers are differences, not proven corruption.
-- All 22 new identity tests pass; final targeted batch: 134 tests passed,
-  plus 10 browser-gate tests. Targeted Clippy denies warnings; ShellCheck,
-  Bash syntax, formatting and whitespace checks pass. PR URL is on SH-574.
-- Run only new/directly impacted tests in this lane. Central verification owns
-  full-suite testing, merge, completion and worktree cleanup.
+- Central verification returned PR #673 for documentation/template conflicts.
+- Merge current origin/main f954df312, preserving published history.
+- Keep main's SH-585, SH-581 and SH-579 completions with SH-574's current work.
+  AGENTS.md and `src/service/templates.rs` remain synchronized.
+- Preserve the GitHub committers on imported main merge commits; the repository
+  records an explicit committer-only alternative derived from main's metadata.
+  This is the documented policy mechanism, not a hook bypass.
+- Reconciliation test results and the merge commit are recorded on SH-574.
 
-## Prior context to preserve
+## Verification evidence
 
-- SH-585: installed-launcher reader exceptions; PR #669 and
-  `docs/rca/SH-585-installed-launcher-readers.md` carry its record.
-- SH-584 merged as #668. Preserve daemon dispatch environment isolation,
-  installer payload validation and verifier restoration/remediation behavior.
-- The dirty verifier preserved at
-  `.git/storyhook/verification-recovery-SH-584-20260906` must not be removed.
-- AGENTS.md remains synchronized with `src/service/templates.rs`; SH-557 owns
-  separating project roadmap data from generated instructions.
-- Next: verifier lifecycle audit SH-560; attachment work SH-315 remains later.
+- Original regression accepted an incorrect local email before the fix.
+- Disposable mutation controls kill missing detection and overrestriction.
+- Initial audit: 2,657 reachable commits, 792 requiring review, including all
+  five fixture-identity commits. Differences alone do not prove corruption.
+- Before reconciliation: all 22 new identity tests passed within a 134-test
+  targeted batch, plus 10 browser-gate tests. Clippy denied warnings; ShellCheck,
+  Bash syntax, formatting and whitespace checks passed.
+- Run only new/directly impacted tests here. Central verification owns the full
+  suite, merge, completion and worktree cleanup.
+
+## Main behavior and operational constraints to preserve
+
+- SH-579 (#671): independent remote tag audit and repeated host/Lima preflight
+  observer. Atomic results distinguish missing/running/failed/stale/successful;
+  every test tier reports the read-only advisory. No scheduler was installed.
+- Observer setup and design: `docs/spec/release-observer.md`. Observations do
+  not prove complete builds or artifact provenance. Historical tag mismatches
+  remain visible; never repair published tags.
+- Do not run manual release assembly concurrently with the observer: observer
+  passes share a lock; existing manual release commands do not.
+- SH-581 (#670): Lima builds in the extracted source subshell and preserves
+  caller cwd for export. Preserve both Linux-target regression paths.
+- SH-585 (#669): installed-launcher reader exceptions;
+  `docs/rca/SH-585-installed-launcher-readers.md` carries the record.
+- SH-584 (#668): preserve dispatch environment isolation, installer payload
+  validation and verifier restoration/remediation behavior.
+- Preserve `.git/storyhook/verification-recovery-SH-584-20260906`.
+- SH-557 owns separating roadmap data from generated instructions; SH-560 is
+  the next verifier audit. Attachment work SH-315 remains later.
 
 ## Submission boundary
 
-Commit and push without rewriting history. Open exactly one PR with SH-574 in
-its title and body; link it and comment results on the story. Make
-`story move SH-574 verifying` the absolute last action, then stop.
-Repair the same PR if verification returns it. No full-suite, version, release,
-deployment, merge or cleanup operation from this worktree.
+Continue PR #673. Commit the merge and push without rewriting history. Record
+results on SH-574, then make `story move SH-574 verifying` the absolute last
+operation and stop. Repair this same PR if verification returns it again.
+No full-suite, release, version, deployment, landing or cleanup from this lane.
