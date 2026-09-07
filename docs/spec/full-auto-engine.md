@@ -1743,13 +1743,27 @@ gets the rest of that table.
 
 ### SH-547 — bounded centralized verification
 
-The one daemon verification worker no longer lends one repository an
-unbounded wall clock. `ShellVerificationActuator::verify` gives
-`verify-pr.sh` 1,746 seconds: twice the 873-second `make test` runtime already
-measured under this machine's ordinary concurrent workload. The second whole
-gate window covers machine-lock waiting plus the GitHub, fetch, preflight and
-landing phases around the gate; it is a derivation from observed cost, not a
-bare opinion about how fast verification should be.
+**As built after SH-592:** `ShellVerificationActuator::verify` bounds silence,
+not total elapsed time. SH-547's original 1,746-second absolute deadline killed
+SH-588 while plugin tests were still completing, after both Rust batteries
+passed. Machine-lock waiting had consumed part of that same budget; unordered
+waiters have no finite queue-time bound. Raising the multiplier cannot fix it.
+
+The existing 1,746 seconds (twice the measured 873-second contended gate)
+remains a conservative idle allowance for quiet compilation and network work.
+Every append to the attempt's journal renews it. `machine-lock.sh` also appends
+`lock-wait` evidence on each identity check, only after confirming the holder's
+PID and recorded start time. Progressing work and a confirmed live lock wait
+may continue indefinitely. The lock's own shorter gate-idle watchdog remains
+responsible for a stalled gate holder; arbitrary stderr output renews neither
+deadline. Notification and cleanup helpers retain their absolute deadlines.
+
+Journal preparation is now required before spawning verification. Losing,
+replacing, or truncating the observed journal fails as infrastructure with its
+path and reason, using the same bounded process-group cleanup. The checklist
+ignores lock-wait records, which claim liveness without claiming test success.
+Regression coverage in `tests/verification_progress_timeout.rs` executes the
+real shell actuator and production lock across shortened idle windows.
 
 The subprocess owns a fresh process group and writes stdout/stderr to bounded
 temporary files. At the deadline the actuator sends `SIGTERM` to the entire
@@ -1757,8 +1771,8 @@ group, then grants the same 30-second interval used by the infrastructure
 recovery wake. That lets `merge-watch.sh`'s existing signal trap restore the
 persistent verifier worktree and remove its private-object lease. A survivor
 after that grace receives `SIGKILL`; the outcome is an infrastructure failure,
-never a red classification of submitted code, and the existing recovery wake
-retries it.
+never a red classification of submitted code. It halts the incident for repair;
+resubmission creates a fresh verification generation after the cause is fixed.
 
 Forced termination cannot permanently poison the verifier worktree. A real-Git
 regression strands that worktree on a commit whose private object directory is
