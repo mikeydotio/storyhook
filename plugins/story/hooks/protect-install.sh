@@ -89,10 +89,49 @@ with open(manifest, encoding="utf-8") as handle:
         if line and not line.startswith("#"):
             prefixes.append(line)
 
-# SH-585: this is an argv contract for ONE installed entry point, not a
+# Dispatch changes stories, worktrees and panes, never the installed helper.
+# SH-588: domain mutations are not evidence of an installed-artifact edit.
+# The helper still owns provider catalogs, readiness and claims; the host
+# still owns authorization. An inert hook response approves no operation.
+def dispatch_preserves_artifacts(args):
+    """Recognize dispatch arguments with no installed-file operand or code string."""
+    if args[:1] != ["dispatch"]:
+        return False
+    target = None
+    options = set()
+    for arg in args[1:]:
+        if arg == "--next" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", arg):
+            if target is not None:
+                return False
+            target = arg
+            continue
+        name, _, value = arg.partition("=")
+        if name in options:
+            return False
+        if arg in {"--auto", "--full-auto", "--force", "--resume"}:
+            pass
+        elif name == "--agent" and value in {"claude", "codex"}:
+            pass
+        elif name == "--speed" and value in {"standard", "fast"}:
+            pass
+        elif name in {"--model", "--effort"} and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            pass
+        else:
+            return False
+        options.add(name)
+    return (
+        target is not None
+        and not {"--force", "--resume"} <= options
+        and (target != "--next" or not options & {"--force", "--resume", "--full-auto"})
+        and ("--full-auto" not in options or "--auto" in options)
+    )
+
+
+# SH-585/SH-588: this is an argv contract for ONE installed entry point, not a
 # general permission to run scripts. Keep it paired with the real installer
 # in tests/plugin_install.rs; a marker alone cannot prove executable contents.
-def launcher_only_reads(command):
+def launcher_preserves_artifacts(command):
+    """Admit supported operations only through the exact installer-owned launcher."""
     # shlex is a lexer, not a shell parser. Reject even quoted occurrences of
     # unsupported syntax instead of guessing whether expansion will occur.
     if any(c in command for c in "\n\r;$`|&()<>{}*?[]~#"):
@@ -113,7 +152,7 @@ def launcher_only_reads(command):
     if words[:1] != [launcher]:
         return False
     args = words[1:]
-    # A read verb has no managed-file operand. Do not let a project selector
+    # An admitted verb has no managed-file operand. Do not let a project selector
     # or malformed argument confer permission on another installed path.
     if any(prefix in arg for prefix in prefixes for arg in args):
         return False
@@ -133,7 +172,7 @@ def launcher_only_reads(command):
     ) or (
         len(args) == 2 and args[0] == "view"
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args[1]) is not None
-    )
+    ) or dispatch_preserves_artifacts(args)
     if not valid:
         return False
 
@@ -224,7 +263,7 @@ def shell_only_reads_managed_paths(command):
 
 if tool == "Bash":
     command = str(supplied.get("command", ""))
-    if launcher_only_reads(command) or shell_only_reads_managed_paths(command):
+    if launcher_preserves_artifacts(command) or shell_only_reads_managed_paths(command):
         sys.stdout.write("{}")
         raise SystemExit(0)
     haystacks = [command]
@@ -251,7 +290,7 @@ if target is None:
 decision = (
     "storyhook: refusing to edit an installed release artifact.\n"
     if tool != "Bash"
-    else "storyhook: cannot establish that this operation on an installed release artifact is read-only.\n"
+    else "storyhook: cannot establish that this operation preserves installed release artifacts.\n"
 )
 reason = (
     decision +
