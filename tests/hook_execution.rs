@@ -278,6 +278,67 @@ impl HookRepo {
         ]);
     }
 
+    /// Merges one unhooked branch commit while a recording `story` shim owns
+    /// the hook's `$PATH`, returning both Git's result and every story command.
+    ///
+    /// The real binary installs the real hook first. Only the merge execution
+    /// is shimmed, so these tests isolate the shell's response to a child exit
+    /// status without waiting through a real ten-second client deadline.
+    fn merge_with_story_move_exit(
+        &self,
+        branch: &str,
+        message: &str,
+        move_exit: i32,
+    ) -> (std::process::Output, Vec<String>) {
+        self.git(&["checkout", "-q", "-b", branch]);
+        self.commit_unhooked(message, None);
+        self.git(&["checkout", "-q", "main"]);
+
+        let shim_dir = self.path().join(format!("{branch}-story-shim"));
+        std::fs::create_dir_all(&shim_dir).expect("creating the story shim directory");
+        let shim = shim_dir.join("story");
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STORY_CALL_LOG\"\ncase \" $* \" in\n  *' move '*) exit \"$STORY_MOVE_EXIT\" ;;\nesac\nexit 0\n",
+        )
+        .expect("writing the story shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("making the story shim executable");
+
+        let log = self.path().join(format!("{branch}-story-calls"));
+        let mut path = vec![shim_dir];
+        path.extend(std::env::split_paths(&self.env.path_with_binary()));
+
+        let mut command = Command::new("git");
+        command.current_dir(self.path());
+        self.env.apply(&mut command);
+        command.env(
+            "PATH",
+            std::env::join_paths(path).expect("joining the shim PATH"),
+        );
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("STORY_CALL_LOG", &log);
+        command.env("STORY_MOVE_EXIT", move_exit.to_string());
+        let output = command
+            .args([
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                &format!("Merge {branch}"),
+                branch,
+            ])
+            .output()
+            .expect("merging with the story shim");
+
+        let calls = std::fs::read_to_string(log)
+            .expect("the installed hook must invoke the story shim")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        (output, calls)
+    }
+
     /// The branch `HEAD` is on.
     fn current_branch(&self) -> String {
         let out = self.git(&["symbolic-ref", "--short", "HEAD"]);
@@ -420,6 +481,62 @@ fn a_message_naming_two_stories_closes_both() {
 
     assert_eq!(repo.state_of(&first), "done");
     assert_eq!(repo.state_of(&second), "done");
+}
+
+/// SH-353: once one auto-close gives up at the caller's deadline, a daemon
+/// that remains unreachable must not charge the same deadline for every later
+/// trailer in the merge.
+#[test]
+fn a_deadline_give_up_stops_later_auto_close_attempts() {
+    let repo = HookRepo::new();
+    let (out, calls) = repo.merge_with_story_move_exit(
+        "deadline-give-up",
+        "feat: work\n\nCloses SH-101\nFixes SH-102\nResolves SH-103",
+        12,
+    );
+
+    assert!(
+        out.status.success(),
+        "the hook cannot fail the merge: {out:?}"
+    );
+    assert!(out.stdout.is_empty(), "the hook must stay silent on stdout");
+    assert!(out.stderr.is_empty(), "the hook must stay silent on stderr");
+    let moves: Vec<&str> = calls
+        .iter()
+        .map(String::as_str)
+        .filter(|call| call.contains(" move "))
+        .collect();
+    assert_eq!(
+        moves.len(),
+        1,
+        "exit 12 means storyhook gave up; later trailers must not each spend another \
+         deadline. Calls: {calls:?}"
+    );
+}
+
+/// A refusal about one story is not evidence that storyhook is unreachable.
+/// The hook must keep trying later trailers for every status except the
+/// dedicated deadline-abandonment signal.
+#[test]
+fn an_ordinary_story_refusal_does_not_stop_later_auto_closes() {
+    let repo = HookRepo::new();
+    let (out, calls) = repo.merge_with_story_move_exit(
+        "ordinary-refusal",
+        "feat: work\n\nCloses SH-201\nFixes SH-202\nResolves SH-203",
+        2,
+    );
+
+    assert!(
+        out.status.success(),
+        "the hook cannot fail the merge: {out:?}"
+    );
+    assert!(out.stdout.is_empty(), "the hook must stay silent on stdout");
+    assert!(out.stderr.is_empty(), "the hook must stay silent on stderr");
+    let moves = calls.iter().filter(|call| call.contains(" move ")).count();
+    assert_eq!(
+        moves, 3,
+        "a per-story refusal must not suppress later valid trailers. Calls: {calls:?}"
+    );
 }
 
 /// `Resolves` and mixed case, since the pattern claims to accept them.
