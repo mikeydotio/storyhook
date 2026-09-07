@@ -54,6 +54,24 @@
   refusal; its evidence is in /tmp/SH-577-reconcile-failed-artifacts. The PID
   overlap's cause is unproven. A fresh sequential Chromium run passed 26/26.
 
+## Second reconciliation
+
+- Merge origin/main f954df312 (SH-579, PR #671) without rewriting history.
+- Preserve its remote tag audit, host/Lima preflight observer, atomic status
+  records and test-tier advisory. No timer is installed from this worktree.
+- Historical mismatches remain visible; published tags are never repaired.
+  A preflight observation proves neither complete builds nor artifact provenance.
+- Missing observations remain advisory until a durable checkout configures the
+  optional scheduler. See docs/spec/release-observer.md for that separate setup.
+- Observer passes share a machine lock; manual release assembly does not.
+  Never run those two operations concurrently. Neither is run by this lane.
+- Reconciliation tests use real Git remotes/locks and production status code;
+  only external preflight is a fixture. No Lima starts. Final targeted results
+  and preserved browser validation are recorded on SH-577 and PR #672.
+- Second reconciliation passed 49 targeted Rust contracts and 26 cases per
+  desktop browser, all run sequentially. Formatting, shell syntax and diff
+  checks passed. Evidence: /tmp/SH-577-reconcile2-*.log.
+
 ## Submission boundary
 
 Exactly one PR on `worktree-SH-577`, with SH-577 in title and body. Link and
