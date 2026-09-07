@@ -36,6 +36,21 @@ fn scaffold_agents_md_uses_project_prefix() {
 }
 
 #[test]
+fn scaffold_agents_md_contains_no_storyhook_repository_roadmap() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "ZZ"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["scaffold", "agents-md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Mini-roadmap").not())
+        .stdout(predicate::str::contains("SH-").not());
+}
+
+#[test]
 fn scaffold_agents_md_references_help_compact() {
     let dir = scratch_dir();
     story(dir.path())
