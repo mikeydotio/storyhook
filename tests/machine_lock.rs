@@ -49,7 +49,7 @@
 //!   `the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it`.
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
-//! script as shipped, **all 26 tests pass**.
+//! script as shipped, every test passes.
 
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -73,7 +73,7 @@ fn read_checkout_file(relative: &str) -> String {
         .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()))
 }
 
-/// A disposable root holding a symlink to the tracked script and its own lock
+/// A disposable root holding symlinks to the tracked scripts and its own lock
 /// directory. The symlink rather than a copy is the `tests/orphan_check.rs`
 /// rule: the artifact under test is the one that ships.
 struct Fixture {
@@ -84,11 +84,13 @@ impl Fixture {
     fn new() -> Self {
         let root = scratch_dir();
         std::fs::create_dir_all(root.path().join("scripts")).expect("fixture: creating scripts/");
-        std::os::unix::fs::symlink(
-            checkout().join("scripts/machine-lock.sh"),
-            root.path().join("scripts/machine-lock.sh"),
-        )
-        .expect("fixture: linking the tracked script");
+        for script in ["machine-lock.sh", "gate-progress.sh"] {
+            std::os::unix::fs::symlink(
+                checkout().join("scripts").join(script),
+                root.path().join("scripts").join(script),
+            )
+            .unwrap_or_else(|error| panic!("fixture: linking tracked {script}: {error}"));
+        }
         std::fs::create_dir_all(root.path().join("locks")).expect("fixture: creating locks/");
         Self { root }
     }
@@ -811,11 +813,17 @@ fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
 #[test]
 fn max_wait_elapsing_refuses_without_running_or_stealing() {
     let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
 
     let mut first = fixture.spawn(&["gate", "--", "sleep", "5"]);
     wait_for(&fixture.lock("gate").join("pid"));
 
-    let second = fixture.run(&["--max-wait", "0", "gate", "--", "echo", "MUST-NOT-RUN"]);
+    let second = fixture
+        .command(&["--max-wait", "0", "gate", "--", "echo", "MUST-NOT-RUN"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .env("STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH", "release gate")
+        .output()
+        .expect("running the bounded lock waiter");
 
     assert_eq!(
         code(&second),
@@ -834,6 +842,12 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
     assert!(
         fixture.lock("gate").exists(),
         "giving up must leave the holder's lock alone"
+    );
+    let progress = std::fs::read_to_string(journal).expect("reading lock activity");
+    assert!(
+        progress.contains(r#""label":"waiting for gate lock","status":"running""#)
+            && progress.contains(r#""label":"waiting for gate lock","status":"failed""#),
+        "a refused acquisition must close its visible activity as failed: {progress}"
     );
     first.wait_within(poll_ceiling(), || {
         "the `gate` holder (sleep 5) never exited, so the waiter above gave up against a lock \

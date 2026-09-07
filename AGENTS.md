@@ -189,7 +189,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
-- Current: audit the story lifecycle end to end (SH-560) after installing
-  SH-588's hook repair and release validation fixes.
-- Next: separate the project roadmap from generated instructions (SH-557).
+- Current: verify SH-589's truthful progress phases and whole verification-gate
+  serialization.
+- Next: audit the story lifecycle end to end (SH-560), then separate the
+  project roadmap from generated instructions (SH-557).
 - Later: resume authenticated attachment serving and upload (SH-315).

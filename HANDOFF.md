@@ -1,49 +1,41 @@
-# SH-588 — Installed launcher dispatch guard
+# SH-589 — Verifier handoff
 
-- Hook fix and dialog readiness merged in PRs #683/#684.
-- Current follow-up: `fix/release-pointer-fixtures`.
-- Failure: the installed-artifact guard explicitly denied `dispatch`, treating
-  story/worktree mutations as if they edited the installed launcher.
-- Regression reproduced RED before the hook changed; targeted suites passed
-  53 tests after the behavior fix. Final gate status belongs on SH-588.
-- The exact installer-produced launcher now admits supported dispatch forms.
-  Identity, managed-operand and ambiguous-shell restrictions still apply.
-- Integration executes the real launcher/helper/CLI/daemon/Git path and checks
-  the persisted claim, worktree, prompt delivery and unchanged installed files.
-  Provider installation and terminal behavior use the existing test doubles.
-- `story doctor install` found plugin 2.4.0 with binary 2.4.2. The fix must ship
-  through the release/plugin installer before the live SH-560 retry can work.
-- No installed copies, override files or version metadata were changed.
-- Adopted baseline gate repair: the mobile-browser coverage assertion omitted
-  the existing open-PR-chip exception. Preserve its coverage on both engines
-  and update the stale assertion/comments. Core Rust battery passed 3703 tests.
-- Adopted baseline isolation repair: pin the original port only on the cookie
-  spec's daemon-restart subprocess. The browser runner retains the shared
-  ephemeral-port environment; its existing isolation detector stays intact.
-- Release gate found three Chromium failures (414 passed): focus measurement
-  still assumed a toolbar stepper; two Enter tests outran the deletion plan.
-- Follow-up opens the real Full Auto dialog before measuring focus and makes
-  shared deletion helpers await the completed server plan. A delayed-response
-  regression checks both filled and empty confirmation fields.
-- A resumed browser gate exposed stale raw-pointer coordinates in the blocked
-  reference race tests. Reuse settledBoundingBox immediately before each press;
-  apply the same repair to the drawer-open race sibling. Keep split gestures.
-- WebKit 2336 also hangs before issuing navigation requests after roughly 65
-  fresh contexts. A 128-context dashboard probe reproduced it on 1.62.1 and
-  passed on 1.63.0. The final probe uses a fixture document to avoid SSE buildup.
-  Upgrade pinned Playwright to 1.63.0, carrying the upstream fix for
-  microsoft/playwright#42385; existing retry and timeout policies remain.
-- Chromium and upgraded WebKit each passed all 15 affected cases, including
-  the final navigation probe. Desktop sign-in resolved the separate native
-  startup failure. With the desktop active, the old browser also passes the
-  fixture-document probe; that comparison is not new RED evidence.
-- PR #685 carries the follow-up. Both behavior commits independently pass
-  `make test`; full release validation belongs on SH-588. `npm ci` restored
-  the committed Playwright 1.63.0 dependency after the old-browser control.
-- Adopted release-order repair: gate the versioned tree before push/install.
-  Five real-script regressions reproduced certification of the old tree and
-  an unchecked push/install after the bump. Cover public and local paths,
-  successful and failed gates, and failed bumps against a disposable Git remote.
-- Next: complete `make test-full`, submit PR #685 for centralized verification,
-  then run the normal patch release and publication flow. Install the packaged
-  Codex plugin and retry `$story do SH-560` through its installed launcher.
+## Diagnosis
+
+- PR #686 completed `rust-suite` in 11m40s, then waited 976s for another
+  process's machine-wide gate before the 1746s verifier timeout halted it.
+- The dashboard joined the current `rust-contracts` label to aggregate
+  3706/3706 counts from the completed suite. Lock acquisition, discovery, and
+  result-ledger work were invisible.
+- Per-battery lock acquisition also allowed another run to interleave and
+  create a second wait inside a timeout designed for one wait plus one run.
+
+## Implementation
+
+- Journal `activity` records expose lock acquisition, Rust test discovery, and
+  result-ledger recording without adding fake checklist units.
+- Current-step selection uses the newest live item or activity. `/data.tests`
+  contains only that test item's exact counts and is absent for activities.
+- The dashboard and its accessible card name render the corrected current step
+  and omit unrelated percentages.
+- Central verification holds `gate` around the complete speculative command.
+  Inner Rust battery locks use the existing reentrant path, so a second suite
+  cannot interleave between them.
+- `machine-lock.sh` owns optional running/passed/failed acquisition telemetry;
+  both centralized verification and direct Rust batteries supply a parent path.
+
+## Focused evidence
+
+- Red: the gate-progress unit target lacked current-step counts; the new
+  centralized-gate regression returned `tests-failed` because its command did
+  not inherit `gate`.
+- Green: gate-progress unit tests 18/18.
+- Green: `gate_lock` 13/13, `machine_lock` 26/26, `merge_gate` 25/25, and
+  `verification_queue` 46/46.
+- Green: focused verification-status E2E, Chromium 2/2 and WebKit 2/2.
+- Green: targeted Clippy with warnings denied, Rust formatting, changed-shell
+  syntax, and diff whitespace checks.
+
+The centralized verifier owns the full suite, merge, completion, and lane
+cleanup. Decision history and the approved verbatim plan are durable comments
+on SH-589.
