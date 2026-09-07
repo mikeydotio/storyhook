@@ -921,6 +921,9 @@ fn error_corpus() -> Vec<AppError> {
         AppError::Validation("invalid priority `urgent`".to_string()),
         AppError::NotFound("story `SH-99` not found".to_string()),
         AppError::LockTimeout("another process holds the project lock".to_string()),
+        AppError::DeadlineExceeded(
+            "gave up after 10s waiting for storyhook, as --deadline asked".to_string(),
+        ),
         // The one variant whose payload is a document. Deliberately carries a
         // context, two findings of different codes, both optional story
         // fields, a structured payload, and advice — so a hop that dropped or
@@ -973,6 +976,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::Validation(_) => "Validation",
         AppError::NotFound(_) => "NotFound",
         AppError::LockTimeout(_) => "LockTimeout",
+        AppError::DeadlineExceeded(_) => "DeadlineExceeded",
         AppError::Integrity(_) => "Integrity",
         AppError::Storage(_) => "Storage",
         AppError::GithubAuth(_) => "GithubAuth",
@@ -991,7 +995,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        10,
+        11,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -1083,6 +1087,7 @@ fn error_variants_travel_under_a_kind_tag() {
             "validation",
             "not_found",
             "lock_timeout",
+            "deadline_exceeded",
             "integrity",
             "storage",
             "github_auth",

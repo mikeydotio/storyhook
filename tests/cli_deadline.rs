@@ -72,8 +72,9 @@ fn a_deadline_expires_behind_a_held_spawn_lock_and_says_so() {
     );
     assert_eq!(
         output.status.code(),
-        Some(5),
-        "AppError::Storage carries exit code 5"
+        Some(12),
+        "deadline abandonment needs its own exit code so callers do not confuse it with \
+         storage or integrity failures"
     );
     assert!(
         elapsed < DEADLINE_GIVE_UP_CEILING,
