@@ -151,8 +151,9 @@ $XDG_STATE_HOME/storyhook/
 
 ## Ports
 
-- The **default** store keeps `DEFAULT_DAEMON_PORT` (3456), so the dashboard URL is
-  stable and the launchd agent needs no change.
+- The **default** store a process with only `HOME` would open keeps
+  `DEFAULT_DAEMON_PORT` (3456), so the dashboard URL is stable and the launchd agent
+  needs no change.
 - Any **non-default** store binds port 0 and publishes the assigned port in its own
   portfile. Two isolated stores can therefore never collide on a port, which is what
   makes a parallel test suite safe without the harness choosing ports.
@@ -355,6 +356,21 @@ unasked. Per-store labels also remove the accidental self-limiting collision a s
 label used to provide, so `agent::report` additionally enumerates every other storyhook
 login agent on the machine, named rather than left to accumulate invisibly.
 
+**SH-426 closes the temporary-store accumulation path at its origin.** An install is
+refused when the store is under a reclaimable temporary root but its plist under
+`~/Library/LaunchAgents` is durable: otherwise the store can disappear while the plist
+keeps launching its defunct daemon at every later login. The predicate compares both
+lifetimes rather than rejecting `is_under_temp(store)` alone. That distinction is
+load-bearing for the suite: `Environment::at` puts both its store and fake home under
+`/private/tmp`, so both artifacts disappear together and remain permitted. Durable named
+stores also remain permitted; multiple persistent stores are supported, not treated as
+leaks.
+
+Existing agents are not automatically reaped. A store whose path is absent may live on a
+volume that is only offline, and `story daemon status` remains a read-only observation.
+The enumeration above plus `story --store-path <path> daemon uninstall` is the explicit,
+recoverable cleanup path for an agent created before the guard existed.
+
 ### Later amendment — the daemon address became a port (SH-253)
 
 The `Environment` diagrammed above carried a `SocketAddr` whose IP nothing ever read:
@@ -370,3 +386,13 @@ is the single place in the program that names an address to bind. The diagram ab
 updated to the shape as built, so **"`STORYHOOK_DAEMON_ADDR` still overrides explicitly
 and still wins" under *Ports* should be read as being about the port** — which is all it
 ever meant, and now all it can say.
+
+### Later amendment — the stable port follows the login default (SH-428)
+
+Port selection originally used `StoreLocation::is_default()`, whose answer is relative to
+the current process's `$XDG_DATA_HOME`. That let an XDG-relocated store prefer 3456 even
+though a login-time daemon with no inherited store-location variables would open the home
+default there instead. `StoreLocation::is_default_for_home` now owns the shared predicate
+for both stable-port selection and the launch-agent identity fixed in SH-414: only the
+store a process with the same `HOME` and no store-location overrides would open gets 3456;
+all other stores request an OS-assigned port.

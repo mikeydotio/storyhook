@@ -178,22 +178,24 @@ fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let running_id = submitted(&fixture, "active low", Priority::Low, PR_ONE);
-    let running = VerificationQueue::new(fixture.store())
+    let running_candidate = VerificationQueue::new(fixture.store())
         .next()
         .unwrap()
         .unwrap();
     let activity = VerificationActivity::new();
     let acquired_at = fixture.env().now();
-    let _guard = activity.acquire(&running, acquired_at.clone());
-    let journal = journal_path(fixture.env(), &running);
+    let _guard = activity.acquire(&running_candidate, acquired_at.clone());
+    let journal = journal_path(fixture.env(), &running_candidate);
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(
-        journal,
+        &journal,
         attempt_journal(
-            &running,
+            &running_candidate,
             &format!(
-                "{{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":{at},\"total\":4}}\n\
-                 {{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}}\n",
+                "{{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"passed\",\"at\":{at},\"total\":4}}\n\
+                 {{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}}\n\
+                 {{\"kind\":\"item\",\"path\":\"release gate/rust-contracts\",\"status\":\"running\",\"at\":{at}}}\n\
+                 {{\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"waiting for gate lock\",\"status\":\"running\",\"at\":{at}}}\n",
                 at = serde_json::to_string(&acquired_at).unwrap()
             ),
         ),
@@ -207,7 +209,7 @@ fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
         })
         .unwrap()
         .id;
-    let path = format!("/api/repos/{}/data", running.project_slug);
+    let path = format!("/api/repos/{}/data", running_candidate.project_slug);
 
     let routed = rest::route_with_activity(
         fixture.store(),
@@ -235,9 +237,51 @@ fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
     let running = &story(&running_id)["verification"];
     assert_eq!(running["status"], "running");
     assert!(running["elapsed_seconds"].as_u64().unwrap() <= 1);
-    assert_eq!(running["current_step"]["label"], "rust-suite");
-    assert_eq!(running["tests"]["completed"], 1);
-    assert_eq!(running["tests"]["total"], 4);
+    assert_eq!(running["current_step"]["label"], "waiting for gate lock");
+    assert!(
+        running.get("tests").is_none(),
+        "a non-test activity must not inherit the completed rust-suite count: {running}"
+    );
+
+    std::fs::write(
+        &journal,
+        attempt_journal(
+            &running_candidate,
+            &format!(
+                "{{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"passed\",\"at\":{at},\"total\":4}}\n\
+                 {{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}}\n\
+                 {{\"kind\":\"item\",\"path\":\"release gate/rust-contracts\",\"status\":\"running\",\"at\":{at},\"total\":3}}\n\
+                 {{\"kind\":\"case\",\"path\":\"release gate/rust-contracts\",\"outcome\":\"pass\"}}\n\
+                 {{\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"waiting for gate lock\",\"status\":\"running\",\"at\":{at}}}\n\
+                 {{\"kind\":\"activity\",\"path\":\"release gate/rust-contracts\",\"label\":\"waiting for gate lock\",\"status\":\"passed\",\"at\":{at}}}\n",
+                at = serde_json::to_string(&acquired_at).unwrap()
+            ),
+        ),
+    )
+    .unwrap();
+    let resumed = rest::route_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &activity,
+        rest::RouteRequest::new(
+            &Method::Get,
+            &path,
+            &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+            "",
+        ),
+        &TrustedHosts::default(),
+    );
+    let resumed_json: serde_json::Value = serde_json::from_str(resumed.reply.body()).unwrap();
+    let resumed_running = resumed_json["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|view| view["story"]["id"] == running_id)
+        .and_then(|view| view.get("verification"))
+        .unwrap();
+    assert_eq!(resumed_running["current_step"]["label"], "rust-contracts");
+    assert_eq!(resumed_running["tests"]["completed"], 1);
+    assert_eq!(resumed_running["tests"]["total"], 3);
     assert_eq!(story(&queued_id)["verification"]["status"], "queued");
     assert_eq!(story(&queued_id)["verification"]["position"], 1);
     assert!(story(&idle_id).get("verification").is_none());

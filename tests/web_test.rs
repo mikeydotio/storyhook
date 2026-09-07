@@ -1577,6 +1577,45 @@ fn populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed() {
     );
 }
 
+/// `populateCard()` owns only the card's derived `pending` and
+/// `not-draggable` classes (SH-424). Transient classes belong to independent
+/// drag and animation lifecycles, so a render must toggle the derived tokens
+/// without replacing the card's whole class list.
+#[test]
+fn populate_card_preserves_classes_owned_by_transient_lifecycles() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+    let build_body = function_body(source, "buildCard");
+    let body = function_body(source, "populateCard");
+
+    assert!(
+        build_body.contains(
+            r#"var card = el("div", { class: "card", dataset: { id: id }, role: "button", tabIndex: -1 }, []);"#
+        ),
+        "buildCard() must establish the permanent `card` class when it constructs the node; \
+         populateCard() owns only state-derived class tokens (SH-424). Body: {build_body}"
+    );
+
+    assert!(
+        !body.contains("card.className"),
+        "populateCard() must not replace the card's whole class list: doing so removes \
+         transient drag and animation classes owned by other lifecycles (SH-424). Body: {body}"
+    );
+    for statement in [
+        r#"card.classList.toggle("pending", !!state.pending[st.id]);"#,
+        r#"card.classList.toggle("not-draggable", !draggable);"#,
+    ] {
+        assert!(
+            body.contains(statement),
+            "expected populateCard() to project its derived class with a forced DOMTokenList \
+             toggle, preserving every unrelated class token. Missing: {statement}. Body: {body}"
+        );
+    }
+}
+
 /// `populateListRow()` follows the output-derived reconciliation rule SH-399
 /// established for cards (SH-425): a `/data` reply that changes nothing the
 /// row renders must not discard its cells or a focused `.row-actions-btn`.
