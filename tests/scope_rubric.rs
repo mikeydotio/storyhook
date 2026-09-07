@@ -48,8 +48,30 @@ const POINTER: &str = "story help scope-rubric";
 /// The topic key the pointer resolves to.
 const TOPIC: &str = "scope-rubric";
 
+const STORYHOOK_BEGIN: &str = "<!-- BEGIN STORYHOOK -->";
+const STORYHOOK_END: &str = "<!-- END STORYHOOK -->";
+
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn storyhook_owned_block(text: &str) -> Result<&str, &'static str> {
+    if text.matches(STORYHOOK_BEGIN).count() != 1 || text.matches(STORYHOOK_END).count() != 1 {
+        return Err("AGENTS.md must contain exactly one Storyhook sentinel pair");
+    }
+
+    let begin = format!("{STORYHOOK_BEGIN}\n");
+    let end = format!("{STORYHOOK_END}\n");
+    let content_start = text
+        .find(&begin)
+        .map(|index| index + begin.len())
+        .ok_or("the Storyhook begin sentinel must occupy its own line")?;
+    let content_end = text[content_start..]
+        .find(&end)
+        .map(|index| content_start + index)
+        .ok_or("the Storyhook end sentinel must follow the begin sentinel on its own line")?;
+
+    Ok(&text[content_start..content_end])
 }
 
 #[test]
@@ -338,22 +360,45 @@ fn claude_md_points_at_the_topic_and_does_not_restate_it() {
 }
 
 #[test]
-fn this_repos_agents_md_is_what_the_template_generates() {
-    // The root AGENTS.md used to be a pre-SH-354 rendering — no Planning
-    // section, no priority-rubric pointer, no relationship table — which
-    // meant nothing added to templates::agents_md, this story's own
-    // scope-rubric pointer included, ever reached this repository's own
-    // agents until it was regenerated. Byte-equal against the same
-    // "SH"/"done" pair tests/priority_rubric.rs already hardcodes for this
-    // project (this project's own prefix and closed state), so a future
-    // template edit that forgets to regenerate this file fails here rather
-    // than drifting silently again.
+fn this_repos_storyhook_block_is_what_the_template_generates() {
+    // The generated instructions stay byte-exact while the repository-owned
+    // roadmap outside their sentinels can change independently.
     let on_disk =
         std::fs::read_to_string(repo_root().join("AGENTS.md")).expect("reading AGENTS.md");
     assert_eq!(
-        on_disk,
+        storyhook_owned_block(&on_disk).expect("extracting the generated Storyhook block"),
         templates::agents_md("SH", "done"),
-        "AGENTS.md no longer matches templates::agents_md(\"SH\", \"done\") — regenerate \
-         it with `story scaffold agents-md` rather than hand-editing"
+        "the generated AGENTS.md block no longer matches \
+         templates::agents_md(\"SH\", \"done\") — refresh it with Storyhook setup \
+         rather than hand-editing it"
     );
+}
+
+#[test]
+fn this_repos_agents_md_contract_rejects_malformed_ownership_boundaries() {
+    for (case, text) in [
+        (
+            "missing begin",
+            format!("generated\n{STORYHOOK_END}\nproject-owned\n"),
+        ),
+        (
+            "missing end",
+            format!("{STORYHOOK_BEGIN}\ngenerated\nproject-owned\n"),
+        ),
+        (
+            "duplicate pair",
+            format!(
+                "{STORYHOOK_BEGIN}\none\n{STORYHOOK_END}\n{STORYHOOK_BEGIN}\ntwo\n{STORYHOOK_END}\n"
+            ),
+        ),
+        (
+            "reversed",
+            format!("{STORYHOOK_END}\nproject-owned\n{STORYHOOK_BEGIN}\ngenerated\n"),
+        ),
+    ] {
+        assert!(
+            storyhook_owned_block(&text).is_err(),
+            "{case} sentinels were accepted"
+        );
+    }
 }

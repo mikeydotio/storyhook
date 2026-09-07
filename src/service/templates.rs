@@ -13,11 +13,12 @@
 //! asked for — and because their bytes are a user-visible contract that the
 //! differential harness compares against the legacy path verbatim.
 
-/// `AGENTS.md`: how an agent is expected to drive this project's tracker.
+/// The generated Storyhook-owned `AGENTS.md` instructions.
 ///
 /// `prefix` names the project's story-id prefix and `done_state` its first
 /// CLOSED state, so the examples are runnable in the project they describe
-/// rather than in a hypothetical one.
+/// rather than in a hypothetical one. Repository-owned content such as a
+/// roadmap belongs outside this payload's managed sentinel block.
 #[must_use]
 pub fn agents_md(prefix: &str, done_state: &str) -> String {
     format!(
@@ -207,13 +208,6 @@ The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook
 configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
-
-## Mini-roadmap
-
-- Current: audit the story lifecycle end to end (SH-560) after installing
-  SH-588's hook repair and release validation fixes.
-- Next: separate the project roadmap from generated instructions (SH-557).
-- Later: resume authenticated attachment serving and upload (SH-315).
 "#,
         done_state = done_state,
         prefix = prefix,
