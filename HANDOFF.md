@@ -1,6 +1,6 @@
 # SH-588 — Installed launcher dispatch guard
 
-- Branch: `fix/launcher-dispatch-guard`.
+- Hook fix merged in PR #683; follow-up: `fix/release-browser-readiness`.
 - Failure: the installed-artifact guard explicitly denied `dispatch`, treating
   story/worktree mutations as if they edited the installed launcher.
 - Regression reproduced RED before the hook changed; targeted suites passed
@@ -19,5 +19,10 @@
 - Adopted baseline isolation repair: pin the original port only on the cookie
   spec's daemon-restart subprocess. The browser runner retains the shared
   ephemeral-port environment; its existing isolation detector stays intact.
-- Next: finish review/verification, release and install through the normal
-  release workflow, then retry `$story do SH-560`.
+- Release gate found three Chromium failures (414 passed): focus measurement
+  still assumed a toolbar stepper; two Enter tests outran the deletion plan.
+- Follow-up opens the real Full Auto dialog before measuring focus and makes
+  shared deletion helpers await the completed server plan. A delayed-response
+  regression checks both filled and empty confirmation fields.
+- Next: verify and submit the follow-up, resume the normal patch release and
+  packaged plugin installation, then retry `$story do SH-560`.
