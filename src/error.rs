@@ -128,6 +128,14 @@ pub enum AppError {
     NotFound(String),
     #[error("{0}")]
     LockTimeout(String),
+    /// The calling process stopped waiting because its `--deadline` elapsed.
+    ///
+    /// Distinct from [`Self::Storage`] because the command may still complete
+    /// in the daemon. Automation can stop repeated attempts on this condition
+    /// without treating an ordinary store failure as evidence that every
+    /// subsequent command will also time out.
+    #[error("{0}")]
+    DeadlineExceeded(String),
     #[error("{0}")]
     Integrity(IntegrityDetail),
     #[error("{0}")]
@@ -167,6 +175,7 @@ impl AppError {
             Self::StateConflict(..) => 9,
             // 11, not 8: 8 and 10 are retired above, and 9 is taken.
             Self::ReadOnlyStore(_) => 11,
+            Self::DeadlineExceeded(_) => 12,
         }
     }
 
@@ -200,6 +209,7 @@ impl AppError {
             Self::Validation(detail) => Self::Validation(joined(detail)),
             Self::NotFound(detail) => Self::NotFound(joined(detail)),
             Self::LockTimeout(detail) => Self::LockTimeout(joined(detail)),
+            Self::DeadlineExceeded(detail) => Self::DeadlineExceeded(joined(detail)),
             Self::Integrity(mut detail) => {
                 // Annotated, never rewritten: an outer layer's sentence is
                 // prepended to the report, and every finding inside it is
@@ -234,8 +244,8 @@ impl AppError {
 /// conversion a place where the compiler can enforce completeness.
 ///
 /// What survives the hop, and how it is guaranteed:
-/// - **variant** — [`From<&AppError>`] is an exhaustive `match`, so an
-///   eleventh `AppError` variant stops this file compiling until it is given
+/// - **variant** — [`From<&AppError>`] is an exhaustive `match`, so a further
+///   `AppError` variant stops this file compiling until it is given
 ///   a wire form.
 /// - **fields** — each variant carries its own payload by name, so
 ///   `StateConflict { expected, actual }` arrives as two strings rather than
@@ -262,6 +272,9 @@ pub enum WireError {
         detail: String,
     },
     LockTimeout {
+        detail: String,
+    },
+    DeadlineExceeded {
         detail: String,
     },
     /// The one variant whose payload is a document rather than a sentence.
@@ -311,6 +324,9 @@ impl From<&AppError> for WireError {
             AppError::LockTimeout(detail) => Self::LockTimeout {
                 detail: detail.clone(),
             },
+            AppError::DeadlineExceeded(detail) => Self::DeadlineExceeded {
+                detail: detail.clone(),
+            },
             AppError::Integrity(detail) => Self::Integrity {
                 context: detail.context.clone(),
                 findings: detail.findings.clone(),
@@ -349,6 +365,7 @@ impl From<WireError> for AppError {
             WireError::Validation { detail } => Self::Validation(detail),
             WireError::NotFound { detail } => Self::NotFound(detail),
             WireError::LockTimeout { detail } => Self::LockTimeout(detail),
+            WireError::DeadlineExceeded { detail } => Self::DeadlineExceeded(detail),
             WireError::Integrity {
                 context,
                 findings,
@@ -431,6 +448,7 @@ mod tests {
             AppError::Validation("v".into()),
             AppError::NotFound("n".into()),
             AppError::LockTimeout("l".into()),
+            AppError::DeadlineExceeded("d".into()),
             AppError::Integrity("i".into()),
             AppError::Storage("s".into()),
             AppError::GithubAuth("ga".into()),
