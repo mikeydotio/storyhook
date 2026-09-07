@@ -188,3 +188,8 @@ configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
 
 ## Mini-roadmap
+
+- Current: validate SH-588's installed-launcher dispatch guard correction.
+- Next: audit the story lifecycle end to end (SH-560).
+- Later: separate the project roadmap from generated instructions (SH-557).
+- Later: resume authenticated attachment serving and upload (SH-315).
