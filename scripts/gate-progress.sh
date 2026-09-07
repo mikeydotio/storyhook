@@ -33,6 +33,10 @@
 #    "label":"waiting for gate lock","status":"running","at":"..."}
 #     Non-checklist work inside an item. Later activity lines for the same
 #     path replace its current activity without adding tests or gate legs.
+#   {"kind":"lock-wait","name":"gate","pid":123}
+#     machine-lock.sh rechecked this holder's PID and start time (SH-592).
+#     Renews verifier supervision without claiming a test completed. The
+#     checklist ignores this kind; human lock-wait diagnostics stay on stderr.
 #
 # Status vocabulary an "item" line's "status" may hold:
 #   pending | running | passed | failed | skipped | reused
