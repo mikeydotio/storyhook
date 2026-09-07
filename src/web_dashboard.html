@@ -8614,7 +8614,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // is what actually keeps only one at `tabIndex=0`. Enter/Space/arrow
     // handling is delegated from `#board-view` (`bindRovingKeys`, bound
     // once in `bindShell`), not bound per card here.
-    var card = el("div", { dataset: { id: id }, role: "button", tabIndex: -1 }, []);
+    var card = el("div", { class: "card", dataset: { id: id }, role: "button", tabIndex: -1 }, []);
     card.addEventListener("click", function() { openDrawer(id); });
     card.addEventListener("dragstart", function(e) {
       card.classList.add("dragging");
@@ -8720,7 +8720,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return "open pull request " + pr.owner + "/" + pr.repo + "#" + pr.number;
     }).join(", ");
     var draggable = !isClosed && !state.pending[st.id];
-    card.className = "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable");
+    card.classList.toggle("pending", !!state.pending[st.id]);
+    card.classList.toggle("not-draggable", !draggable);
     card.draggable = draggable;
     card.title = isClosed ? "Reopen from the detail view to move this card" : "";
     // Computed before the flags block below so the label can be set here,
