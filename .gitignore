@@ -44,3 +44,6 @@
 
 # story per-story git worktrees (ephemeral — never commit)
 .codex/worktrees/
+
+# Session notes remain local; stories hold durable work context.
+/HANDOFF.md
