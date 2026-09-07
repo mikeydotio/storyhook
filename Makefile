@@ -197,6 +197,7 @@ _test-full-body: E2E=1
 _test-full-body: _test-body
 
 _test-body:
+	@bash scripts/release-status.sh || true
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
@@ -230,6 +231,7 @@ test-changed: check-no-orphan-servers
 	 bash scripts/gate-receipt.sh postlude $$tier_args
 
 _test-changed-body:
+	@bash scripts/release-status.sh || true
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
@@ -300,6 +302,16 @@ browser-watch:
 
 browser-status:
 	@bash scripts/browser-status.sh
+
+.PHONY: release-watch release-status release-watch-plist
+release-watch:
+	@bash scripts/release-watch.sh
+
+release-status:
+	@bash scripts/release-status.sh
+
+release-watch-plist:
+	@python3 -B scripts/release-observer.py launchd
 
 # The coverage tier's own detection layer (SH-429), the same shape as the
 # browser tier's three targets just above — a council verdict on this story

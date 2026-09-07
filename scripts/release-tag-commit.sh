@@ -27,7 +27,9 @@
 # stderr, so a caller using `$(...)` gets an empty string and a failed status
 # rather than a sentence where an oid should be.
 #
-#   Usage: release-tag-commit.sh <version>
+#   Usage: release-tag-commit.sh <version> [revision]
+# The optional revision scopes historical tag audits; ordinary release callers
+# retain HEAD as their default. Resolve it to a commit before passing it to log.
 #
 # <version> is required and is checked rather than trusted: the commit this
 # names must itself contain a `VERSION` reading exactly that. A caller asking
@@ -45,7 +47,7 @@ die() {
 version="${1:-}"
 [ -n "$version" ] \
     || die "usage: release-tag-commit.sh <version> — refusing to guess which version is meant"
-[ "$#" -le 1 ] || die "unexpected argument \`$2\` — this takes one version and nothing else"
+[ "$#" -le 2 ] || die "usage: release-tag-commit.sh <version> [revision]"
 
 git rev-parse --git-dir >/dev/null 2>&1 \
     || die "not inside a git repository"
@@ -53,7 +55,9 @@ git rev-parse --git-dir >/dev/null 2>&1 \
 # The one query, and the whole mechanism: git's history simplification omits a
 # merge whose tree matches a parent's, so this walks past the merge commit to
 # the release commit underneath it, exactly as semver does.
-commit="$(git log -1 --format=%H -- VERSION 2>/dev/null)"
+revision="$(git rev-parse --verify --end-of-options "${2:-HEAD}^{commit}" 2>/dev/null)" \
+    || die "revision ${2:-HEAD} is not a commit"
+commit="$(git log -1 --format=%H "$revision" -- VERSION 2>/dev/null)"
 [ -n "$commit" ] \
     || die "no commit in this history modifies VERSION — there is nothing to tag for $version"
 
