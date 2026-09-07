@@ -12,6 +12,9 @@
 source "$(dirname "$0")/lib.sh"
 
 repo=$(mk_story_repo)
+project_session=$(slug_for "$repo")
+_register_tmp_tmux_session "$project_session" \
+  || fail_test "epic auto: could not register the fixture-owned tmux session"
 epic=$(cd "$repo" && story new "Real epic" --type epic --json | jq -r '.story.story.id')
 child=$(new_story "$repo" "Actionable child")
 (cd "$repo" && story relate "$epic" parent-of "$child" >/dev/null)
