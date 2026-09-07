@@ -1330,8 +1330,7 @@ fn worker(
                 while !inflight.is_empty() {
                     thread::sleep(SHUTDOWN_CHECK);
                 }
-                crate::daemon::lifecycle::clear_info(&env);
-                std::process::exit(0);
+                crate::daemon::lifecycle::exit_cleanly(&env);
             });
         }
         Err(_) => finish(
@@ -1665,8 +1664,7 @@ fn watch_parent(env: &Environment, stop: &AtomicBool) {
         if !crate::daemon::lifecycle::process_identity_is_live(parent, parent_start_time.as_deref())
         {
             eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
-            crate::daemon::lifecycle::clear_info(env);
-            std::process::exit(0);
+            crate::daemon::lifecycle::exit_cleanly(env);
         }
     }
 }

@@ -39,6 +39,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use fs4::FileExt;
@@ -60,6 +61,10 @@ pub const SPAWN_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How often it asks, while waiting.
 const SPAWN_POLL: Duration = Duration::from_millis(25);
+
+// A daemon owns one portfile. Late listener publication and orderly exit
+// share this lock so no writer can recreate crash residue after cleanup.
+static INFO_PUBLICATION: Mutex<()> = Mutex::new(());
 
 /// One request the daemon is serving right now.
 ///
@@ -564,6 +569,9 @@ pub fn read_info_at(path: &Path) -> Option<DaemonInfo> {
 /// it to fabricate a residue portfile, the same fixture `stopping_clears_a_
 /// portfile_left_by_a_crashed_daemon` below builds for itself.
 pub(crate) fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
+    let _publication = INFO_PUBLICATION
+        .lock()
+        .expect("daemon portfile publication lock poisoned");
     std::fs::create_dir_all(env.daemon_state_dir())?;
     let final_path = env.daemon_file();
     let temp_path = final_path.with_extension("json.tmp");
@@ -2114,9 +2122,24 @@ fn kill_pid(pid: u32) {
 #[cfg(not(unix))]
 fn kill_pid(_pid: u32) {}
 
-/// Removes a portfile. Used by a daemon on its way out, best-effort.
+/// Removes a portfile left by a stopped daemon, best-effort.
 pub fn clear_info(env: &Environment) {
     let _ = std::fs::remove_file(env.daemon_file());
+}
+
+/// Removes this daemon's portfile and terminates an orderly shutdown.
+pub(crate) fn exit_cleanly(env: &Environment) -> ! {
+    with_cleared_info(env, || std::process::exit(0))
+}
+
+fn with_cleared_info<R>(env: &Environment, finish: impl FnOnce() -> R) -> R {
+    // Keep the lock through process exit: releasing it after remove_file
+    // would let a waiting tailnet publisher recreate the portfile.
+    let _publication = INFO_PUBLICATION
+        .lock()
+        .expect("daemon portfile publication lock poisoned");
+    clear_info(env);
+    finish()
 }
 
 /// The parent process a daemon must not outlive, if one was named.
@@ -2251,6 +2274,63 @@ mod tests {
             .prefix("storyhook-lifecycle-")
             .tempdir_in("/private/tmp")
             .expect("a scratch directory")
+    }
+
+    #[test]
+    fn orderly_exit_cannot_leave_a_concurrently_published_portfile() {
+        const CHILD: &str = "STORYHOOK_PORTFILE_EXIT_CHILD";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let env = Environment::at(Path::new(&root));
+            let info = info_for(
+                &loopback_only(4321),
+                "fixture-token".to_string(),
+                "2026-01-01T00:00:00Z",
+                env.store_path(),
+            )
+            .expect("building the late publisher's portfile");
+            write_info(&env, &info).expect("publishing the initial portfile");
+            let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let writer_ready = ready.clone();
+            let writer_env = env.clone();
+            let (sent, received) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                writer_ready.wait();
+                write_info(&writer_env, &info).expect("publishing a late portfile");
+                sent.send(()).expect("reporting the completed publication");
+            });
+            with_cleared_info(&env, || {
+                // Hold the clear-to-exit interval open while the real atomic
+                // publisher tries to recreate the file. A serialized publisher
+                // cannot finish until this process has exited.
+                ready.wait();
+                match received.recv_timeout(FORCE_GRACE) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(error) => panic!("late publisher failed: {error}"),
+                }
+                std::process::exit(0);
+            });
+        }
+
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut command = Command::new(std::env::current_exe().expect("the test executable"));
+        command
+            .args([
+                "--exact",
+                "daemon::lifecycle::tests::orderly_exit_cannot_leave_a_concurrently_published_portfile",
+                "--nocapture",
+            ])
+            .env(CHILD, dir.path());
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("starting the orderly-exit child");
+        let status = child.wait_within(FORCE_GRACE + SPAWN_DEADLINE, || {
+            "the child must finish its controlled clear-to-exit interval".to_string()
+        });
+        assert!(status.success(), "orderly-exit child failed: {status}");
+        assert!(
+            !env.daemon_file().exists(),
+            "late publication must not recreate crash residue after orderly cleanup"
+        );
     }
 
     #[test]
