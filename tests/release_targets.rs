@@ -294,6 +294,19 @@ if [ "${1:-}" = --print ] && [ "${2:-}" = sysroot ]; then
 fi
 echo "$(basename "$0") $*" >> "$RELEASE_TEST_LOG"
 echo "strip=${CARGO_PROFILE_RELEASE_STRIP:-} x86_linker=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER:-} rustc=${RUSTC:-}" >> "$RELEASE_TEST_LOG"
+# Observe source identity before the guest removes its extracted tree.
+if [ "$(basename "$0")" = cargo ] && [ -n "${RELEASE_EXPECT_SOURCE:-}" ]; then
+  echo "arm_linker=${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-}" >> "$RELEASE_TEST_LOG"
+  echo "cwd=$(pwd -P)" >> "$RELEASE_TEST_LOG"
+  echo "source_root=$(cd "$(dirname "$CARGO_TARGET_DIR")" && pwd -P)" >> "$RELEASE_TEST_LOG"
+  for source_file in Cargo.toml source-marker; do
+    if cmp -s "$source_file" "$RELEASE_EXPECT_SOURCE/$source_file"; then
+      echo "$source_file=archived" >> "$RELEASE_TEST_LOG"
+    else
+      echo "$source_file=wrong-or-missing" >> "$RELEASE_TEST_LOG"
+    fi
+  done
+fi
 target=""
 output=""
 previous=""
@@ -551,6 +564,16 @@ fn linux_guest_probe_uses_native_and_cross_linkers_and_strips_symbols() {
 
 #[test]
 fn linux_guest_build_uses_locked_cargo_and_exports_the_binary() {
+    for target in release_targets()
+        .iter()
+        .filter(|target| target.contains("linux"))
+    {
+        assert_linux_guest_build(target);
+    }
+}
+
+/// Exercises the guest entry point from the manifest-free directory Lima can supply.
+fn assert_linux_guest_build(target: &str) {
     let (fixture, bin, _target_dir, toolchain, _linux_runner) = release_tool_shims();
     let source = fixture.path().join("source");
     let archive = fixture.path().join("source.tar.gz");
@@ -559,9 +582,10 @@ fn linux_guest_build_uses_locked_cargo_and_exports_the_binary() {
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(
         source.join("Cargo.toml"),
-        "[package]\nname='fixture'\nversion='0.0.0'\n",
+        "[package]\nname='sh581-archived-source'\nversion='0.0.0'\n",
     )
     .unwrap();
+    std::fs::write(source.join("source-marker"), "SH-581 extracted source\n").unwrap();
     let archived = Command::new("tar")
         .args(["-czf"])
         .arg(&archive)
@@ -572,36 +596,66 @@ fn linux_guest_build_uses_locked_cargo_and_exports_the_binary() {
         .unwrap();
     assert!(archived.success());
 
+    let manifest_free = fixture.path().join("no-manifest-here");
+    std::fs::create_dir_all(&manifest_free).unwrap();
+    let manifest_free = std::fs::canonicalize(manifest_free).unwrap();
+    for ancestor in manifest_free.ancestors() {
+        assert!(
+            !ancestor.join("Cargo.toml").exists(),
+            "launch directory must have no ancestor manifest: {}",
+            ancestor.display()
+        );
+    }
+
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = Command::new("/bin/bash")
-        .current_dir(repo_root())
+        .current_dir(&manifest_free)
         .arg(repo_root().join("scripts/release-linux.sh"))
         .args([
             "--guest-build",
             "aarch64-unknown-linux-gnu",
             fixture.path().join("cache").to_str().unwrap(),
-            "x86_64-unknown-linux-gnu",
+            target,
             archive.to_str().unwrap(),
             output.to_str().unwrap(),
             "0123456789ab",
         ])
         .env("PATH", path)
         .env("RELEASE_TEST_LOG", &log)
+        .env("RELEASE_EXPECT_SOURCE", &source)
         .env("STORYHOOK_RELEASE_TOOLCHAIN_DIR", &toolchain)
         .output()
         .unwrap();
     assert!(
         result.status.success(),
-        "guest build failed: {}",
+        "guest build failed for {target}: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(output.is_file(), "guest build did not export its binary");
+    assert_ne!(output.metadata().unwrap().permissions().mode() & 0o111, 0);
 
     let calls = std::fs::read_to_string(log).unwrap();
-    assert!(calls.contains("cargo build --locked --release --target x86_64-unknown-linux-gnu"));
+    assert!(calls.contains(&format!("cargo build --locked --release --target {target}")));
     assert!(calls.contains("strip=symbols"));
-    assert!(calls.contains("x86_linker=x86_64-linux-gnu-gcc"));
+    if target == "x86_64-unknown-linux-gnu" {
+        assert!(calls.contains("x86_linker=x86_64-linux-gnu-gcc"));
+    } else {
+        assert!(calls.contains("arm_linker=cc"));
+    }
     assert!(calls.contains(&format!("rustc={}", toolchain.join("bin/rustc").display())));
+    let observed = |prefix: &str| {
+        calls
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap()
+    };
+    assert_eq!(
+        observed("cwd="),
+        observed("source_root="),
+        "Cargo must enter the extracted source for {target} (SH-581)"
+    );
+    assert!(calls.contains("Cargo.toml=archived"), "{calls}");
+    assert!(calls.contains("source-marker=archived"), "{calls}");
 }
 
 #[test]
