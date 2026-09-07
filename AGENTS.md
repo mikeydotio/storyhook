@@ -1,3 +1,4 @@
+<!-- BEGIN STORYHOOK -->
 # AGENTS.md — Project Task Management
 
 > Project standards, environment, and git policy live in [CLAUDE.md](./CLAUDE.md) — read it alongside this file.
@@ -186,10 +187,10 @@ The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook
 configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
+<!-- END STORYHOOK -->
 
 ## Mini-roadmap
 
 - Current: audit the story lifecycle end to end (SH-560) after installing
   SH-588's hook repair and release validation fixes.
-- Next: separate the project roadmap from generated instructions (SH-557).
-- Later: resume authenticated attachment serving and upload (SH-315).
+- Next: resume authenticated attachment serving and upload (SH-315).
