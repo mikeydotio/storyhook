@@ -28,6 +28,7 @@ pub(crate) enum CaptureError {
     Stage(std::io::Error),
     Spawn(std::io::Error),
     Wait(std::io::Error),
+    Track(String),
     Timeout(TimeoutTermination),
 }
 
@@ -36,6 +37,7 @@ impl CaptureError {
     pub(crate) fn detail(&self) -> String {
         match self {
             Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
+            Self::Track(error) => error.clone(),
             Self::Timeout(_) => "the process timed out".to_string(),
         }
     }
@@ -68,9 +70,20 @@ pub(crate) fn run_captured(command: Command, timeout: Duration) -> Result<Captur
 
 /// Runs a command with file-backed capture and caller-selected termination.
 pub(crate) fn run_captured_with_termination(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+) -> Result<Captured, CaptureError> {
+    run_captured_with_registration(command, timeout, termination, |_| Ok(()))
+}
+
+/// Runs a command with capture while retaining a caller-owned registration
+/// guard for the child's complete lifetime.
+pub(crate) fn run_captured_with_registration<G>(
     mut command: Command,
     timeout: Duration,
     termination: TerminationPolicy,
+    register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
     let stderr_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
@@ -84,6 +97,14 @@ pub(crate) fn run_captured_with_termination(
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
+    let _registration = match register(pid) {
+        Ok(registration) => registration,
+        Err(error) => {
+            kill_process_group(pid);
+            let _ = child.wait();
+            return Err(CaptureError::Track(error));
+        }
+    };
     let status = match child.wait_timeout(timeout) {
         Ok(Some(status)) => status,
         Ok(None) => {

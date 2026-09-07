@@ -78,6 +78,9 @@ pub fn note_tailnet_pending(info: &DaemonInfo) {
 /// abandoned, but there is no deadline of its own; `--force` is the escape
 /// hatch for a daemon that is not draining.
 pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
+    let pidfile_pid = (force && lifecycle::is_live(env))
+        .then(|| lifecycle::read_daemon_identity(env).map(|identity| identity.pid))
+        .flatten();
     let mode = if force {
         lifecycle::StopMode::Force
     } else {
@@ -85,7 +88,10 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
     };
     match lifecycle::stop(env, mode)? {
         Some(info) => Ok(format!("storyhook daemon stopped (PID {})", info.pid)),
-        None => Ok("storyhook daemon is not running".to_string()),
+        None => Ok(pidfile_pid.map_or_else(
+            || "storyhook daemon is not running".to_string(),
+            |pid| format!("storyhook daemon stopped (PID {pid})"),
+        )),
     }
 }
 

@@ -17,8 +17,7 @@ use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured,
-    run_captured_with_termination,
+    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured_with_registration,
 };
 use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::{
@@ -217,6 +216,7 @@ pub trait VerificationActuator: Send + Sync {
 /// Production actuator backed by repository and plugin scripts.
 pub struct ShellVerificationActuator {
     env: Environment,
+    owned_processes: super::lifecycle::OwnedProcesses,
     helper_path: Option<PathBuf>,
     story_binary: Option<PathBuf>,
     verification_timeout: Duration,
@@ -229,6 +229,7 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn new(env: Environment) -> Self {
         Self {
+            owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: None,
             story_binary: None,
@@ -246,6 +247,7 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn with_paths(env: Environment, helper_path: PathBuf, story_binary: PathBuf) -> Self {
         Self {
+            owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
@@ -270,6 +272,7 @@ impl ShellVerificationActuator {
         termination_grace: Duration,
     ) -> Self {
         Self {
+            owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
@@ -294,8 +297,24 @@ impl ShellVerificationActuator {
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| "story".into()))
     }
 
-    fn run_control_command(&self, command: Command, operation: &str) -> Result<Captured, AppError> {
-        run_captured(command, self.control_timeout).map_err(|error| match error {
+    fn run_control_command(
+        &self,
+        command: Command,
+        role: &str,
+        request_id: &str,
+        operation: &str,
+    ) -> Result<Captured, AppError> {
+        run_captured_with_registration(
+            command,
+            self.control_timeout,
+            TerminationPolicy::Kill,
+            |pid| {
+                self.owned_processes
+                    .register(role, pid, Some(request_id))
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| match error {
             CaptureError::Timeout(_) => AppError::Storage(format!(
                 "{operation} did not finish within {:?}; its process group was terminated",
                 self.control_timeout
@@ -330,7 +349,12 @@ impl ShellVerificationActuator {
         if let Some(extra) = extra {
             command.arg(extra);
         }
-        let output = self.run_control_command(command, &format!("story helper `{verb}`"))?;
+        let output = self.run_control_command(
+            command,
+            &format!("verifier-{verb}"),
+            &verification_request_id(candidate),
+            &format!("story helper `{verb}`"),
+        )?;
         let payload: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
                 "story helper `{verb}` returned invalid JSON: {}",
@@ -387,7 +411,12 @@ impl ShellVerificationActuator {
             .env(CLEANUP_LEASE_ENV, encoded)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
-        let output = self.run_control_command(command, "leased story helper `reap`")?;
+        let output = self.run_control_command(
+            command,
+            "verifier-reap",
+            &verification_request_id(candidate),
+            "leased story helper `reap`",
+        )?;
 
         let receipt: CleanupReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
@@ -490,11 +519,17 @@ impl VerificationActuator for ShellVerificationActuator {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             .env("STORYHOOK_GATE_PROGRESS", &journal);
-        let captured = match run_captured_with_termination(
+        let request_id = verification_request_id(candidate);
+        let captured = match run_captured_with_registration(
             command,
             self.verification_timeout,
             TerminationPolicy::TerminateThenKill {
                 grace: self.termination_grace,
+            },
+            |pid| {
+                self.owned_processes
+                    .register("verifier", pid, Some(&request_id))
+                    .map_err(|error| error.to_string())
             },
         ) {
             Ok(captured) => captured,
@@ -513,6 +548,12 @@ impl VerificationActuator for ShellVerificationActuator {
             Err(CaptureError::Wait(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not wait for scripts/verify-pr.sh: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
+            Err(CaptureError::Track(error)) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!("could not track scripts/verify-pr.sh: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
@@ -884,15 +925,8 @@ fn name_verification(
     candidate: &VerificationCandidate,
     started_at: &str,
 ) {
-    let generation = candidate.verifying_generation.map_or_else(
-        || "legacy".to_string(),
-        |generation| generation.get().to_string(),
-    );
     lifecycle_entry.name(CurrentRequest {
-        request_id: format!(
-            "verify:{}:{}:{generation}",
-            candidate.project_slug, candidate.story_id
-        ),
+        request_id: verification_request_id(candidate),
         command: "verify".to_string(),
         project: Some(candidate.project_slug.clone()),
         pid: std::process::id(),
@@ -900,6 +934,17 @@ fn name_verification(
         served_deadline_secs: VERIFICATION_TIMEOUT.as_secs(),
         cwd: candidate.checkout.clone(),
     });
+}
+
+fn verification_request_id(candidate: &VerificationCandidate) -> String {
+    let generation = candidate.verifying_generation.map_or_else(
+        || "legacy".to_string(),
+        |generation| generation.get().to_string(),
+    );
+    format!(
+        "verify:{}:{}:{generation}",
+        candidate.project_slug, candidate.story_id
+    )
 }
 
 fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCandidate) -> bool {
