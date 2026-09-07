@@ -8218,6 +8218,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** Revokes the one deferred exit currently owned by `node`, if any.
+   * Ownership lives on the keyed node because that same object can be
+   * reclaimed by a later render before either completion source fires. */
+  function cancelCardExit(node) {
+    if (node.cancelCardExit) node.cancelCardExit();
+  }
+
   /** Removes any card left in the DOM that no story wanted this render —
    * genuinely gone (closed, deleted, filtered out), not just relocated to
    * a different column (a relocated card was already re-claimed by
@@ -8239,15 +8246,45 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (wasFocused) syncRoving(container, ".card[data-id]", id);
       }
       if (reduceMotion) {
+        cancelCardExit(node);
         reclaimIfFocused();
         return;
       }
+
+      // A keyed node can remain unclaimed across several renders while its
+      // first exit is pending. That owner already covers both completion
+      // paths; installing another would let an older callback remove a node
+      // after a later render reclaims it.
+      if (node.cancelCardExit) return;
+
+      var exitTimer = null;
+      function releaseExit() {
+        if (exitTimer !== null) window.clearTimeout(exitTimer);
+        exitTimer = null;
+        node.removeEventListener("animationend", finishExit);
+        if (node.cancelCardExit === cancelExit) delete node.cancelCardExit;
+      }
+      function cancelExit() {
+        if (node.cancelCardExit !== cancelExit) return;
+        releaseExit();
+        node.classList.remove("exiting");
+      }
+      function finishExit(event) {
+        if (event && (event.target !== node || event.animationName !== "card-exit")) return;
+        // A callback already queued when cancellation happened no longer owns
+        // this node and must not complete a later card lifecycle.
+        if (node.cancelCardExit !== cancelExit) return;
+        releaseExit();
+        reclaimIfFocused();
+      }
+
+      node.cancelCardExit = cancelExit;
       node.classList.add("exiting");
-      node.addEventListener("animationend", reclaimIfFocused, { once: true });
+      node.addEventListener("animationend", finishExit);
       // Safety net: guarantee removal even if `animationend` never fires
       // (e.g. an ancestor is hidden mid-animation) so a stale card can
       // never linger indefinitely.
-      setTimeout(function() { if (node.parentNode) reclaimIfFocused(); }, 600);
+      exitTimer = window.setTimeout(finishExit, 600);
     });
   }
 
@@ -8659,6 +8696,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a primary press is live. SH-422's exact reposition witness now lives in
    * `card-reposition-click-race.spec.ts`. */
   function populateCard(card, v, ready, blocked, isClosed) {
+    cancelCardExit(card);
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
     var engineLaneDesc = engineLaneDescription(engineLane);
