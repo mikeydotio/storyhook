@@ -33,6 +33,10 @@
 //! 7. The fake-tmux one-writer guard rejects concurrent dispatches without
 //!    rejecting stop-now's deliberately overlapping `unclaim` --
 //!    `the_fake_tmux_writer_guard_applies_only_to_dispatch`.
+//! 8. Dashboard source documentation cannot repeat the obsolete claims that
+//!    the suite drives only Chromium, both projects are Blink, or installation
+//!    fetches no other engine --
+//!    `dashboard_source_does_not_repeat_obsolete_chromium_only_claims`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -201,6 +205,28 @@ fn engine_for_device_recognises_this_configs_own_devices_and_panics_on_an_unknow
         panicked,
         "engine_for_device() silently accepted a device it was never taught -- it must panic on \
          an unrecognised device, not guess"
+    );
+}
+
+#[test]
+fn dashboard_source_does_not_repeat_obsolete_chromium_only_claims() {
+    let dashboard = read("src/web_dashboard.html");
+    let normalized = dashboard.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stale_claims = [
+        "suite drives only Chromium",
+        "both projects are Blink",
+        "e2e-install` installs chromium and nothing else",
+    ];
+    let offenders: Vec<&str> = stale_claims
+        .into_iter()
+        .filter(|claim| normalized.contains(claim))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "src/web_dashboard.html repeats obsolete Chromium-only browser coverage claims: \
+         {offenders:?}. The Playwright matrix drives Chromium and WebKit, and `make \
+         e2e-install` installs both (SH-335/SH-374)."
     );
 }
 
