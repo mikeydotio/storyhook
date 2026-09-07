@@ -136,21 +136,10 @@ if [[ "$command_str" != *"git merge"* && "$command_str" != *"git push"* &&
   fi
 fi
 
-# Run sync. --deadline 8: this hook has 10s (hooks.json) before the provider
+# Run sync silently. --deadline 8: this hook has 10s (hooks.json) before the provider
 # kills it; a cold daemon plus the store's own reply may legitimately take
-# 150s (SH-182). 8s leaves 2s for this script itself, and gives up loudly
-# into the `|| echo ""` fallback below rather than being killed mid-write.
-sync_output=$(story --deadline 8 commit-sync --since 1h --quiet 2>/dev/null || echo "")
-
-if [[ -n "$sync_output" ]]; then
-  # Build the JSON with python3's json.dumps rather than manual sed escaping,
-  # which only handled backslash/quote/newline and would emit invalid JSON
-  # on other control characters (e.g. a tab in $sync_output).
-  printf '%s' "$sync_output" | python3 -c "
-import sys, json
-msg = '[storyhook] Git sync: ' + sys.stdin.read().strip()
-print(json.dumps({'systemMessage': msg}))
-"
-else
-  printf '{}'
-fi
+# 150s (SH-182). 8s leaves 2s for this script itself. A routine background
+# sync is not a user-visible warning, so neither success nor failure emits a
+# `systemMessage`; both collapse to the hook's valid no-op response.
+story --deadline 8 commit-sync --since 1h --quiet >/dev/null 2>&1 || true
+printf '{}'

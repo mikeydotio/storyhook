@@ -1385,11 +1385,18 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
  * re-animates cards, so a live poll can restart an animation at any moment.
  * Scoped to `root` rather than the document for that reason — the drawer's
  * own transition is what a drawer spec must wait out, and an unrelated card
- * animating on the board behind it is not this spec's business. */
+ * animating on the board behind it is not this spec's business.
+ *
+ * A settled box can still be outside a scrollport (SH-577: Comments at y=727
+ * in a 720px viewport). Scroll without focusing or activating the control,
+ * then require the exact centre the callers press to hit it or a descendant.
+ * Visibility and viewport intersection alone cannot rule out an overlay or
+ * ancestor clipping. This prepares input; it never sends the gesture itself. */
 export async function settledBoundingBox(
   root: Locator,
   locator: Locator,
 ): Promise<{ x: number; y: number; width: number; height: number }> {
+  await locator.scrollIntoViewIfNeeded();
   await expect
     .poll(
       async () =>
@@ -1415,7 +1422,25 @@ export async function settledBoundingBox(
     )
     .toEqual([]);
 
-  const box = await locator.boundingBox();
+  let box: { x: number; y: number; width: number; height: number } | null = null;
+  await expect.poll(async () => {
+    box = await locator.boundingBox();
+    if (!box) return "the element to press has no bounding box";
+    return locator.evaluate((node, rect) => {
+      const x = rect.x + rect.width / 2;
+      const y = rect.y + rect.height / 2;
+      const hit = node.ownerDocument.elementFromPoint(x, y);
+      if (hit && node.contains(hit)) return "target";
+      return JSON.stringify({
+        centre: { x, y },
+        box: rect,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        receiver: hit ? hit.tagName + "#" + hit.id + "." + hit.className : "outside viewport",
+      });
+    }, box);
+  }, {
+    message: "the coordinate-driven press centre must reach its intended hit target",
+  }).toBe("target");
   if (!box) {
     throw new Error("the element to press has no bounding box");
   }
