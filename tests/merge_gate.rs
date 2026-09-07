@@ -283,6 +283,7 @@ impl MergeRepo {
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "t@t"]);
         repo.git(&["config", "user.name", "t"]);
+        storyhook_test_support::approve_fixture_identity(repo.path(), "t", "t@t");
 
         // The tracked hooks directory, symlinked rather than copied, so
         // `gate-receipt.sh preflight`'s own executable-hook check passes the
