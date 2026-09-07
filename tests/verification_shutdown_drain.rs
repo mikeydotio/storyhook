@@ -1,13 +1,15 @@
 //! Regression coverage for daemon shutdown while centralized verification runs.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
     TickResult, VERIFICATION_TIMEOUT, VerificationActivity, VerificationActuator,
-    VerificationOutcome, tick_with_activity,
+    VerificationOutcome, tick_with_activity, wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
 use storyhook::error::AppError;
@@ -181,4 +183,98 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         VERIFICATION_TIMEOUT.as_secs()
     );
     assert_eq!(observed.cwd, std::path::PathBuf::from("/checkouts/fixture"));
+}
+
+#[test]
+fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let held = submitted(&fixture, "reserved", Priority::Low, LOW_PR);
+    let reserved = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "in-progress", None, Some("verifying"), None)
+        .unwrap();
+    let bus = ChangeBus::new();
+    let subscription = bus.subscribe();
+    let stop = AtomicBool::new(false);
+    let (result_tx, result_rx) = channel();
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            result_tx
+                .send(wait_for_reconciled_candidate(
+                    fixture.store(),
+                    &subscription,
+                    &stop,
+                    &reserved,
+                ))
+                .unwrap();
+        });
+
+        submitted(&fixture, "higher priority", Priority::Critical, HIGH_PR);
+        bus.publish(Change::Ping);
+        bus.publish(Change::Project("other-project".into()));
+        assert!(
+            result_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE / 10)
+                .is_err(),
+            "an unrelated queue arrival or wake must not release the reservation"
+        );
+
+        StoryService::new(&fixture.ctx())
+            .set_state(&held, "verifying", None, Some("in-progress"), None)
+            .unwrap();
+        bus.publish(Change::Project("fixture".into()));
+        let resumed = result_rx
+            .recv_timeout(lifecycle::CONTROL_DEADLINE)
+            .unwrap()
+            .unwrap()
+            .expect("the reserved story must wake its waiter");
+        assert_eq!(resumed.story_id, held);
+        assert_ne!(resumed.verifying_generation, reserved.verifying_generation);
+    });
+}
+
+#[test]
+fn reconciliation_wait_stops_without_a_resubmission() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let held = submitted(&fixture, "reserved", Priority::High, LOW_PR);
+    let reserved = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "in-progress", None, Some("verifying"), None)
+        .unwrap();
+    let bus = ChangeBus::new();
+    let subscription = bus.subscribe();
+    let stop = AtomicBool::new(false);
+    let (result_tx, result_rx) = channel();
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            result_tx
+                .send(wait_for_reconciled_candidate(
+                    fixture.store(),
+                    &subscription,
+                    &stop,
+                    &reserved,
+                ))
+                .unwrap();
+        });
+        stop.store(true, Ordering::Relaxed);
+        bus.publish(Change::Reload);
+        assert!(
+            result_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap()
+                .unwrap()
+                .is_none(),
+            "shutdown must cancel the reservation wait without a candidate"
+        );
+    });
 }

@@ -830,6 +830,11 @@ Exit codes:
 - `3` not found
 - `4` lock timeout
 - `5` integrity or storage error
+- `6` GitHub authentication error
+- `7` GitHub API error
+- `9` state conflict
+- `11` read-only store
+- `12` client deadline expired; the command may still complete in the daemon
 
 Examples:
 

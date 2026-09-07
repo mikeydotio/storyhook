@@ -41,6 +41,17 @@
 
 set -uo pipefail
 
+# Identity and receipt checks need the same complete ref update stream. Never let
+# a nested Git command consume records intended for either checker.
+push_input="$(mktemp /tmp/storyhook-push-identity.XXXXXX)" || exit 2
+trap 'rm -f "$push_input"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cat >"$push_input" || exit 2
+hook_dir="$(cd "$(dirname "$0")" && pwd -P)" || exit 2
+bash "$hook_dir/../scripts/git-identity.sh" push "${1:-}" <"$push_input" || exit "$?"
+
 if [ "${SKIP_PREPUSH_TESTS:-}" = "1" ]; then
     echo "pre-push: BYPASS — SKIP_PREPUSH_TESTS=1, shipping without a certified tree." >&2
     exit 0
@@ -62,6 +73,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     *[!0]*) ;;
     *) continue ;;
     esac
+
+    # Non-commit tags have neither commit identity nor a tree receipt obligation.
+    # The identity reader already validated that the advertised object exists.
+    if ! git rev-parse --quiet --verify "${local_sha}^{commit}" </dev/null >/dev/null 2>&1; then
+        continue
+    fi
 
     tree="$(git rev-parse --quiet --verify "${local_sha}^{tree}" </dev/null)" || {
         echo "pre-push: cannot resolve a tree for $local_ref ($local_sha)" >&2
@@ -118,7 +135,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         unreceipted_commits="$unreceipted_commits  ${sha:0:9} ${subject:-}
 "
     done < <(git log --format='%H %s' "${range[@]}" </dev/null 2>/dev/null || true)
-done
+done <"$push_input"
 
 if [ -n "$unreceipted_commits" ]; then
     echo "pre-push: these pushed commits carry no receipt of their own — the tip" >&2

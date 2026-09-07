@@ -123,12 +123,11 @@ const HOOK_MARKER: &str = "# storyhook managed hook -- do not edit this line";
 /// costs nothing (`--quiet 2>/dev/null || true` already discards its output,
 /// and expiry does not cancel the request). Giving up on a `story move`
 /// inside the loop below is real but bounded: the daemon still completes
-/// that move, nothing here reads the answer, and this fragment has no shared
-/// budget across loop iterations — a merge naming N stories against a daemon
-/// that stays unreachable for the whole hook still costs N × 10s (filed as
-/// SH-353, deliberately not fixed here: `--deadline`'s exit code 5 is shared
-/// with genuine store errors, `src/error.rs`, so a latch keyed on it would
-/// need its own signal, its own tests, and its own review).
+/// that move and nothing here reads the answer. `DeadlineExceeded`'s dedicated
+/// exit code 12 lets the loop stop after that first give-up without confusing
+/// an ordinary per-story or store failure for a persistently unreachable
+/// daemon (SH-353). The sync call deliberately does not share the latch: it
+/// may outlive this client while warming a daemon that can accept the moves.
 macro_rules! merge_arrival_fn {
     () => {
         r#"storyhook_merge_arrival() {
@@ -146,7 +145,11 @@ macro_rules! merge_arrival_fn {
     grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
     while IFS= read -r match; do
       STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
-      [ -n "$STORY_ID" ] && story --deadline 10 move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
+      if [ -n "$STORY_ID" ]; then
+        story --deadline 10 move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null
+        STORY_STATUS=$?
+        if [ "$STORY_STATUS" -eq 12 ]; then break; fi
+      fi
     done
 }
 "#
