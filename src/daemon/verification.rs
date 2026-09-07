@@ -17,7 +17,8 @@ use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured_with_registration,
+    CaptureError, Captured, TerminationPolicy, TimeoutTermination,
+    run_captured_with_progress_and_registration, run_captured_with_registration,
 };
 use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::{
@@ -164,15 +165,16 @@ impl VerificationGuard {
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
 /// Slack above the measured contended gate for GitHub, fetch, and landing.
-const VERIFICATION_TIMEOUT_MARGIN: u64 = 2;
+const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 
-/// Maximum wall-clock duration of one centralized verification attempt.
+/// Maximum silence during centralized verification (SH-592).
 ///
-/// Derived from the largest measured contended gate rather than a bare
-/// deadline. Twice that measurement leaves one additional full gate window
-/// for lock waiting and the networked phases surrounding `make test`.
-pub const VERIFICATION_TIMEOUT: Duration =
-    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_TIMEOUT_MARGIN);
+/// Retains SH-547's conservative allowance for a quiet build or network phase:
+/// twice the largest measured contended gate. Journal appends renew it, so
+/// progressing tests and identity-checked lock waits have no total runtime cap.
+/// The gate lock's shorter idle watchdog reports stalled tests first.
+pub const VERIFICATION_IDLE_TIMEOUT: Duration =
+    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,7 +221,7 @@ pub struct ShellVerificationActuator {
     owned_processes: super::lifecycle::OwnedProcesses,
     helper_path: Option<PathBuf>,
     story_binary: Option<PathBuf>,
-    verification_timeout: Duration,
+    verification_idle_timeout: Duration,
     control_timeout: Duration,
     termination_grace: Duration,
 }
@@ -233,7 +235,7 @@ impl ShellVerificationActuator {
             env,
             helper_path: None,
             story_binary: None,
-            verification_timeout: VERIFICATION_TIMEOUT,
+            verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
         }
@@ -251,7 +253,7 @@ impl ShellVerificationActuator {
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
-            verification_timeout: VERIFICATION_TIMEOUT,
+            verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
         }
@@ -267,7 +269,7 @@ impl ShellVerificationActuator {
         env: Environment,
         helper_path: PathBuf,
         story_binary: PathBuf,
-        verification_timeout: Duration,
+        verification_idle_timeout: Duration,
         control_timeout: Duration,
         termination_grace: Duration,
     ) -> Self {
@@ -276,7 +278,7 @@ impl ShellVerificationActuator {
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
-            verification_timeout,
+            verification_idle_timeout,
             control_timeout,
             termination_grace,
         }
@@ -477,20 +479,19 @@ impl VerificationActuator for ShellVerificationActuator {
             return VerificationOutcome::InvalidSubmission { detail };
         }
         let journal = journal_path(&self.env, candidate);
-        // Best-effort and non-fatal (SH-524): the progress journal is an
-        // observability feature, not part of the release gate's own
-        // correctness, so a failure to prepare it is reported — never
-        // silently swallowed (CLAUDE.md's fail-loud rule) — but must not
-        // abort the actual verification over it. Truncated at run start so
-        // a rerun after an infrastructure retry does not replay stale
-        // progress from the attempt before it.
+        // Supervision now depends on the journal (SH-592). Refuse before
+        // starting work if it cannot be prepared, rather than silently
+        // reverting to the aggregate deadline that killed healthy gates.
         if let Some(parent) = journal.parent()
             && let Err(error) = std::fs::create_dir_all(parent)
         {
-            eprintln!(
-                "storyhook: could not create verification progress directory {}: {error}",
-                parent.display()
-            );
+            return VerificationOutcome::InfrastructureFailure {
+                detail: format!(
+                    "could not prepare progress journal {}: {error}",
+                    journal.display()
+                ),
+                disposition: VerificationFailureDisposition::Permanent,
+            };
         }
         let initial = candidate
             .verifying_generation
@@ -505,10 +506,13 @@ impl VerificationActuator for ShellVerificationActuator {
                 )
             });
         if let Err(error) = std::fs::write(&journal, initial) {
-            eprintln!(
-                "storyhook: could not truncate verification progress journal {}: {error}",
-                journal.display()
-            );
+            return VerificationOutcome::InfrastructureFailure {
+                detail: format!(
+                    "could not initialize progress journal {}: {error}",
+                    journal.display()
+                ),
+                disposition: VerificationFailureDisposition::Permanent,
+            };
         }
         let mut command = Command::new("bash");
         apply_verification_allowlist(&mut command);
@@ -520,12 +524,13 @@ impl VerificationActuator for ShellVerificationActuator {
             .env("GH_PROMPT_DISABLED", "1")
             .env("STORYHOOK_GATE_PROGRESS", &journal);
         let request_id = verification_request_id(candidate);
-        let captured = match run_captured_with_registration(
+        let captured = match run_captured_with_progress_and_registration(
             command,
-            self.verification_timeout,
+            self.verification_idle_timeout,
             TerminationPolicy::TerminateThenKill {
                 grace: self.termination_grace,
             },
+            &journal,
             |pid| {
                 self.owned_processes
                     .register("verifier", pid, Some(&request_id))
@@ -571,8 +576,8 @@ impl VerificationActuator for ShellVerificationActuator {
                 };
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
-                        "scripts/verify-pr.sh did not finish within {:?}; {termination}",
-                        self.verification_timeout
+                        "scripts/verify-pr.sh made no progress for {:?}; {termination}",
+                        self.verification_idle_timeout
                     ),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
@@ -931,7 +936,7 @@ fn name_verification(
         project: Some(candidate.project_slug.clone()),
         pid: std::process::id(),
         started_at: started_at.to_string(),
-        served_deadline_secs: VERIFICATION_TIMEOUT.as_secs(),
+        served_deadline_secs: VERIFICATION_IDLE_TIMEOUT.as_secs(),
         cwd: candidate.checkout.clone(),
     });
 }

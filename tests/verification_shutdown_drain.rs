@@ -8,7 +8,7 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    TickResult, VERIFICATION_TIMEOUT, VerificationActivity, VerificationActuator,
+    TickResult, VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator,
     VerificationOutcome, tick_with_activity, wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
@@ -180,7 +180,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
     assert!(!observed.started_at.is_empty());
     assert_eq!(
         observed.served_deadline_secs,
-        VERIFICATION_TIMEOUT.as_secs()
+        VERIFICATION_IDLE_TIMEOUT.as_secs()
     );
     assert_eq!(observed.cwd, std::path::PathBuf::from("/checkouts/fixture"));
 }

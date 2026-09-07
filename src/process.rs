@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
 
+mod progress;
+
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
@@ -80,10 +82,47 @@ pub(crate) fn run_captured_with_termination(
 /// Runs a command with capture while retaining a caller-owned registration
 /// guard for the child's complete lifetime.
 pub(crate) fn run_captured_with_registration<G>(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     termination: TerminationPolicy,
     register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(command, termination, None, register, || {
+        Ok(deadline.saturating_duration_since(Instant::now()))
+    })
+}
+
+/// Runs a command until its append-only journal stops advancing for `timeout`.
+/// Output chatter is deliberately not progress. An unreadable or damaged
+/// journal fails closed with the caller's ordinary process-group cleanup.
+pub(crate) fn run_captured_with_progress_and_registration<G>(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    journal: &std::path::Path,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let mut deadline =
+        progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
+    // Observe at least four times per idle window, capped to keep journal
+    // activity responsive even for the production multi-minute budget.
+    let poll = (timeout / 4).min(Duration::from_millis(100));
+    let captured = run_captured_until(command, termination, Some(poll), register, || {
+        deadline.remaining()
+    })?;
+    // A child can damage the journal and exit inside one poll interval. Check
+    // once more after reaping so a fast successful result cannot hide that.
+    deadline.remaining().map_err(CaptureError::Wait)?;
+    Ok(captured)
+}
+
+fn run_captured_until<G>(
+    mut command: Command,
+    termination: TerminationPolicy,
+    poll: Option<Duration>,
+    register: impl FnOnce(u32) -> Result<G, String>,
+    mut remaining: impl FnMut() -> std::io::Result<Duration>,
 ) -> Result<Captured, CaptureError> {
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
     let stderr_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
@@ -105,16 +144,26 @@ pub(crate) fn run_captured_with_registration<G>(
             return Err(CaptureError::Track(error));
         }
     };
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let outcome = terminate_timed_out(&mut child, pid, termination);
-            return Err(CaptureError::Timeout(outcome));
-        }
-        Err(error) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Wait(error));
+    let status = loop {
+        let budget = match remaining() {
+            Ok(budget) => budget,
+            Err(error) => {
+                terminate_timed_out(&mut child, pid, termination);
+                return Err(CaptureError::Wait(error));
+            }
+        };
+        match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
+            Ok(Some(status)) => break status,
+            Ok(None) if !budget.is_zero() => continue,
+            Ok(None) => {
+                let outcome = terminate_timed_out(&mut child, pid, termination);
+                return Err(CaptureError::Timeout(outcome));
+            }
+            Err(error) => {
+                kill_process_group(pid);
+                let _ = child.wait();
+                return Err(CaptureError::Wait(error));
+            }
         }
     };
     Ok(Captured {
