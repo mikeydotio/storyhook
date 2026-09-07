@@ -9,6 +9,7 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
+  settledBoundingBox,
 } from "./support";
 
 /**
@@ -114,12 +115,10 @@ async function seedBlockedPair(
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // SH-407's display-promotion moves the worker's card into "blocked"
-  //    via playFlip()'s FLIP animation (up to 320ms) -- a bounding box
-  //    grabbed before that settles is stale by the time a raw mouse event
-  //    reaches it.
-  const workerCard = page.locator(".card", { hasText: workerTitle });
-  await expect(workerCard).not.toHaveClass(/moving/);
+  // The drawer's reason can arrive before the board promotion. Require the
+  // destination first; callers settle and hit-test their actual press target.
+  const workerCard = page.locator('.column[data-state="blocked"] .card', { hasText: workerTitle });
+  await expect(workerCard).toBeVisible();
 
   return { blockerId, workerId };
 }
@@ -141,10 +140,6 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
   });
   const ref = workerCard.locator(".flag-blocked .rel-id");
   await expect(ref).toHaveText(blockerId);
-  const box = await ref.boundingBox();
-  if (!box) {
-    throw new Error(`"${workerTitle}"'s .rel-id has no box to click`);
-  }
 
   // Gate the *next* `/data` reply so it lands exactly where the race needs
   // it -- between mousedown and mouseup.
@@ -178,6 +173,7 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
   }
   await held.taken;
 
+  const box = await settledBoundingBox(page.locator('.column[data-state="blocked"] .column-cards'), ref);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   // Releases the held reply -- fetchData()'s success handler runs
@@ -220,10 +216,7 @@ test("the same down/up choreography opens the blocker's drawer when nothing re-r
     hasText: workerTitle,
   });
   const ref = workerCard.locator(".flag-blocked .rel-id");
-  const box = await ref.boundingBox();
-  if (!box) {
-    throw new Error(`"${workerTitle}"'s .rel-id has no box to click`);
-  }
+  const box = await settledBoundingBox(page.locator('.column[data-state="blocked"] .column-cards'), ref);
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
