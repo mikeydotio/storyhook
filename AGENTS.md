@@ -188,19 +188,3 @@ configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
 
 ## Mini-roadmap
-
-- Complete: SH-584 dispatch/Astra and verifier-remediation fixes merged (#668).
-- Complete: SH-585 installed-launcher reader exception merged (#669).
-- Complete: SH-581 extracted-source Lima guest build fix merged (#670).
-- Complete: SH-579 release tag/preflight observer and advisory merged (#671).
-- Complete: SH-342 silent plugin post-git sync merged (#674).
-- Complete: SH-577 reachable browser press coordinates merged (#672).
-- Complete: SH-374 deterministic cross-engine notice fixtures merged (#680).
-- Complete: SH-574 commit/push identity detection and audit merged (#673).
-- Current: verify SH-586's open pull-request chips on Web UI story cards through
-  the centralized verifier.
-- Next: audit verifier behavior end to end (SH-560).
-- Later: separate the project-owned roadmap from generated agent instructions
-  (SH-557).
-- Later: resume the attachment epic's authenticated serving and upload work
-  (SH-315).

@@ -21,6 +21,7 @@
 
 use std::path::Path;
 
+use fs4::FileExt;
 use storyhook::error::AppError;
 use storyhook_test_support::{TestEnv, scratch_dir};
 
@@ -46,17 +47,15 @@ struct Case {
 
 /// Whether a row's two output forms may be provoked at the same time.
 ///
-/// True for every row but one, and keyed on `variant` because that *is* this
+/// True for every row but two, and keyed on `variant` because that *is* this
 /// table's primary key: [`variant_name`] is exhaustive over `AppError` and
 /// [`the_table_covers_every_variant`] fails if a name here answers to nothing,
 /// so this cannot quietly stop matching the row it is about.
 ///
-/// `LockTimeout` takes the store's **exclusive** write lock and holds it on
-/// purpose. Its two forms run the same closure, so one form's holder can be
-/// sitting on the lock while the other form's fixture is still being built — and
-/// `story project new` is a write. The fixture then waits out `busy_timeout` and
-/// dies at exit 4 during *setup*, which reads as a product failure and is not
-/// one.
+/// `LockTimeout` takes the store's **exclusive** write lock; `DeadlineExceeded`
+/// takes the daemon spawn lock. Their two forms run the same closure, so one
+/// form's holder can block the other form's fixture setup instead of the child
+/// each row means to exercise.
 ///
 /// **That race was always here.** It never fired because creation reached its
 /// transaction faster than the sibling thread reached the lock — a margin
@@ -66,7 +65,7 @@ struct Case {
 /// `STORYHOOK_BUSY_TIMEOUT_MS` — and removes the race instead of re-widening the
 /// margin, which is the difference between a fix and a postponement.
 fn forms_may_run_together(variant: &str) -> bool {
-    variant != "LockTimeout"
+    !matches!(variant, "LockTimeout" | "DeadlineExceeded")
 }
 
 /// Every variant reachable through the CLI.
@@ -155,6 +154,31 @@ fn cases() -> Vec<Case> {
                 let out = finish(cmd, &["new", "Blocked on the lock"], json);
                 let _ = release_tx.send(());
                 holder.join().expect("the holder thread panicked");
+                out
+            },
+        },
+        Case {
+            variant: "DeadlineExceeded",
+            exit_code: 12,
+            message: "gave up after 1s",
+            provoke: |_shared, json| {
+                let env = TestEnv::isolated();
+                let project = env.project().build();
+                env.stop_daemon();
+                let environment = env.environment();
+                std::fs::create_dir_all(environment.daemon_state_dir())
+                    .expect("creating the daemon directory");
+                let held = std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(environment.daemon_spawn_lock())
+                    .expect("opening the spawn lock");
+                held.try_lock_exclusive()
+                    .expect("this test must hold the spawn lock");
+                let out = run(project.path(), &env, &["--deadline", "1", "list"], json);
+                let _ = FileExt::unlock(&held);
                 out
             },
         },
@@ -508,6 +532,7 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
         (AppError::Validation(String::new()), 2),
         (AppError::NotFound(String::new()), 3),
         (AppError::LockTimeout(String::new()), 4),
+        (AppError::DeadlineExceeded(String::new()), 12),
         (AppError::Integrity("a finding".into()), 5),
         (AppError::Storage(String::new()), 5),
         (AppError::GithubAuth(String::new()), 6),
@@ -528,7 +553,7 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
 /// Every variant is exercised by [`cases`].
 ///
 /// The guard that matters is [`variant_name`]: its `match` is exhaustive, so an
-/// eleventh `AppError` variant stops this file compiling until someone decides
+/// further `AppError` variant stops this file compiling until someone decides
 /// which list it belongs in.
 #[test]
 fn the_table_covers_every_variant() {
@@ -542,6 +567,7 @@ fn the_table_covers_every_variant() {
         AppError::Validation(String::new()),
         AppError::NotFound(String::new()),
         AppError::LockTimeout(String::new()),
+        AppError::DeadlineExceeded(String::new()),
         AppError::Integrity("a finding".into()),
         AppError::Storage(String::new()),
         AppError::GithubAuth(String::new()),
@@ -573,6 +599,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::Validation(_) => "Validation",
         AppError::NotFound(_) => "NotFound",
         AppError::LockTimeout(_) => "LockTimeout",
+        AppError::DeadlineExceeded(_) => "DeadlineExceeded",
         AppError::Integrity(_) => "Integrity",
         AppError::Storage(_) => "Storage",
         AppError::GithubAuth(_) => "GithubAuth",
