@@ -61,6 +61,8 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$(dirname "$0")/.."
 
+gate_progress_case_path="${STORYHOOK_GATE_PROGRESS_PATH:-release gate/rust-suite}"
+
 # THE MACHINE-WIDE `gate` LOCK -- SH-457, decision D4 of
 # `docs/spec/full-auto-engine.md`.
 #
@@ -151,7 +153,8 @@ else
         echo "run-tests.sh: reached the 'gate' lock take $depth times over, which means the re-exec handshake is not landing -- refusing rather than forking a process per cycle" >&2
         exit 2
     fi
-    STORYHOOK_GATE_LOCK_TAKEN=1 STORYHOOK_GATE_LOCK_DEPTH="$depth" \
+    STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="$gate_progress_case_path" \
+        STORYHOOK_GATE_LOCK_TAKEN=1 STORYHOOK_GATE_LOCK_DEPTH="$depth" \
         exec bash scripts/machine-lock.sh gate -- bash "$self" "$@"
 fi
 
@@ -212,7 +215,6 @@ log="$data_root/test-output.log"
 # leg.sh still owns the item's running/passed/failed lifecycle because it wraps
 # this script's whole invocation; the fold preserves a total omitted by its
 # later terminal line.
-gate_progress_case_path="${STORYHOOK_GATE_PROGRESS_PATH:-release gate/rust-suite}"
 run_leg() {
     if [ -n "$(gate_progress_journal)" ]; then
         # `env -u` strips the journal (and its path hint) from cargo and every
@@ -254,6 +256,8 @@ sys.exit(1)
 
 storyhook_test_args=()
 lib_packages=()
+discovery_activity="discovering tests"
+gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" running
 if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
     for name in "${only_names[@]}"; do
         if [ -f "tests/$name.rs" ]; then
@@ -264,6 +268,7 @@ if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
             echo "run-tests.sh: --only names '$name', which is neither a \
 tests/*.rs binary nor a workspace lib target -- refusing rather than silently \
 skipping it" >&2
+            gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
             exit 1
         }
         lib_packages+=("$pkg")
@@ -350,22 +355,35 @@ add_to_exact_total() {
 
 if [ -n "$(gate_progress_journal)" ]; then
     if [ "$only_mode" -eq 0 ]; then
-        add_to_exact_total cargo test --workspace "$@" || exit 1
+        add_to_exact_total cargo test --workspace "$@" || {
+            gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+            exit 1
+        }
     else
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
-            add_to_exact_total cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || exit 1
+            add_to_exact_total cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || {
+                gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+                exit 1
+            }
         fi
         i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
-            add_to_exact_total cargo test -p "${lib_packages[$i]}" --lib "$@" || exit 1
+            add_to_exact_total cargo test -p "${lib_packages[$i]}" --lib "$@" || {
+                gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+                exit 1
+            }
             i=$((i + 1))
         done
         if [ "$run_docs" -eq 1 ]; then
-            add_to_exact_total cargo test --workspace --doc "$@" || exit 1
+            add_to_exact_total cargo test --workspace --doc "$@" || {
+                gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+                exit 1
+            }
         fi
     fi
     gate_progress_emit_item "$gate_progress_case_path" running "total=$exact_total"
 fi
+gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" passed
 
 status=0
 
@@ -401,9 +419,14 @@ fi
 # never be reported as a test failure, and the tree oid may legitimately be
 # unresolvable (a tarball, a corrupt index) in exactly the same cases
 # `tracked-tree.sh` already tolerates for `build.rs`.
+ledger_activity="recording test results"
+gate_progress_emit_activity "$gate_progress_case_path" "$ledger_activity" running
 tree="$(scripts/tracked-tree.sh 2>/dev/null || true)"
+ledger_status=0
 if [ -n "$tree" ]; then
-    bash scripts/test-delta.sh "$tree" <"$log" || true
+    bash scripts/test-delta.sh "$tree" <"$log" || ledger_status=$?
 fi
+gate_progress_emit_activity "$gate_progress_case_path" "$ledger_activity" \
+    "$([ "$ledger_status" = 0 ] && echo passed || echo failed)"
 
 exit "$status"

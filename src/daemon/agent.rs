@@ -21,6 +21,23 @@
 //! [`crate::env::StoreLocation::is_default`] — see its own doc for why that
 //! substitution would have left the defect half-open.
 //!
+//! # A durable agent cannot serve a temporary store (SH-426)
+//!
+//! Per-store labels also let per-store agents accumulate. That is legitimate
+//! for durable stores, but not when the plist under a durable home names a
+//! store the operating system may reclaim: the store disappears while the
+//! plist keeps launching its defunct daemon at every later login. The install
+//! target guard in [`super::commands`] refuses that lifetime mismatch before
+//! it writes this module's plist or calls launchd.
+//!
+//! The mismatch is deliberately narrower than "temporary store." Tests root
+//! both the store and their fake `~/Library/LaunchAgents` under `/private/tmp`,
+//! so both artifacts disappear together. Refusing those would disable the
+//! isolation that makes the install tests safe without protecting anything
+//! durable. Existing agents are reported and remain explicitly uninstallable;
+//! they are never reaped from a read-only status call, because an absent store
+//! may be on a volume that is merely offline.
+//!
 //! # Why one module owns both directions
 //!
 //! SH-411 gave the plist a *reader* (`story daemon status` reports which binary

@@ -122,7 +122,9 @@ run_verification_gate() {
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
     verifier_window_tail "$log"
-    STORYHOOK_GATE_RESULT_FILE="$gate_result" \
+    STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
+        STORYHOOK_GATE_RESULT_FILE="$gate_result" \
+        bash "$script_dir/machine-lock.sh" gate -- \
         bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?

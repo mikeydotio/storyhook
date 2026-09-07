@@ -130,22 +130,12 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
     let poller = poller_container.path().join("poller");
     fs::write(poller.join("f"), "unclassified local edits\n").unwrap();
     let expected_tree = stdout(&repo.preflight(&next_base, &head));
-    let script = checkout().join("scripts/verify-pr.sh");
-    let result = run(
-        repo.path(),
-        "bash",
-        &[
-            script.to_str().unwrap(),
-            "--run-gate",
-            "668",
-            &expected_tree,
-            &next_base,
-            &head,
-            poller.to_str().unwrap(),
-            "--",
-            "touch",
-            "gate-started",
-        ],
+    let result = repo.verification_gate(
+        &expected_tree,
+        &next_base,
+        &head,
+        &poller,
+        &["touch", "gate-started"],
     );
     assert_ok(&result, "verifier emits classified JSON");
     assert!(!poller.join("gate-started").exists());
@@ -174,27 +164,58 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
     let clean_container = repo.poller(&next_base);
     let clean = clean_container.path().join("poller");
     for (command, expected) in [("exit 7", "tests-failed"), ("exit 0", "gate-passed")] {
-        let outcome = run(
-            repo.path(),
-            "bash",
-            &[
-                script.to_str().unwrap(),
-                "--run-gate",
-                "668",
-                &expected_tree,
-                &next_base,
-                &head,
-                clean.to_str().unwrap(),
-                "--",
-                "bash",
-                "-c",
-                command,
-            ],
+        let outcome = repo.verification_gate(
+            &expected_tree,
+            &next_base,
+            &head,
+            &clean,
+            &["bash", "-c", command],
         );
         assert_ok(&outcome, "classifying an actual completed gate");
         let result: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
         assert_eq!(result["result"], expected, "{result}");
     }
+}
+
+/// The verifier takes one machine-wide gate around the complete speculative
+/// command, so its timeout contains at most one lock wait plus one gate run.
+#[test]
+fn verifier_holds_the_gate_across_the_complete_speculative_run() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ]",
+        ],
+    );
+
+    assert_ok(&outcome, "running the centralized verification gate");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "gate-passed", "{payload}");
+    let progress = fs::read_to_string(repo.path().join("gate-progress.ndjson")).unwrap();
+    assert!(
+        progress.contains(
+            r#"{"kind":"activity","path":"release gate","label":"waiting for gate lock","status":"running""#
+        ),
+        "the lock wait must be visible before the speculative command: {progress}"
+    );
+    assert!(
+        progress.contains(
+            r#"{"kind":"activity","path":"release gate","label":"waiting for gate lock","status":"passed""#
+        ),
+        "the activity must terminate after acquisition: {progress}"
+    );
 }
 
 /// Neither pre-existing nor gate-created tracked edits may be discarded or
@@ -225,23 +246,8 @@ fn verifier_preserves_tracked_edits_before_and_during_the_gate() {
             } else {
                 "touch gate-started"
             };
-            let result = run(
-                repo.path(),
-                "bash",
-                &[
-                    checkout().join("scripts/verify-pr.sh").to_str().unwrap(),
-                    "--run-gate",
-                    "668",
-                    &tree,
-                    &base,
-                    &head,
-                    poller.to_str().unwrap(),
-                    "--",
-                    "bash",
-                    "-c",
-                    command,
-                ],
-            );
+            let result =
+                repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
             assert_ok(&result, "classify tracked edits");
             let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
             assert_eq!(
@@ -440,6 +446,46 @@ impl MergeRepo {
             .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .output()
             .expect("running speculative merge command")
+    }
+
+    fn verification_gate(
+        &self,
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        command: &[&str],
+    ) -> Output {
+        let mut args = vec![
+            checkout()
+                .join("scripts/verify-pr.sh")
+                .display()
+                .to_string(),
+            "--run-gate".to_string(),
+            "668".to_string(),
+            expected_tree.to_string(),
+            base.to_string(),
+            head.to_string(),
+            poller.display().to_string(),
+            "--".to_string(),
+        ];
+        args.extend(command.iter().map(|arg| (*arg).to_string()));
+        Command::new("bash")
+            .args(&args)
+            .current_dir(self.path())
+            .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env(
+                "STORYHOOK_GATE_PROGRESS",
+                self.path().join("gate-progress.ndjson"),
+            )
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .expect("running the centralized verification gate")
     }
 
     fn spawn_speculative_run(
