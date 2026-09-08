@@ -350,6 +350,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // runs retain the honest fact that no explicit selection was stored.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 33,
+        name: "cleanup_settings",
+        sql: include_str!("schema/0033_cleanup_settings.sql"),
+        // Two nullable project-setting columns added in place. Existing
+        // projects inherit the code defaults without a stored rewrite.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

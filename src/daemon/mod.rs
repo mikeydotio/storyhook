@@ -40,6 +40,7 @@ pub mod activity;
 pub mod agent;
 pub mod backup;
 pub mod bus;
+pub mod cleanup;
 pub mod commands;
 pub mod crash;
 pub mod engine;

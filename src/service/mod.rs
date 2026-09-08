@@ -31,6 +31,7 @@
 
 pub mod attachment;
 pub mod catalog;
+pub mod cleanup;
 mod cleanup_lease;
 pub mod config;
 pub mod engine;
@@ -77,6 +78,7 @@ pub use catalog::{
     CatalogEntry, CatalogService, OriginFinding, OriginSweep, OrphanedRegistration, RecordedOrigin,
     UnregisteredOrigin,
 };
+pub use cleanup::{CleanupFailure, CleanupRemoval, CleanupReport, CleanupService, CleanupSkip};
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
 pub use git_links::{CheckoutLink, GitLinkService, OriginLink, PointerOutcome};

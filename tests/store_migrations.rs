@@ -3749,3 +3749,42 @@ fn migration_thirty_normalizes_every_story_with_real_events() {
     }
     assert!(diff_read_model(&store, project).unwrap().is_clean());
 }
+
+// ---------------------------------------------------------------------------
+// Migration 33: automatic cleanup policy is project-scoped (SH-594)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_thirty_three_adds_nullable_cleanup_settings_without_rewriting_projects() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..32]).unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects
+             (id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq)
+         VALUES
+             (1, 'cleanup-settings', 'fixture', 'Fixture', 'SH',
+              '2026-01-01T00:00:00Z', 1, 1);
+         INSERT INTO project_settings
+             (project_id, sync_auto_transition, doctor_stale_threshold)
+         VALUES (1, 0, '14d');",
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate_with(&migrate::MIGRATIONS[..33]).unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    let row: (i64, String, Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT sync_auto_transition, doctor_stale_threshold,
+                    cleanup_auto, cleanup_interval
+             FROM project_settings WHERE project_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (0, "14d".into(), None, None));
+    assert_eq!(user_version(store.path()), 33);
+}

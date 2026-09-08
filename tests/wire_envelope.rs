@@ -37,6 +37,7 @@ use storyhook::output::{
     StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome, render_error,
     render_response,
 };
+use storyhook::service::{CleanupFailure, CleanupRemoval, CleanupReport, CleanupSkip};
 use storyhook::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, GlobalSeq, PrLink,
 };
@@ -382,6 +383,34 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 needs_human: vec![EngineNeedsHumanView {
                     id: "SH-11".to_string(),
                     title: "Approve the rollout".to_string(),
+                }],
+            })),
+        ),
+        (
+            "cleanup",
+            Response::Cleanup(Box::new(CleanupReport {
+                project: "fixture".to_string(),
+                dry_run: false,
+                candidates: 3,
+                reclaimed_bytes: 4096,
+                removed: vec![CleanupRemoval {
+                    story_id: "SH-7".to_string(),
+                    worktree: "/repo/SH-7".into(),
+                    branch: "worktree-SH-7".to_string(),
+                    removed_worktree: true,
+                    removed_local_branch: true,
+                    removed_remote_branch: true,
+                    reclaimed_bytes: 4096,
+                }],
+                skipped: vec![CleanupSkip {
+                    story_id: "SH-8".to_string(),
+                    reason: "dirty-worktree".to_string(),
+                    detail: "/repo/SH-8".to_string(),
+                }],
+                failed: vec![CleanupFailure {
+                    story_id: "SH-9".to_string(),
+                    reason: "fetch-failed".to_string(),
+                    detail: "authentication required".to_string(),
                 }],
             })),
         ),
@@ -792,6 +821,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Unclaimed(..) => "unclaimed",
             Response::Stories { .. } => "stories",
             Response::EngineRun(_) => "engine_run",
+            Response::Cleanup(_) => "cleanup",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",
@@ -806,7 +836,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 18] = [
+    const EVERY_VARIANT: [&str; 19] = [
         "message",
         "message_with_warnings",
         "story",
@@ -814,6 +844,7 @@ fn the_response_corpus_covers_every_variant() {
         "unclaimed",
         "stories",
         "engine_run",
+        "cleanup",
         "summary",
         "graph",
         "issues",
@@ -1727,6 +1758,7 @@ fn invocation_corpus() -> Vec<Invocation> {
                 run: Some("run-1".to_string()),
             },
         },
+        Invocation::Cleanup { dry_run: true },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1764,6 +1796,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Engine { .. } => "Engine",
+        Invocation::Cleanup { .. } => "Cleanup",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1832,7 +1865,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        67,
+        68,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
