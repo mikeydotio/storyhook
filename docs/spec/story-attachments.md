@@ -1,6 +1,7 @@
-# Story attachments: the storage and CLI foundation
+# Story attachments: storage, CLI, and authenticated reads
 
-Design of record for **SH-315** (the epic) and its foundation child **SH-387**. Written
+Design of record for **SH-315** (the epic), foundation child **SH-387**, and
+byte-serving child **SH-388**. Written
 after implementation, for the reason [`dashboard-dispatch.md`](dashboard-dispatch.md) and
 [`responsive-dashboard.md`](responsive-dashboard.md) give: sharper against the actual code
 than against a proposal for it.
@@ -208,4 +209,81 @@ below carry.
 Matches this document as written — SH-387 shipped exactly the storage-and-CLI scope
 above, with the `next_attachment_id` counter added during implementation once
 `tests/story_attachments.rs` demonstrated the id-reuse defect a first draft would have
-shipped. SH-388 through SH-393 remain open; SH-315 itself stays open until they land.
+shipped. The SH-388 extension follows below; SH-389 through SH-393 remain separate
+children, and SH-315 stays open until they land.
+
+
+## As built — SH-388: authenticated bytes
+
+`GET /api/repos/{project}/story/{story}/attachments/{attachment}` resolves the
+project slug through the existing REST router and calls `AttachmentService::get`
+with that project's context. Attachment IDs are positive decimal `u32` values
+(leading zeroes are accepted); invalid syntax, signs, zero, and overflow return
+400. Missing resources return 404, missing backing blobs retain the service's
+contextual integrity error (500), and closed stories remain readable. Other
+methods follow the existing method/admission rules (405 after admission).
+
+`Reply` now stores `Vec<u8>` and feeds the HTTP response's byte constructor.
+Text constructors retain their UTF-8 behavior; `body()` exposes bytes and
+`text_body()` reports invalid UTF-8 explicitly. The finalizer still owns all
+security headers. Successful attachment responses add `Cache-Control: no-store`
+and `Cross-Origin-Resource-Policy: same-origin`, with the allowlisted stored MIME
+type and Content-Length computed from the actual bytes. The supplied filename
+never enters a header. Responses are complete: Range and conditional headers
+do not select partial or cached responses. The existing 10 MiB attachment limit
+bounds ordinary blob reads; no schema or upload change is involved.
+
+### The cookie decision
+
+No URL credential or new authentication path is needed. SH-319 already supplied
+the mechanism the original SH-388 description called out as unresolved:
+`same_origin_read` accepts a named cookie with `Sec-Fetch-Site: same-origin`,
+or, only when that header is absent, a Referer whose authority matches Host.
+The latter is needed on plain HTTP LAN/tailnet origins, where browsers do not
+send Fetch Metadata. The dashboard's existing `Referrer-Policy: same-origin`
+keeps that proof available for a same-origin image. Explicit master/named token
+headers continue to work. Missing or rejected proof fails closed, and query
+parameters cannot authenticate.
+
+This reuses the existing gate rather than weakening it. The browser restriction
+in the response adds defense against cross-origin embedding. References:
+[Fetch Metadata](https://www.w3.org/TR/fetch-metadata/) and
+[Fetch's Cross-Origin-Resource-Policy](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
+`default-src 'self'` already allows these same-origin images, so CSP is unchanged.
+
+### Metadata and consumers
+
+Both story-detail and board responses already serialize
+`StoryView.story.attachments`. Consumers build the relative route from the
+project slug, story ID, and attachment ID; metadata gains no duplicate fields,
+URLs, tokens, or byte payloads. Empty attachment lists remain omitted. Drawer
+markup and the viewer belong to SH-390, uploads to SH-389, and remote URLs to
+SH-393.
+
+### Verification
+
+`tests/attachment_http.rs` exercises the real socket/daemon path: each supported
+MIME type, arbitrary binary bytes and maximum size, shared security headers,
+origin-proof and token refusals (including expiry/revocation), project isolation,
+resource and method errors, closed stories, missing blobs, metadata parity,
+and no change-feed publication. HTTP unit tests also cover byte access, strict
+UTF-8 access, framing, and HEAD suppression. The original missing route was
+reproduced as four failing regressions before implementation; metadata tests
+already passed.
+
+The browser tests seed a real PNG through the CLI, sign in through the dashboard
+modal, then decode a plain image in the dashboard shell. They assert that no
+custom auth header accompanies the image request. The desktop spec covers
+Chromium/WebKit; the untrusted-origin cookie spec covers the Referer fallback.
+Only new and directly impacted tests are run here; the centralized verifier owns
+the full suite.
+
+Verification completed: 121 selected Rust integration tests, seven existing web
+response checks, the affected HTTP/admission/routes/handoff/token/framing unit
+tests and dispatch-log response test, and 34 source/fixture fences passed.
+Chromium and WebKit image tests passed; both tests in the plain-HTTP Chromium
+cookie spec passed. `cargo fmt --all -- --check`, `git diff --check`, and
+`cargo clippy --all-targets -- -D warnings` passed. The initial plain-HTTP browser
+fixture used Node's API client, which could not resolve Chromium's test-only
+hostname; it now reads the project slug from the dashboard's actual catalog
+response, keeping the test wholly on the browser's configured origin.
