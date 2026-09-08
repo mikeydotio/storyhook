@@ -58,7 +58,13 @@ pub struct RouteRequest<'a> {
     method: &'a Method,
     path: &'a str,
     headers: &'a [Header],
-    body: &'a str,
+    body: RouteBody<'a>,
+}
+
+/// Borrowed body semantics survive routing without a lossy text conversion.
+enum RouteBody<'a> {
+    Text(&'a str),
+    Binary(&'a [u8]),
 }
 
 impl<'a> RouteRequest<'a> {
@@ -69,8 +75,37 @@ impl<'a> RouteRequest<'a> {
             method,
             path,
             headers,
-            body,
+            body: RouteBody::Text(body),
         }
+    }
+
+    /// Creates a binary request for the attachment-upload route. Other routes
+    /// refuse this representation, even when the bytes happen to be UTF-8.
+    pub fn binary(
+        method: &'a Method,
+        path: &'a str,
+        headers: &'a [Header],
+        body: &'a [u8],
+    ) -> Self {
+        Self {
+            method,
+            path,
+            headers,
+            body: RouteBody::Binary(body),
+        }
+    }
+}
+
+/// Keeps catalog mutations on the ordinary text guard.
+fn guarded_text(
+    headers: &[Header],
+    trusted: &TrustedHosts,
+    body: RouteBody<'_>,
+    handler: impl FnOnce(&str) -> Reply,
+) -> Reply {
+    match body {
+        RouteBody::Text(text) => guarded(headers, trusted, text, handler),
+        RouteBody::Binary(_) => text_reply(400, "binary body requires the attachment-upload route"),
     }
 }
 
@@ -193,6 +228,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryShow { .. } => "show",
         ProjectRoute::StoryPatch { .. } => "set-fields",
         ProjectRoute::StoryDelete { .. } => "delete",
+        ProjectRoute::StoryAttachmentUpload { .. } => "attachment",
         ProjectRoute::StoryAction { action, .. } => match action {
             StoryAction::Move => "move",
             StoryAction::Comment => "comment",
@@ -278,7 +314,22 @@ pub fn route_with_activity<S: Store>(
         headers,
         body,
     } = request;
-    match classify(&path_segments(path), method) {
+    let route = classify(&path_segments(path), method);
+    if matches!(body, RouteBody::Binary(_))
+        && !matches!(
+            route,
+            Route::Project {
+                route: ProjectRoute::StoryAttachmentUpload { .. },
+                ..
+            }
+        )
+    {
+        return Routed::quiet(text_reply(
+            400,
+            "binary body requires the attachment-upload route",
+        ));
+    }
+    match route {
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => Routed::quiet(match repos_json(store, env) {
             Ok(json) => json_reply(200, json).no_cache(),
@@ -286,14 +337,14 @@ pub fn route_with_activity<S: Store>(
         }),
         Route::ReposCreate => Routed::changing(
             method,
-            guarded(headers, trusted_hosts, body, |b| {
+            guarded_text(headers, trusted_hosts, body, |b| {
                 route_init_repo(store, env, b)
             }),
             Changed::Catalog,
         ),
         Route::RepoDelete { id } => Routed::changing(
             method,
-            guarded(headers, trusted_hosts, body, |b| {
+            guarded_text(headers, trusted_hosts, body, |b| {
                 route_delete_repo(store, env, id, b)
             }),
             Changed::Catalog,
@@ -354,10 +405,28 @@ fn route_project<S: Store>(
     verification_activity: &VerificationActivity,
     route: ProjectRoute<'_>,
     headers: &[Header],
-    body: &str,
+    body: RouteBody<'_>,
     trusted_hosts: &TrustedHosts,
 ) -> Reply {
+    let body = match body {
+        RouteBody::Text(text) => text,
+        RouteBody::Binary(bytes) => {
+            return match route {
+                ProjectRoute::StoryAttachmentUpload { id } => {
+                    guarded_no_body(headers, trusted_hosts, || {
+                        crate::api::upload::reply(ctx, id, headers, bytes)
+                    })
+                }
+                _ => text_reply(400, "binary body requires the attachment-upload route"),
+            };
+        }
+    };
     match route {
+        ProjectRoute::StoryAttachmentUpload { id } => {
+            guarded_no_body(headers, trusted_hosts, || {
+                crate::api::upload::reply(ctx, id, headers, body.as_bytes())
+            })
+        }
         ProjectRoute::Data => match project_data_json(ctx, verification_activity) {
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
@@ -1036,12 +1105,9 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
 /// which is what this route used to do, and what cost it two acquisitions of a
 /// lock that no longer exists.
 ///
-/// Being the one route that skips [`dispatch`] makes it the one route that
-/// would also skip the story-id canonicalization every other door gets there
-/// (SH-118), so it asks for the same expansion explicitly. That call is the
-/// price of the shortcut above, and it is written here rather than hidden
-/// inside `set_fields` because the rule belongs to the *door*, not to the
-/// service.
+/// Like attachment upload, this service-backed route explicitly applies the
+/// story-id canonicalization otherwise provided by [`dispatch`] (SH-118).
+/// The rule belongs to the door, not to `set_fields`.
 fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let id = &crate::invoke::story_ids::canonicalize_one(ctx, id)?;
