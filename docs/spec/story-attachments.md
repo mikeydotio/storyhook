@@ -1,8 +1,9 @@
 # Story attachments: storage, transport, and dashboard viewer
 
 Design of record for **SH-315** (the epic), foundation child **SH-387**,
-byte-serving child **SH-388**, upload transport child **SH-389**, and drawer/viewer
-child **SH-390**. Written
+byte-serving child **SH-388**, upload transport child **SH-389**, drawer/viewer
+child **SH-390**, create-modal paste child **SH-391**, existing-story drop child
+**SH-392**, and remote-image child **SH-393**. Written
 after implementation, for the reason [`dashboard-dispatch.md`](dashboard-dispatch.md) and
 [`responsive-dashboard.md`](responsive-dashboard.md) give: sharper against the actual code
 than against a proposal for it.
@@ -476,3 +477,49 @@ ordered persistence, draft save/reopen/publish, partial refusal and retry,
 ambiguous failure, and cross-project ownership through production UI and API
 paths. SH-392 still owns drag-and-drop onto existing stories; SH-393 owns remote
 image URLs.
+
+## Remote description images (SH-393)
+
+A story description projects supported remote image URLs into the existing
+attachment strip without changing the description or storing attachment metadata.
+Stored attachments remain first in addition order; remote images follow in their
+first textual order. The markdown parser reports bare URLs, autolinks, link
+destinations and image-syntax destinations through an optional collector, so code
+spans and blocks stay non-operative and there is no second, drifting URL grammar.
+The image syntax itself remains literal in rendered prose rather than becoming an
+inline image.
+
+A candidate must be an absolute HTTPS URL with no URL credentials and a decoded
+path ending case-insensitively in `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp`.
+Queries remain part of identity; fragments are discarded before first-occurrence
+deduplication because they never reach the server. The decoded final path segment
+is the display name, falling back to the hostname. HTTP, SVG, malformed and
+credential-bearing URLs remain ordinary text or links and create no media control.
+
+Remote controls initially contain an unloaded placeholder, filename and hostname.
+Opening the drawer therefore sends no third-party image request. Activating the
+control is the consent boundary: it assigns the URL to a fresh modal image with
+`referrerPolicy="no-referrer"`; successful decoding then hydrates the strip preview
+for that browser session. Error and retry, obsolete callbacks, modal containment
+and focus restoration share SH-390's existing viewer lifecycle. Media identity is
+compared as dataset text, never interpolated into selector syntax. Accepted board
+snapshots compare the complete derived media list, so an external description edit
+can add, replace or remove the optional section and closes a viewer whose URL
+vanished without trusting retained detail data.
+
+The CSP adds `https:` to the existing `img-src 'self' blob:` policy. The daemon
+never resolves or fetches the URL, so this creates no server-side SSRF surface
+and no backup/export/schema work.
+The browser still reveals its IP and request time to the selected host and may send
+that host's own cookies; explicit activation makes that request intentional, and
+the per-image policy removes the dashboard/story URL from `Referer`. Using
+`crossorigin="anonymous"` would omit cross-origin credentials but require the image
+host to opt into CORS, rejecting ordinary image URLs; the viewer therefore uses the
+normal image request mode and states that residual privacy boundary explicitly.
+HTTP is excluded rather than relying on browser-dependent mixed-content upgrading.
+
+Acceptance is covered structurally in `tests/web_test.rs` and behaviorally in
+`remote-image-viewer.spec.ts` on Chromium and WebKit: consent-before-request,
+referrer omission, grammar and exclusions, stable ordering/deduplication, real
+decoding, retry, delayed-response invalidation, live description replacement,
+removal and focus fallback.
