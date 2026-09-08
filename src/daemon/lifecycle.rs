@@ -916,6 +916,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     crate::daemon::crash::install_panic_hook(env);
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
+    let _activity = crate::daemon::activity::start(env);
     crate::daemon::crash::harvest(env);
     let (listeners, bound) = bind_preferred(env)?;
     let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
@@ -2431,6 +2432,7 @@ pub fn clear_info(env: &Environment) {
 
 /// Removes this daemon's portfile and terminates an orderly shutdown.
 pub(crate) fn exit_cleanly(env: &Environment) -> ! {
+    crate::daemon::activity::stop();
     with_cleared_info(env, || std::process::exit(0))
 }
 

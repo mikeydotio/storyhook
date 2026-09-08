@@ -648,6 +648,30 @@ Acknowledgement is separate from recovery: `story engine ack --run <run-id>`
 removes the durable dashboard alert only after you have reviewed it; it does not
 resume, clean, or delete anything.
 
+### Live daemon and verifier activity
+
+The daemon maintains a continuous log view in
+`storyhook-verifier:verification` on tmux's default server:
+
+```bash
+tmux attach -t storyhook-verifier
+story daemon logs --follow
+story daemon logs --json
+```
+
+Entries carry UTC timestamps, source and stream labels, process identifiers,
+and story/request context. The view includes daemon diagnostics, committed
+story events, engine and verifier activity, and script stdout/stderr. Color is
+added only at a terminal; `--json` produces one JSON record per line. Reading
+logs does not start a daemon. `--store-path` selects another store's journal.
+
+Private `activity/YYYY-MM-DD.jsonl` files live beneath each store's daemon
+state directory. They rotate at UTC midnight, append across restarts, and stay
+until you remove them. Read older files directly. Set
+`STORYHOOK_VERIFIER_MIRROR=0` to disable tmux integration while retaining logs.
+When several stores share a machine, the last daemon started owns the fixed
+pane; each store retains its own files.
+
 ## Storage model
 
 Stories live in one store outside your repositories:

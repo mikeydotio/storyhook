@@ -15,6 +15,41 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
         let mut m = BTreeMap::new();
 
         m.insert(
+            "daemon",
+            "\
+Manage the per-store daemon and inspect its operational journal.
+
+  story daemon start [--port PORT]
+  story daemon stop [--force]
+  story daemon status
+  story daemon install [--this-binary]
+  story daemon uninstall
+  story daemon token
+  story daemon logs [--follow] [--json]
+
+logs reads today's UTC activity journal directly, even while the daemon is
+stopped. --follow continues across midnight; --json emits one JSON record
+per line. Plain output uses color only at a terminal (NO_COLOR disables it).
+Each record labels its source, stream, process and story/request context.
+Use --store-path to inspect a different store.
+
+The daemon opens storyhook-verifier:verification on the default tmux server
+as a continuous log view. STORYHOOK_VERIFIER_MIRROR=0 disables that view,
+without disabling the journal. A missing tmux is non-fatal.
+
+Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
+They are private, append across restarts, and are not automatically deleted.
+Scripts log stdout/stderr as well as process status. Read archived files
+directly when investigating an earlier day. The journal describes observed
+activity; the story store remains the authoritative history.
+
+  tmux attach -t storyhook-verifier
+  story daemon logs --follow
+  story daemon logs --json
+",
+        );
+
+        m.insert(
             "project",
             r#"story project new
 story project new --prefix <PREFIX> [--name <NAME>]

@@ -188,8 +188,10 @@ fn truncating_an_observed_journal_is_an_infrastructure_failure() {
 
 #[test]
 fn replacing_a_journal_cannot_renew_the_deadline() {
+    // Publish a new inode atomically in the same directory. Moving the old
+    // journal away first would race the separate missing-journal refusal.
     let script = format!(
-        "mv \"$STORYHOOK_GATE_PROGRESS\" old-journal\nprintf replacement > \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n"
+        "printf replacement > \"$STORYHOOK_GATE_PROGRESS.replacement\"\nmv \"$STORYHOOK_GATE_PROGRESS.replacement\" \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n"
     );
     let outcome = verify_script(&script, IDLE);
     assert!(

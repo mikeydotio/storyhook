@@ -944,7 +944,7 @@ const REDACTED_HEADERS: &[&str] = &["Authorization:", "X-Storyhook-Token:"];
 /// [`CrashedDaemon`]'s own doc explains why the bearer token this daemon was
 /// serving with is never carried past [`harvest`], so there is no specific
 /// value here to compare against — only the shapes a leaked one takes.
-fn redact(text: &str) -> String {
+pub(crate) fn redact(text: &str) -> String {
     let token_free = redact_github_tokens(text);
     token_free
         .lines()

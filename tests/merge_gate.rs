@@ -196,13 +196,30 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         &[
             "bash",
             "-c",
-            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ]",
+            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
         ],
     );
 
     assert_ok(&outcome, "running the centralized verification gate");
     let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
     assert_eq!(payload["result"], "gate-passed", "{payload}");
+    let journal = fs::read_dir(repo.path().join("activity"))
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<String>();
+    let rows: Vec<serde_json::Value> = journal
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for stream in ["stdout", "stderr"] {
+        assert!(
+            rows.iter()
+                .any(|row| row["source"] == "machine-lock.sh/merge-watch.sh"
+                    && row["stream"] == stream
+                    && row["message"] == format!("gate-{stream}")),
+            "gate stream missing from activity: {journal}"
+        );
+    }
     let progress = fs::read_to_string(repo.path().join("gate-progress.ndjson")).unwrap();
     assert!(
         progress.contains(
@@ -474,6 +491,8 @@ impl MergeRepo {
             .args(&args)
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
+            .env("STORYHOOK_VERIFIER_MIRROR", "0")
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
