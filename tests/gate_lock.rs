@@ -76,6 +76,7 @@
 //! calls in this file's own fixture are the same defence applied one level
 //! down, and they are load-bearing for exactly that reason.
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -302,21 +303,37 @@ impl Fixture {
             std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
                 .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
-        // `run-tests.sh` reaches this non-shell parser only when progress is
-        // enabled. Derive its name from the tracked caller's source instead
-        // of extending the old hand-kept shell list with another exception.
+        // `run-tests.sh` reaches these non-shell observers only while running
+        // Cargo. Derive their names from the tracked callers instead of
+        // extending the old hand-kept shell list with another exception.
+        let mut observers = BTreeSet::new();
         for token in read_checkout_file("scripts/run-tests.sh").split('"') {
-            if !token.ends_with(".awk") {
+            if !token.ends_with(".py") && !token.ends_with(".awk") {
                 continue;
             }
             let name = Path::new(token)
                 .file_name()
-                .expect("a referenced awk script name")
+                .expect("a referenced helper script name")
                 .to_str()
-                .expect("a UTF-8 awk script name");
+                .expect("a UTF-8 helper script name");
+            observers.insert(name.to_string());
+        }
+        for line in read_checkout_file("scripts/activity-run.py").lines() {
+            let Some(imported) = line.strip_prefix("from ") else {
+                continue;
+            };
+            let Some((module, _)) = imported.split_once(" import ") else {
+                continue;
+            };
+            let name = format!("{module}.py");
+            if checkout().join("scripts").join(&name).is_file() {
+                observers.insert(name);
+            }
+        }
+        for name in observers {
             std::os::unix::fs::symlink(
-                checkout().join("scripts").join(name),
-                path.join("scripts").join(name),
+                checkout().join("scripts").join(&name),
+                path.join("scripts").join(&name),
             )
             .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }

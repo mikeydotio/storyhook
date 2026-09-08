@@ -390,17 +390,15 @@ pub(crate) enum Intent {
     /// story is closed — see [`resolve_open_story`].
     Edit,
     /// Records an observation about the story without changing what it is.
-    /// Permitted on a closed story. Granted to three writes so far: `story
+    /// Permitted on a closed story. Granted to two writes so far: `story
     /// comment` (SH-261 — a comment reaches only the comment list and
     /// `updated_at`), `commit-sync`'s commit link (SH-279 —
     /// `StoryCommitLinked` reaches only `referenced_by_commits` and
-    /// `updated_at`), and the SH-524 verification progress publisher's
-    /// `StoryService::upsert_marked_comment` (a retract-and-add pair still
-    /// reaches only the comment list and `updated_at`, and must be able to
-    /// run concurrently with the verifier moving the same story to `done`).
+    /// `updated_at`). Verification progress is generation-guarded and refuses
+    /// closed stories, so it deliberately does not hold this permission.
     /// `tests/invoker_seam.rs::
-    /// only_comment_commit_link_and_progress_publish_append_to_a_closed_story`
-    /// pins the exact set; a fourth write needs its own argument before it is
+    /// only_comment_and_commit_link_append_to_a_closed_story`
+    /// pins the exact set; a third write needs its own argument before it is
     /// added there.
     Append,
 }

@@ -258,10 +258,10 @@ fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let command = r#"
 printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
 printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
-printf 'test-delta: still red (25):\n'
+printf '     Running tests/diagnostics.rs (target/debug/deps/diagnostics-fixture)\n'
 i=1
 while [ "$i" -le 25 ]; do
-    printf '  diagnostics::failure_%02d\n' "$i"
+    printf 'test failure_%02d ... FAILED\n' "$i"
     i=$((i + 1))
 done
 i=1
@@ -390,6 +390,37 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         ),
         "the activity must terminate after acquisition: {progress}"
     );
+}
+
+#[test]
+fn same_tree_verification_attempts_keep_distinct_logs() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    for marker in ["first-attempt", "second-attempt"] {
+        let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["printf", marker]);
+        assert_ok(&outcome, "running a same-tree verification attempt");
+    }
+
+    let logs = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        logs.len(),
+        2,
+        "each attempt needs its own evidence: {logs:?}"
+    );
+    let contents = logs
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect::<Vec<_>>();
+    assert!(contents.iter().any(|text| text.contains("first-attempt")));
+    assert!(contents.iter().any(|text| text.contains("second-attempt")));
 }
 
 /// Neither pre-existing nor gate-created tracked edits may be discarded or

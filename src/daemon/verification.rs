@@ -21,6 +21,7 @@ use crate::process::{
     run_captured_with_progress_and_registration, run_captured_with_registration,
 };
 use crate::service::engine::DISPATCH_TIMEOUT;
+use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
     VerificationCandidate, VerificationQueue,
@@ -38,9 +39,6 @@ pub const INFRASTRUCTURE_RETRY_ATTEMPTS: u32 = super::verification_progress::PUB
     .as_secs() as u32
     / RECOVERY_WAKE.as_secs() as u32
     + 1;
-
-/// Marker for the one edited infrastructure evidence comment.
-pub const INFRASTRUCTURE_COMMENT_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
 /// One verification generation currently owned by this daemon's serialized
 /// verifier. Queue rank is deliberately absent: priority may change while an
@@ -164,17 +162,19 @@ impl VerificationGuard {
 /// concurrent workload, recorded by the Full Auto design investigation.
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
-/// Slack above the measured contended gate for GitHub, fetch, and landing.
+/// Multiplicative slack above the measured contended gate.
 const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 
 /// Maximum silence during centralized verification (SH-592).
 ///
-/// Retains SH-547's conservative allowance for a quiet build or network phase:
-/// twice the largest measured contended gate. Journal appends renew it, so
-/// progressing tests and identity-checked lock waits have no total runtime cap.
-/// The gate lock's shorter idle watchdog reports stalled tests first.
-pub const VERIFICATION_IDLE_TIMEOUT: Duration =
-    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
+/// Twice the largest measured contended gate covers healthy silence. One
+/// recovery window beyond that gives the inner gate watchdog time to publish
+/// its last journal record, descendant tree, and bounded cleanup first.
+/// Journal appends renew this deadline, so progressing tests and
+/// identity-checked lock waits have no total runtime cap.
+pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
+    MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN + RECOVERY_WAKE.as_secs(),
+);
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -824,6 +824,11 @@ where
     let mut active = activity.acquire(&candidate, started_at);
 
     loop {
+        match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            AuthorityRefresh::Current => {}
+            AuthorityRefresh::Replaced => continue,
+            AuthorityRefresh::Released => return Ok(TickResult::Returned),
+        }
         let ctx = Ctx::new(
             store,
             candidate.project,
@@ -834,8 +839,19 @@ where
         let pull_request = match &candidate.pull_request {
             Ok(pull_request) => pull_request.clone(),
             Err(problem) => {
-                return_for_repair(&ctx, actuator, &candidate, &problem.message())?;
-                return Ok(TickResult::Returned);
+                match return_for_repair(&queue, &ctx, actuator, &candidate, &problem.message())? {
+                    GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
+                    GenerationWrite::Superseded => match refresh_authority(
+                        &queue,
+                        &mut active,
+                        &lifecycle_entry,
+                        env,
+                        &mut candidate,
+                    )? {
+                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+                    },
+                }
             }
         };
         let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
@@ -859,20 +875,38 @@ where
             &format!("verification outcome: {outcome:?}"),
         );
 
-        if !matches!(outcome, VerificationOutcome::InfrastructureFailure { .. }) {
-            clear_matching_incident(store, &candidate)?;
+        match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            AuthorityRefresh::Current => {}
+            AuthorityRefresh::Replaced => continue,
+            AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
 
         match outcome {
             VerificationOutcome::Merged { tree, detail } => {
-                StoryService::new(&ctx).comment(
-                &candidate.story_id,
-                &format!(
+                let green_comment = format!(
                     "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `make test` and pull request {} landed. {detail}",
                     pull_request.url
-                ),
-            )?;
-                queue.record_merged(&ctx, &candidate.story_id, &pull_request.url)?;
+                );
+                if matches!(
+                    queue.record_generation_merged(
+                        &ctx,
+                        &candidate,
+                        &pull_request.url,
+                        &green_comment,
+                    )?,
+                    GenerationWrite::Superseded
+                ) {
+                    match refresh_authority(
+                        &queue,
+                        &mut active,
+                        &lifecycle_entry,
+                        env,
+                        &mut candidate,
+                    )? {
+                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+                    }
+                }
                 // Reaping is cleanup for work whose durable outcome is already
                 // recorded; it must not keep graceful shutdown waiting on the
                 // completed verification transaction.
@@ -886,6 +920,7 @@ where
             }
             VerificationOutcome::Conflict { detail } => {
                 let remediation_started = return_for_repair(
+                    &queue,
                     &ctx,
                     actuator,
                     &candidate,
@@ -894,6 +929,19 @@ where
                         candidate.story_id
                     ),
                 )?;
+                let remediation_started = match remediation_started {
+                    GenerationWrite::Applied(started) => started,
+                    GenerationWrite::Superseded => match refresh_authority(
+                        &queue,
+                        &mut active,
+                        &lifecycle_entry,
+                        env,
+                        &mut candidate,
+                    )? {
+                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+                    },
+                };
                 if !remediation_started {
                     return Ok(TickResult::Returned);
                 }
@@ -910,14 +958,13 @@ where
                         candidate.story_id
                     )));
                 }
-                let resumed_at = env.now();
-                active.replace(&resubmitted, resumed_at.clone());
-                name_verification(&lifecycle_entry, &resubmitted, &resumed_at);
+                transfer_verifier(&mut active, &lifecycle_entry, env, &resubmitted);
                 candidate = resubmitted;
                 continue;
             }
             VerificationOutcome::InvalidSubmission { detail } => {
-                return_for_repair(
+                let result = return_for_repair(
+                    &queue,
                     &ctx,
                     actuator,
                     &candidate,
@@ -926,10 +973,13 @@ where
                         candidate.story_id
                     ),
                 )?;
-                return Ok(TickResult::Returned);
+                if matches!(result, GenerationWrite::Applied(_)) {
+                    return Ok(TickResult::Returned);
+                }
             }
             VerificationOutcome::TestsFailed { tree, log, detail } => {
-                return_for_repair(
+                let result = return_for_repair(
+                    &queue,
                     &ctx,
                     actuator,
                     &candidate,
@@ -938,12 +988,25 @@ where
                         candidate.story_id
                     ),
                 )?;
-                return Ok(TickResult::Returned);
+                if matches!(result, GenerationWrite::Applied(_)) {
+                    return Ok(TickResult::Returned);
+                }
             }
             VerificationOutcome::InfrastructureFailure {
                 detail,
                 disposition,
-            } => return record_infrastructure_failure(&ctx, &candidate, disposition, &detail),
+            } => {
+                match record_infrastructure_failure(&queue, &ctx, &candidate, disposition, &detail)?
+                {
+                    GenerationWrite::Applied(result) => return Ok(result),
+                    GenerationWrite::Superseded => {}
+                }
+            }
+        }
+
+        match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+            AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
     }
 }
@@ -980,82 +1043,88 @@ fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCan
         && candidate.verifying_generation == Some(incident.generation)
 }
 
-fn clear_matching_incident(
-    store: &impl Store,
-    candidate: &VerificationCandidate,
-) -> Result<(), AppError> {
-    let incident = store.read(|tx| tx.verification_incident())?;
-    if let Some(incident) = incident.filter(|incident| incident_matches(incident, candidate)) {
-        store.write(|tx| {
-            tx.clear_verification_incident(&incident.incident_id)?;
-            Ok(())
-        })?;
-    }
-    Ok(())
+enum CandidateAuthority {
+    Current,
+    Superseded(Option<Box<VerificationCandidate>>),
 }
 
-fn record_infrastructure_failure(
-    ctx: &Ctx<'_, impl Store>,
+enum AuthorityRefresh {
+    Current,
+    Replaced,
+    Released,
+}
+
+fn candidate_authority(
+    queue: &VerificationQueue<'_, impl Store>,
+    candidate: &VerificationCandidate,
+) -> Result<CandidateAuthority, AppError> {
+    let current = queue.current_for(candidate)?;
+    if current
+        .as_ref()
+        .is_some_and(|current| current.verifying_generation == candidate.verifying_generation)
+    {
+        Ok(CandidateAuthority::Current)
+    } else {
+        Ok(CandidateAuthority::Superseded(current.map(Box::new)))
+    }
+}
+
+fn refresh_authority<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    active: &mut VerificationGuard,
+    lifecycle_entry: &crate::daemon::lifecycle::Entry<'_>,
+    env: &Environment,
+    candidate: &mut VerificationCandidate,
+) -> Result<AuthorityRefresh, AppError> {
+    match candidate_authority(queue, candidate)? {
+        CandidateAuthority::Current => Ok(AuthorityRefresh::Current),
+        CandidateAuthority::Superseded(Some(resubmitted)) => {
+            super::activity::emit(
+                "INFO",
+                "verifier",
+                "event",
+                &format!("project={} {}", candidate.project_slug, candidate.story_id),
+                &format!(
+                    "verification generation {:?} is superseded and has no outcome authority; transferring to {:?}",
+                    candidate.verifying_generation, resubmitted.verifying_generation
+                ),
+            );
+            transfer_verifier(active, lifecycle_entry, env, &resubmitted);
+            *candidate = *resubmitted;
+            Ok(AuthorityRefresh::Replaced)
+        }
+        CandidateAuthority::Superseded(None) => Ok(AuthorityRefresh::Released),
+    }
+}
+
+fn transfer_verifier(
+    active: &mut VerificationGuard,
+    lifecycle_entry: &crate::daemon::lifecycle::Entry<'_>,
+    env: &Environment,
+    resubmitted: &VerificationCandidate,
+) {
+    let resumed_at = env.now();
+    active.replace(resubmitted, resumed_at.clone());
+    name_verification(lifecycle_entry, resubmitted, &resumed_at);
+}
+
+fn record_infrastructure_failure<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
     candidate: &VerificationCandidate,
     disposition: VerificationFailureDisposition,
     detail: &str,
-) -> Result<TickResult, AppError> {
-    let generation = candidate.verifying_generation.ok_or_else(|| {
-        AppError::Storage(format!(
-            "{} has no verification generation",
-            candidate.story_id
-        ))
-    })?;
-    let project = ctx
-        .store()
-        .read(|tx| tx.project(candidate.project))?
-        .ok_or_else(|| AppError::NotFound(format!("project {}", candidate.project.get())))?;
-    let story = crate::store::StoryNo::parse_id(&project.prefix, &candidate.story_id)?;
-    let incident_id = format!("{}:{}", candidate.project.get(), generation.get());
-    let now = ctx.now();
-    let mut incident = ctx
-        .store()
-        .read(|tx| tx.verification_incident())?
-        .filter(|current| current.incident_id == incident_id)
-        .unwrap_or(VerificationIncident {
-            incident_id,
-            project: candidate.project,
-            story,
-            generation,
-            disposition,
-            halted: false,
-            attempts: 0,
-            detail: String::new(),
-            first_failed_at: now.clone(),
-            last_failed_at: now.clone(),
-        });
-    incident.attempts = incident.attempts.saturating_add(1);
-    incident.disposition = disposition;
-    incident.detail = detail.to_string();
-    incident.last_failed_at = now;
-    incident.halted = disposition == VerificationFailureDisposition::Permanent
-        || incident.attempts >= INFRASTRUCTURE_RETRY_ATTEMPTS;
-    ctx.store()
-        .write(|tx| tx.put_verification_incident(&incident))?;
-
-    let state = if incident.halted {
-        "HALTED"
-    } else {
-        "RETRYING"
-    };
-    let body = format!(
-        "{INFRASTRUCTURE_COMMENT_PREFIX} {state}\n\nAttempt {} of {}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n\n{}",
-        incident.attempts,
+) -> Result<GenerationWrite<TickResult>, AppError> {
+    let incident = match queue.record_generation_incident(
+        ctx,
+        candidate,
+        disposition,
+        detail,
         INFRASTRUCTURE_RETRY_ATTEMPTS,
-        incident.first_failed_at,
-        incident.last_failed_at,
-        incident.detail
-    );
-    StoryService::new(ctx).upsert_marked_comment(
-        &candidate.story_id,
-        INFRASTRUCTURE_COMMENT_PREFIX,
-        &body,
-    )?;
+    )? {
+        GenerationWrite::Applied(incident) => incident,
+        GenerationWrite::Superseded => return Ok(GenerationWrite::Superseded),
+    };
     if incident.halted {
         Ctx::new(
             ctx.store(),
@@ -1076,9 +1145,9 @@ fn record_infrastructure_failure(
                 "detail": incident.detail,
             }),
         );
-        Ok(TickResult::Halted)
+        Ok(GenerationWrite::Applied(TickResult::Halted))
     } else {
-        Ok(TickResult::RetryLater)
+        Ok(GenerationWrite::Applied(TickResult::RetryLater))
     }
 }
 
@@ -1110,27 +1179,29 @@ fn record_cleanup_required(
 }
 
 fn return_for_repair<S: Store, A: VerificationActuator>(
+    queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
     actuator: &A,
     candidate: &VerificationCandidate,
     diagnosis: &str,
-) -> Result<bool, AppError> {
-    StoryService::new(ctx).comment(&candidate.story_id, diagnosis)?;
-    StoryService::new(ctx).set_state(
-        &candidate.story_id,
-        "in-progress",
-        None,
-        Some("verifying"),
-        None,
-    )?;
-    if let Err(error) = actuator.notify(candidate, diagnosis) {
-        StoryService::new(ctx).set_awaiting(
-            &candidate.story_id,
-            &format!("verification remediation could not reach its agent: {error}"),
-        )?;
-        return Ok(false);
+) -> Result<GenerationWrite<bool>, AppError> {
+    if matches!(
+        queue.record_generation_returned(ctx, candidate, diagnosis)?,
+        GenerationWrite::Superseded
+    ) {
+        return Ok(GenerationWrite::Superseded);
     }
-    Ok(true)
+    if let Err(error) = actuator.notify(candidate, diagnosis) {
+        let reason = format!("verification remediation could not reach its agent: {error}");
+        if matches!(
+            queue.set_generation_awaiting(ctx, candidate, &reason)?,
+            GenerationWrite::Superseded
+        ) {
+            return Ok(GenerationWrite::Superseded);
+        }
+        return Ok(GenerationWrite::Applied(false));
+    }
+    Ok(GenerationWrite::Applied(true))
 }
 
 fn comment_once(
