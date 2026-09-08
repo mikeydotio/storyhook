@@ -1217,6 +1217,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-body .field-grid { gap: 0.625rem; }
 .modal-body .field label { display: block; margin-bottom: 0.25rem; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.25rem; }
+#create-modal .modal-footer {
+  position: sticky; bottom: 0; z-index: 1; background: var(--bg-raised); border-top: 1px solid var(--border);
+}
 .modal-error { font-size: 0.75rem; color: var(--danger); }
 .modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
