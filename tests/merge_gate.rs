@@ -160,6 +160,18 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
         payload["detail"]
             .as_str()
             .unwrap()
+            .contains("Verification infrastructure failure")
+    );
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Candidate test status: unknown")
+    );
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
             .contains(payload["log"].as_str().unwrap())
     );
     assert!(
@@ -185,6 +197,141 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
         let result: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
         assert_eq!(result["result"], expected, "{result}");
     }
+}
+
+/// The SH-607 production incident had one decisive failure followed by 611
+/// unknown outcomes. A tail cannot recover the failure from that ordering.
+#[test]
+fn verifier_names_a_failure_before_hundreds_of_not_rerun_entries() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf 'test-delta: newly RED (1):\n'
+printf '  orphan_check::postlude_fails_when_a_survivor_outlives_sigkill\n'
+printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (611):\n'
+i=1
+while [ "$i" -le 611 ]; do
+    printf '  web_test::not_rerun_%03d (was PASS)\n' "$i"
+    i=$((i + 1))
+done
+exit 101
+"#;
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+
+    assert_ok(&outcome, "summarizing the reproduced verification failure");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("Failed tests (1)")
+            && detail.contains("orphan_check::postlude_fails_when_a_survivor_outlives_sigkill"),
+        "the decisive failure must survive independently of the tail: {detail}"
+    );
+    assert!(
+        detail.contains("Not re-run (611): status unknown; not counted as pass or failure"),
+        "unknown prior outcomes need their own classification: {detail}"
+    );
+    assert!(
+        detail.contains("Ancillary context — last 40 of 615 log lines (575 earlier lines omitted)"),
+        "the tail's bounded and ancillary nature must be explicit: {detail}"
+    );
+    assert_eq!(
+        payload["log"].as_str().map(Path::new).map(Path::exists),
+        Some(true),
+        "the full log must remain referenced"
+    );
+}
+
+#[test]
+fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
+printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
+printf '     Running tests/diagnostics.rs (target/debug/deps/diagnostics-fixture)\n'
+i=1
+while [ "$i" -le 25 ]; do
+    printf 'test failure_%02d ... FAILED\n' "$i"
+    i=$((i + 1))
+done
+i=1
+while [ "$i" -le 12 ]; do
+    printf 'error[E%04d]: compiler diagnostic %02d\n' "$i" "$i"
+    i=$((i + 1))
+done
+printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (300):\n'
+exit 101
+"#;
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+
+    assert_ok(&outcome, "summarizing bounded verification diagnostics");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    let detail = payload["detail"].as_str().unwrap();
+    let summary = detail
+        .split("\nAncillary context")
+        .next()
+        .expect("every failure detail starts with its summary");
+    assert!(
+        summary.contains("Failed tests (25; showing first 20)"),
+        "{detail}"
+    );
+    assert!(summary.contains("diagnostics::failure_20"), "{detail}");
+    assert!(!summary.contains("diagnostics::failure_21"), "{detail}");
+    assert!(
+        summary.contains("5 additional failed tests omitted"),
+        "{detail}"
+    );
+    assert!(
+        summary.contains("Compiler/build diagnostics (12; showing first 10)"),
+        "{detail}"
+    );
+    assert!(summary.contains("compiler diagnostic 10"), "{detail}");
+    assert!(!summary.contains("compiler diagnostic 11"), "{detail}");
+    assert!(
+        summary.contains("2 additional compiler/build diagnostics omitted"),
+        "{detail}"
+    );
+    assert!(detail.contains("Reused/cached legs (2)"), "{detail}");
+    assert!(
+        detail.contains("Not re-run (300): status unknown; not counted as pass or failure"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn verifier_reports_a_failed_gate_without_inventing_a_diagnosis() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", "exit 9"]);
+
+    assert_ok(&outcome, "summarizing a gate with no diagnostic output");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("The completed gate failed with exit status 9"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("No failed test or compiler/build diagnostic was recognized"),
+        "{detail}"
+    );
 }
 
 /// The verifier takes one machine-wide gate around the complete speculative

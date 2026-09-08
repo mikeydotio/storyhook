@@ -13,7 +13,7 @@ follow the workflow below.
 - Use a feature branch in the assigned checkout.
 - Move the story to In Progress: `story move SH-<n> in-progress`.
 - Make the change. Add tests for new behavior and defects.
-- Run new and directly affected tests with direct test commands.
+- If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
 - Leave the full suite and its lock to the central verifier.
 - Commit the work. Push the latest commits and create a PR against the repository's default branch.
 - Link exactly one open PR: `story link-pr SH-<n> <pr-url>`.

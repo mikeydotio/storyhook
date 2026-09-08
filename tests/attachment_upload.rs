@@ -364,7 +364,12 @@ fn route_preserves_project_resolution_story_rules_and_change_signal() {
         )
     };
     let success = route(&Method::Post, &f.path().replace("SH-1", "1"), &headers, PNG);
-    assert_eq!(success.reply.status, 201, "{}", success.reply.body());
+    assert_eq!(
+        success.reply.status,
+        201,
+        "{}",
+        success.reply.text_body().unwrap()
+    );
     assert_eq!(success.changed, Some(Changed::Project(f.repo.clone())));
     let events = f
         .store
@@ -385,7 +390,7 @@ fn route_preserves_project_resolution_story_rules_and_change_signal() {
             result.reply.status,
             expected,
             "{path}: {}",
-            result.reply.body()
+            result.reply.text_body().unwrap()
         );
         assert_eq!(result.changed, None);
     }
@@ -411,7 +416,12 @@ fn route_preserves_project_resolution_story_rules_and_change_signal() {
     )
     .unwrap();
     let closed = route(&Method::Post, &f.path(), &headers, PNG);
-    assert_eq!(closed.reply.status, 422, "{}", closed.reply.body());
+    assert_eq!(
+        closed.reply.status,
+        422,
+        "{}",
+        closed.reply.text_body().unwrap()
+    );
     assert_eq!(closed.changed, None);
     f.store
         .write(|tx| tx.set_checkout_path(project, None))

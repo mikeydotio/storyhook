@@ -33,13 +33,15 @@
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use storyhook::daemon::lifecycle::{SERVED_DEADLINE, SPAWN_LOCK_DEADLINE};
+use storyhook::daemon::lifecycle::{self, SERVED_DEADLINE, SPAWN_LOCK_DEADLINE};
 use storyhook::store::{DELIVERY_BACKSTOP, FaultPoint};
 
 use crate::env::TestEnv;
-use crate::server::{ChildGuard, PORTFILE_DEADLINE, port_of, run_bounded, wait_for_server};
+use crate::server::{
+    ChildGuard, PORTFILE_DEADLINE, REAP_POLL, port_of, run_bounded, wait_for_server,
+};
 
 // ---------------------------------------------------------------------------
 // The three deadlines, and what each one disproves (SH-528)
@@ -174,6 +176,12 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
     wait_for_server(port_of(env, armed.pid()));
 
     let armed_pid = armed.pid();
+    let armed_identity = lifecycle::read_daemon_identity(&env.environment())
+        .expect("the armed daemon published its locked process identity");
+    assert_eq!(
+        armed_identity.pid, armed_pid,
+        "the locked daemon identity must belong to the process this crash armed"
+    );
     let mut client_cmd = client_command(env, cwd);
     client_cmd.args(args);
     let client = run_bounded(
@@ -196,7 +204,26 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
         String::from_utf8_lossy(&client.stdout),
         String::from_utf8_lossy(&client.stderr),
     );
-    assert_no_daemon(env, "after the crash");
+    wait_for_reaped_daemon_lock(
+        &armed_identity,
+        Instant::now() + MARGIN,
+        || {
+            (
+                env.daemon_is_live(),
+                lifecycle::read_daemon_identity(&env.environment()),
+            )
+        },
+        std::thread::sleep,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "a daemon is holding the store after the crash: {error}. It would answer reads from \
+             its own page cache and keep the write-ahead log alive, so every question this test \
+             asks about the file would be asked of memory instead.\narmed daemon stderr (last \
+             {STDERR_TAIL_LINES} lines):\n{}",
+            armed_daemon_stderr(env)
+        )
+    });
 
     Crash {
         armed_pid,
@@ -314,6 +341,48 @@ fn armed_daemon_stderr(env: &TestEnv) -> String {
 
 /// How much of the armed daemon's stderr a diagnostic carries.
 const STDERR_TAIL_LINES: usize = 40;
+
+/// Waits out only lock references inherited from the daemon that was reaped.
+///
+/// macOS `flock(2)` locks survive `fork(2)` as references to the same lock. A
+/// daemon killed between a child fork and its exec can therefore be reaped
+/// while that child briefly keeps the pidfile locked. The stale identity proves
+/// this is residue from the process the fixture already reaped; a different
+/// identity is a real successor and remains an immediate failure.
+fn wait_for_reaped_daemon_lock(
+    armed: &lifecycle::DaemonIdentity,
+    give_up_at: Instant,
+    mut observe: impl FnMut() -> (bool, Option<lifecycle::DaemonIdentity>),
+    mut pause: impl FnMut(Duration),
+) -> Result<(), String> {
+    let mut observed_unlocked = false;
+    loop {
+        let (live, current) = observe();
+        if live {
+            observed_unlocked = false;
+            if current.as_ref().is_some_and(|identity| identity != armed) {
+                return Err(format!(
+                    "a different daemon identity claimed the lock: armed {armed:?}, current \
+                     {current:?}"
+                ));
+            }
+        } else if observed_unlocked {
+            return Ok(());
+        } else {
+            // One free observation can race a successor claiming the lock.
+            // Require it to remain free across one ordinary fixture poll.
+            observed_unlocked = true;
+        }
+
+        if Instant::now() >= give_up_at {
+            return Err(format!(
+                "the reaped daemon's identity still owns lock references after the fixture's \
+                 contention margin: armed {armed:?}, current {current:?}"
+            ));
+        }
+        pause(REAP_POLL);
+    }
+}
 
 /// Fails unless this environment has no daemon holding its store.
 ///
@@ -469,8 +538,89 @@ fn client_command(env: &TestEnv, cwd: &Path) -> std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::panic::AssertUnwindSafe;
-    use std::time::Instant;
+
+    #[test]
+    fn a_reaped_daemons_stale_identity_gets_bounded_lock_release_grace() {
+        let armed = lifecycle::DaemonIdentity {
+            pid: 41,
+            process_group: 41,
+            start_time: Some("armed-incarnation".to_string()),
+        };
+        let mut observations = VecDeque::from([
+            (true, Some(armed.clone())),
+            (false, Some(armed.clone())),
+            (false, Some(armed.clone())),
+        ]);
+        let mut pauses = 0;
+
+        let result = wait_for_reaped_daemon_lock(
+            &armed,
+            Instant::now() + MARGIN,
+            || observations.pop_front().expect("one observation per poll"),
+            |_| pauses += 1,
+        );
+
+        assert!(result.is_ok(), "stale lock residue must settle: {result:?}");
+        assert_eq!(
+            pauses, 2,
+            "an unlocked observation must be stable across one poll"
+        );
+    }
+
+    #[test]
+    fn a_different_daemon_identity_after_a_crash_is_refused_immediately() {
+        let armed = lifecycle::DaemonIdentity {
+            pid: 41,
+            process_group: 41,
+            start_time: Some("armed-incarnation".to_string()),
+        };
+        let successor = lifecycle::DaemonIdentity {
+            pid: 42,
+            process_group: 42,
+            start_time: Some("successor-incarnation".to_string()),
+        };
+        let mut paused = false;
+
+        let error = wait_for_reaped_daemon_lock(
+            &armed,
+            Instant::now() + MARGIN,
+            || (true, Some(successor.clone())),
+            |_| paused = true,
+        )
+        .expect_err("a successor daemon is not inherited lock residue");
+
+        assert!(error.contains("different daemon identity"), "{error}");
+        assert!(
+            !paused,
+            "a real successor must fail without being waited away"
+        );
+    }
+
+    #[test]
+    fn stale_lock_residue_that_outlives_the_margin_still_fails() {
+        let armed = lifecycle::DaemonIdentity {
+            pid: 41,
+            process_group: 41,
+            start_time: Some("armed-incarnation".to_string()),
+        };
+        let mut paused = false;
+
+        let error = wait_for_reaped_daemon_lock(
+            &armed,
+            Instant::now(),
+            || (true, Some(armed.clone())),
+            |_| paused = true,
+        )
+        .expect_err("persistent lock residue must remain a failure");
+
+        assert!(error.contains("contention margin"), "{error}");
+        assert!(
+            !paused,
+            "an exhausted bound must fail without another sleep"
+        );
+    }
 
     /// **The regression test for SH-528**, and the reproduction the story was
     /// filed without.

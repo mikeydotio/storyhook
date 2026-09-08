@@ -43,7 +43,9 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
 use crate::output::{ReportData, Response, render_response};
-use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
+use crate::service::{
+    AttachmentService, CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService,
+};
 use crate::store::{ProjectId, ReadOps, Store, WriteOps};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
@@ -226,6 +228,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::VerificationAck => "verification-ack",
         ProjectRoute::StoryCreate => "new",
         ProjectRoute::StoryShow { .. } => "show",
+        ProjectRoute::StoryAttachment { .. } => "attachment-get",
         ProjectRoute::StoryPatch { .. } => "set-fields",
         ProjectRoute::StoryDelete { .. } => "delete",
         ProjectRoute::StoryAttachmentUpload { .. } => "attachment",
@@ -392,6 +395,25 @@ pub fn route_with_activity<S: Store>(
     }
 }
 
+/// Serves one attachment through its owning project's service context.
+fn attachment_reply<S: Store>(ctx: &Ctx<'_, S>, id: &str, raw_id: &str) -> Result<Reply, AppError> {
+    let attachment_id = raw_id
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id > 0 && raw_id.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| {
+            AppError::Usage(format!(
+                "story `{id}` attachment id `{raw_id}` must be a positive decimal u32"
+            ))
+        })?;
+    let (attachment, bytes) = AttachmentService::new(ctx).get(id, attachment_id)?;
+    Ok(
+        Reply::from_bytes(200, attachment.media_type.as_str(), bytes)
+            .no_store()
+            .same_origin_resource(),
+    )
+}
+
 /// The per-project API surface — everything under `/api/repos/<id>/...` once
 /// `<id>` has resolved to a project.
 ///
@@ -445,6 +467,12 @@ fn route_project<S: Store>(
         }
         ProjectRoute::StoryShow { id } => {
             reply_with(ctx, 200, Invocation::Show { id: id.to_string() })
+        }
+        ProjectRoute::StoryAttachment { id, attachment_id } => {
+            match attachment_reply(ctx, id, attachment_id) {
+                Ok(reply) => reply,
+                Err(error) => error_reply(&error).no_store(),
+            }
         }
         ProjectRoute::StoryPatch { id } => guarded(headers, trusted_hosts, body, |b| {
             route_patch_story(ctx, id, b)
