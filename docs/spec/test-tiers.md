@@ -164,7 +164,7 @@ Measured over the 30 merges preceding the fix: **14 produced a tree matching
 neither parent** — content no receipt could possibly have covered.
 
 **The fix asks the same question a push does, computed instead of pushed.**
-`git merge-tree --write-tree origin/main <pr-head>` computes the tree a merge
+`git merge-tree --write-tree <base-ref> <pr-head>` computes the tree a merge
 would produce without touching the working directory or creating a commit,
 and is byte-identical to what a real `git merge` of the same two parents
 produces — pinned by `tests/merge_gate.rs::
@@ -193,7 +193,7 @@ administration remains detached at the ordinary base commit. For the gate only,
 `merge-watch.sh` atomically points the verifier's `.git` file at lease-local
 per-worktree administration whose `commondir` still reaches shared receipts;
 its synthetic `HEAD`, index, and objects therefore remain private together.
-The verifier supplies a fetched ref such as `refs/remotes/origin/main`, but a
+The verifier supplies the submitted PR's fetched base ref, but a
 private detached `HEAD` records the exact commit resolved from that ref, never
 the unprefixed ref text (SH-556). This keeps the temporary administration a
 valid Git repository while the later preflight still detects ref drift.
@@ -226,7 +226,7 @@ matrix above. `tests/verification_queue.rs` drives durable selection and
 outcome handling. Live GitHub orchestration is not replaced by a behavioral
 fake.
 
-## The push gate narrowed to `main`/`master`, so work ships before it is tested (SH-429)
+## The push gate narrowed to long-lived branches (SH-429, SH-595)
 
 Once the SH-396 section above was true — `merge-preflight.sh` and its verifier
 are what actually decide whether content reaches `main`, unconditionally,
@@ -239,10 +239,10 @@ story, three-to-four concurrent worktree suites), so every session paid that
 cost **before its work ever left the machine**, on every branch, whether or
 not that branch was ever going near `main` directly.
 
-**The decision:** `.githooks/pre-push` now refuses only a direct push to
-`main` or `master` with no receipt — defence in depth behind the org's
-`protect-main` ruleset, which already blocks direct pushes there by policy.
-Every other ref is *reported*, never refused: which tier's receipt the tree
+**The decision:** `.githooks/pre-push` refuses a direct push to `dev`, `main`,
+or legacy `master` with no receipt — defence in depth behind the GitHub
+rulesets that already block direct pushes there by policy. Every feature ref
+is *reported*, never refused: which tier's receipt the tree
 carries, or that it carries none, and that `scripts/merge-preflight.sh` is
 what actually decides whether this content may land. The autonomous dispatch
 charter (`plugins/story/bin/story.sh`'s `PROMPT_TPL`/`AUTO_PROMPT_TAIL`)
@@ -264,9 +264,9 @@ exactly as untested as it was; only the party who finds out, and when, has
 changed.
 
 **What stays a hard refusal, and why the line is drawn there.** A direct push
-to `main`/`master` is categorically different: unlike a feature branch, its
-content does not pass through `merge-preflight.sh` on the way in (there is no
-merge — it *is* `main` already). The org ruleset already blocks this by
+to `dev`/`main`/`master` is categorically different: unlike a feature branch,
+its content does not pass through `merge-preflight.sh` on the way in (there is
+no PR merge). GitHub rulesets already block this by
 policy, so in the ordinary case this refusal never fires; it exists for the
 case where policy is misconfigured, bypassed, or the ruleset is not the layer
 actually enforcing it (e.g. a fork, a mirror, or a future repo that adopts
@@ -279,8 +279,9 @@ it: `push_branch` provokes the new non-`main` report-not-refuse path (a
 fresh, receipt-less branch push must still succeed and must still move the
 remote ref — SH-306's own doctrine that the remote ref, not the exit code, is
 the load-bearing assertion), while the renamed
-`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move`
-keeps pinning the surviving refusal. Mutation-checked in both directions:
+`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move` and
+the corresponding `dev` test pin the surviving refusals. Mutation-checked in
+both directions:
 forcing every ref to be treated as protected turns exactly the one new
 report-path test red; making the `main`/`master` case arm unreachable (so
 nothing is ever refused) turns every test whose assertion depends on that
@@ -330,7 +331,7 @@ resolves on no fresh clone). Two reasons, and both are general:
 - **It is a hand-kept list.** SH-136, SH-198, SH-258, SH-260/276 and SH-360 are
   five recorded cases of exactly that shape drifting.
 
-The trigger is instead: **does `origin/main`'s tip tree already carry a `tier
+The trigger is instead: **does `origin/dev`'s tip tree already carry a `tier
 full` receipt?** Derived from content, so it re-arms on every merge whatever
 that merge touched; free to evaluate (a file stat); and self-coalescing — a
 burst of merges collapses into one run against the newest tip rather than one
@@ -365,8 +366,8 @@ No second notion of "certified" was introduced. A green pass writes an ordinary
 with **no change to how they read it**. What is new is a reader that
 discriminates.
 
-`scripts/browser-status.sh` walks `main` back — `--first-parent`, because a
-commit a merge brought in was never `main`'s own content — to the nearest tree
+`scripts/browser-status.sh` walks `dev` back — `--first-parent`, because a
+commit a merge brought in was never `dev`'s own content — to the nearest tree
 carrying a `full` receipt, and reports **commits-behind and age, or `never`**.
 
 **Distance, computed per read, and deliberately not a cached marker.** A
@@ -402,7 +403,7 @@ nothing about whether any run ever hadn't. `make test` now follows it with
 
 ```
 leg e2e: SKIPPED — not part of this tier. Run `make test-full` to include it.
-browser-status: never — no tree in origin/main's 642-commit first-parent
+browser-status: never — no tree in origin/dev's 642-commit first-parent
   history has ever passed the browser suite. Run 'make browser-watch'.
 ```
 

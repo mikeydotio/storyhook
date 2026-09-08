@@ -4,7 +4,8 @@ Design of record for **SH-429**, bullet 2 ("Merge-gate tests should only be
 the tests that cover code paths that have been touched since the last green
 test"). Bullet 1 (push before test) and bullet 3 (release runs `make
 test-full`, already true since SH-394) are covered by
-`docs/spec/test-tiers.md`'s "The push gate narrowed to main/master" section.
+`docs/spec/test-tiers.md`'s "The push gate narrowed to long-lived branches"
+section.
 
 ## The problem, measured
 
@@ -144,12 +145,12 @@ alternative — piggybacking coverage capture onto every worktree's own
 `gate-receipt.sh` postlude, so a map regenerates on every local green
 `make test`. That alternative was rejected on the same grounds SH-418's own
 council already used for the browser tier: it fires far more often than
-needed while doing nothing to guarantee freshness relative to `main`'s
+needed while doing nothing to guarantee freshness relative to `dev`'s
 actual tip, which is the fact that matters for what a **merge** — and
 therefore `select-tests.sh`'s own baseline resolution on the next branch cut
-from `main` — will see.
+from `dev` — will see.
 
-`scripts/coverage-status.sh` reports how far `origin/main`'s tip is from the
+`scripts/coverage-status.sh` reports how far `origin/dev`'s tip is from the
 last tree with a coverage map — `current` / `behind by N` / `never`, no
 staleness threshold (a ceiling on "how stale is too stale" would be a bare
 literal about one machine's cadence on one day, the same rule
@@ -158,8 +159,8 @@ literal about one machine's cadence on one day, the same rule
 locked worktree (`coverage-watch-worktree`, kept separate from
 `browser-watch-worktree` because an instrumented build lives in its own
 `target-coverage/`, so sharing a worktree would mean the two pollers evict
-each other's warm build on alternating runs), keyed to whether `origin/
-main`'s tip already has a map. If the tip has no `gate`/`full` receipt yet
+each other's warm build on alternating runs), keyed to whether `origin/dev`'s
+tip already has a map. If the tip has no `gate`/`full` receipt yet
 either (the ordinary case is that it does, since the centralized verifier
 certified it on the way to landing), it runs `make test` there first.
 
