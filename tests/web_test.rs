@@ -9255,3 +9255,23 @@ fn story_detail_is_a_non_modal_workspace_peer() {
         "the panel's icon-only X needs a stable accessible name"
     );
 }
+
+/// Attachment viewing must use the same modal and authenticated-image contract
+/// as the rest of the dashboard; browser tests exercise the interactions.
+#[test]
+fn attachment_viewer_is_a_registered_named_dialog() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let at = html
+        .find(r#"id="attachment-modal""#)
+        .expect("attachment viewer exists");
+    let tag = enclosing_tag(&html, at);
+    assert_eq!(attribute(tag, "role"), Some("dialog"));
+    assert_eq!(attribute(tag, "aria-modal"), Some("true"));
+    assert_eq!(attribute(tag, "aria-labelledby"), Some("attachment-title"));
+    assert!(html.contains(r#"data-overlay="attachment-modal""#));
+    assert!(html.contains(r#"id="attachment-close""#));
+    assert!(html.contains(r#"id="attachment-status" role="status""#));
+}

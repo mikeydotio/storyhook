@@ -1119,6 +1119,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .archive-modal-list { list-style: none; margin: 0.5rem 0 0; padding: 0; max-height: 12rem; overflow-y: auto; font-size: 0.8125rem; font-family: var(--mono); }
 .archive-modal-list li { padding: 0.125rem 0; color: var(--fg-muted); white-space: nowrap; }
 
+/* ---- Attachments ---- */
+.attachment-strip { display: flex; gap: 0.625rem; overflow-x: auto; padding: 0.25rem; }
+.attachment-thumbnail { flex: 0 0 7rem; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; white-space: normal; text-align: left; }
+.attachment-thumbnail > * { pointer-events: none; }
+.attachment-thumbnail img { width: 100%; height: 5rem; object-fit: contain; background: var(--bg-sunken); border-radius: var(--radius-sm); }
+.attachment-name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-preview-error { font-size: 0.75rem; color: var(--fg-muted); }
+#attachment-modal { width: min(60rem, 92vw); }
+#attachment-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#attachment-image { display: flex; justify-content: center; min-width: 0; }
+#attachment-image img { max-width: 100%; max-height: 55vh; max-height: 55dvh; object-fit: contain; }
+#attachment-status { margin: 0; }
+
 /* ---- Modal ---- */
 .modal {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -46%); width: min(30rem, 92vw);
@@ -1698,6 +1711,18 @@ svg.ctxmenu-disabled-warning {
   </div>
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="drafts-close">Close</button>
+  </div>
+</div>
+
+<div class="backdrop" id="attachment-backdrop" data-overlay="attachment-modal" hidden></div>
+<div class="modal" id="attachment-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-title" tabindex="-1" aria-hidden="true">
+  <div class="modal-header" id="attachment-title"></div>
+  <div class="modal-body">
+    <div id="attachment-image"></div>
+    <p id="attachment-status" role="status"></p>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="attachment-close">Close</button>
   </div>
 </div>
 
@@ -3237,7 +3262,10 @@ svg.ctxmenu-disabled-warning {
           // be malformed has applied nothing, so it must not stop a later
           // (higher-ticket) reply from applying either.
           boardFetchFloor = ticket;
+          var oldAttachments = drawerAttachments();
           state.data = parsed;
+          var attachmentsChanged = JSON.stringify(oldAttachments) !== JSON.stringify(drawerAttachments());
+          if (attachmentViewer && !storyReferenceExists(attachmentViewer.storyId)) closeAttachmentModal();
           state.verificationObservedAt = Date.now();
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
@@ -3248,7 +3276,7 @@ svg.ctxmenu-disabled-warning {
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
-          if (hasChanges && state.drawerId) renderDrawer();
+          if ((hasChanges || attachmentsChanged) && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
           // Nothing else re-renders once the dwell window closes (no
           // further fetch is guaranteed to land exactly then) -- one
@@ -10386,6 +10414,7 @@ svg.ctxmenu-disabled-warning {
    * same state fact is only a second thing to keep true, not a second
    * safeguard. */
   function openDrawer(id) {
+    if (state.drawerId !== id) closeAttachmentModal();
     var wasOpen = state.drawerId !== null;
     var invoker = document.activeElement;
     // A board/list activation retargets this peer and becomes its new return
@@ -10415,6 +10444,7 @@ svg.ctxmenu-disabled-warning {
   }
 
   function closeDrawer() {
+    closeAttachmentModal();
     var wasOpen = state.drawerId !== null;
     state.drawerId = null;
     state.drawerDetail = null;
@@ -10426,6 +10456,103 @@ svg.ctxmenu-disabled-warning {
     drawerReturnFocus = null;
     measureNoticeBands();
     syncUrl();
+  }
+
+  /** The board carries complete, live attachment metadata; retained detail
+   * predates later SSE updates and must not resurrect a removed image. */
+  function drawerAttachments() {
+    if (!state.drawerId) return [];
+    var view = findStory(state.drawerId);
+    return (view && view.story.attachments) || [];
+  }
+
+  /** Owns one opening, including callbacks from its image request. Replacing
+   * this object invalidates every callback from earlier openings. */
+  var attachmentViewer = null;
+
+  /** A cookie-authenticated, same-origin URL with no token in the address. */
+  function attachmentUrl(repoId, storyId, attachmentId) {
+    return repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments/" + encodeURIComponent(attachmentId);
+  }
+
+  /** Builds native keyboard controls with text-only filenames. The section's
+   * normal drawer fingerprint preserves its nodes on unrelated refreshes. */
+  function buildAttachmentsSection(storyId) {
+    var attachments = drawerAttachments();
+    if (!attachments.length) return null;
+    var repoId = state.repoId;
+    var strip = el("div", { class: "attachment-strip" }, attachments.map(function(attachment) {
+      var error = el("span", { class: "attachment-preview-error", hidden: true }, ["Preview unavailable"]);
+      var image = el("img", {
+        src: attachmentUrl(repoId, storyId, attachment.id), alt: "", loading: "lazy",
+        onError: function() { image.hidden = true; error.hidden = false; }
+      });
+      return el("button", {
+        type: "button", class: "btn attachment-thumbnail", title: attachment.name,
+        "aria-label": "View " + attachment.name,
+        dataset: { attachmentId: String(attachment.id), field: "attachment-" + attachment.id },
+        onClick: function() { openAttachmentModal(repoId, storyId, attachment.id); }
+      }, [image, error, el("span", { class: "attachment-name" }, [attachment.name])]);
+    }));
+    return el("section", { "aria-label": "Attachments" }, [
+      el("div", { class: "section-label" }, ["Attachments"]), strip
+    ]);
+  }
+
+  /** Opens only an attachment still owned by the current drawer. Each opening
+   * retries via a new image node; stale load/error events cannot affect it. */
+  function openAttachmentModal(repoId, storyId, attachmentId) {
+    if (state.repoId !== repoId || state.drawerId !== storyId) return;
+    var attachment = drawerAttachments().find(function(a) { return a.id === attachmentId; });
+    if (!attachment) return;
+    closeAttachmentModal();
+    var viewer = { repoId: repoId, storyId: storyId, attachmentId: attachmentId };
+    attachmentViewer = viewer;
+    $("attachment-title").textContent = attachment.name;
+    $("attachment-title").title = attachment.name;
+    $("attachment-status").textContent = readinessNote("image", false);
+    var image = el("img", {
+      alt: attachment.name, hidden: true,
+      onLoad: function() {
+        if (attachmentViewer !== viewer) return;
+        image.hidden = false;
+        $("attachment-status").textContent = "";
+      },
+      onError: function() {
+        if (attachmentViewer !== viewer) return;
+        image.hidden = true;
+        $("attachment-status").textContent = "Could not load " + attachment.name + ". Close and reopen to retry.";
+      }
+    });
+    $("attachment-image").appendChild(image);
+    image.src = attachmentUrl(repoId, storyId, attachmentId);
+    showBackdrop("attachment-backdrop");
+    $("attachment-modal").classList.add("open");
+    $("attachment-modal").setAttribute("aria-hidden", "false");
+    activateOverlay("attachment-modal", "attachment-close");
+  }
+
+  /** Releases both the request's identity and its DOM. Resolve return focus
+   * by identity because a live attachment-list update may replace the button. */
+  function closeAttachmentModal() {
+    var viewer = attachmentViewer;
+    if (!viewer) return;
+    attachmentViewer = null;
+    var image = $("attachment-image").querySelector("img");
+    if (image) image.removeAttribute("src");
+    clear($("attachment-image"));
+    $("attachment-title").textContent = "";
+    $("attachment-title").removeAttribute("title");
+    $("attachment-status").textContent = "";
+    hideBackdrop("attachment-backdrop");
+    $("attachment-modal").classList.remove("open");
+    $("attachment-modal").setAttribute("aria-hidden", "true");
+    if (state.repoId === viewer.repoId && state.drawerId === viewer.storyId) {
+      overlayReturnFocus["attachment-modal"] = $("drawer-body").querySelector(
+        '[data-attachment-id="' + viewer.attachmentId + '"]'
+      ) || $("drawer");
+    }
+    releaseOverlay("attachment-modal");
   }
 
   function renderDrawer() {
@@ -10465,6 +10592,9 @@ svg.ctxmenu-disabled-warning {
       "description",
       buildDescriptionSection(st, !!(focused && focused.field === "description"))
     ));
+
+    var attachmentsSection = buildAttachmentsSection(st.id);
+    if (attachmentsSection) nextBody.appendChild(drawerSection("attachments", attachmentsSection));
 
     if (st.hidden_at) {
       nextBody.appendChild(drawerSection("archived", el("div", { class: "banner banner-archived" }, [
@@ -10515,6 +10645,9 @@ svg.ctxmenu-disabled-warning {
     }
     body.dataset.storyId = st.id;
     body.dataset.repoId = state.repoId;
+    if (attachmentViewer && !drawerAttachments().some(function(a) { return a.id === attachmentViewer.attachmentId; })) {
+      closeAttachmentModal();
+    }
 
     restoreDrawerFocus(body, focused);
     renderDrawerFooter(st);
@@ -13921,6 +14054,8 @@ svg.ctxmenu-disabled-warning {
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
     bindEnterSubmit($("delete-confirmation"), submitDeleteStory);
     $("drawer-close").addEventListener("click", closeDrawer);
+    $("attachment-close").addEventListener("click", closeAttachmentModal);
+    $("attachment-backdrop").addEventListener("click", closeAttachmentModal);
     $("engine-alert-ack").addEventListener("click", function() {
       acknowledgeEngineRun($("engine-alert-modal").dataset.runId);
     });
@@ -13939,6 +14074,16 @@ svg.ctxmenu-disabled-warning {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
+        if (overlayStack[overlayStack.length - 1] === "attachment-modal") {
+          closeAttachmentModal();
+          return;
+        }
+        // An authentication prompt may cover the viewer after a board read.
+        // Its Escape must not dismiss the image or detail underneath it.
+        if (attachmentViewer && overlayStack[overlayStack.length - 1] === "token-modal") {
+          cancelTokenModal();
+          return;
+        }
         // SH-568's D13 exception: this alert must not disappear without a
         // durable acknowledgement. Return before any dismissible surface so
         // Escape cannot alter either this dialog or a surface behind it.
