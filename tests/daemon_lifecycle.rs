@@ -574,11 +574,19 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let daemon = start(&env);
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let daemon = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
     let environment = env.environment();
     std::fs::write(environment.daemon_file(), "not-json").expect("corrupting the daemon portfile");
 
-    let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "stop", "--force"])
         .assert()
@@ -593,11 +601,19 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let daemon = start(&env);
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let daemon = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
     let environment = env.environment();
     std::fs::remove_file(environment.daemon_file()).expect("removing the daemon portfile");
 
-    let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "stop", "--force"])
         .assert()
