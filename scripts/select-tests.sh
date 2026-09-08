@@ -188,7 +188,7 @@ fi
 
 impact_map="scripts/test-impact.tsv"
 tree_scanning="$(git grep -l -E 'git ls-files|CARGO_MANIFEST_DIR|include_str!' -- 'tests/*.rs' 2>/dev/null \
-    | sed -n 's#^tests/\(.*\)\.rs$#\1#p' | LC_ALL=C sort -u)"
+    | sed -n 's#^tests/\([^/]*\)\.rs$#\1#p' | LC_ALL=C sort -u)"
 
 impact_rows=""
 impact_targets=""

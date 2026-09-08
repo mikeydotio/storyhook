@@ -659,6 +659,37 @@ fn the_tree_scanning_set_is_always_selected_regardless_of_the_map() {
     );
 }
 
+/// Cargo integration-test targets are the top-level `tests/*.rs` files.
+/// Support modules below `tests/` can contain the same checkout-read markers,
+/// but must not be emitted as nonexistent slash-delimited test targets.
+#[test]
+fn nested_test_support_modules_are_not_selected_as_test_targets() {
+    let repo = SelectRepo::new();
+    repo.write(
+        "tests/support/checkout.rs",
+        "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n",
+    );
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "add a nested checkout-reading helper"]);
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[("story_priority", "src/a.rs")]);
+
+    repo.commit("src/a.rs", "fn a2() {}\n", "touch a.rs");
+
+    let out = repo.select_tests();
+    assert_ok(&out, "select-tests.sh with a nested test support module");
+    assert_eq!(
+        selection_lines(&out),
+        vec!["scanner_test".to_string(), "story_priority".to_string()],
+        "nested support modules are not standalone Cargo test targets; stderr: {}",
+        stderr(&out)
+    );
+}
+
 /// A tracked file the map genuinely has no entry for, and that is not a
 /// tests/*.rs file, selects nothing beyond the tree-scanning set — the
 /// correct reading (nothing observed exercises it) rather than a gap.
