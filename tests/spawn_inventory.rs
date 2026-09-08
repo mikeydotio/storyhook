@@ -106,10 +106,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
-    // `.output()`, which reads the child's stdout to EOF. `git` reads files,
-    // spawns nothing of its own and touches no network, so the
-    // descendant-holds-the-pipe hazard this column exists for has nothing to
-    // attach to.
+    // `.output()`, which reads the child's stdout to EOF. Callers that can
+    // reach a remote must add a deadline: workspace cleanup routes this same
+    // command through shared file-backed, process-group-bounded capture.
     ("src/env/git_env.rs", "\"git\"", Kind::Reads),
     // `event_hooks::fire_hook` — a user's shell command. `Waited` since SH-141:
     // it spawns, waits, and reads a *file*. The hook is handed unlinked
@@ -124,6 +123,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    // Cleanup's tmux probe uses shared file-backed, process-group-bounded
+    // capture, so neither a server nor a descendant can retain an output pipe.
+    ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
     // `install_status::installed_binary` — the `story` on this machine's own
     // `$PATH`, asked for its version so the report can say whether the build
     // answering you is the build this machine runs (SH-530). `Reads`, because

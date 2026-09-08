@@ -23,7 +23,7 @@ impl ReleaseFixture {
         ] {
             fs::create_dir_all(directory).unwrap();
         }
-        for file in ["release.sh", "release-targets.sh", "branch-policy.sh"] {
+        for file in ["branch-policy.sh", "release.sh", "release-targets.sh"] {
             fs::copy(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("scripts")

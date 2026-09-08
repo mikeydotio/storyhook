@@ -440,10 +440,11 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
 PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
-# which it can remind the model to persist the plan. Codex changes modes in the
-# TUI and exposes no corresponding tool call, so its built-in charter has to
-# carry that boundary across the turn itself: make persistence step one of the
-# approved plan, then the approved plan is the instruction Codex resumes from.
+# which it can remind the model to persist the plan. Codex may surface the
+# compatibility event, but rejects its bare allow decision; the TUI watcher
+# owns approval instead. Its built-in charter therefore carries persistence
+# across the turn itself: make it step one of the approved plan, then the plan
+# is the instruction Codex resumes from.
 # The same provider clause owns PR-title traceability: every Codex-authored PR
 # carries the resolved story id where an operator can see it in a PR list.
 # Kept provider-specific so Claude's established prompt stays byte-identical,

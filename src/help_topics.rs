@@ -255,6 +255,14 @@ Settings:
     NOTE: no command reads this yet. You can store a value, and
     'story doctor' will not act on it. The listing says so too.
 
+  cleanup.auto             true|false, default true
+    Whether the daemon runs safe project cleanup automatically.
+
+  cleanup.interval         a positive duration, default 1d
+    How often the daemon attempts automatic cleanup for this project.
+    Failed attempts wait for the next interval; use 'story cleanup' to
+    retry immediately after repairing the cause.
+
 list reports every setting with the value in force and where that value
 came from:
 
@@ -274,6 +282,8 @@ Examples:
   story project settings get sync.auto_transition
   story project settings set sync.auto_transition false
   story project settings set doctor.stale_threshold 14d
+  story project settings set cleanup.auto false
+  story project settings set cleanup.interval 12h
   story project settings unset doctor.stale_threshold
   story project settings list --json     # source and value as fields
 
@@ -281,6 +291,37 @@ Related:
   story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
   story set          — Change a STORY's fields, not a project's settings
+"#,
+        );
+
+        m.insert(
+            "cleanup",
+            r#"story cleanup [--dry-run]
+
+Safely remove inactive StoryHook-owned story workspaces. A candidate is
+eligible only when its versioned cleanup lease matches the current project,
+its exact tmux window is absent, the worktree is clean and unlocked, and
+every worktree/local/origin branch tip is contained by a freshly fetched
+origin default branch.
+
+Cleanup removes the exact leased worktree, its contained build artifacts,
+and the exact local and origin branches. It never removes the main checkout
+or shared build artifacts outside an eligible worktree. Missing or malformed
+leases, unverifiable tmux/Git state, dirty work, and unmerged commits are
+reported and preserved.
+
+--dry-run applies every read-only preflight and reports reclaimed bytes, but
+does not remove resources. JSON output includes removed and skipped arrays
+with stable reason strings.
+
+The daemon runs the same service daily by default. Configure it per project:
+
+  story project settings set cleanup.auto false
+  story project settings set cleanup.interval 12h
+
+Remote fetch and deletion use Git's configured origin credentials. An
+authentication or network failure fails closed: the report names the failed
+step and a later explicit or scheduled pass can retry idempotently.
 "#,
         );
 

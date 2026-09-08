@@ -19,9 +19,9 @@ import type { Locator, Page } from "@playwright/test";
  * browser layout, on both desktop engines, confirming `svg.icon` renders
  * with a non-zero box in the exact control it replaced.
  *
- * `.card-actions-btn`/`.row-actions-btn` are `display: none` outside
- * `pointer: coarse` (SH-235) and are covered by `icon-shapes.mobile.spec.ts`
- * instead, on the projects where they're actually visible.
+ * `.row-actions-btn` remains hidden outside `pointer: coarse` (SH-235).
+ * Mobile coverage still checks both action icons; SH-600's desktop context-menu
+ * regression now also proves the always-visible card icon paints a non-zero box.
  */
 
 test.beforeEach(async ({ page }) => {
