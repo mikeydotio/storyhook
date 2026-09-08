@@ -9,6 +9,7 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
+  showEpics,
   THEMES,
 } from "./support";
 
@@ -811,6 +812,74 @@ test("a failed refresh leaves the last-confirmed engine alert visibly stale", as
   );
 });
 
+test("compact live controls use one bounded status row in every live state", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const current = run("alpha", "AA-LONG-LIVE-STORY-IDENTIFIER", "running");
+  occupySecondLane(current, "AA-SECOND-LONG-LIVE-STORY-IDENTIFIER");
+  await page.route("**/api/repos/*/engine", (route) =>
+    fulfillRuns(route, [current]),
+  );
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  async function expectBoundedHeader(state: EngineRun["state"]): Promise<void> {
+    await expect(page.locator("#engine-control")).toHaveAttribute(
+      "data-mode",
+      "live",
+    );
+    await expect(page.locator(".engine-state")).toHaveText(state);
+    const geometry = await page.evaluate(() => {
+      const control = document
+        .querySelector<HTMLElement>("#engine-control")!
+        .getBoundingClientRect();
+      const workspace = document
+        .querySelector<HTMLElement>("#repo-workspace")!
+        .getBoundingClientRect();
+      const lanes = document
+        .querySelector<HTMLElement>(".engine-lane-strip")!;
+      return {
+        controlHeight: control.height,
+        workspaceTop: workspace.top,
+        laneClientWidth: lanes.clientWidth,
+        laneScrollWidth: lanes.scrollWidth,
+        documentClientWidth: document.documentElement.clientWidth,
+        documentScrollWidth: document.documentElement.scrollWidth,
+      };
+    });
+    expect(geometry.controlHeight).toBeLessThanOrEqual(56);
+    expect(geometry.workspaceTop).toBeLessThanOrEqual(248);
+    expect(geometry.laneClientWidth).toBeGreaterThan(0);
+    expect(geometry.laneScrollWidth).toBeGreaterThanOrEqual(
+      geometry.laneClientWidth,
+    );
+    expect(geometry.documentScrollWidth).toBeLessThanOrEqual(
+      geometry.documentClientWidth,
+    );
+    await expectCoarseEngineTargets(page, ".engine-live button");
+  }
+
+  await expectBoundedHeader("running");
+  await expect(page.locator(".engine-pause-btn")).toBeVisible();
+  await expect(page.locator(".engine-stop-btn")).toBeVisible();
+
+  current.state = "paused";
+  await page.reload();
+  await expectBoundedHeader("paused");
+  await expect(page.locator(".engine-resume-btn")).toBeVisible();
+  await expect(page.locator(".engine-stop-btn")).toBeVisible();
+
+  current.state = "draining";
+  await page.reload();
+  await expectBoundedHeader("draining");
+  await expect(
+    page.locator(".engine-pause-btn, .engine-resume-btn"),
+  ).toHaveCount(0);
+  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop (draining)");
+});
+
 test("project launch is guarded once and becomes a live lane instrument", async ({
   page,
 }) => {
@@ -1275,9 +1344,7 @@ test("an epic replaces ordinary Dispatch with an epic-scoped Full Auto start", a
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await page.locator("#filter-toggle-btn").click();
-  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute("aria-expanded", "true");
-  await page.locator("#toggle-epics").check();
+  await showEpics(page);
   expect(transformedEpicId).not.toBe("");
   const epicCard = page.locator(`.card[data-id="${transformedEpicId}"]`);
   await epicCard.click();
@@ -1472,15 +1539,21 @@ test("lane chips identify live Full Auto work and clear through the view press g
   }
 
   await page.locator('#view-toggle button[data-view="list"]').click();
-  const firstRow = page.locator('tr[data-id="AA-1"]');
-  const secondRow = page.locator('tr[data-id="AA-2"]');
-  await expect(firstRow.locator(".col-title .engine-lane-chip")).toHaveText(
+  const firstListStory = page.locator(
+    '#list-desktop:not([hidden]) tr[data-id="AA-1"], ' +
+      '#mobile-list:not([hidden]) .mobile-story-title[data-id="AA-1"]',
+  );
+  const secondListStory = page.locator(
+    '#list-desktop:not([hidden]) tr[data-id="AA-2"], ' +
+      '#mobile-list:not([hidden]) .mobile-story-title[data-id="AA-2"]',
+  );
+  await expect(firstListStory.locator(".engine-lane-chip")).toHaveText(
     "Full Auto: Lane 1",
   );
-  await expect(secondRow.locator(".col-title .engine-lane-chip")).toHaveText(
+  await expect(secondListStory.locator(".engine-lane-chip")).toHaveText(
     "Full Auto: Lane 2",
   );
-  await expect(firstRow).toHaveAccessibleName(/Full Auto: Lane 1/);
+  await expect(firstListStory).toHaveAccessibleName(/Full Auto: Lane 1/);
 
   for (const state of ["paused", "draining"] as const) {
     current = { ...current, state };
@@ -1491,8 +1564,8 @@ test("lane chips identify live Full Auto work and clear through the view press g
       }).__testEventSource.emit("repo-changed", JSON.stringify({ repo_id: repo }));
     }, project);
     await expect.poll(() => gets).toBeGreaterThanOrEqual(stateFetch);
-    await expect(firstRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
-    await expect(secondRow.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
+    await expect(firstListStory.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 1");
+    await expect(secondListStory.locator(".engine-lane-chip")).toHaveText("Full Auto: Lane 2");
   }
 
   await page.locator('#view-toggle button[data-view="board"]').click();

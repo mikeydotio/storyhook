@@ -244,6 +244,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .workspace-content { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* ---- Topbar ---- */
+.dashboard-header { flex-shrink: 0; min-width: 0; }
 .topbar {
   display: flex; align-items: center; gap: 1rem;
   padding: 0.75rem 1.25rem;
@@ -295,12 +296,21 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .btn-ghost:hover { background: var(--bg-sunken); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .topbar-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; margin-left: auto; }
-/* SH-235: Home/Settings/Drafts go icon-only under the same <=768px block
-   that already wraps the topbar -- see that block's own comment for why.
-   `.btn-icon` carries no text a screen reader would read twice over
-   (aria-hidden); `.btn-text` is the real accessible name and stays in the
-   layout normally above the breakpoint, visually hidden (not display:none,
-   which would also remove it from the accessibility tree) below it. */
+.more-wrap { display: contents; }
+.more-btn { display: none; }
+.secondary-nav { display: contents; }
+#home-btn { order: 1; }
+#settings-btn { order: 2; }
+#new-story-btn { order: 3; }
+#drafts-btn { order: 4; }
+.topbar-right > .connection { order: 5; }
+.more-draft-count {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem;
+  padding: 0 0.25rem; border-radius: 999px; background: var(--accent); color: var(--accent-fg);
+  font-size: 0.6875rem; line-height: 1; font-weight: 800;
+}
+/* Secondary navigation keeps one icon/text treatment both when exposed on
+   desktop and when the same controls become mobile menu items. */
 .btn-icon { line-height: 1; }
 /* SH-444: every control icon in this file is a shape the page draws, never a
    character. U+2302 HOUSE, U+2699 GEAR and U+270E LOWER RIGHT PENCIL (the
@@ -506,10 +516,13 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    board. */
 .filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-toggle-btn .disclosure-icon { flex-shrink: 0; }
+.filter-active-indicator { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; flex: none; }
 .filter-panel {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
   padding: 0 1.25rem 0.75rem;
 }
+.filter-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+.filter-group-title { font-size: 0.6875rem; font-weight: 800; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .fdd { position: relative; }
 .fdd-btn {
   padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
@@ -537,7 +550,24 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-width: var(--tap-min); min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
-.filter-clear-short { display: none; }
+/* The mobile filter sheet owns the one live filter subtree only while the
+   inclusive compact breakpoint matches. Above it, the same nodes sit in
+   #filter-inline-host and retain the desktop disclosure contract. */
+.filter-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 51;
+  display: flex; flex-direction: column; max-height: 85vh; max-height: 85dvh;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--bg-raised); border: 1px solid var(--border); border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0; box-shadow: var(--shadow-lg);
+}
+.filter-sheet-header {
+  display: flex; align-items: center; gap: 0.75rem; flex: none;
+  padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+}
+.filter-sheet-title { flex: 1; font-size: 1rem; font-weight: 700; }
+.filter-sheet-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 0.125rem; }
+.filter-sheet-body { min-height: 0; overflow-y: auto; padding: 0.75rem; }
+.filter-sheet-clear { display: flex; justify-content: flex-end; padding-top: 0.5rem; border-top: 1px solid var(--border); }
 
 /* ---- Full Auto project control (SH-470) ----
    An operational instrument in the project header, not another card or
@@ -888,6 +918,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .mobile-story-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
 .mobile-story-type { color: var(--fg-muted); overflow-wrap: anywhere; }
 .mobile-story-priority { display: inline-flex; align-items: center; }
+/* Width, not pointer precision, owns mobile-list visibility. Keep its action
+   rendered until the responsive synchronizer transfers focus and hides the
+   whole mobile presentation. */
 .mobile-story-actions {
   display: inline-flex; align-items: center; justify-content: center; margin-left: auto;
   min-width: var(--tap-min); min-height: var(--tap-min); border: 0;
@@ -913,13 +946,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    and widths stay exactly what they were). */
 .col-actions { display: none; width: 1%; white-space: nowrap; text-align: right; cursor: default; }
 .row-actions-btn {
-  display: none; border: none; background: none; color: var(--fg-muted);
+  border: none; background: none; color: var(--fg-muted);
   font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
 }
+.col-actions .row-actions-btn { display: none; }
 .row-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
 @media (pointer: coarse) {
   .col-actions { display: table-cell; }
-  .row-actions-btn {
+  .col-actions .row-actions-btn {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: var(--tap-min); min-height: var(--tap-min);
   }
@@ -1563,57 +1597,74 @@ svg.ctxmenu-disabled-warning {
 
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
-  .topbar { flex-wrap: wrap; gap: 0.375rem; }
-  .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
-  /* SH-303: this used to read `max-width: none`, removing the only ceiling
-     `.projsel-label`'s `text-overflow: ellipsis` had to elide against --
-     exactly at the widths that can least afford an unconstrained box. A long
-     project name then carried `.brand`, `.projsel` and the whole document
-     past the viewport's own width. `14rem` keeps the desktop ceiling rather
-     than widening it: `.projsel-btn` shares this row with `.view-toggle` and
-     `.topbar-right` once `.search-wrap` wraps below, and that row's own
-     chrome budget (this block's own comment, and
-     responsive.mobile.spec.ts's "topbar and collapsed filter bar" test) has
-     too little headroom to safely absorb a wider button with nothing here to
-     catch a regression -- council-decided over a wider mobile-only figure,
-     verdict on SH-303. `calc(100vw - 2.5rem)`
-     -- `.topbar`'s own horizontal padding -- is a backstop for viewports
-     narrower than anything this file's own sweep tests. */
-  .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
-  /* SH-235: the topbar's chrome budget (responsive.mobile.spec.ts's own
-     "topbar and collapsed filter bar" test) is what forced this -- at a
-     375px width every one of Home/Settings/+ New/Drafts/the connection
-     indicator, each already at a natural, un-compacted width, cannot share
-     a row with anything else; four buttons' worth of prose text was most
-     of the measured overage. The `.sr-only` recipe (see that class's own
-     rule above) hides each label from sighted readers without removing it
-     from the accessibility tree -- an icon-only button still announces
-     "Home", it just doesn't spend layout width saying so. */
-  .icon-compact-btn .btn-text, .conn-text, .brand h1 {
+  /* SH-613: display:contents lets the two desktop chrome bands contribute
+     their existing controls to one compact grid without cloning any stateful
+     control. The rows are identity/actions, search/Filters, and
+     view/results/automation. */
+  .dashboard-header {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: repeat(3, minmax(var(--tap-min), auto));
+    align-items: center; gap: 0.5rem; padding: 0.75rem;
+    background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  }
+  .topbar, .filter-bar, .filter-summary, .topbar-right { display: contents; }
+  .brand { grid-column: 1; grid-row: 1; min-width: 0; padding-left: 0.875rem; }
+  .brand h1, .conn-text {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
   }
-  /* WCAG 2.2 SC 2.5.8 needs both axes -- the icon alone, once its label
-     stops taking up width, is narrower than --tap-min on its own. */
-  .icon-compact-btn { gap: 0; justify-content: center; min-width: var(--tap-min); }
-  /* Keep Full Auto in the existing project-header row at phone widths. The
-     full accessible name stays on the button; only its visible copy shortens. */
+  .brand .projsel { flex: 1 1 auto; min-width: 0; }
+  .brand .projsel-btn { min-width: 0; width: 100%; }
+  /* Keep SH-303's fixed ceiling and viewport backstop while the grid cell
+     still lets the control shrink below either limit. */
+  .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
+  .connection {
+    grid-column: 1; grid-row: 1; justify-self: start; z-index: 1;
+    flex: none; pointer-events: none;
+  }
+  #new-story-btn { grid-column: 2; grid-row: 1; }
+  .more-wrap { display: block; grid-column: 3; grid-row: 1; position: relative; }
+  .more-btn { display: inline-flex; }
+  .secondary-nav {
+    display: flex;
+    position: absolute; top: calc(100% + 0.375rem); right: 0; z-index: 30;
+    min-width: 12rem; padding: 0.375rem; flex-direction: column; align-items: stretch;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+  }
+  .secondary-nav .btn { width: 100%; justify-content: flex-start; border-color: transparent; }
+  .search-wrap { grid-column: 1 / 3; grid-row: 2; max-width: none; min-width: 0; }
+  .search-input { min-height: var(--tap-min); }
+  .filter-toggle-btn { grid-column: 3; grid-row: 2; }
+  .view-toggle { grid-column: 1; grid-row: 3; }
+  .view-toggle button { min-width: var(--tap-min); padding-left: 0.625rem; padding-right: 0.625rem; }
+  .filter-count { grid-column: 2; grid-row: 3; margin-left: 0; white-space: nowrap; }
+  .engine-control { grid-column: 3; grid-row: 3; max-width: none; min-width: 0; }
+  .filter-inline-host, .filter-clear-host { display: none; }
+  .filter-panel { padding: 0; flex-direction: column; align-items: stretch; gap: 1rem; }
+  .filter-group { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .filter-group-title { font-size: 0.8125rem; color: var(--fg); }
+  .filter-group .fdd-btn { width: 100%; justify-content: space-between; }
+  .filter-group .fdd-panel { position: static; margin-top: 0.375rem; box-shadow: none; }
+  .filter-toggle { font-size: 0.8125rem; color: var(--fg); min-height: var(--tap-min); }
+  .filter-clear { font-size: 0.8125rem; }
+  /* The full accessible name stays on the idle button while its visible
+     label shortens. A live run gets the one optional status row instead of
+     forcing the three idle rows to wrap unpredictably. */
   .engine-wordmark, .engine-run-label { display: none; }
   .engine-run-short { display: inline; }
-  .engine-control { max-width: none; flex: 1 1 auto; }
-  .engine-lanes-copy, .filter-clear-label { display: none; }
-  .filter-clear-short { display: inline; }
+  .engine-run-btn { background: transparent; color: var(--accent); border-color: var(--accent); }
+  .engine-control[data-mode="live"] { grid-column: 1 / -1; grid-row: 4; max-height: 3.5rem; }
+  .engine-lanes-copy { display: none; }
   .engine-lanes-input { width: 3rem; }
-  .engine-live { flex-wrap: wrap; justify-content: flex-end; }
-  .engine-lane-strip { order: 2; max-width: min(13rem, 42vw); }
+  .engine-live { width: 100%; flex-wrap: nowrap; justify-content: flex-start; overflow: hidden; }
+  .engine-config { display: none; }
+  .engine-lane-strip { flex: 1 1 auto; max-width: none; }
   .engine-actions { order: 1; }
   .engine-banner-region { padding: 0.5rem 0.75rem 0; }
   .engine-banner-head { align-items: stretch; flex-direction: column; }
   .engine-banner-ack { align-self: flex-start; margin-left: 0; }
   .engine-alert-modal .modal-footer { align-items: stretch; flex-direction: column; }
   .engine-alert-impact { align-self: flex-start; }
-  /* Width, not pointer precision, owns mobile-list visibility. Actions must
-     stay visible on a narrow laptop window as well as on a touch device. */
-  .mobile-story-actions { display: inline-flex; }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
      project selector next to it -- the wordmark orients a reader arriving
      fresh; once a project is open, its name is what matters and the
@@ -1647,7 +1698,8 @@ svg.ctxmenu-disabled-warning {
      open (SH-299). See `applyOverlayModality()` for what that buys and why the
      marker lives here rather than in a list inside the script. -->
 <div class="app" id="app" data-modal="covered">
-  <header class="topbar">
+  <header class="dashboard-header" id="dashboard-header">
+  <div class="topbar">
     <div class="brand">
       <h1>Storyhook</h1>
       <div class="projsel" id="projsel">
@@ -1668,40 +1720,55 @@ svg.ctxmenu-disabled-warning {
       <button type="button" data-view="list">List</button>
     </div>
     <div class="topbar-right">
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h3.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V21H18a1 1 0 0 0 1-1V9.5"/></svg></span><span class="btn-text">Home</span></button>
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.34 4.88 9.35 2.77 14.65 2.77 14.66 4.88 15.15 5.08 16.65 3.6 20.4 7.35 18.92 8.85 19.12 9.34 21.23 9.35 21.23 14.65 19.12 14.66 18.92 15.15 20.4 16.65 16.65 20.4 15.15 18.92 14.66 19.12 14.65 21.23 9.35 21.23 9.34 19.12 8.85 18.92 7.35 20.4 3.6 16.65 5.08 15.15 4.88 14.66 2.77 14.65 2.77 9.35 4.88 9.34 5.08 8.85 3.6 7.35 7.35 3.6 8.85 5.08Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="btn-text">Settings</span></button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 3.5 6 6L8 22H2v-6z"/><path d="m13 5 6 6"/></svg></span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
+      <div class="more-wrap" id="more-wrap">
+        <button type="button" class="btn btn-ghost more-btn" id="more-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu" hidden>
+          More <span class="more-draft-count" id="more-draft-count" hidden></span>
+        </button>
+        <div class="secondary-nav" id="more-menu">
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h3.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V21H18a1 1 0 0 0 1-1V9.5"/></svg></span><span class="btn-text">Home</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.34 4.88 9.35 2.77 14.65 2.77 14.66 4.88 15.15 5.08 16.65 3.6 20.4 7.35 18.92 8.85 19.12 9.34 21.23 9.35 21.23 14.65 19.12 14.66 18.92 15.15 20.4 16.65 16.65 20.4 15.15 18.92 14.66 19.12 14.65 21.23 9.35 21.23 9.34 19.12 8.85 18.92 7.35 20.4 3.6 16.65 5.08 15.15 4.88 14.66 2.77 14.65 2.77 9.35 4.88 9.34 5.08 8.85 3.6 7.35 7.35 3.6 8.85 5.08Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="btn-text">Settings</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 3.5 6 6L8 22H2v-6z"/><path d="m13 5 6 6"/></svg></span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
+        </div>
+      </div>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text" class="conn-text">Connecting…</span>
       </div>
     </div>
-  </header>
+  </div>
 
   <div class="filter-bar" id="filter-bar">
     <div class="filter-summary" id="filter-summary">
       <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
         <svg class="icon disclosure-icon" id="filter-toggle-chevron" data-direction="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg> Filters
+        <span class="filter-active-indicator" id="filter-active-indicator" hidden><span class="sr-only">Active filters</span></span>
       </button>
       <span class="filter-count" id="filter-count"></span>
-      <button type="button" class="filter-clear" id="filter-clear" aria-label="Clear filters">
-        <span class="filter-clear-label">Clear filters</span><span class="filter-clear-short" aria-hidden="true">Clear</span>
-      </button>
+      <span class="filter-clear-host" id="filter-clear-host"><button type="button" class="filter-clear" id="filter-clear" aria-label="Clear filters">Clear filters</button></span>
       <div class="engine-control" id="engine-control" hidden></div>
     </div>
-    <div class="filter-panel" id="filter-panel" hidden>
-      <div class="fdd" id="fdd-priorities"></div>
-      <div class="fdd" id="fdd-assignees"></div>
-      <div class="fdd" id="fdd-types"></div>
-      <div class="fdd" id="fdd-states"></div>
-      <div class="fdd" id="fdd-columns"></div>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+    <div class="filter-inline-host" id="filter-inline-host">
+      <div class="filter-panel" id="filter-panel" hidden>
+        <section class="filter-group" aria-labelledby="story-filter-group-title">
+          <h2 class="filter-group-title" id="story-filter-group-title">Stories</h2>
+          <div class="fdd" id="fdd-priorities"></div>
+          <div class="fdd" id="fdd-assignees"></div>
+          <div class="fdd" id="fdd-types"></div>
+          <div class="fdd" id="fdd-states"></div>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
+        </section>
+        <section class="filter-group" id="board-filter-group" aria-labelledby="board-filter-group-title">
+          <h2 class="filter-group-title" id="board-filter-group-title">Board display</h2>
+          <div class="fdd" id="fdd-columns"></div>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+        </section>
+      </div>
     </div>
   </div>
+  </header>
 
   <div class="repo-workspace" id="repo-workspace">
   <div class="workspace-content" id="workspace-content">
@@ -1784,6 +1851,18 @@ svg.ctxmenu-disabled-warning {
      existing rather than by being remembered. `tests/web_test.rs` refuses to
      serve a backdrop that names no surface, or one whose surface is never
      handed to `activateOverlay()`/`releaseOverlay()`. -->
+<div class="backdrop" id="filter-sheet-backdrop" data-overlay="filter-sheet" hidden></div>
+<section class="filter-sheet" id="filter-sheet" role="dialog" aria-modal="true" aria-labelledby="filter-sheet-title" aria-hidden="true" tabindex="-1" hidden>
+  <div class="filter-sheet-header">
+    <h2 class="filter-sheet-title" id="filter-sheet-title" tabindex="-1">Filters</h2>
+    <button type="button" class="btn btn-primary" id="filter-sheet-done">Done</button>
+  </div>
+  <div class="filter-sheet-body" id="filter-sheet-body">
+    <div id="filter-sheet-panel-host"></div>
+    <div class="filter-sheet-clear" id="filter-sheet-clear-host"></div>
+  </div>
+</section>
+
 <div class="backdrop" id="modal-backdrop" data-overlay="create-modal" hidden></div>
 <div class="modal" id="create-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="create-modal-header">New story</div>
@@ -2428,6 +2507,7 @@ svg.ctxmenu-disabled-warning {
   // is known -- see `pruneCarriedFilters()`, called from `fetchData()`.
 
   var FILTER_STORAGE_KEY = "storyhookFilters";
+  var compactHeaderQuery = window.matchMedia("(max-width: 768px)");
 
   /** A fresh, independently-mutable default filter object — never a shared
    * literal, since `state.filter[key]` arrays are pushed/spliced in place
@@ -2629,6 +2709,11 @@ svg.ctxmenu-disabled-warning {
     // stays visible regardless, so a reader always sees whether a filter
     // is active without opening this.
     filtersOpen: sectionOpenDefault("filters", false),
+    // SH-613: unlike the desktop disclosure above, the mobile sheet is a
+    // transient overlay. It deliberately has no storage key and begins
+    // closed on every load and project switch.
+    mobileFiltersOpen: false,
+    compactHeader: null,
     // Drawer section open/closed state (SH-169). A durable cross-project
     // preference like `showArchived`/`hideEmptyColumns` above, not a
     // per-story or per-repo value — a reader who collapses "Referenced By"
@@ -7389,6 +7474,11 @@ svg.ctxmenu-disabled-warning {
     var complete = state.reposReadiness === "loaded" && !catalogHasDraftErrors();
     var count = catalogDrafts().length;
     $("drafts-btn-text").textContent = complete ? (count || "No") + " Drafts" : "Drafts";
+    $("more-draft-count").hidden = !complete || count === 0;
+    $("more-draft-count").textContent = count ? String(count) : "";
+    $("more-btn").setAttribute("aria-label", complete && count
+      ? "More, " + count + (count === 1 ? " draft" : " drafts")
+      : "More");
     // Overlay ownership changes synchronously; `.open` follows one animation
     // frame later. A catalog reply inside that frame must still repaint the
     // activated surface rather than leave its first loading snapshot behind.
@@ -7550,7 +7640,10 @@ svg.ctxmenu-disabled-warning {
     // (the project changed, not the screen), and since it sets
     // `screen = "repo"` this one is false exactly when that one must fire.
     // No single rule covers both.
-    if (!isRepo) closeDrawer();
+    if (!isRepo) {
+      closeDrawer();
+      closeFilterSheet();
+    }
 
     if (isRepo) {
       renderView();
@@ -7634,6 +7727,103 @@ svg.ctxmenu-disabled-warning {
     buildColumnsDropdown(m.states);
   }
 
+  function moreMenuItems() {
+    return Array.prototype.slice.call($("more-menu").querySelectorAll("button"));
+  }
+
+  function closeMoreMenu(returnFocus) {
+    if (!state.compactHeader) return;
+    $("more-menu").hidden = true;
+    $("more-btn").setAttribute("aria-expanded", "false");
+    if (returnFocus && canTakeFocus($("more-btn"))) $("more-btn").focus();
+  }
+
+  function openMoreMenu(fromEnd) {
+    if (!state.compactHeader) return;
+    closeAllPopovers();
+    $("more-menu").hidden = false;
+    $("more-btn").setAttribute("aria-expanded", "true");
+    var items = moreMenuItems();
+    if (items.length) items[fromEnd ? items.length - 1 : 0].focus();
+  }
+
+  function moveAdaptiveFilterControls(compact) {
+    (compact ? $("filter-sheet-panel-host") : $("filter-inline-host")).appendChild($("filter-panel"));
+    (compact ? $("filter-sheet-clear-host") : $("filter-clear-host")).appendChild($("filter-clear"));
+  }
+
+  function openFilterSheet() {
+    if (!state.compactHeader || state.mobileFiltersOpen) return;
+    closeAllPopovers();
+    state.mobileFiltersOpen = true;
+    $("filter-panel").hidden = false;
+    $("filter-sheet").hidden = false;
+    $("filter-sheet").setAttribute("aria-hidden", "false");
+    showBackdrop("filter-sheet-backdrop");
+    activateOverlay("filter-sheet", "filter-sheet-title");
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+  }
+
+  function closeFilterSheet() {
+    if (!state.mobileFiltersOpen && overlayStack.indexOf("filter-sheet") === -1) return;
+    closeAllPopovers();
+    state.mobileFiltersOpen = false;
+    $("filter-panel").hidden = true;
+    $("filter-sheet").hidden = true;
+    $("filter-sheet").setAttribute("aria-hidden", "true");
+    hideBackdrop("filter-sheet-backdrop");
+    releaseOverlay("filter-sheet");
+    // WebKit can clear focus after a clicked Done button is hidden during its
+    // activation. Restore once more with the settled modal DOM before paint.
+    requestAnimationFrame(function() { restoreOverlayFocus($("filter-toggle-btn")); });
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+  }
+
+  /** Switches the same controls between desktop disclosure and mobile modal
+   * presentation. A breakpoint crossing always dismisses transient UI while
+   * leaving the desktop preference and every filter/display value intact. */
+  function syncAdaptiveChrome() {
+    var compact = compactHeaderQuery.matches;
+    var changed = state.compactHeader !== null && state.compactHeader !== compact;
+    if (changed && state.mobileFiltersOpen) closeFilterSheet();
+    if (changed) closeAllPopovers();
+
+    state.compactHeader = compact;
+    state.mobileFiltersOpen = false;
+    moveAdaptiveFilterControls(compact);
+
+    $("more-btn").hidden = !compact;
+    $("more-btn").setAttribute("aria-expanded", "false");
+    $("more-menu").hidden = compact;
+    if (compact) {
+      $("more-menu").setAttribute("role", "menu");
+      $("more-menu").setAttribute("aria-labelledby", "more-btn");
+      moreMenuItems().forEach(function(item) {
+        item.setAttribute("role", "menuitem");
+        item.tabIndex = -1;
+      });
+      $("filter-toggle-btn").setAttribute("aria-controls", "filter-sheet");
+    } else {
+      $("more-menu").removeAttribute("role");
+      $("more-menu").removeAttribute("aria-labelledby");
+      moreMenuItems().forEach(function(item) {
+        item.removeAttribute("role");
+        item.tabIndex = 0;
+      });
+      $("filter-toggle-btn").setAttribute("aria-controls", "filter-panel");
+    }
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+    measureNoticeBands();
+  }
+
+  /** Owns the shared 768px boundary. List focus transfers before the chrome
+   * moves controls or dismisses transient surfaces, while its invoker is
+   * still available to describe exactly which responsive peer should take it. */
+  function syncResponsivePresentation() {
+    syncListPresentation(true);
+    syncAdaptiveChrome();
+  }
+
   var openFilterDropdown = null;
 
   /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
@@ -7663,6 +7853,7 @@ svg.ctxmenu-disabled-warning {
     document.querySelectorAll('[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
     projselFocusIndex = -1;
+    closeMoreMenu(false);
     closeStoryMenu(false);
     closeColumnSortMenu(false);
   }
@@ -7679,6 +7870,7 @@ svg.ctxmenu-disabled-warning {
    * apart either way, so timing alone can't tell them apart). */
   function dismissPopoversOnOutsideClick(e) {
     if (storyMenuInvoker && e.target && storyMenuInvoker.contains(e.target)) return;
+    if (e.target && $("more-wrap").contains(e.target)) return;
     closeAllPopovers();
   }
 
@@ -7825,22 +8017,26 @@ svg.ctxmenu-disabled-warning {
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
   }
 
-  /** Reflects `state.filtersOpen` onto the filter panel's visibility, the
-   * toggle button's `aria-expanded`/chevron, and (given `visible`/`total`,
-   * the same pair `renderView()` already computes for `#filter-count`)
-   * whether the toggle button reads as "active" -- so a reader who never
-   * opens the panel this session still sees that a filter is narrowing
-   * the board, per the same "collapsed but not hidden" shape
-   * `buildSectionToggle` (SH-169) uses for the drawer's own sections. */
+  /** Reflects the active presentation's open state without conflating the
+   * transient mobile sheet with the persisted desktop disclosure. */
   function syncFilterToggle(visible, total) {
-    $("filter-panel").hidden = !state.filtersOpen;
-    $("filter-toggle-btn").setAttribute("aria-expanded", String(state.filtersOpen));
-    setDisclosureDirection($("filter-toggle-chevron"), state.filtersOpen ? "down" : "right");
-    $("filter-toggle-btn").classList.toggle("active", !!total && visible !== total);
+    var open = state.compactHeader ? state.mobileFiltersOpen : state.filtersOpen;
+    var active = !!total && visible !== total;
+    $("filter-panel").hidden = !open;
+    $("filter-toggle-btn").setAttribute("aria-expanded", String(open));
+    setDisclosureDirection($("filter-toggle-chevron"), open ? "down" : "right");
+    $("filter-toggle-btn").classList.toggle("active", active);
+    $("filter-active-indicator").hidden = !active;
+    $("board-filter-group").hidden = state.view !== "board";
   }
 
   function bindFilterBar() {
     $("filter-toggle-btn").addEventListener("click", function() {
+      if (state.compactHeader) {
+        if (state.mobileFiltersOpen) closeFilterSheet();
+        else openFilterSheet();
+        return;
+      }
       state.filtersOpen = !state.filtersOpen;
       localStorage.setItem("storyhook.section.filters.open", String(state.filtersOpen));
       syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
@@ -7882,6 +8078,8 @@ svg.ctxmenu-disabled-warning {
       savePersistedFilters();
       renderView();
     });
+    $("filter-sheet-done").addEventListener("click", closeFilterSheet);
+    $("filter-sheet-backdrop").addEventListener("click", closeFilterSheet);
     document.addEventListener("click", dismissPopoversOnOutsideClick);
     bindTypedKeys(document, function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
@@ -10065,8 +10263,6 @@ svg.ctxmenu-disabled-warning {
   // RENDER: LIST
   // ============================================================
 
-  var mobileListMedia = window.matchMedia("(max-width: 768px)");
-
   function clearMobileListDetails() {
     state.mobileListDetails = Object.create(null);
   }
@@ -10107,7 +10303,7 @@ svg.ctxmenu-disabled-warning {
    * the newly exposed DOM instead of remaining inside a hidden copy. */
   function syncListPresentation(transferFocus) {
     var descriptor = transferFocus ? listFocusDescriptor() : null;
-    var mobile = mobileListMedia.matches;
+    var mobile = compactHeaderQuery.matches;
     $("list-desktop").hidden = mobile;
     $("mobile-list").hidden = !mobile;
 
@@ -10124,7 +10320,7 @@ svg.ctxmenu-disabled-warning {
       var inactive = mobile ? $("list-desktop") : $("mobile-list");
       var active = document.activeElement;
       if (state.screen !== "repo" || state.view !== "list"
-          || mobileListMedia.matches !== mobile || !target.isConnected
+          || compactHeaderQuery.matches !== mobile || !target.isConnected
           || (active !== document.body && !inactive.contains(active))) return;
       target.focus();
     });
@@ -10415,6 +10611,7 @@ svg.ctxmenu-disabled-warning {
     var next = el("li", {}, []);
     var title = el("button", {
       type: "button", class: "mobile-story-title", dataset: { id: id }, tabIndex: -1,
+      "aria-label": st.title + (engineLaneDesc ? " — " + engineLaneDesc : ""),
       onClick: function() { openDrawer(id); }
     }, [st.title, buildEngineLaneChip(engineLane)]);
     next.appendChild(title);
@@ -12057,6 +12254,7 @@ svg.ctxmenu-disabled-warning {
    * from `fetchData()`'s first successful load for this repo. */
   function selectRepo(id) {
     closeDrawer();
+    closeFilterSheet();
     clearMobileListDetails();
     state.repoId = id;
     state.screen = "repo";
@@ -14711,6 +14909,7 @@ svg.ctxmenu-disabled-warning {
 
   function bindShell() {
     bindPressGate();
+    syncResponsivePresentation();
     // Before anything is bound, and before anything is open: this is what
     // takes the eight *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
@@ -14720,6 +14919,42 @@ svg.ctxmenu-disabled-warning {
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
     });
+    $("more-btn").addEventListener("click", function() {
+      if ($("more-menu").hidden) openMoreMenu(false);
+      else closeMoreMenu(true);
+    });
+    $("more-btn").addEventListener("keydown", function(e) {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      openMoreMenu(e.key === "ArrowUp");
+    });
+    $("more-menu").addEventListener("keydown", function(e) {
+      var items = moreMenuItems();
+      var at = items.indexOf(document.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMoreMenu(true);
+        return;
+      }
+      if (e.key === "Tab") {
+        closeMoreMenu(false);
+        return;
+      }
+      var next = null;
+      if (e.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = items.length - 1;
+      if (next === null || !items.length) return;
+      e.preventDefault();
+      items[next].focus();
+    });
+    if (compactHeaderQuery.addEventListener) {
+      compactHeaderQuery.addEventListener("change", syncResponsivePresentation);
+    } else {
+      compactHeaderQuery.addListener(syncResponsivePresentation);
+    }
     bindProjectSelector();
     // SH-197: one delegated listener per view, not one per card/row --
     // consistent with cards/rows already being reconciled in place rather
@@ -14730,10 +14965,8 @@ svg.ctxmenu-disabled-warning {
     bindRovingFocus($("list-body"), "tr[data-id]");
     bindRovingKeys($("mobile-list-body"), ".mobile-story-title[data-id]", listRovingMove);
     bindRovingFocus($("mobile-list-body"), ".mobile-story-title[data-id]");
-    mobileListMedia.addEventListener("change", function() { syncListPresentation(true); });
-    syncListPresentation(false);
-    $("home-btn").addEventListener("click", goHome);
-    $("settings-btn").addEventListener("click", goSettings);
+    $("home-btn").addEventListener("click", function() { closeMoreMenu(true); goHome(); });
+    $("settings-btn").addEventListener("click", function() { closeMoreMenu(true); goSettings(); });
     // SH-175: the New Story modal no longer closes on a backdrop click or
     // (see the shared Escape handler below) Escape — only its own three
     // footer buttons dismiss it. Every other modal in this file keeps that
@@ -14746,7 +14979,7 @@ svg.ctxmenu-disabled-warning {
     bindEnterSubmit($("create-title"), submitCreate);
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
     $("create-description").addEventListener("paste", stagePastedCreateAttachments);
-    $("drafts-btn").addEventListener("click", openDraftsModal);
+    $("drafts-btn").addEventListener("click", function() { closeMoreMenu(true); openDraftsModal(); });
     $("drafts-close").addEventListener("click", closeDraftsModal);
     $("drafts-backdrop").addEventListener("click", closeDraftsModal);
     $("token-cancel").addEventListener("click", cancelTokenModal);
@@ -14809,6 +15042,10 @@ svg.ctxmenu-disabled-warning {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
+        if (overlayStack[overlayStack.length - 1] === "filter-sheet") {
+          closeFilterSheet();
+          return;
+        }
         if (overlayStack[overlayStack.length - 1] === "attachment-modal") {
           closeAttachmentModal();
           return;
