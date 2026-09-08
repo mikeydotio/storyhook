@@ -1281,11 +1281,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             EngineScope::Epic(id) => Some(id.clone()),
             EngineScope::Project => None,
         };
-        let occupied = view
-            .lanes
-            .iter()
-            .filter(|lane| lane.state != EngineLaneState::Idle)
-            .count();
         let idle: Vec<EngineLaneRecord> = view
             .lanes
             .iter()
@@ -1293,10 +1288,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cloned()
             .collect();
 
-        for (n, lane) in idle.into_iter().enumerate() {
-            if occupied + n >= ENGINE_LANE_BUDGET {
-                break;
-            }
+        for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
             let filters = ReadyQueueFilters {
@@ -1308,7 +1300,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .claim_next_filtered_if(
                     filters,
                     None,
-                    |tx| Ok(run_for_project(tx, slug, run_id)?.state == EngineRunState::Running),
+                    |tx| {
+                        Ok(
+                            run_for_project(tx, slug, run_id)?.state == EngineRunState::Running
+                                && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
+                                && tx
+                                    .engine_lanes(run_id)?
+                                    .iter()
+                                    .any(|current| current == &lane),
+                        )
+                    },
                     |tx, before, claimed| {
                         working.state = EngineLaneState::Dispatching;
                         working.story_id = Some(claimed.id.clone());
@@ -1436,21 +1437,28 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     fn finish_if_drained(&self, run_id: &RunId, reason: &str) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        let needs_human = !self
-            .ctx
-            .store()
-            .read(|tx| {
-                let slug = project_slug(tx, project)?;
-                let run = run_for_project(tx, &slug, run_id)?;
-                needs_human_stories(tx, project, &now, &run.scope)
-            })?
-            .is_empty();
         let just_drained = std::cell::Cell::new(false);
-        let view = self.transition(run_id, |run, lanes| {
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            let lanes = tx.engine_lanes(run_id)?;
             let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
-            let waiting_on_a_human = run.state == EngineRunState::Running && needs_human;
+            // An empty fill may mean capacity contention, or the queue may
+            // have changed since filling. Only this transaction can certify drain.
+            let waiting_for_work = run.state == EngineRunState::Running
+                && (!needs_human_stories(tx, project, &now, &run.scope)?.is_empty()
+                    || !QueryService::new(tx, project, &now)
+                        .next_filtered(
+                            1,
+                            ReadyQueueFilters {
+                                phase: None,
+                                epic: run.scope.story_id(),
+                                exclude_label: Some(LABEL_NO_AUTO),
+                            },
+                        )?
+                        .is_empty());
             if all_idle
-                && !waiting_on_a_human
+                && !waiting_for_work
                 && matches!(
                     run.state,
                     EngineRunState::Running | EngineRunState::Draining
@@ -1462,6 +1470,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     run.acknowledged_at = None;
                     just_drained.set(reason == QUEUE_DRAINED);
                 }
+                run.updated_at = now.clone();
+                tx.update_engine_run(&run)?;
             }
             Ok(())
         })?;
@@ -1475,7 +1485,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }),
             );
         }
-        Ok(view)
+        self.one_view(run_id)
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
@@ -1781,6 +1791,27 @@ fn needs_human_stories(
             title: view.story.title,
         })
         .collect())
+}
+
+/// Capacity belongs to occupied lanes, including evidence retained by a halted
+/// run. Call inside the same write transaction that reserves the next lane.
+fn occupied_lane_count(tx: &impl ReadOps) -> Result<usize, StoreError> {
+    let mut occupied = 0;
+    for project in tx.projects()? {
+        for run in tx.engine_runs(&project.slug)? {
+            occupied += tx
+                .engine_lanes(&run.id)?
+                .iter()
+                .filter(|lane| {
+                    matches!(
+                        lane.state,
+                        EngineLaneState::Dispatching | EngineLaneState::Working
+                    )
+                })
+                .count();
+        }
+    }
+    Ok(occupied)
 }
 
 fn project_slug(tx: &impl ReadOps, project: crate::store::ProjectId) -> Result<String, StoreError> {
