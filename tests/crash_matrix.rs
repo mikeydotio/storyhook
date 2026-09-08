@@ -43,10 +43,12 @@
 //!
 //! [`FaultAction::Fail`]: storyhook::store::fault::FaultAction::Fail
 
+use std::collections::HashSet;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 
 use rusqlite::Connection;
+use storyhook::daemon::lifecycle;
 use storyhook::store::{
     FaultPoint, ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model,
 };
@@ -647,6 +649,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     let mut racers: Vec<_> = (0..8)
         .map(|_| spawn_daemon(&env, cwd.path(), None))
         .collect();
+    let racer_pids: HashSet<_> = racers.iter().map(|racer| racer.pid()).collect();
 
     // Whichever wins the pidfile serves forever, so every round asks the
     // incumbent to stand down. Repeatedly, and not once at the end: a racer
@@ -680,24 +683,31 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
             "a racer never exited; {} of 8 still running",
             done.iter().filter(|finished| !**finished).count()
         );
-        let identity = storyhook::daemon::lifecycle::read_daemon_identity(&env.environment());
-        if env.daemon_is_live()
-            && let Some((index, racer)) = identity.and_then(|identity| {
-                racers
+        // The lifetime lock identifies the exact incumbent. Kill only the
+        // owned racer with that PID; every loser remains subject to the
+        // signal-free oracle above.
+        if env.daemon_is_live() {
+            let environment = env.environment();
+            if let Some(identity) = lifecycle::read_daemon_identity(&environment) {
+                assert!(
+                    racer_pids.contains(&identity.pid),
+                    "the live incumbent must be one of this test's racers: {identity:?}"
+                );
+                let (index, racer) = racers
                     .iter_mut()
                     .enumerate()
                     .find(|(_, racer)| racer.pid() == identity.pid)
-            })
-        {
-            racer.kill_and_reap();
-            let status = racer
-                .try_wait()
-                .expect("the exact incumbent was reaped after the fixture killed it");
-            assert!(
-                status.signal().is_none() || status.signal() == Some(libc::SIGKILL),
-                "the fixture's exact incumbent exited through an unexpected signal: {status:?}"
-            );
-            done[index] = true;
+                    .expect("the live incumbent belongs to the spawned racer set");
+                racer.kill_and_reap();
+                let status = racer
+                    .try_wait()
+                    .expect("the exact incumbent was reaped after the fixture killed it");
+                assert!(
+                    status.signal().is_none() || status.signal() == Some(libc::SIGKILL),
+                    "the fixture's exact incumbent exited through an unexpected signal: {status:?}"
+                );
+                done[index] = true;
+            }
         }
     }
     assert_eq!(integrity_of(env.store_path()), "ok");

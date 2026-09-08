@@ -757,19 +757,24 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .card-open-prs { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin: 0 0 0.4375rem; }
+/* SH-597: the anchor owns the pointer target; its child owns the paint. A
+   label-sized action can therefore stay compact without giving a finger less
+   than --tap-min to hit. */
 .open-pr-chip {
   display: inline-flex; align-items: center; box-sizing: border-box; min-height: var(--tap-min);
-  padding: 0.0625rem 0.4375rem; border: 1px solid var(--accent); border-radius: 9999px;
-  background: var(--accent-soft); color: var(--accent); font-size: 0.625rem; font-weight: 650;
-  font-variant-numeric: tabular-nums; line-height: 1.35; text-decoration: none; white-space: nowrap;
+  color: var(--accent); text-decoration: none; white-space: nowrap;
 }
-.open-pr-chip:hover { box-shadow: 0 0 0 1px var(--accent); }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .chip {
   font-size: 0.625rem; padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-sunken);
   border: 1px solid var(--border); color: var(--fg-muted); font-weight: 600; white-space: nowrap;
 }
+.open-pr-chip-visual {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.open-pr-chip:hover .open-pr-chip-visual { box-shadow: 0 0 0 1px var(--accent); }
 /* The two reserved label names (SH-454, decision D12 of the Full Auto epic --
    docs/spec/full-auto-engine.md). They mean "a person is required here", so
    they must never read as one more tag: orange, distinct from the neutral chip
@@ -1196,6 +1201,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-item.danger { color: var(--danger); }
 .ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
 .ctxmenu-arrow { margin-left: auto; opacity: 0.7; }
+svg.ctxmenu-disabled-warning {
+  width: 0.875rem; height: 0.875rem; margin-left: auto; color: var(--warn);
+}
 /* SH-305: the per-column sort menu's `role="menuitemradio"` items -- same
    always-reserve-the-width, toggle-visibility idiom as `.projsel-item-check`
    so the label doesn't shift left/right as the checked item changes. */
@@ -2683,6 +2691,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var icon = svgIcon([["path", { d: paths[direction] }]], { strokeWidth: 2.5 });
     icon.classList.add("disclosure-icon");
     icon.dataset.direction = direction;
+    return icon;
+  }
+
+  /** Builds the fixed-size warning shape shown beside a disabled menu action
+   * whose temporary gate has a useful explanation (SH-596). The icon stays
+   * decorative because the menu item's title carries the reason in text. */
+  function menuDisabledWarningIcon() {
+    var icon = svgIcon([
+      ["path", { d: "M21.73 18 13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }],
+      ["path", { d: "M12 9v4" }],
+      ["path", { d: "M12 17h.01" }]
+    ], { strokeWidth: 2.25 });
+    icon.classList.add("ctxmenu-disabled-warning");
     return icon;
   }
 
@@ -6086,6 +6107,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       dispatchHidden ? null : {
         label: "Dispatch",
         disabled: dispatchInFlight,
+        disabledReason: dispatchInFlight
+          ? "A dispatch is already in progress for this story"
+          : null,
         onSelect: function() { openDispatchModal(st.id, invoker); }
       },
       { separator: true },
@@ -6332,7 +6356,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Builds a `.ctxmenu`-shaped popup's DOM from a flat `model` array of
-   * `{label, onSelect, disabled, danger, title, checked, submenu}` entries
+   * `{label, onSelect, disabled, disabledReason, danger, title, checked,
+   * submenu}` entries
    * (`separator: true` for a divider) -- shared by every `.ctxmenu`-shaped
    * popup in the app. `checked` (SH-305) renders as `role="menuitemradio"`
    * with an `aria-checked` state and a leading `✓` instead of a plain
@@ -6374,13 +6399,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var children = checked === undefined
         ? [entry.label]
         : [el("span", { class: "ctxmenu-check" }, ["✓"]), entry.label];
+      var disabledReason = disabled ? entry.disabledReason : null;
+      if (disabledReason) children.push(menuDisabledWarningIcon());
       node.appendChild(el("div", {
         class: "ctxmenu-item" + (entry.danger ? " danger" : ""),
         role: checked === undefined ? "menuitem" : "menuitemradio",
         "aria-checked": checked === undefined ? null : String(!!checked),
         tabIndex: -1,
         "aria-disabled": disabled ? "true" : null,
-        title: entry.title || null,
+        title: disabledReason || entry.title || null,
         onClick: function() {
           if (disabled) return;
           closeMenu(false);
@@ -8814,7 +8841,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           tabIndex: -1,
           title: "Open " + pr.owner + "/" + pr.repo + "#" + pr.number + " in a new tab",
           onClick: function(e) { e.stopPropagation(); }
-        }, ["PR #" + pr.number + " ↗"]));
+        }, [el("span", { class: "chip open-pr-chip-visual" }, ["PR #" + pr.number + " ↗"])]));
       });
       next.appendChild(openPrWrap);
     }
