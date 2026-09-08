@@ -26,6 +26,7 @@
 //! directory regardless of which fixture repository is the current working
 //! directory.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -111,6 +112,10 @@ impl SelectRepo {
             "tests/scanner_test.rs",
             "#[test] fn t() { std::fs::read_to_string(env!(\"CARGO_MANIFEST_DIR\")).ok(); }\n",
         );
+        repo.write(
+            "scripts/test-impact.tsv",
+            "scanner_test\ttests/scanner_test.rs\n",
+        );
         repo.write("README.md", "readme\n");
         repo.git(&["add", "-A"]);
         repo.git(&["commit", "-qm", "init"]);
@@ -188,6 +193,19 @@ impl SelectRepo {
         lines.sort();
         std::fs::write(dir.join(for_tree), lines.join("\n") + "\n")
             .expect("fixture: writing a coverage map");
+    }
+
+    fn write_impact_map(&self, entries: &[(&str, &str)]) {
+        let mut lines: Vec<String> = entries
+            .iter()
+            .map(|(binary, input)| format!("{binary}\t{input}"))
+            .collect();
+        lines.sort();
+        self.write("scripts/test-impact.tsv", &(lines.join("\n") + "\n"));
+    }
+
+    fn write_impact_map_raw(&self, body: &str) {
+        self.write("scripts/test-impact.tsv", body);
     }
 
     fn select_tests(&self) -> Output {
@@ -293,6 +311,9 @@ fn a_baseline_with_no_coverage_map_means_all() {
 #[test]
 fn a_changed_path_outside_the_covered_globs_means_all() {
     let repo = SelectRepo::new();
+    repo.write_impact_map(&[("scanner_test", ":(glob)**/*")]);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "declare the dynamic scanner"]);
     let base = repo.tree();
     assert_ok(
         &repo.certify("gate", None),
@@ -316,6 +337,185 @@ fn a_changed_path_outside_the_covered_globs_means_all() {
     assert!(
         stderr(&out).contains("README.md"),
         "the offending path must be named, got: {}",
+        stderr(&out)
+    );
+}
+
+/// A declared checkout dependency turns an otherwise uncovered path into a
+/// precise contract selection instead of the broad `ALL` escape hatch.
+#[test]
+fn a_declared_cross_cutting_dependency_selects_its_contract() {
+    let repo = SelectRepo::new();
+    repo.write("tests/dead_public_surface.rs", "#[test] fn contract() {}\n");
+    repo.write_impact_map(&[
+        ("dead_public_surface", "src/a.rs"),
+        ("scanner_test", "tests/scanner_test.rs"),
+    ]);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "declare the source contract"]);
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[("story_priority", "src/b.rs")]);
+
+    repo.commit(
+        "src/a.rs",
+        "pub fn newly_public() {}\n",
+        "change public surface",
+    );
+
+    let out = repo.select_tests();
+    assert_ok(&out, "select-tests.sh over a declared contract input");
+    let selected = selection_lines(&out);
+    assert!(
+        selected.contains(&"dead_public_surface".to_string()),
+        "got: {selected:?}"
+    );
+}
+
+/// A fixture depends on the complete literal source closure of the shell
+/// script it copies, not only on the top-level file named in the manifest.
+#[test]
+fn a_changed_sourced_script_selects_the_fixture_contract_transitively() {
+    let repo = SelectRepo::new();
+    repo.write(
+        "scripts/release.sh",
+        "#!/bin/sh\nSCRIPT_DIR=$(cd \"$(dirname \"$0\")\" && pwd)\nsource \"$SCRIPT_DIR/branch-policy.sh\"\n",
+    );
+    repo.write("scripts/branch-policy.sh", "readonly BRANCH=dev\n");
+    repo.write("tests/release_contract.rs", "#[test] fn contract() {}\n");
+    repo.write_impact_map(&[
+        ("release_contract", "scripts/release.sh"),
+        ("scanner_test", "tests/scanner_test.rs"),
+    ]);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "declare the release fixture"]);
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[]);
+
+    repo.commit(
+        "scripts/branch-policy.sh",
+        "readonly BRANCH=integration\n",
+        "change a sourced dependency",
+    );
+
+    let out = repo.select_tests();
+    assert_ok(&out, "select-tests.sh over a transitive fixture input");
+    let selected = selection_lines(&out);
+    assert_ne!(
+        selected,
+        vec!["ALL".to_string()],
+        "got: {selected:?}; stderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        selected.contains(&"release_contract".to_string()),
+        "got: {selected:?}"
+    );
+}
+
+/// Adding a checkout reader without declaring its inputs is a map defect, not
+/// permission to trust the coverage map. Selection fails closed and names it.
+#[test]
+fn an_unmapped_checkout_reader_is_detected_and_falls_back_to_all() {
+    let repo = SelectRepo::new();
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[]);
+
+    repo.commit(
+        "tests/unmapped_contract.rs",
+        "#[test] fn contract() { let _ = env!(\"CARGO_MANIFEST_DIR\"); }\n",
+        "add an undeclared checkout reader",
+    );
+
+    let out = repo.select_tests();
+    assert_ok(&out, "select-tests.sh with an incomplete impact map");
+    assert_eq!(selection_lines(&out), vec!["ALL".to_string()]);
+    assert!(
+        stderr(&out).contains("unmapped_contract"),
+        "the missing target must be named, got: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn malformed_impact_manifests_are_detected_and_fail_closed() {
+    for (name, manifest, diagnostic) in [
+        (
+            "missing target",
+            "missing_target\tsrc/a.rs\nscanner_test\ttests/scanner_test.rs\n",
+            "missing integration-test target missing_target",
+        ),
+        (
+            "unmatched input",
+            "scanner_test\tmissing/input.rs\n",
+            "pathspec matches no tracked input",
+        ),
+        (
+            "duplicate row",
+            "scanner_test\ttests/scanner_test.rs\nscanner_test\ttests/scanner_test.rs\n",
+            "sorted and contain no duplicate",
+        ),
+        (
+            "unsorted rows",
+            "scanner_test\ttests/scanner_test.rs\nscanner_test\tsrc/a.rs\n",
+            "must be sorted",
+        ),
+    ] {
+        let repo = SelectRepo::new();
+        let base = repo.tree();
+        assert_ok(
+            &repo.certify("gate", None),
+            "fixture: certifying the baseline",
+        );
+        repo.write_map(&base, &[]);
+        repo.write_impact_map_raw(manifest);
+
+        let out = repo.select_tests();
+        assert_ok(&out, &format!("select-tests.sh with {name}"));
+        assert_eq!(selection_lines(&out), vec!["ALL".to_string()], "{name}");
+        assert!(
+            stderr(&out).contains(diagnostic),
+            "{name} must report {diagnostic:?}, got: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn deleting_a_declared_input_still_selects_its_contract() {
+    let repo = SelectRepo::new();
+    repo.write("tests/source_contract.rs", "#[test] fn contract() {}\n");
+    repo.write_impact_map(&[
+        ("scanner_test", "tests/scanner_test.rs"),
+        ("source_contract", "src/a.rs"),
+    ]);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "declare the removable input"]);
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[]);
+    std::fs::remove_file(repo.path().join("src/a.rs")).expect("deleting the declared input");
+
+    let out = repo.select_tests();
+    assert_ok(&out, "select-tests.sh over a deleted declared input");
+    let selected = selection_lines(&out);
+    assert!(
+        selected.contains(&"source_contract".to_string()),
+        "got: {selected:?}; stderr: {}",
         stderr(&out)
     );
 }
@@ -761,6 +961,97 @@ fn a_changed_receipt_records_its_base_tree() {
 // ---------------------------------------------------------------------------
 // Derived fences
 // ---------------------------------------------------------------------------
+
+#[test]
+fn this_checkouts_impact_manifest_covers_every_checkout_reader_and_named_escape() {
+    let manifest = std::fs::read_to_string(checkout().join("scripts/test-impact.tsv"))
+        .expect("reading scripts/test-impact.tsv");
+    let rows: Vec<(&str, &str)> = manifest
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(
+                fields.len(),
+                2,
+                "impact rows are <test-target><TAB><Git pathspec>: {line:?}"
+            );
+            (fields[0], fields[1])
+        })
+        .collect();
+    let rendered: Vec<String> = rows
+        .iter()
+        .map(|(target, input)| format!("{target}\t{input}"))
+        .collect();
+    let mut sorted = rendered.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        rendered, sorted,
+        "the impact manifest must be sorted and unique"
+    );
+
+    for (target, input) in &rows {
+        assert!(
+            checkout()
+                .join("tests")
+                .join(format!("{target}.rs"))
+                .is_file(),
+            "impact target {target} has no tests/{target}.rs"
+        );
+        let matched = run(
+            checkout(),
+            "git",
+            &["ls-files", "--error-unmatch", "--", input],
+        );
+        assert_ok(&matched, &format!("impact pathspec {input} must match"));
+    }
+
+    let mapped: BTreeSet<&str> = rows.iter().map(|(target, _)| *target).collect();
+    let declared_inputs: BTreeSet<(&str, &str)> = rows.iter().copied().collect();
+    let listed = run(checkout(), "git", &["ls-files", "--", "tests/*.rs"]);
+    assert_ok(&listed, "listing integration tests");
+    let missing: Vec<String> = stdout(&listed)
+        .lines()
+        .filter_map(|relative| {
+            let source = std::fs::read_to_string(checkout().join(relative))
+                .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
+            let is_reader = ["git ls-files", "CARGO_MANIFEST_DIR", "include_str!"]
+                .iter()
+                .any(|marker| source.contains(marker));
+            let target = relative
+                .strip_prefix("tests/")
+                .and_then(|path| path.strip_suffix(".rs"))?;
+            if target.contains('/') {
+                return None;
+            }
+            let has_real_input = declared_inputs.iter().any(|(declared_target, input)| {
+                *declared_target == target && *input != format!("tests/{target}.rs")
+            });
+            (is_reader && (!mapped.contains(target) || !has_real_input)).then(|| target.to_string())
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "checkout-reading targets have no impact declaration: {missing:?}"
+    );
+
+    for required in [
+        ("checkout_path_readers", ":(glob)src/**/*.rs"),
+        ("dead_public_surface", ":(glob)src/**/*.rs"),
+        ("golden_cli", ":(glob)src/**/*.rs"),
+        ("portfile_fixture_hygiene", ":(glob)tests/**/*.rs"),
+        ("release_gate_order", "scripts/release.sh"),
+        ("release_targets", "scripts/release.sh"),
+        ("scope_rubric", "src/service/templates.rs"),
+        ("store_isolation", ":(glob)tests/**/*.rs"),
+    ] {
+        assert!(
+            rows.contains(&required),
+            "missing required impact row {required:?}"
+        );
+    }
+}
 
 /// `pub(crate) const SHUTDOWN_CHECK: Duration = Duration::from_millis(<n>);`
 /// in `src/daemon/serve.rs` — read as source text rather than imported,

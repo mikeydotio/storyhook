@@ -64,30 +64,43 @@ that reads a tracked file directly (`CARGO_MANIFEST_DIR`-relative reads — 57
 of this repo's test files, measured) or shells out to `git ls-files` (19
 more) to scan the tree at runtime: the lines that execute there belong to
 `std::fs::read`'s own generic body or to the `git` binary, not to whichever
-*specific* file happened to be read. Three unconditional escape hatches sit
-on top of the map for exactly this reason, checked by `select-tests.sh`
-**before** the map is ever consulted:
+*specific* file happened to be read. `scripts/test-impact.tsv` complements
+coverage with reviewed `<test-target><TAB><Git pathspec>` dependencies for
+those checkout reads. `select-tests.sh` validates the manifest against the
+actual tracked tree and unions matching contracts into the coverage result.
+Three escape hatches sit on top of the map for exactly this reason:
 
 1. **No map for the resolved baseline → run everything.** A map is only
    ever a strengthening signal on top of "run everything"; its absence is
    never treated as "nothing changed."
-2. **Any changed path outside `src/**.rs`, `crates/**.rs`, `tests/*.rs` →
-   run everything.** This is what covers `Makefile`, `scripts/`,
-   `.githooks/`, `src/web_dashboard.html`, `plugin/`, `docs/`, `e2e/`, and
-   every `include_str!`ed asset — none of which coverage instrumentation
-   touches at all.
+2. **Any undeclared changed path outside `src/**.rs`, `crates/**.rs`,
+   `tests/*.rs` → run everything.** A matching manifest row can select its
+   named contract instead. Exact shell-script inputs expand through literal
+   repository-local `source`/`.` statements transitively, so a fixture mapped
+   to `scripts/release.sh` also follows newly sourced helpers. Dynamic or
+   otherwise undeclared inputs retain the conservative `ALL` result.
 3. **The derived tree-scanning set, always applied.** Every `tests/*.rs`
    file whose own source names `git ls-files`, `CARGO_MANIFEST_DIR` or
    `include_str!` runs regardless of what changed — derived by scanning
    `tests/*.rs` at selection time (`git grep`), never a hand-kept list.
    CLAUDE.md's own SH-136/SH-198/SH-258/SH-260-276/SH-360 are five recorded
    costs of exactly that hand-kept shape in this project alone; this is that
-   doctrine applied here rather than repeated a sixth time.
+   doctrine applied here rather than repeated a sixth time. The manifest must
+   name every member of this derived set; a new reader without a declaration,
+   stale target, unmatched pathspec, duplicate or unsorted row fails closed to
+   `ALL` with the broken invariant on stderr.
 
-Only once all three are checked does `select-tests.sh` consult the map:
-every binary the map names for a changed `src/**.rs`/`crates/**.rs` file,
-plus the binary for any changed `tests/*.rs` file itself (a file the map has
-never seen, because it is new), unioned and sorted.
+Only once these checks pass does `select-tests.sh` consult LLVM coverage:
+every binary the coverage map names for a changed Rust source, every matching
+declared contract, the always-on derived scanner set, and the binary for any
+changed `tests/*.rs` file itself are unioned, sorted and deduplicated.
+
+This declaration layer exists for pre-submission discovery as well as the
+`test-changed` target. A work lane in a repository that provides the selector
+runs it against its actual tracked tree before choosing direct test targets;
+`ALL` remains a statement that selection cannot safely narrow the run, never
+permission to claim a full gate. The centralized verifier still runs the full
+suite on the proposed merge.
 
 ### The tier, and where it does and does not gate
 
