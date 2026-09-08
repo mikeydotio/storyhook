@@ -33,7 +33,12 @@ impl ReleaseFixture {
             .unwrap();
         }
         fs::write(repo.join("VERSION"), "v9.9.9\n").unwrap();
-        for file in ["bin/claude", "bin/cargo", "scripts/build-release-assets.sh"] {
+        for file in [
+            "bin/claude",
+            "bin/codex",
+            "bin/cargo",
+            "scripts/build-release-assets.sh",
+        ] {
             executable(&repo.join(file), "#!/bin/bash\nexit 0\n");
         }
         executable(
@@ -85,7 +90,17 @@ esac
         );
         executable(
             &repo.join("bin/story"),
-            "#!/bin/bash\nprintf 'story %s\n' \"$(cat VERSION)\"\n",
+            r#"#!/bin/bash
+set -eu
+case "${1:-}" in
+  --version) printf 'story %s\n' "$(cat VERSION)" ;;
+  plugin)
+    [ "${2:-}" = install ] || exit 90
+    printf 'plugin:%s\n' "${3:-}" >> "$RELEASE_TEST_LOG"
+    ;;
+  *) exit 90 ;;
+esac
+"#,
         );
         let fixture = Self { scratch, repo };
         fixture.git(&["init", "-q", "-b", "dev"]);
@@ -146,6 +161,16 @@ esac
         command
             .env("RELEASE_GATE_FAIL", if gate_fail { "1" } else { "0" })
             .env("RELEASE_BUMP_FAIL", if bump_fail { "1" } else { "0" })
+            .output()
+            .unwrap()
+    }
+
+    fn run_local_with_plugins(&self) -> Output {
+        self.command("bash")
+            .arg("scripts/release.sh")
+            .args(["--yes", "--skip-daemon", "--local-only"])
+            .env("RELEASE_GATE_FAIL", "0")
+            .env("RELEASE_BUMP_FAIL", "0")
             .output()
             .unwrap()
     }
@@ -236,6 +261,17 @@ fn local_install_gates_the_final_tree_with_or_without_a_bump() {
         );
         fixture.assert_no_push();
     }
+}
+
+#[test]
+fn local_install_refreshes_both_provider_plugins_after_the_binary() {
+    let fixture = ReleaseFixture::new();
+    assert_exit(&fixture.run_local_with_plugins(), 0);
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        fixture.calls(),
+        format!("gate:v9.9.9:{tree}\ninstall:v9.9.9\nplugin:claude\nplugin:codex\n")
+    );
 }
 
 #[test]
