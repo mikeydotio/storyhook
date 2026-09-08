@@ -1,0 +1,479 @@
+{
+  "schema": 1,
+  "epic_id": "SH-602",
+  "source_revision": "df83daa58dc20fd92895b38bf65c9581da14967f",
+  "summary": "Across the selected stories' full histories: 24 RED outcome comments, 20 conflict comments, and six permanent infrastructure-halt comments. Seventeen conflicts mention shared roadmap or handoff files. Those shared-document faults are now repaired. Six selected follow-ups target remaining generation, convergence, watchdog, test-selection, diagnostics, and export gaps; host-hook repairs retain their existing Agentics owners.",
+  "method": "Cohort: any story entering Done during the inclusive 48-hour UTC window. Reconstruct each complete history through the frozen event watermark, including earlier work and later-in-window reopenings. Sequence determines order. Identical archive markers do not create extra completions; same-state Verifying submissions do create new generations. All outcome counts describe recorded comments, including superseded historical statements, rather than independently certified test runs. Collection preserves raw payloads and separate daemon-derived command / self-attested actor provenance.",
+  "limitations": [
+    "Completion-based sampling excludes stories that remained stuck at cutoff. This audit cannot estimate the whole system's failure rate or prove the absence of unresolved work outside the cohort.",
+    "State residence includes overlapping waits and execution across stories. No exact gate-runtime total or queue-only total is derived from it; gate runtime remains unknown unless an attributed observation supplies it.",
+    "Full histories include events before the completion window. The counts are cohort-history counts, not counts of all events occurring during those 48 hours.",
+    "Comments are statements by agents, people, or the verifier. Retracted comments remain historical evidence, explicitly labelled; their text is not proof of truth. Actors are self-attested and do not replace the derived command.",
+    "Source inspection uses the assigned worktree at df83daa58 (VERSION v2.4.2). The SH-588 incident explicitly reports installed CLI/daemon v2.4.2; equal version labels do not prove equal runtime source or installed plugin contents.",
+    "Referenced raw verification logs reside under the main checkout's shared Git directory and were not opened, respecting the workspace instruction against inspecting the main checkout. Preserved log excerpts and later diagnostic comments are available; exact per-attempt runtime/queue decomposition is not.",
+    "GitHub PR fields were retrieved after the cutoff as corroboration of historical merges. They are distinguished from frozen store events; later observations do not alter cohort membership.",
+    "The export failure and installed host-hook inspection are supplemental observations made during SH-560. They are not attributed to the cohort's earlier execution.",
+    "Missing standardized GREEN or cleanup comments do not prove a gate was skipped or resources leaked. The report distinguishes recorded state, attributed outcomes, and externally corroborated merges.",
+    "Report selection changes are session-local until downloaded. Filed story IDs are durable StoryHook records; the report never creates stories or changes the live tracker."
+  ],
+  "observations": [
+    {
+      "title": "PR merge metadata — retrieved through GitHub GraphQL during SH-560",
+      "detail": "[\n  {\n    \"number\": 652,\n    \"title\": \"SH-566: Configure Full Auto runs per provider\",\n    \"mergedAt\": \"2026-09-06T19:14:16Z\",\n    \"mergeCommit\": {\n      \"oid\": \"f199c98c26f1fbec4c20c2adbc0205bc45bc333c\"\n    },\n    \"url\": \"https://github.com/mikeydotio/storyhook/pull/652\"\n  },\n  {\n    \"number\": 689,\n    \"title\": \"fix(daemon): serialize portfile publication with exit\",\n    \"mergedAt\": \"2026-09-07T22:15:08Z\",\n    \"mergeCommit\": {\n      \"oid\": \"151df0fa922fb4572e8340f75eaf57a43353bf93\"\n    },\n    \"url\": \"https://github.com/mikeydotio/storyhook/pull/689\"\n  },\n  {\n    \"number\": 691,\n    \"title\": \"fix(dashboard): preserve transient card classes (SH-424)\",\n    \"mergedAt\": \"2026-09-07T22:24:34Z\",\n    \"mergeCommit\": {\n      \"oid\": \"e0902a7a768abe9af31adac0a32bb0d1e3c4cccd\"\n    },\n    \"url\": \"https://github.com/mikeydotio/storyhook/pull/691\"\n  },\n  {\n    \"number\": 695,\n    \"title\": \"test: reap Full Auto fixture sessions (SH-591)\",\n    \"mergedAt\": \"2026-09-07T23:25:41Z\",\n    \"mergeCommit\": {\n      \"oid\": \"cfd9503687a9edfa8aeac81ed7b765169f0240f9\"\n    },\n    \"url\": \"https://github.com/mikeydotio/storyhook/pull/695\"\n  },\n  {\n    \"number\": 703,\n    \"title\": \"SH-594: Periodically clean merged story workspaces\",\n    \"mergedAt\": \"2026-09-08T04:37:44Z\",\n    \"mergeCommit\": {\n      \"oid\": \"df83daa58dc20fd92895b38bf65c9581da14967f\"\n    },\n    \"url\": \"https://github.com/mikeydotio/storyhook/pull/703\"\n  }\n]"
+    },
+    {
+      "title": "Project export reproduction",
+      "detail": "Command: story export. Error: the daemon's answer was unreadable: json: the response body is larger than request limit: 10485760 at line 1 column 10485760. An initial sandbox attempt was denied loopback access; the escalated read reached the daemon and reproduced this distinct size failure. Current client: HttpInvoker::exchange, src/invoke.rs:3221, calls ureq read_json without a response-specific limit."
+    },
+    {
+      "title": "Existing host-hook ownership",
+      "detail": "Read ~/.codex/hooks.json and ~/.codex/hooks/pre-push-tests.sh. The registration enables the global pre-push gate; its source describes Agentics ownership, whole-command text matching, duplicate suites, and the deliberate SKIP_PREPUSH_TESTS=1 bypass. Read-only Agentics store inspection confirmed AGE-63, AGE-64, AGE-65 remain todo. No installed hook or external project story was modified."
+    },
+    {
+      "title": "Priorities and selection",
+      "detail": "Selected F01→SH-603 (high), F02→SH-604, F03→SH-605, F05→SH-606, F06→SH-607, F07→SH-608 (medium), parent SH-602 (medium). Every diagnosis distinguishes supported observations from hypotheses. Other findings retain existing owners or remain explicitly qualified risks."
+    }
+  ],
+  "sources": [
+    {
+      "title": "SQLite — snapshot isolation and concurrent readers",
+      "url": "https://www.sqlite.org/isolation.html"
+    },
+    {
+      "title": "ureq 3.3.0 — response body limits",
+      "url": "https://docs.rs/ureq/3.3.0/ureq/struct.Body.html"
+    },
+    {
+      "title": "GitHub — pull request state and merge metadata",
+      "url": "https://docs.github.com/en/rest/pulls/pulls"
+    },
+    {
+      "title": "StoryHook source baseline for this assessment",
+      "url": "https://github.com/mikeydotio/storyhook/tree/df83daa58dc20fd92895b38bf65c9581da14967f"
+    }
+  ],
+  "story_notes": {
+    "SH-321": "Four verification generations and four conflict returns. Three conflicts cite shared roadmap/template files; another cites a real test-file overlap. Repeated browser and contract reruns are documented. Final Done lacks a standardized GREEN comment; certification is not inferred.",
+    "SH-328": "Two roadmap conflict returns, then an orphan-check RED. The agent adopted a deterministic delayed-respawn regression and fixed the detector in a separate commit. Final Done is recorded after the repair; do not count prior-PASS lines as failures.",
+    "SH-342": "One verification submission; standardized GREEN and cleanup-complete comments provide recorded terminal outcomes.",
+    "SH-353": "Three verification submissions: a roadmap conflict and a compiler/public-surface RED interrupted the deadline fix. The final Done record alone is not a full gate trace.",
+    "SH-374": "One submission with GREEN and cleanup complete. Clipboard failure fixtures and an adopted documentation correction were tested across browser engines.",
+    "SH-400": "One submission with GREEN and cleanup complete. The agent separately repaired an animation-listener ownership sibling exposed by the new regression.",
+    "SH-421": "One verification generation ending Done. No standardized terminal verifier comment exists in the frozen history; the report leaves certification evidence unknown.",
+    "SH-424": "One verification generation. Landing encountered a missing receipt for the refreshed tree; GitHub later records PR #691 merged. A global pre-push hook also delayed submission.",
+    "SH-426": "One verification generation with a 1746-second total-runtime infrastructure halt. A global pre-push suite was stopped before submission; Done followed later.",
+    "SH-427": "One verification generation and a recorded Done transition; no standardized terminal verifier comment. The agent reported repeated silent push stalls and used a bypass after checking transport/hook behavior.",
+    "SH-428": "One verification generation; no standardized terminal outcome. Push delays and an explicitly announced hook bypass are recorded.",
+    "SH-486": "One verification generation. The agent first suspected transport, then directly observed four host-hook suite runs and revised its diagnosis. Done has no standardized GREEN comment.",
+    "SH-557": "One verification generation interrupted by invalid verifier-worktree metadata. This story removes a major source of shared status-file reconciliation, but its own terminal record is not a complete gate trace.",
+    "SH-566": "Long pre-window work and multiple verification generations, including a stale golden snapshot, shared workspace restoration error, and plugin-reinstall diagnosis. Full-history residence is intentionally included even though completion selection uses only the 48-hour window.",
+    "SH-574": "Multiple roadmap conflicts and a RED preceded GREEN and cleanup complete. Reconciliation preserved commit-identity policy while repeatedly updating shared generated status text.",
+    "SH-576": "Recorded Todo → Done, with no intervening Verifying event. The story reports the compiler sysroot repair as merged; this audit does not infer a bypass from absent state transitions.",
+    "SH-577": "Two shared-document conflict returns required repeated browser matrices. An overlapping run failed before interaction; sequential reruns passed and preserved the original failed evidence. GREEN and cleanup complete are recorded.",
+    "SH-578": "Recorded Todo → Done. Its merge comment attributes three release-toolchain/cache failures to this repair and adopted siblings; no Verifying interval is available to measure.",
+    "SH-579": "One shared-document conflict return, then GREEN and cleanup complete. The independent release observer was added; this audit did not run or deploy it.",
+    "SH-580": "Recorded Todo → Done. The release workflow abort repair is recorded without a Verifying interval; do not interpret that gap as zero gate runtime.",
+    "SH-581": "One verification submission with GREEN and cleanup complete for the extracted-source guest working-directory correction.",
+    "SH-582": "A workspace-restoration error was reported as RED before Done. That is an infrastructure classification failure, distinct from the daemon cwd defect this story repaired.",
+    "SH-584": "Three RED returns: shared workspace restoration, generated-guidance equality, and daemon-containment contract. GREEN and cleanup complete followed; narrow feature tests alone missed cross-cutting contracts.",
+    "SH-585": "Three RED returns and one conflict. Generated-guidance and containment contracts overlapped SH-584's returns. Final GREEN and cleanup complete are recorded.",
+    "SH-586": "Four verification generations, three conflict returns and one RED. Shared roadmap/template edits recur in the conflict evidence; final completion lacks a standardized GREEN statement.",
+    "SH-587": "Conflict reconciliation reservation was implemented while itself encountering a shared status-file conflict. One generation completed; terminal certification is not inferred from Done.",
+    "SH-588": "Five Done entries, four reopenings, and five linked/merged PR records span evolving work. An early completion lacked a cleanup lease; a later resubmission exposed the ownership discrepancy. Repeated completion must remain visible.",
+    "SH-589": "One short-lived verification generation before a repair return, followed later by Done. The progress-chip fix does not itself establish what the central verifier owned.",
+    "SH-590": "A conflict and a RED interrupted activity-log work. The recorded RED includes a failing crash-matrix case; activity logging now offers additional evidence, but cannot reconstruct events predating its installation.",
+    "SH-591": "PR #695 merged at 23:25:41Z. At 23:26:02Z web:move / web:user set Done; the verifier posted a permanent MERGED refusal at 23:33:57Z. These are three separate observations, not one atomic completion.",
+    "SH-592": "Three generations and two RED comments plus a conflict. A compatibility alias failed the public-surface contract and was removed. Later reconciliation composed idle supervision with SH-593 child ownership.",
+    "SH-593": "One brief verification generation before Done. Forced child draining was repaired, but new live-portfile fixtures later exposed contract failures on SH-596/597.",
+    "SH-594": "Four generations, three RED comments, and a 288-second silence halt. Repairs covered Clippy layout and registered checkout readers; watchdog diagnosis is kept separate from actual later test failures. Final GREEN and cleanup complete are recorded.",
+    "SH-595": "One Verifying interval before a inherited crash-matrix RED; Done occurred after return to In Progress. Its branch-policy change later required copied release-fixture repairs in SH-596.",
+    "SH-596": "Four generations and three RED returns. The UI change adopted inherited crash, portfile-hygiene, and release-fixture repairs in separate commits. It spent about 1.9 hours in Verifying, including the halt behind SH-594.",
+    "SH-597": "Two generations with a portfile-hygiene RED, then GREEN and cleanup complete. The agent independently repaired the same SH-593 fixture class also encountered by SH-596."
+  },
+  "findings": [
+    {
+      "rank": 1,
+      "id": "F01",
+      "title": "Verification ownership can disagree with the submitted generation",
+      "priority": "high",
+      "status": "unresolved",
+      "confidence": "Observed discrepancy; cause unproven",
+      "evidence": [
+        21455,
+        21348,
+        21768,
+        21843
+      ],
+      "observation": "SH-588 was reported QUEUED after a same-state Verifying resubmission while a verify-pr child was already running. SH-591 was moved Done by web:move / web:user before a later verifier result was published.",
+      "cause": "A running attempt owns a captured generation; UI state and later submissions can advance independently. The SH-588 comment does not establish whether its child belonged to the older or newer generation.",
+      "current": "src/daemon/verification_progress.rs:100 matches ownership by exact generation. src/daemon/verification.rs:914 explicitly replaces ownership during conflict reconciliation, but the synchronous actuator otherwise retains its candidate. Inspect outcome acceptance and cleanup as well as the displayed queue status; no false completion is proven here.",
+      "recommendation": "Reproduce concurrent state/resubmission changes around an active actuator. Define and enforce how superseded attempts are reported and which generation may publish completion or cleanup.",
+      "acceptance": [
+        "A controlled running actuator plus same-state resubmission has an explicit truthful status for both generations.",
+        "A delayed old-generation outcome cannot close, return, or reap resources belonging to a newer submission.",
+        "Cover UI-driven Done, reopen, daemon restart, and conflict reconciliation; preserve serialized ownership."
+      ],
+      "priority_reason": "An unmarked wrong ownership answer can drive duplicate intervention. High follows the wrong-answer rung; no claim of silent corrupt completion.",
+      "decision": "File a diagnostic hardening story. Preserve competing hypotheses until reproduction establishes the origin.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-603"
+    },
+    {
+      "rank": 2,
+      "id": "F02",
+      "title": "Expected landing races become permanent queue halts",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Observed; current classification path confirmed",
+      "evidence": [
+        18581,
+        21544,
+        21768,
+        21843
+      ],
+      "observation": "SH-566 and SH-424 encountered missing receipts for a changed landing tree. SH-591 received a permanent infrastructure halt eight minutes after GitHub says PR #695 merged, and after the web UI moved the story Done.",
+      "cause": "verify-pr.sh refreshes metadata before the gate, but classify_land maps a later generic refusal to permanent infrastructure failure. A changed base or externally completed merge is not necessarily an unrecoverable configuration error.",
+      "current": "scripts/verify-pr.sh:153 classifies landing results; recover_merged at line 176 proves ancestry and receipt only when entered from initial MERGED metadata. src/daemon/verification.rs:793 stops on a matching halted incident.",
+      "recommendation": "After a landing refusal, refresh authoritative PR/base state and converge safely. Recover a certified already-merged result; reverify a changed tree under bounded retry; retain hard refusal for missing proof.",
+      "acceptance": [
+        "PR becomes MERGED between preflight and landing: validate actual merge identity, ancestry, and receipt before acknowledging completion.",
+        "Base changes after gate: no merge using the old receipt; re-evaluate the exact new tree with bounded recovery.",
+        "Missing/invalid receipt, closed-unmerged PR, stale generation, and unavailable GitHub remain distinct outcomes; repeated ticks are idempotent."
+      ],
+      "priority_reason": "The system fails loudly and stalls otherwise ready work; medium. Recovery must never weaken merge certification.",
+      "decision": "File one convergence story for the common metadata/preflight/landing boundary, rather than separate retries at each symptom.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-604"
+    },
+    {
+      "rank": 3,
+      "id": "F03",
+      "title": "A warm-suite-derived silence limit can stop healthy verification",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Halt proven; healthy-silence explanation needs reproduction",
+      "evidence": [
+        22147,
+        22193,
+        22237
+      ],
+      "observation": "SH-594 halted after 288 seconds without a journal append following test discovery. Its agent reported an identical-tree retry advanced through tests; later runs found real, unrelated contract failures.",
+      "cause": "machine-lock.sh derives every stage's idle ceiling from a historical 36-second warm suite median × four lanes × two. That derivation does not itself prove that discovery/build/long tests emit progress within 288 seconds.",
+      "current": "scripts/machine-lock.sh:108–131 retains the 288-second silence ceiling. SH-592 corrected a separate total-runtime deadline; it does not remove this inner watchdog. A subsequent passing stage does not prove all earlier silence was harmless.",
+      "recommendation": "Measure and reproduce stage-specific healthy silence and genuine hangs. Add trustworthy progress at legitimate silent work boundaries or revise supervision from observed stage behavior, with finite deadlock detection.",
+      "acceptance": [
+        "Reproduce the cold/contended discovery interval with preserved process and journal evidence.",
+        "A legitimately progressing stage survives; a stuck stage still terminates with its last trustworthy activity and process context.",
+        "Do not solve by an unconditional heartbeat, disabling supervision, or arbitrarily enlarging all deadlines."
+      ],
+      "priority_reason": "Visible false-failure risk and queue interruption, medium; current evidence does not show a false green gate.",
+      "decision": "File a diagnostic story with the two alternatives explicit: progress emission gap versus actual stall.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-605"
+    },
+    {
+      "rank": 4,
+      "id": "F04",
+      "title": "Host pre-push hooks override centralized test ownership",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Multiple reports; installed source corroborated",
+      "evidence": [
+        20730,
+        20886,
+        20960,
+        21830
+      ],
+      "observation": "Several sessions describe global PreToolUse hooks starting forbidden full suites, creating concurrent workers, delaying submission, and requiring a documented bypass. SH-486 counted four hook runs from its session.",
+      "cause": "The host hook detects push text and runs its own test command without knowing that a StoryHook work lane delegates full-suite verification. The repository's feature-branch hook is already advisory.",
+      "current": "~/.codex/hooks/pre-push-tests.sh identifies Agentics ownership. Agentics AGE-63, AGE-64, and AGE-65 are open and cover text overmatching, duplicate suites, and attestation redesign. They are existing owners, not new StoryHook defects to duplicate.",
+      "recommendation": "Use the existing Agentics work to compose host policy with centralized-verifier ownership while retaining protected-branch and identity checks. Include StoryHook lane fixtures in that integration.",
+      "acceptance": [
+        "StoryHook feature submission runs only approved impacted tests and no host-launched full suite.",
+        "Commands merely describing a push do not launch tests.",
+        "Protected-branch enforcement remains intact; selected-test evidence must never masquerade as a full merge receipt."
+      ],
+      "priority_reason": "Visible workflow failure and repeated expensive work; medium. Do not rank cost alone as record corruption.",
+      "decision": "Reference existing AGE-63–65 in the epic; create no duplicate story.",
+      "disposition": "Existing Agentics AGE-63–65",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 5,
+      "id": "F05",
+      "title": "Impacted-test selection misses cross-cutting contracts",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Multiple repaired escapes; prevention gap remains",
+      "evidence": [
+        18304,
+        18909,
+        21762,
+        21821,
+        21989,
+        22064,
+        22429
+      ],
+      "observation": "Verification repeatedly found omitted snapshot, environment-containment, public-surface, portfile-hygiene, release-fixture, and checkout-path contracts. SH-596 repaired multiple earlier changes before its UI change could finish; SH-597 independently repaired the same fixture class.",
+      "cause": "Directly testing a feature did not necessarily select source-scanning contracts or fixtures that copy its dependencies. Later branches inherit the broken combined baseline, so the next exposed story pays the repair and another gate.",
+      "current": "Specific failures were repaired in SH-566, SH-584/585, SH-592, SH-596/597, and SH-594. The audit does not establish that selective reuse caused bad merges; it establishes that pre-submission impacted selections missed known contracts.",
+      "recommendation": "Make cross-cutting impact coverage discoverable and checkable before submission. Derive or declare dependencies for source-scanning contracts and fixture input copies; verify the mapping on the actual changed tree.",
+      "acceptance": [
+        "Changes to public surfaces, checkout readers, daemon fixture setup, output shapes, and sourced release scripts select the relevant existing contracts.",
+        "A newly introduced scan/input dependency without impact coverage is detected.",
+        "Keep the central full suite authoritative; do not turn every feature push into a full-suite run or declare reused stale evidence green."
+      ],
+      "priority_reason": "Observed loud verification returns and cross-story rework; medium. A missing pre-submission accelerator is not itself proof the final detector failed.",
+      "decision": "File one focused prevention story for selection completeness, not stories re-fixing the repaired examples.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-606"
+    },
+    {
+      "rank": 6,
+      "id": "F06",
+      "title": "Failure comments can omit the actual failed test",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Recorded diagnostic loss; source confirms mechanism",
+      "evidence": [
+        20209,
+        20237,
+        21679,
+        22408
+      ],
+      "observation": "Some RED comments consist largely of '(was PASS)' entries and the final make error. SH-328 had to inspect the full log to discover one orphan-check failure rather than interpret the long list as failures.",
+      "cause": "verify-pr.sh takes the last 40 lines of the gate log; test-delta.sh prints failures before a potentially much longer list of tests not rerun. The fixed tail can therefore erase the decisive failure names.",
+      "current": "scripts/verify-pr.sh:138/145 still tails 40 lines. scripts/test-delta.sh:157–160 emits not-rerun entries after newly/still-red entries.",
+      "recommendation": "Publish a bounded structured failure summary before ancillary context, alongside the full log reference. Preserve distinctions between failed, cached, not rerun, and infrastructure outcomes.",
+      "acceptance": [
+        "A single failure followed by hundreds of not-rerun entries still names the failure in the story comment.",
+        "Multiple failures, compile errors, infrastructure termination, and no-result cases retain accurate classification.",
+        "Full logs remain referenced; truncation is explicit and never converts unknown status into success or failure."
+      ],
+      "priority_reason": "Visible incomplete diagnostic answer prolongs recovery; medium.",
+      "decision": "File a bounded diagnostics story at the result-production boundary, rather than increasing the tail length.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-607"
+    },
+    {
+      "rank": 7,
+      "id": "F07",
+      "title": "Project export fails once history crosses the response cap",
+      "priority": "medium",
+      "status": "unresolved",
+      "confidence": "Reproduced in this audit; client source corroborated",
+      "evidence": [],
+      "observation": "The planning investigation ran story export and received: 'the response body is larger than request limit: 10485760 at line 1 column 10485760'. The audit needed a read-only SQLite fallback to access project history.",
+      "cause": "HttpInvoker::exchange uses ureq Body::read_json without explicit response sizing. ureq documents a default 10 MB limit for that convenience method; the wire envelope can exceed it even when raw payload bytes are smaller.",
+      "current": "src/invoke.rs:3221 uses read_json. This checkout resolves ureq 3.3.0. No existing open project story found for this size boundary. This is supplemental investigation evidence, not an incident attributed to one of the 36 completed stories.",
+      "recommendation": "Design bounded large-result transport for export and other potentially large reads; preserve valid JSON and lossless events without an unbounded memory fallback.",
+      "acceptance": [
+        "Export a synthetic project whose encoded response exceeds 10 MiB; parse the complete output and compare all event identities/payloads.",
+        "Test truncated/malformed responses and resource limits; errors identify the actual size/transport problem.",
+        "Sweep other unbounded result shapes and preserve export compatibility plus unknown event kinds."
+      ],
+      "priority_reason": "A supported read fails loudly; medium. The store remains accessible and no data loss is established.",
+      "decision": "File a separate transport hardening story under the approved epic; this audit remains read-only.",
+      "selected": true,
+      "disposition": "File approved follow-up",
+      "story_id": "SH-608"
+    },
+    {
+      "rank": 8,
+      "id": "F08",
+      "title": "Completed-state records do not establish a certified lifecycle",
+      "priority": "medium",
+      "status": "risk",
+      "confidence": "Evidence gap, not a proven gate bypass",
+      "evidence": [
+        18480,
+        18502,
+        18586,
+        21768
+      ],
+      "observation": "SH-576, SH-578, and SH-580 move directly from Todo to Done in the recorded state history. Other cohort members have no standardized GREEN comment. SH-588 has five distinct completions; SH-591's completion was a web action.",
+      "cause": "Story state is writable independently of the verifier; comments and state changes alone do not provide complete gate/merge/cleanup proof. Historical manual work and repeated scope adoption can also produce these shapes legitimately.",
+      "current": "The report preserves all transitions and provenance. Absence of a GREEN comment is not evidence that no gate ran. SH-590 added activity journals and SH-594 strengthened cleanup, so current observability must be assessed before proposing a new event subsystem.",
+      "recommendation": "Use generation/PR/receipt evidence when judging completion. Evaluate remaining auditability needs with F01/F02; do not infer unsafe merges from missing comments.",
+      "acceptance": [
+        "Any future completion audit distinguishes explicit certificate evidence, externally corroborated merges, and unknown certification.",
+        "Repeated completions remain distinct rather than being collapsed to updated_at.",
+        "Self-attested actors never replace daemon-derived commands in the evidence."
+      ],
+      "priority_reason": "A material visibility gap warrants scrutiny, but severity of a hypothetical bypass is not assigned.",
+      "decision": "Retain as a risk and acceptance guidance for the generation/convergence follow-ups; do not duplicate them.",
+      "disposition": "Covered by F01/F02 investigation",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 9,
+      "id": "F09",
+      "title": "Shared roadmap and handoff files amplified reconciliation",
+      "priority": "low",
+      "status": "fixed",
+      "confidence": "Repeated conflict evidence; removal confirmed",
+      "evidence": [
+        20066,
+        20145,
+        20458,
+        20636,
+        19203,
+        19431
+      ],
+      "observation": "Seventeen of twenty standardized conflict comments mention AGENTS.md or HANDOFF.md. Several unrelated stories repeatedly reconciled the same project status text while other PRs advanced the base.",
+      "cause": "Concurrent lanes edited a shared narrative status block, sometimes duplicated in the generated template, and a tracked handoff file. Reconciliation itself produced another shared edit.",
+      "current": "SH-557 separated the project roadmap from generated AGENTS guidance. SH-588 removed tracked root handoff notes and established story comments as durable context. Current tests enforce those boundaries; SH-587 retains verifier ownership during reconciliation.",
+      "recommendation": "Keep project status in StoryHook and preserve the existing generated-guidance/handoff contracts. Evaluate any remaining actual code conflicts separately.",
+      "acceptance": [
+        "Concurrent unrelated lanes do not edit shared generated status prose.",
+        "Durable context stays on the assigned story and does not resurrect a shared handoff file."
+      ],
+      "priority_reason": "Cost and friction, low; historical repetition does not raise the damage rung.",
+      "decision": "Mark repaired; no new story.",
+      "disposition": "Repaired by SH-557 / SH-588 / SH-587",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 10,
+      "id": "F10",
+      "title": "Infrastructure restoration errors were blamed on submitted tests",
+      "priority": "medium",
+      "status": "fixed",
+      "confidence": "Historical diagnostics; present completion fence confirmed",
+      "evidence": [
+        18582,
+        18629,
+        18735,
+        18744
+      ],
+      "observation": "SH-566, SH-582, SH-584, and SH-585 received RED comments whose diagnosis was a failed checkout restoration with local release-script/test changes, rather than a failed assertion.",
+      "cause": "An outer script status was treated as a completed test result even when workspace restoration failed. Dirty shared verification state then affected multiple candidates.",
+      "current": "run_verification_gate now requires the completion record to match the gate status; absent/mismatched completion is infrastructure failure. The verifier uses a private metadata format and guarded recovery instead of assuming any existing workspace is valid.",
+      "recommendation": "Retain completion-record and verifier-worktree tests. F02 covers the remaining transition from recoverable infrastructure state to permanent halt.",
+      "acceptance": [
+        "Preparation/restoration failures cannot publish tests-failed.",
+        "Dirty or unclassified workspaces are preserved with diagnostics; recovery never overwrites user work."
+      ],
+      "priority_reason": "Historically wrong visible classification, medium.",
+      "decision": "Mark the classification defect repaired; no duplicate runtime fix.",
+      "disposition": "Existing gate completion and workspace protections",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 11,
+      "id": "F11",
+      "title": "Total-runtime deadlines and orphaned verifier children stopped recovery",
+      "priority": "medium",
+      "status": "fixed",
+      "confidence": "Historical timeout evidence; source repairs present",
+      "evidence": [
+        20934,
+        21348,
+        21604
+      ],
+      "observation": "SH-426 and SH-588 were halted when verify-pr exceeded 1746 seconds. SH-593's approved diagnosis documented force-stop behavior that killed only the daemon after waiting, leaving verifier child ownership unresolved.",
+      "cause": "Elapsed wall time included legitimate gate work; forced shutdown did not consistently supervise the owned subprocess group.",
+      "current": "SH-592 changed verification supervision to journal-driven idle time. SH-593 registered daemon-owned child groups and combined shutdown with the progress-deadline path. F03 tracks the distinct inner 288-second silence policy.",
+      "recommendation": "Retain both progress and owned-child containment regressions. Do not treat SH-592's fix as proof that every nested watchdog is calibrated.",
+      "acceptance": [
+        "Progressing verification may exceed the former total-runtime bound.",
+        "Forced daemon stop drains only owned subprocess groups; no orphan verifier survives."
+      ],
+      "priority_reason": "Visible hangs/timeouts, medium; installed-version attribution matters.",
+      "decision": "Mark repaired in this checkout, explicitly separate from the still-open watchdog diagnosis.",
+      "disposition": "Repaired by SH-592 / SH-593",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 12,
+      "id": "F12",
+      "title": "Done did not always mean workspace cleanup finished",
+      "priority": "medium",
+      "status": "partial",
+      "confidence": "Missing lease observed; recovery boundaries explicit",
+      "evidence": [
+        20671,
+        21924,
+        22429
+      ],
+      "observation": "SH-588's earlier completion reported CLEANUP REQUIRED because its latest generation had no cleanup lease. SH-594's approved investigation reported 45 GB of stale worktree storage.",
+      "cause": "Cleanup needs exact resource identity. A legacy/manual completion without a lease cannot safely authorize deleting a worktree merely because its name resembles a story.",
+      "current": "SH-594 adds the periodic project-scoped safe sweep, and recent cohort events contain explicit cleanup-complete statements. A missing lease still correctly refuses destructive cleanup; old disk-usage totals were not remeasured here.",
+      "recommendation": "Use the existing cleanup mechanism and verify its refusal diagnostics. Include stale-generation cleanup protection in F01; retain conservative handling of dirty/unclassified resources.",
+      "acceptance": [
+        "A completed current-generation lease can be verified and safely reaped.",
+        "Missing or mismatched leases never remove unrelated resources; unresolved cleanup stays visible."
+      ],
+      "priority_reason": "Visible incomplete cleanup, medium; unsafe automatic deletion would be worse than retained disk use.",
+      "decision": "Reference SH-594 and generation follow-up; do not create a duplicate cleanup feature.",
+      "disposition": "SH-594 plus F01 validation",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 13,
+      "id": "F13",
+      "title": "Concurrent browser fixtures produced unresolved transient failures",
+      "priority": "low",
+      "status": "risk",
+      "confidence": "Failed/passing reruns recorded; general cause not established",
+      "evidence": [
+        18363,
+        18376,
+        18477,
+        19229,
+        19261
+      ],
+      "observation": "SH-566 and SH-577 reported disappearing fake dispatch windows, PID overlap, and daemon connection refusals. Fresh sequential reruns passed; an earlier contention hypothesis was explicitly refuted in SH-566's later investigation.",
+      "cause": "The histories do not justify one root cause for all transient failures. Shared binaries, fixture lifetime, test data, and process containment are competing explanations.",
+      "current": "SH-591 improved tmux fixture cleanup; SH-596/597 repaired deterministic live-portfile fixture hazards. Neither proves that every historical browser failure shares that mechanism.",
+      "recommendation": "Retain the failures as evidence, preserve isolated reproduction conditions, and investigate again if the same signature recurs. Do not label a retry-pass as a proven fix.",
+      "acceptance": [
+        "A future recurrence records process identity, fixture roots, binary identity, and the exact failing test before retry.",
+        "Retries never rewrite the original outcome or silently relax test assertions."
+      ],
+      "priority_reason": "Known individual retry cost without a confirmed remaining defect class, low.",
+      "decision": "No new speculative story; preserve risk and existing repaired fixture references.",
+      "disposition": "Monitor; insufficient remaining mechanism",
+      "selected": false,
+      "story_id": null
+    },
+    {
+      "rank": 14,
+      "id": "F14",
+      "title": "Release-path integration defects escaped narrow fixtures",
+      "priority": "medium",
+      "status": "fixed",
+      "confidence": "Recorded diagnoses and completed repair stories",
+      "evidence": [
+        18480,
+        18501,
+        18586,
+        22064
+      ],
+      "observation": "The cohort includes compiler sysroot layout, Lima working-directory/error propagation, noninteractive release bump, and extracted-source path failures. Later branch-policy changes also broke copied release fixtures on unrelated submitted work.",
+      "cause": "Narrow fixtures did not exercise the real packaging layout or the full sourced dependency set. Some downstream errors described the wrong origin.",
+      "current": "SH-576/578/580/581 repaired the specific release failures; SH-579 added observation and SH-595 separated development/stable branch policy. SH-596 repaired stale copied fixtures. No release was attempted by this audit.",
+      "recommendation": "Retain realistic release preflight tests and fixture dependency coverage. F05 addresses the general impacted-test omission; do not reimplement released repairs.",
+      "acceptance": [
+        "Fixtures exercise their intended failure boundary after sourcing all real dependencies.",
+        "Release observations identify their exact tree and preserve underlying failure context."
+      ],
+      "priority_reason": "Visible supported-path failures, medium; existing fixes reduce current work, not the recorded historical impact.",
+      "decision": "Mark specific faults repaired; route prevention through F05.",
+      "disposition": "Repaired release stories; F05 prevention",
+      "selected": false,
+      "story_id": null
+    }
+  ]
+}
