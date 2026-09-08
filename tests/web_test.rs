@@ -9450,3 +9450,23 @@ fn attachment_drop_targets_preserve_json_and_card_drag_contracts() {
         "the existing card-move handler must remain independent of attachment drops"
     );
 }
+
+/// SH-391: staged previews can make the create modal taller than a narrow
+/// viewport. Its actions must remain reachable without changing every modal.
+#[test]
+fn create_modal_alone_keeps_its_footer_sticky() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let rule = html
+        .split_once("#create-modal .modal-footer {")
+        .expect("the create modal needs its scoped footer rule")
+        .1
+        .split_once('}')
+        .expect("the scoped footer rule must close")
+        .0;
+
+    assert!(rule.contains("position: sticky"));
+    assert!(rule.contains("bottom: 0"));
+}
