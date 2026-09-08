@@ -43,10 +43,12 @@
 //!
 //! [`FaultAction::Fail`]: storyhook::store::fault::FaultAction::Fail
 
+use std::collections::HashSet;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 
 use rusqlite::Connection;
+use storyhook::daemon::lifecycle;
 use storyhook::store::{
     FaultPoint, ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model,
 };
@@ -645,6 +647,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     let mut racers: Vec<_> = (0..8)
         .map(|_| spawn_daemon(&env, cwd.path(), None))
         .collect();
+    let racer_pids: HashSet<_> = racers.iter().map(|racer| racer.pid()).collect();
 
     // Whichever wins the pidfile serves forever, so every round asks the
     // incumbent to stand down. Repeatedly, and not once at the end: a racer
@@ -652,12 +655,13 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     // claim the vacated pidfile and serve in its turn.
     //
     // Which is also why "exactly one served" is not the assertion. How many
-    // racers get as far as serving is a fact about scheduling; what this test is
-    // about is that however many did, the migration happened once. That at
-    // *least* one served is asserted, because a run where none did never reached
-    // the race at all.
+    // racers publish is a fact about scheduling; what this test is about is
+    // that however many did, the migration happened once. Publication is the
+    // proof that a racer finished `open_store`; its exit code is not, because
+    // this fixture may intentionally force-stop that exact incumbent.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let mut served = 0;
+    let mut published_incumbents = HashSet::new();
+    let mut intentionally_force_stopped = HashSet::new();
     let mut done = vec![false; racers.len()];
     while done.iter().any(|finished| !finished) {
         for (racer, finished) in racers.iter_mut().zip(done.iter_mut()) {
@@ -668,13 +672,16 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
                 continue;
             };
             *finished = true;
-            assert_eq!(
-                status.signal(),
-                None,
-                "a racer that merely lost the pidfile must exit, not die: {status:?}"
-            );
-            if status.code() == Some(0) {
-                served += 1;
+            if let Some(signal) = status.signal() {
+                assert_eq!(
+                    signal,
+                    libc::SIGKILL,
+                    "an intentionally stopped incumbent may only die by SIGKILL: {status:?}"
+                );
+                assert!(
+                    intentionally_force_stopped.contains(&racer.pid()),
+                    "a racer that merely lost the pidfile must exit without a signal: {status:?}"
+                );
             }
         }
         assert!(
@@ -682,11 +689,30 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
             "a racer never exited; {} of 8 still running",
             done.iter().filter(|finished| !**finished).count()
         );
-        env.stop_daemon();
+
+        // A portfile alone may be stale. Only attribute a bounded Force stop to
+        // the racer whose published PID matches the identity protected by the
+        // live lifetime lock; every other racer remains subject to the ordinary
+        // signal-free loser oracle above.
+        if env.daemon_is_live() {
+            let environment = env.environment();
+            if let (Some(published), Some(identity)) =
+                (env.daemon(), lifecycle::read_daemon_identity(&environment))
+                && published.pid == identity.pid
+            {
+                assert!(
+                    racer_pids.contains(&published.pid),
+                    "the live incumbent must be one of this test's racers: {published:?}"
+                );
+                published_incumbents.insert(published.pid);
+                env.stop_daemon();
+                intentionally_force_stopped.insert(published.pid);
+            }
+        }
     }
     assert!(
-        served >= 1,
-        "no racer ever got as far as serving, so none of them finished opening the store"
+        !published_incumbents.is_empty(),
+        "no racer published its daemon identity, so none of them finished opening the store"
     );
 
     assert_eq!(integrity_of(env.store_path()), "ok");
