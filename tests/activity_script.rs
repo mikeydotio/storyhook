@@ -46,6 +46,11 @@ fn test_output_runner(
     command
 }
 
+fn guarded_output(command: &mut Command, what: &'static str) -> std::process::Output {
+    let mut child = ChildGuard::spawn_with_output(command).expect("starting the test process");
+    child.wait_with_output_within(STORY_COMMAND_DEADLINE, || what.into())
+}
+
 fn journal(logs: &std::path::Path) -> Vec<serde_json::Value> {
     let mut rows = Vec::new();
     if let Ok(entries) = std::fs::read_dir(logs) {
@@ -274,7 +279,7 @@ fn required_capture_failure_does_not_start_the_command() {
     );
     command.arg("probe").arg(&marker);
 
-    let output = command.output().expect("running the observer");
+    let output = guarded_output(&mut command, "required-capture probe did not finish");
     assert!(!output.status.success(), "{output:?}");
     assert!(
         !marker.exists(),
@@ -288,25 +293,26 @@ fn required_capture_failure_does_not_start_the_command() {
 
 #[test]
 fn shared_test_output_parser_preserves_ledger_identity_and_ignores_chatter() {
-    let mut child = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/scripts/test_output.py"
         ))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
+        .stdin(Stdio::piped());
+    let mut child = ChildGuard::spawn_with_output(&mut command)
         .expect("starting the shared test-output parser");
     child
-        .stdin
-        .take()
-        .unwrap()
+        .stdin()
+        .expect("the parser's stdin is piped")
         .write_all(
             b"   Compiling fixture v0.0.0\nrandom heartbeat\n     Running tests/one.rs (target/one)\ntest same_name ... ok\n     Running tests/two.rs (target/two)\ntest same_name ... FAILED\ntest ignored ... ignored\n",
         )
         .unwrap();
 
-    let output = child.wait_with_output().expect("waiting for the parser");
+    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "shared test-output parser did not finish".into()
+    });
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -329,11 +335,11 @@ fn importing_the_shared_parser_does_not_dirty_the_checkout() {
         .unwrap();
     }
 
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(scripts.join("activity-run.py"))
-        .args(["probe", "--", "true"])
-        .output()
-        .expect("running the observer through a fixture path");
+        .args(["probe", "--", "true"]);
+    let output = guarded_output(&mut command, "fixture-path observer did not finish");
     assert!(output.status.success(), "{output:?}");
     assert!(
         !scripts.join("__pycache__").exists(),
