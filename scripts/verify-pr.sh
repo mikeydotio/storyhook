@@ -10,6 +10,8 @@
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+# shellcheck source=activity-log.sh
+. "$script_dir/activity-log.sh"
 
 die_json() {
     jq -n --arg detail "$1" \
@@ -124,7 +126,7 @@ run_verification_gate() {
     verifier_window_tail "$log"
     STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
         STORYHOOK_GATE_RESULT_FILE="$gate_result" \
-        bash "$script_dir/machine-lock.sh" gate -- \
+        activity_run "machine-lock.sh/merge-watch.sh" bash "$script_dir/machine-lock.sh" gate -- \
         bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
@@ -307,7 +309,7 @@ head="$(git rev-parse "$head_ref" 2>/dev/null)" || die_json "could not resolve f
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
-preflight="$(bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
+preflight="$(activity_run "merge-preflight.sh" bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
@@ -335,7 +337,7 @@ esac
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running
 _land_start=$(date +%s)
-land_output="$(bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
+land_output="$(activity_run "land-pr.sh" bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
 land_status=$?
 gate_progress_emit_item "land pull request" \
     "$([ "$land_status" = 0 ] && echo passed || echo failed)" \

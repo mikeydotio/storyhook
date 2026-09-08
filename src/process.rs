@@ -85,6 +85,8 @@ pub(crate) fn run_captured_with_registration<G>(
     termination: TerminationPolicy,
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
+    let source = crate::daemon::activity::command_source(&command);
+    crate::daemon::activity::configure(&mut command);
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
     let stderr_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
     let child_stdout = stdout_file.try_clone().map_err(CaptureError::Stage)?;
@@ -97,6 +99,14 @@ pub(crate) fn run_captured_with_registration<G>(
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
+    let context = format!("child={pid}");
+    crate::daemon::activity::emit("INFO", &source, "event", &context, "process started");
+    let observer = crate::daemon::activity::OutputWatch::capture(
+        &source,
+        &context,
+        &stdout_file,
+        &stderr_file,
+    );
     let _registration = match register(pid) {
         Ok(registration) => registration,
         Err(error) => {
@@ -109,6 +119,13 @@ pub(crate) fn run_captured_with_registration<G>(
         Ok(Some(status)) => status,
         Ok(None) => {
             let outcome = terminate_timed_out(&mut child, pid, termination);
+            crate::daemon::activity::emit(
+                "ERROR",
+                &source,
+                "event",
+                &context,
+                "process timed out; group terminated",
+            );
             return Err(CaptureError::Timeout(outcome));
         }
         Err(error) => {
@@ -117,6 +134,14 @@ pub(crate) fn run_captured_with_registration<G>(
             return Err(CaptureError::Wait(error));
         }
     };
+    drop(observer);
+    crate::daemon::activity::emit(
+        if status.success() { "INFO" } else { "ERROR" },
+        &source,
+        "event",
+        &context,
+        &format!("process finished: {status}"),
+    );
     Ok(Captured {
         status,
         stdout: read_capture(stdout_file),

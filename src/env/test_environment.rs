@@ -203,6 +203,18 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  real GitHub API; there is no harmless value, so it is removed",
     },
     Parameter {
+        name: "STORYHOOK_ACTIVITY_LOG_DIR",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the real daemon's activity journal; fixture output must never append to it",
+    },
+    Parameter {
+        name: "STORYHOOK_ACTIVITY_CONTEXT",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "a real verification attempt's identity, which must not label fixture work",
+    },
+    Parameter {
         name: "STORYHOOK_PROJECT",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,

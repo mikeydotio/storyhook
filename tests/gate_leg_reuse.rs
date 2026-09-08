@@ -51,6 +51,8 @@ impl Repo {
         fs::create_dir_all(repo.path().join("scripts")).expect("creating fixture scripts/");
         for script in [
             "leg.sh",
+            "activity-log.sh",
+            "activity-run.py",
             "gate-progress.sh",
             "gate-leg-fingerprint.sh",
             "rust-test-targets.sh",

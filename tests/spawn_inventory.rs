@@ -87,6 +87,9 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // The journal view helper has file-backed capture and a bounded process
+    // group. Its tmux pane reads logs independently and holds no output pipe.
+    ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),

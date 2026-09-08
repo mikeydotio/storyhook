@@ -99,15 +99,42 @@ fn reconcile_one<S: Store>(store: &S, env: &Environment, run: &EngineRunRecord, 
         }
     };
     let service = EngineService::new(&ctx, &dispatcher);
+    let activity_context = format!("project={} run={}", run.project_slug, run.id);
+    super::activity::emit(
+        "INFO",
+        "engine",
+        "event",
+        &activity_context,
+        if restart {
+            "restart reconciliation started"
+        } else {
+            "reconciliation started"
+        },
+    );
     let result = if restart {
         service.reconcile_after_restart(&run.id)
     } else {
         service.reconcile(&run.id)
     };
     if let Err(error) = result {
+        super::activity::emit(
+            "ERROR",
+            "engine",
+            "event",
+            &activity_context,
+            &format!("reconciliation failed: {error}"),
+        );
         eprintln!(
             "storyhook: engine run `{}` (project `{}`) reconcile failed: {error}",
             run.id, run.project_slug
+        );
+    } else {
+        super::activity::emit(
+            "INFO",
+            "engine",
+            "event",
+            &activity_context,
+            "reconciliation completed",
         );
     }
 }

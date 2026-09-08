@@ -910,6 +910,11 @@ pub enum PluginAction {
 /// `story daemon …`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonAction {
+    /// Read today's operational journal without contacting a daemon.
+    Logs {
+        /// Continue reading new entries across UTC midnight.
+        follow: bool,
+    },
     /// Run the daemon in this process, in the foreground. What the background
     /// spawner execs, and what a launchd agent runs.
     Serve {
@@ -1852,6 +1857,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "daemon",
         subcommand: Some("install"),
         flags: &[bare("this-binary")],
+    },
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("logs"),
+        flags: &[bare("follow")],
     },
     VerbFlags {
         verb: "daemon",
@@ -4280,11 +4290,18 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token";
+                 install [--this-binary] | uninstall | token | logs [--follow]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
     let action = match args[1].as_str() {
+        "logs" => DaemonAction::Logs {
+            follow: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--follow" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
         "start" => DaemonAction::Start {
             port: parse_port_flag(&args[2..], usage)?,
         },

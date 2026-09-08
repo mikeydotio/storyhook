@@ -518,6 +518,10 @@ impl VerificationActuator for ShellVerificationActuator {
             .current_dir(&candidate.checkout)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
+            .env(
+                "STORYHOOK_ACTIVITY_CONTEXT",
+                format!("project={} {}", candidate.project_slug, candidate.story_id),
+            )
             .env("STORYHOOK_GATE_PROGRESS", &journal);
         let request_id = verification_request_id(candidate);
         let captured = match run_captured_with_registration(
@@ -829,7 +833,26 @@ where
                 return Ok(TickResult::Returned);
             }
         };
+        let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
+        super::activity::emit(
+            "INFO",
+            "verifier",
+            "event",
+            &activity_context,
+            "verification started",
+        );
         let outcome = actuator.verify(&candidate, &pull_request);
+        super::activity::emit(
+            if matches!(outcome, VerificationOutcome::Merged { .. }) {
+                "INFO"
+            } else {
+                "ERROR"
+            },
+            "verifier",
+            "event",
+            &activity_context,
+            &format!("verification outcome: {outcome:?}"),
+        );
 
         if !matches!(outcome, VerificationOutcome::InfrastructureFailure { .. }) {
             clear_matching_incident(store, &candidate)?;

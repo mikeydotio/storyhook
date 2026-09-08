@@ -106,6 +106,7 @@ fn run_window(tmux_dir: &Path, args: &[&str]) -> Output {
         .env("HOME", home)
         .env("PATH", path)
         .env_remove("STORYHOOK_VERIFIER_MIRROR")
+        .env_remove("STORYHOOK_ACTIVITY_LOG_DIR")
         .output()
         .expect("running scripts/verify-window.sh")
 }
@@ -350,6 +351,42 @@ fn ensure_creates_a_session_only_when_none_exists() {
         !calls.contains("new-session"),
         "an existing session (has-session succeeding) must never be recreated; calls:\n{calls}"
     );
+}
+
+#[test]
+fn journal_view_passes_binary_and_store_as_literal_arguments() {
+    let fixture = Fixture::new(true);
+    let binary = "/path with spaces/story";
+    let store = "/store's directory/$(inert).db";
+    let output = run_window(&fixture.tmux_dir(), &["logs", binary, store]);
+    assert!(output.status.success(), "{output:?}");
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    let respawn = calls
+        .iter()
+        .find(|call| call.first() == Some(&"respawn-pane"))
+        .unwrap();
+    assert!(respawn.ends_with(&[binary, "--store-path", store, "daemon", "logs", "--follow"]));
+    assert_stable_home_cwd(respawn, &fixture.home(), &log);
+}
+
+#[test]
+fn verifier_phases_do_not_replace_an_active_journal_view() {
+    let fixture = Fixture::new(true);
+    let mut path = fixture.tmux_dir().into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(checkout().join("scripts/verify-window.sh"))
+        .args(["banner", "landing SH-590"])
+        .env("PATH", path)
+        .env("STORYHOOK_VERIFIER_MIRROR", "1")
+        .env("STORYHOOK_ACTIVITY_LOG_DIR", fixture.root.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("landing SH-590"));
+    assert!(!fixture.calls_exist());
 }
 
 #[test]
