@@ -53,6 +53,7 @@ impl Repo {
             "leg.sh",
             "activity-log.sh",
             "activity-run.py",
+            "test_output.py",
             "gate-progress.sh",
             "gate-leg-fingerprint.sh",
             "rust-test-targets.sh",

@@ -164,17 +164,19 @@ impl VerificationGuard {
 /// concurrent workload, recorded by the Full Auto design investigation.
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
-/// Slack above the measured contended gate for GitHub, fetch, and landing.
+/// Multiplicative slack above the measured contended gate.
 const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 
 /// Maximum silence during centralized verification (SH-592).
 ///
-/// Retains SH-547's conservative allowance for a quiet build or network phase:
-/// twice the largest measured contended gate. Journal appends renew it, so
-/// progressing tests and identity-checked lock waits have no total runtime cap.
-/// The gate lock's shorter idle watchdog reports stalled tests first.
-pub const VERIFICATION_IDLE_TIMEOUT: Duration =
-    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
+/// Twice the largest measured contended gate covers healthy silence. One
+/// recovery window beyond that gives the inner gate watchdog time to publish
+/// its last journal record, descendant tree, and bounded cleanup first.
+/// Journal appends renew this deadline, so progressing tests and
+/// identity-checked lock waits have no total runtime cap.
+pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
+    MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN + RECOVERY_WAKE.as_secs(),
+);
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
