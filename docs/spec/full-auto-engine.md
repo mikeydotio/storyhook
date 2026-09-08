@@ -1009,14 +1009,19 @@ is unusable without them:**
   would leave cargo, test binaries or daemons active underneath the next gate
   holder.
 - **A progress ceiling for `gate`, never a duration ceiling.** The SH-524
-  append-only journal is the fact: each growth event resets the full budget, so
-  a progressing suite may run indefinitely. The default 288 silent seconds is
-  written as measured gate median × Full Auto concurrency × a named twofold
-  margin and mechanically bound to those inputs. The daemon supplies a durable
-  journal; an interactive gate gets a private one owned by its lock directory.
-  Expiry reports the last record and active process group, performs the cleanup
-  above, and exits 124. Other lock names remain unbounded unless their caller
-  gives `--max-idle` a positive derived budget.
+  append-only journal is the fact: each trusted growth event resets the full
+  budget, so a progressing suite may run indefinitely. The default 1,746
+  silent seconds is the measured 873-second contended gate maximum times a
+  named twofold margin. The outer verifier adds its existing 30-second
+  recovery window so the inner watchdog owns stall diagnostics and cleanup
+  without racing its supervisor. Both are mechanically bound to the same
+  measurement. Cargo output is observed through regular files; only
+  recognized build, binary-start and completed-test milestones renew the
+  journal. The daemon supplies a durable journal; an interactive gate gets a
+  private one owned by its lock directory. Expiry reports the last record and
+  complete descendant tree, performs the process-group cleanup above, and
+  exits 124. Other lock names remain unbounded unless their caller gives
+  `--max-idle` a positive derived budget.
 - **Reentrancy, via `STORYHOOK_MACHINE_LOCKS` in the command's environment.**
   A caller who wraps a whole `make test` in `machine-lock.sh gate --` would
   otherwise wait forever on a lock its own process tree holds — provably alive,

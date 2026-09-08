@@ -69,9 +69,9 @@ trap 'rm -rf "$work"' EXIT
 # Parse cargo test's own text output into <binary>\t<test>\t<PASS|FAIL>
 # ---------------------------------------------------------------------------
 #
-# The grammar itself lives in test-progress.awk (SH-524), shared with the gate
+# The grammar itself lives in test_output.py (SH-605), shared with the gate
 # progress journal so the two readers of cargo's text output cannot drift.
-awk -f "$root/scripts/test-progress.awk" >"$work/current.tsv"
+python3 "$root/scripts/test_output.py" >"$work/current.tsv"
 
 LC_ALL=C sort -u "$work/current.tsv" >"$work/current.sorted.tsv"
 
