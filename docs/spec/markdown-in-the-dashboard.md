@@ -20,7 +20,9 @@ story.
 
 Scope: GFM-lite — headings, paragraphs, bold/italic/strikethrough, inline code, fenced
 and indented code, links, autolinks, nested lists (tight/loose, task items), blockquotes,
-thematic breaks, and GFM tables. No images, no raw HTML, no footnotes.
+thematic breaks, and GFM tables. No inline images, no raw HTML, no footnotes. SH-393
+later lets supported remote image destinations project into the separate attachment
+strip without changing this inline-rendering boundary.
 
 ## The constraint that shaped every decision
 
@@ -168,9 +170,13 @@ CommonMark delimiter-stack resolution was not implemented — out of scope for a
 dependency-free renderer whose actual content is this project's own prose, not
 adversarial markdown.
 
-**No setext headings, no footnotes, no images, no raw HTML rendering.** `![alt](url)`
-degrades to its literal source text (not a link to `url` with `alt` as link text — the
-whole construct is consumed as one unparsed span). A literal `<b>` or `<script>` tag in
+**No setext headings, no footnotes, no inline images, no raw HTML rendering.**
+`![alt](url)` degrades to its literal source text (not a link to `url` with `alt` as
+link text — the whole construct is consumed as one unparsed span). SH-393 adds an
+optional destination collector to this same parser: a supported HTTPS image
+destination in a description can create a consent-gated control in the separate
+attachment strip, while comment bodies and the rendered prose still create no image.
+Code spans and blocks never reach that collector. A literal `<b>` or `<script>` tag in
 source renders as visible text and creates no element — it can only ever become a text
 node, by construction of `el()`.
 

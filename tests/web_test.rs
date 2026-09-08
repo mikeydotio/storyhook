@@ -20,6 +20,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
+use storyhook::api::http::CSP;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
@@ -9403,6 +9404,39 @@ fn attachment_viewer_is_a_registered_named_dialog() {
     assert!(html.contains(r#"data-overlay="attachment-modal""#));
     assert!(html.contains(r#"id="attachment-close""#));
     assert!(html.contains(r#"id="attachment-status" role="status""#));
+}
+
+/// SH-393: remote description images widen only image loading and remain a
+/// consent-gated browser concern; Playwright proves the runtime boundary.
+#[test]
+fn remote_description_images_are_constrained_to_https_and_explicit_activation() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert_eq!(
+        CSP,
+        "default-src 'self'; img-src 'self' blob: https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    );
+    assert!(html.contains("function remoteImagesFromDescription"));
+    assert!(html.contains("function drawerMedia"));
+    assert!(html.contains(r#"referrerPolicy: "no-referrer""#));
+    assert!(html.contains("var dataset = { mediaKey: media.key, mediaKind: media.kind }"));
+
+    let build = function_body(script, "buildAttachmentsSection");
+    assert!(
+        build.contains("media.kind === \"remote\"")
+            && build.contains("remote-image-placeholder")
+            && build.contains("openAttachmentModal(repoId, storyId, media.key)"),
+        "remote controls must begin as explicit, unloaded activation targets"
+    );
+    assert!(
+        !build.contains("querySelector('[data-media-key=\"")
+            && !build.contains("querySelector(\"[data-media-key="),
+        "untrusted URLs must never be interpolated into selectors"
+    );
 }
 
 /// SH-392: attachment drops are a file-only layer over the existing card
