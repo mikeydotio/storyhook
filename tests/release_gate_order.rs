@@ -23,7 +23,7 @@ impl ReleaseFixture {
         ] {
             fs::create_dir_all(directory).unwrap();
         }
-        for file in ["release.sh", "release-targets.sh"] {
+        for file in ["branch-policy.sh", "release.sh", "release-targets.sh"] {
             fs::copy(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("scripts")
@@ -88,14 +88,14 @@ esac
             "#!/bin/bash\nprintf 'story %s\n' \"$(cat VERSION)\"\n",
         );
         let fixture = Self { scratch, repo };
-        fixture.git(&["init", "-q", "-b", "main"]);
+        fixture.git(&["init", "-q", "-b", "dev"]);
         fixture.git(&["config", "user.name", "Release Fixture"]);
         fixture.git(&["config", "user.email", "release@example.test"]);
         fixture.git(&["add", "-A"]);
         fixture.git(&["commit", "-qm", "fixture"]);
         fixture.git(&["init", "-q", "--bare", "../origin"]);
         fixture.git(&["remote", "add", "origin", "../origin"]);
-        fixture.git(&["push", "-q", "-u", "origin", "main"]);
+        fixture.git(&["push", "-q", "-u", "origin", "dev"]);
         fixture
     }
 
@@ -204,7 +204,12 @@ fn failed_gate_after_local_bump_prevents_install() {
 fn successful_public_gate_certifies_the_tree_actually_pushed() {
     let fixture = ReleaseFixture::new();
     // The GitHub boundary deliberately stops after the real disposable push.
-    assert_exit(&fixture.run(false, true, false, false), 91);
+    let output = fixture.run(false, true, false, false);
+    assert_exit(&output, 1);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("could not open the stable-release pull request")
+    );
     let tree = fixture.git(&["rev-parse", "refs/remotes/origin/release/v9.9.10^{tree}"]);
     assert_eq!(
         fixture.calls(),
