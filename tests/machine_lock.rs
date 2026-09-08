@@ -428,6 +428,89 @@ fn journal_progress_resets_the_idle_ceiling() {
     );
 }
 
+#[test]
+fn recognized_build_progress_renews_the_idle_ceiling() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let capture = fixture.path().join("test-output.log");
+    let script = checkout().join("scripts/activity-run.py");
+    let helper = fixture.helper(
+        "building.sh",
+        "#!/bin/sh\nfor crate in one two three four; do\n  printf '   Compiling %s v0.0.0\\n' \"$crate\"\n  sleep 1\ndone\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "2",
+            "gate",
+            "--",
+            "python3",
+            &script.display().to_string(),
+            "--capture",
+            &capture.display().to_string(),
+            "--test-progress",
+            "release gate/rust-suite",
+            "fixture-cargo",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a progressing build");
+
+    assert_eq!(
+        code(&out),
+        0,
+        "recognized build milestones must outlive the shorter silence ceiling: {out:?}"
+    );
+    let progress = std::fs::read_to_string(journal).unwrap();
+    assert_eq!(progress.matches(r#""kind":"activity""#).count(), 4);
+}
+
+#[test]
+fn arbitrary_output_does_not_renew_the_idle_ceiling() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let capture = fixture.path().join("test-output.log");
+    let script = checkout().join("scripts/activity-run.py");
+    let helper = fixture.helper(
+        "chattering.sh",
+        "#!/bin/sh\nwhile :; do printf 'still waiting\\n'; sleep 1; done\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "2",
+            "gate",
+            "--",
+            "python3",
+            &script.display().to_string(),
+            "--capture",
+            &capture.display().to_string(),
+            "--test-progress",
+            "release gate/rust-suite",
+            "fixture-cargo",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running an untrusted chatterer");
+
+    assert_eq!(
+        code(&out),
+        124,
+        "arbitrary chatter must still time out: {out:?}"
+    );
+    assert!(
+        !std::fs::read_to_string(journal)
+            .unwrap()
+            .contains(r#""kind":"activity""#)
+    );
+}
+
 /// SH-536's incident shape, with the harder descendant case included: a live
 /// holder and its child both ignore TERM and emit no further progress. The
 /// watchdog must diagnose them, escalate to KILL, reap, and release the lock.
@@ -464,7 +547,7 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         "made no progress for 2s",
         "last gate progress",
         "rust-suite",
-        "active process group",
+        "active descendant tree",
         "stubborn-holder.sh",
         "SIGTERM",
         "SIGKILL",
@@ -489,6 +572,49 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         0,
         "the next holder must be able to enter after cleanup"
     );
+}
+
+#[test]
+fn stall_diagnostics_include_descendants_in_another_process_group() {
+    struct EscapedProcess(u32);
+    impl Drop for EscapedProcess {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0 as i32, libc::SIGKILL);
+            }
+        }
+    }
+
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let escaped = fixture.path().join("escaped.pid");
+    let helper = fixture.helper(
+        "other-group.py",
+        "#!/usr/bin/env python3\nimport os, subprocess, sys, time\nchild = subprocess.Popen(['sleep', '30'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nwith open(sys.argv[1], 'w') as output:\n    output.write(str(child.pid))\nwhile True:\n    time.sleep(1)\n",
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            "2",
+            "gate",
+            "--",
+            &helper.display().to_string(),
+            &escaped.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a holder with an escaped descendant");
+    let escaped_pid: u32 = std::fs::read_to_string(escaped).unwrap().parse().unwrap();
+    let _cleanup = EscapedProcess(escaped_pid);
+
+    assert_eq!(code(&out), 124, "{out:?}");
+    let err = stderr(&out);
+    assert!(err.contains("active descendant tree"), "stderr: {err}");
+    assert!(err.contains(&escaped_pid.to_string()), "stderr: {err}");
+    for heading in ["PID", "PPID", "PGID", "STAT", "ELAPSED", "TIME", "COMMAND"] {
+        assert!(err.contains(heading), "missing {heading:?}\nstderr: {err}");
+    }
 }
 
 /// An interactive gate has no daemon-provided journal, so the lock must mint
@@ -1040,7 +1166,7 @@ fn plan_reports_the_resolved_lock_and_runs_nothing() {
         "--plan must print the command it would run\nstdout: {printed}"
     );
     assert!(
-        printed.contains("max_idle=288"),
+        printed.contains("max_idle=1746"),
         "the reserved gate's derived watchdog default must be inspectable\nstdout: {printed}"
     );
     assert!(!Path::new(&sentinel).exists(), "--plan must run nothing");
@@ -1185,30 +1311,36 @@ fn the_wait_report_cadence_still_matches_the_measured_gate_median() {
     );
 }
 
-/// The watchdog ceiling is a formula over three named facts, not a literal
-/// that happens to equal today's result.
+/// The watchdog ceiling is a formula over the measured contended gate, not a
+/// warm-run proxy or a literal that happens to equal today's result.
 #[test]
 fn the_gate_idle_ceiling_stays_derived() {
     let src = read_checkout_file("scripts/machine-lock.sh");
     assert!(
         src.contains(
-            "readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))"
+            "readonly GATE_IDLE_CEILING_SECS=$((GATE_CONTENDED_MAX_SECS * GATE_IDLE_MARGIN))"
         ),
         "the ceiling must preserve its derivation in source"
     );
-    assert_eq!(script_constant("GATE_CONCURRENT_RUNS"), 4);
     assert_eq!(script_constant("GATE_IDLE_MARGIN"), 2);
-    assert_eq!(
-        measured_gate_median_secs()
-            * script_constant("GATE_CONCURRENT_RUNS")
-            * script_constant("GATE_IDLE_MARGIN"),
-        288
-    );
+    let measured = script_constant("GATE_CONTENDED_MAX_SECS");
+    let gate_ceiling = measured * script_constant("GATE_IDLE_MARGIN");
+    assert_eq!(gate_ceiling, 1746);
 
-    let dispatch = read_checkout_file("src/api/dispatch.rs");
+    let verifier = read_checkout_file("src/daemon/verification.rs");
     assert!(
-        dispatch.contains("const MAX_RUNNING: usize = 4;"),
-        "GATE_CONCURRENT_RUNS must be re-derived when MAX_RUNNING changes"
+        verifier.contains(&format!(
+            "const MEASURED_CONTENDED_GATE_SECS: u64 = {measured};"
+        )),
+        "the gate and verifier watchdogs must use the same measured contended-gate fact"
+    );
+    assert!(
+        verifier.contains("+ RECOVERY_WAKE.as_secs()"),
+        "the outer verifier must derive its extra allowance from the existing recovery window"
+    );
+    assert!(
+        storyhook::daemon::verification::VERIFICATION_IDLE_TIMEOUT.as_secs() > gate_ceiling,
+        "the outer verifier must not race the gate watchdog that owns stall diagnostics"
     );
 }
 

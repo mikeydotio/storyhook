@@ -1,6 +1,7 @@
 //! File-backed observation executes real subprocesses and preserves their wire output.
 use std::{
-    process::Command,
+    io::Write as _,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, scratch_dir};
@@ -14,6 +15,34 @@ fn runner(logs: &std::path::Path, code: &str) -> Command {
         ))
         .args(["probe.sh", "--", "sh", "-c", code])
         .env("STORYHOOK_ACTIVITY_LOG_DIR", logs);
+    command
+}
+
+fn test_output_runner(
+    logs: &std::path::Path,
+    capture: &std::path::Path,
+    progress: &std::path::Path,
+    code: &str,
+) -> Command {
+    let mut command = Command::new("python3");
+    command
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/activity-run.py"
+        ))
+        .arg("--capture")
+        .arg(capture)
+        .args([
+            "--test-progress",
+            "release gate/rust-suite",
+            "probe.sh",
+            "--",
+            "sh",
+            "-c",
+            code,
+        ])
+        .env("STORYHOOK_ACTIVITY_LOG_DIR", logs)
+        .env("STORYHOOK_GATE_PROGRESS", progress);
     command
 }
 
@@ -179,6 +208,137 @@ fn a_descendant_holding_the_output_file_cannot_delay_completion() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn test_output_capture_cannot_be_held_open_by_a_descendant() {
+    let root = scratch_dir();
+    let release = root.path().join("release");
+    let done = root.path().join("done");
+    let capture = root.path().join("test-output.log");
+    let progress = root.path().join("gate-progress.ndjson");
+    struct Release(std::path::PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            std::fs::write(&self.0, "release").unwrap();
+        }
+    }
+    let guard = Release(release.clone());
+    let mut command = test_output_runner(
+        &root.path().join("activity"),
+        &capture,
+        &progress,
+        "(while [ ! -f \"$1\" ]; do sleep 0.05; done; printf done > \"$2\") & printf '     Running tests/probe.rs (probe)\\ntest completes ... ok\\n'",
+    );
+    command.arg("probe").arg(&release).arg(&done);
+    let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
+    let deadline = Duration::from_secs(storyhook::event_hooks::HOOK_TIMEOUT_CEILING_SECS);
+    let output = child.wait_with_output_within(deadline, || {
+        "test-output observer waited for the command's descendant".into()
+    });
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(&capture).unwrap(),
+        "     Running tests/probe.rs (probe)\ntest completes ... ok\n"
+    );
+    let progress = std::fs::read_to_string(progress).unwrap();
+    assert!(progress.contains(r#""kind":"activity""#), "{progress}");
+    assert!(progress.contains(r#""status":"running""#), "{progress}");
+    assert!(progress.contains(r#""kind":"case""#), "{progress}");
+    assert!(
+        !done.exists(),
+        "the observer must return before the descendant"
+    );
+    drop(guard);
+    let end = Instant::now() + deadline;
+    while !done.exists() {
+        assert!(
+            Instant::now() < end,
+            "descendant did not finish after release"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn required_capture_failure_does_not_start_the_command() {
+    let root = scratch_dir();
+    let marker = root.path().join("command-started");
+    let capture = root.path().join("missing-parent/test-output.log");
+    let progress = root.path().join("gate-progress.ndjson");
+    let mut command = test_output_runner(
+        &root.path().join("activity"),
+        &capture,
+        &progress,
+        "printf started > \"$1\"",
+    );
+    command.arg("probe").arg(&marker);
+
+    let output = command.output().expect("running the observer");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        !marker.exists(),
+        "a command ran without its required capture"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("required capture unavailable"),
+        "the failure must identify the lost evidence boundary: {output:?}"
+    );
+}
+
+#[test]
+fn shared_test_output_parser_preserves_ledger_identity_and_ignores_chatter() {
+    let mut child = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/test_output.py"
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("starting the shared test-output parser");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"   Compiling fixture v0.0.0\nrandom heartbeat\n     Running tests/one.rs (target/one)\ntest same_name ... ok\n     Running tests/two.rs (target/two)\ntest same_name ... FAILED\ntest ignored ... ignored\n",
+        )
+        .unwrap();
+
+    let output = child.wait_with_output().expect("waiting for the parser");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "one\tsame_name\tPASS\ntwo\tsame_name\tFAIL\n"
+    );
+}
+
+#[test]
+fn importing_the_shared_parser_does_not_dirty_the_checkout() {
+    let root = scratch_dir();
+    let scripts = root.path().join("scripts");
+    std::fs::create_dir(&scripts).unwrap();
+    for name in ["activity-run.py", "test_output.py"] {
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts")
+                .join(name),
+            scripts.join(name),
+        )
+        .unwrap();
+    }
+
+    let output = Command::new("python3")
+        .arg(scripts.join("activity-run.py"))
+        .args(["probe", "--", "true"])
+        .output()
+        .expect("running the observer through a fixture path");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !scripts.join("__pycache__").exists(),
+        "loading the parser must not leave Python bytecode in its checkout"
+    );
 }
 
 #[test]

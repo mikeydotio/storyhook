@@ -816,14 +816,17 @@ while it holds every later verification off the machine-wide gate. The lock
 therefore watches the SH-524 append-only journal while `gate` is held. Each
 growth event resets the full inactivity budget; total runtime has no ceiling.
 
-The default is **288 silent seconds**, expressed in `machine-lock.sh` as the
-product of three named inputs rather than as that literal: the measured
-36-second warm gate median, `api::dispatch::MAX_RUNNING`'s four concurrent
-Full Auto runs, and a twofold margin for fmt, clippy and build work that other
-worktrees can still perform outside this lock. `tests/machine_lock.rs` binds
-the measurement, concurrency value and source-level formula. `--max-idle`
-accepts a positive caller-derived override; non-`gate` locks remain unbounded
-unless a caller supplies one.
+The default is **1,746 silent seconds**, expressed in `machine-lock.sh` as the
+measured 873-second contended gate maximum times a named twofold margin. The
+contended observation includes cold and load-sensitive work that the old
+36-second warm-suite proxy did not. `tests/machine_lock.rs` binds the measured
+fact to the verifier's independent copy and binds the source-level formula.
+`--max-idle` accepts a positive caller-derived override; non-`gate` locks
+remain unbounded unless a caller supplies one.
+
+The outer verifier's silence ceiling is one existing 30-second recovery window
+longer. That derived ordering lets the gate watchdog publish its last evidence
+and complete bounded process-group cleanup before its supervisor can intervene.
 
 Central verification provides the durable journal. An interactive gate has no
 publisher, so the lock creates a private journal inside its owned directory
@@ -841,8 +844,17 @@ If discovery fails, the battery refuses to start: displaying completed cases
 over a moving seen-so-far estimate made an incomplete gate look 100% complete
 and therefore could not distinguish progress from a wedge.
 
+Discovery and execution write combined Cargo output to regular files through
+`activity-run.py`; no descendant receives an output pipe whose inherited file
+descriptor can delay observer completion. One shared parser recognizes only
+Cargo build/running milestones and completed libtest cases for both live
+progress and the final test ledger. Arbitrary chatter remains visible in the
+raw log but cannot renew the watchdog. Each verification attempt also owns a
+distinct raw log, so a retry cannot overwrite the evidence from the attempt it
+is diagnosing.
+
 The wrapped command is a process-group leader. On expiry, the lock prints the
-last journal record and the group's live commands, appends a failed gate item,
+last journal record and the complete live descendant tree, appends a failed gate item,
 sends `SIGTERM`, waits two lock-poll observations, escalates survivors to
 `SIGKILL`, reaps, and only then releases the lock. Exit 124 distinguishes that
 outcome from both the command's own failure and a waiter's exit 75. External

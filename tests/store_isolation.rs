@@ -977,12 +977,25 @@ fn isolating_harnesses(root: &Path) -> Vec<(String, String)> {
 
 /// Whether `line` neutralizes `$STORYHOOK_GATE_PROGRESS` for whatever
 /// subprocess it isolates — a global `unset`, or an `env -u` naming it for
-/// one targeted invocation (`scripts/run-tests.sh`'s own `cargo test`
-/// wrapper, `plugins/story/tests/run-tests.sh`'s own per-file wrapper).
+/// one targeted invocation.
 fn neutralizes_the_gate_progress_journal(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("unset STORYHOOK_GATE_PROGRESS")
         || trimmed.contains("-u STORYHOOK_GATE_PROGRESS")
+}
+
+/// Whether the file-backed observer owns the real spawn boundary and removes
+/// the outer gate journal from the environment it gives that child.
+fn delegates_gate_progress_containment(root: &Path, relative: &str, text: &str) -> bool {
+    if relative != "scripts/run-tests.sh" || !text.contains("$script_dir/activity-run.py") {
+        return false;
+    }
+    let observer = std::fs::read_to_string(root.join("scripts/activity-run.py"))
+        .expect("reading the test-output observer");
+    observer.contains("child_env.pop(\"STORYHOOK_GATE_PROGRESS\", None)")
+        && observer.contains("child_env.pop(\"STORYHOOK_GATE_PROGRESS_PATH\", None)")
+        && observer.contains("subprocess.Popen(command")
+        && observer.contains("env=child_env")
 }
 
 /// Every harness that isolates `$STORYHOOK_DATA_DIR` also neutralizes
@@ -1018,7 +1031,10 @@ fn every_harness_that_isolates_a_run_neutralizes_the_gate_progress_journal() {
     let gaps: Vec<String> = harnesses
         .iter()
         .filter(|(relative, _)| relative != "scripts/run-e2e.sh")
-        .filter(|(_, text)| !text.lines().any(neutralizes_the_gate_progress_journal))
+        .filter(|(relative, text)| {
+            !text.lines().any(neutralizes_the_gate_progress_journal)
+                && !delegates_gate_progress_containment(root, relative, text)
+        })
         .map(|(relative, _)| relative.clone())
         .collect();
     assert!(
@@ -1028,8 +1044,9 @@ fn every_harness_that_isolates_a_run_neutralizes_the_gate_progress_journal() {
          fixture that shells back into make test/leg.sh (tests/gate_leg_reuse.rs \
          is a real one) would otherwise inherit an outer verification run's \
          journal path and corrupt its live counts. Add `unset \
-         STORYHOOK_GATE_PROGRESS`, or `env -u STORYHOOK_GATE_PROGRESS` around \
-         the specific child that must not see it."
+         STORYHOOK_GATE_PROGRESS`, `env -u STORYHOOK_GATE_PROGRESS` around \
+         the specific child that must not see it, or delegate the spawn to the \
+         file-backed observer that removes both journal variables."
     );
 }
 
