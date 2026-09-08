@@ -231,10 +231,14 @@ the *same* function right-click already calls, with the *same* `storyMenuModel` 
 as entries are added or removed later. `responsive.mobile.spec.ts`'s own parity test
 asserts this equality directly, not just that each button opens *some* menu.
 
-Both buttons are `display: none` outside `@media (pointer: coarse)` — right-click
-already reaches this exact menu on a fine pointer, so a mouse-only affordance on
-every card would be pure visual noise, and desktop's rendering is byte-identical to
-before this story.
+SH-600 corrected the original visibility policy: the card button is visible for
+every pointer because right-click can be difficult or unavailable even when a
+fine pointer is primary. Its `--tap-min` target remains 24px normally and 44px on
+coarse pointers. The list-row button remains coarse-pointer-only so desktop table
+geometry is unchanged. Its resting SVG uses `--fg-muted`, measured across all four
+palette resolutions, rather than light theme's 2.60:1 `--fg-faint`; this keeps the
+control-identifying icon above WCAG 2.2 SC 1.4.11's 3:1 threshold. The
+coarse-pointer row action uses the same token and measured four-theme contract.
 
 **The accessibility trade-off, stated plainly.** `.card` is `div[role="button"]`; a
 nested interactive element inside an ARIA `button` role is *presentational* to
@@ -404,7 +408,7 @@ row says otherwise.
 | D4 (filter disclosure) | `web_serve_root_html_has_a_collapsible_filter_panel` | `filter-bar-disclosure.spec.ts` (desktop — not a mobile-only behavior) |
 | D5 (overlay widths) | `web_serve_root_html_clamps_overlay_widths_to_the_viewport` | `responsive.mobile.spec.ts`: "toast and dispatch-history overlays never exceed a narrow viewport" |
 | D8 (column peek) | `web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones` | `responsive.mobile.spec.ts`: "the next board column peeks on the narrowest supported phone" (plus its own "stays at 18rem" companion) |
-| D9 (actions menu) | `web_serve_root_html_has_coarse_pointer_actions_buttons` | `responsive.mobile.spec.ts`: "the card and list-row actions menus have the same items as right-click", "...is deliberately not a Tab stop..." |
+| D9 (actions menu) | `web_serve_root_html_exposes_card_actions_on_every_pointer` | `story-context-menu.spec.ts`: "the visible card actions button matches right-click without opening the drawer"; `responsive.mobile.spec.ts`: mobile card/list parity and focus policy |
 | Chrome budget (topbar + filter bar) | — | `responsive.mobile.spec.ts`: "the topbar and collapsed filter bar together stay within a measured chrome budget" |
 
 ## Verification this design can't cover
