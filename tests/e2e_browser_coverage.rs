@@ -480,8 +480,8 @@ fn selector(block: &str) -> Option<(&'static str, String)> {
 /// either project's own file saying so (SH-335 established this for the
 /// desktop pair; SH-348 extends it to the mobile pair). Across the pairs,
 /// the selector KINDS remain opposite. The mobile pair's expression adds the
-/// intentional cross-class files (`engine.spec.ts` and `open-pr-chip.spec.ts`)
-/// to `MOBILE_SPECS`;
+/// intentional cross-class files (`engine.spec.ts`, `open-pr-chip.spec.ts`,
+/// and `verification-layout.spec.ts`) to `MOBILE_SPECS`;
 /// the desktop pair additionally excludes SH-321's dedicated untrusted-origin
 /// spec, whose own project is pinned below.
 const ENGINE_PAIRS: [(&str, &str, &str, &str); 2] = [
@@ -548,10 +548,11 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     assert!(
         config_text.contains("const ENGINE_SPECS = /engine\\.spec\\.ts$/;")
             && config_text.contains("const OPEN_PR_CHIP_SPECS = /open-pr-chip\\.spec\\.ts$/;")
+            && config_text.contains("const VERIFICATION_LAYOUT_SPECS = /verification-layout\\.spec\\.ts$/;")
             && config_text.contains(
-                "const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];"
+                "const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS, VERIFICATION_LAYOUT_SPECS];"
             ),
-        "engine.spec.ts and open-pr-chip.spec.ts must be the explicit shared exceptions, \
+        "engine.spec.ts, open-pr-chip.spec.ts, and verification-layout.spec.ts must be the explicit shared exceptions, \
          composed from the same MOBILE_SPECS constant for both mobile engines"
     );
 }
