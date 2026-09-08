@@ -15,7 +15,7 @@ follow the workflow below.
 - Make the change. Add tests for new behavior and defects.
 - Run new and directly affected tests with direct test commands.
 - Leave the full suite and its lock to the central verifier.
-- Commit the work. Push the latest commits and create a PR against `main`.
+- Commit the work. Push the latest commits and create a PR against the repository's default branch.
 - Link exactly one open PR: `story link-pr SH-<n> <pr-url>`.
 - Keep automatic closure enabled. Do not use `--no-close-on-merge`.
 - Record test results and final context: `story comment SH-<n> "<context>"`. Do not create `HANDOFF.md`.

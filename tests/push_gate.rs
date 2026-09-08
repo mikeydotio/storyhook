@@ -37,20 +37,19 @@
 //! negative test for the wrong reason, and a hand-written receipt would prove
 //! the checker's format rather than the producer's behaviour.
 //!
-//! # The gate narrowed to `main`/`master` (SH-429)
+//! # The gate narrowed to long-lived branches (SH-429, SH-595)
 //!
 //! This hook used to refuse an unreceipted push on **any** ref. Since SH-396,
 //! `scripts/merge-preflight.sh` is what actually decides whether content
-//! reaches `main` — a server-side `gh pr merge --merge` never triggers this
-//! hook at all — so refusing an ordinary feature-branch push was gating
+//! reaches a protected branch — a server-side `gh pr merge --merge` never
+//! triggers this hook at all — so refusing an ordinary feature-branch push was gating
 //! content this hook's own refusal was never the thing protecting. It now
-//! refuses only a direct push to `main`/`master`, and *reports* (tier found,
-//! or none, and where the real gate lives) for everything else. `GateRepo`
+//! refuses only a direct push to `dev`/`main`/`master`, and *reports* (tier
+//! found, or none, and where the real gate lives) for everything else. `GateRepo`
 //! still checks out and pushes local `main` by default — most of these tests
 //! are about the receipt/tier mechanism itself, which is unchanged and
-//! branch-agnostic — but `push_branch` exists specifically to provoke the new
-//! non-`main` report-not-refuse path, and the tests that exercise an actual
-//! *refusal* now do so through `main`, which is where that behaviour survives.
+//! branch-agnostic — but `push_branch` exists specifically to provoke both the
+//! protected `dev` path and an ordinary feature branch's report-only path.
 //!
 //! # Mutation-checked (SH-295: a pin that cannot fail is not a pin)
 //!
@@ -72,9 +71,9 @@
 //!   `a_push_to_a_feature_branch_with_no_receipt_is_reported_but_not_refused`.
 //!   The narrow blast radius is the point: only the one test that specifically
 //!   provokes the non-`main` path notices a refusal that should not have fired.
-//! - (SH-429) the `main | master` case arm made unreachable, so **no** ref is
-//!   ever refused → **4 of 15 red**: every test whose refusal depends on `main`
-//!   specifically still being protected
+//! - (SH-429/SH-595) the protected-branch case arm made unreachable, so **no**
+//!   ref is ever refused: every test whose refusal depends on a long-lived
+//!   branch specifically still being protected turns red
 //!   (`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move`,
 //!   `a_commit_made_after_the_receipt_is_refused`,
 //!   `content_that_changes_during_the_run_gets_no_receipt`,
@@ -359,6 +358,29 @@ fn a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move() {
         err.contains("protected branch"),
         "the refusal must say why main specifically is refused, got: {err}"
     );
+}
+
+/// SH-595 gives `dev` the same protected, PR-only status as stable `main`.
+/// The local defense-in-depth gate must therefore refuse an uncertified
+/// direct push to either long-lived branch.
+#[test]
+fn a_push_to_dev_with_no_receipt_is_refused_and_the_remote_does_not_move() {
+    let repo = GateRepo::new();
+    assert_ok(&repo.gate("preflight"), "enrolling");
+
+    let out = repo.push_branch("dev", &[]);
+
+    assert!(
+        !out.status.success(),
+        "a push to dev with no receipt must be refused, got success\nstderr: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        repo.remote_sha("dev"),
+        None,
+        "the remote dev ref moved despite the refusal"
+    );
+    assert!(stderr(&out).contains("protected branch"));
 }
 
 /// SH-429's actual behavioural change: a push to an ordinary (non-`main`)

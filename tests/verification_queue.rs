@@ -826,14 +826,10 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
         .unwrap()
         .unwrap();
     assert_eq!(row.state, "in-progress");
-    assert!(
-        row.snapshot
-            .comments
-            .last()
-            .unwrap()
-            .text
-            .contains("CONFLICT")
-    );
+    let conflict = &row.snapshot.comments.last().unwrap().text;
+    assert!(conflict.contains("CONFLICT"));
+    assert!(conflict.contains("its current base branch"));
+    assert!(!conflict.contains("origin/main"));
     assert_eq!(actuator.notified.lock().unwrap().len(), 1);
     assert!(actuator.reaped.lock().unwrap().is_empty());
 }
