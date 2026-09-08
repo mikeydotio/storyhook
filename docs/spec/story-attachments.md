@@ -1,7 +1,7 @@
-# Story attachments: storage, CLI, and authenticated reads
+# Story attachments: storage, CLI, authenticated reads, and browser uploads
 
-Design of record for **SH-315** (the epic), foundation child **SH-387**, and
-byte-serving child **SH-388**. Written
+Design of record for **SH-315** (the epic), foundation child **SH-387**,
+byte-serving child **SH-388**, and upload transport child **SH-389**. Written
 after implementation, for the reason [`dashboard-dispatch.md`](dashboard-dispatch.md) and
 [`responsive-dashboard.md`](responsive-dashboard.md) give: sharper against the actual code
 than against a proposal for it.
@@ -204,14 +204,82 @@ below carry.
 | **SH-392** | drag an image onto an existing story's description or comment field | SH-389, SH-390 |
 | **SH-393** | remote image URLs: CSP `img-src` relaxation, SSRF/privacy analysis, thumbnail strategy — deliberately reopens [`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)'s "no images" rule | SH-390 |
 
+## Browser upload transport (SH-389)
+
+The browser submits one image to
+`POST /api/repos/{repo}/story/{story}/attachments`. The request body is raw
+bytes: Fetch supports `Blob` directly, so neither multipart framing nor base64
+is needed. This endpoint attaches to an existing story; story creation, paste,
+drag/drop and viewing remain separate children of SH-315.
+
+| Contract | Behavior |
+|---|---|
+| Authentication | Existing API admission: master/named header token or same-origin named-token cookie, plus `X-Storyhook` and trusted Host |
+| Content-Type | Exactly one of `application/octet-stream`, `image/png`, `image/jpeg`, `image/gif`, `image/webp`; case-insensitive, parameters ignored |
+| Image format | Existing service sniffs magic bytes; the declared MIME type and filename never decide the stored format |
+| Size | At most `MAX_ATTACHMENT_BYTES` (10 MiB), including the boundary; ordinary requests retain the 64 KiB UTF-8 cap |
+| Filename | Optional `X-Storyhook-Attachment-Name`, encoded with `encodeURIComponent`; absence defaults to `attachment` |
+| Filename validation | Strict percent/UTF-8 decoding, once; `+` stays literal; duplicate, empty, malformed, and control-bearing values return 400 |
+| Filename normalization | Existing source-name basename rule; the name never causes filesystem access |
+| Success | 201 and the existing story JSON envelope (`result: "ok"`, `story.story.attachments`); project change published after commit |
+| Refusals | Admission 401/403; request media type 415; body over cap 413; body framing/read failure 400; unsupported image bytes 422; existing project/story errors unchanged |
+| Story restrictions | Canonical/numeric IDs use existing canonicalization; foreign prefixes are refused; closed stories and projects without a checkout remain uneditable |
+| Provenance | `command: "web:attachment"`, `actor: "web:user"` |
+
+```javascript
+// Run on the authenticated dashboard origin; `image` is a Blob or File.
+const response = await fetch(
+  `/api/repos/${encodeURIComponent(repo)}/story/${encodeURIComponent(story)}/attachments`,
+  {
+    method: "POST",
+    headers: {
+      "X-Storyhook": "1",
+      "Content-Type": "application/octet-stream",
+      "X-Storyhook-Attachment-Name": encodeURIComponent(filename),
+    },
+    body: image,
+  },
+);
+if (!response.ok) throw new Error(await response.text());
+const updated = await response.json();
+```
+
+The worker classifies the route after admission and acquires a `Text(String)`
+or `Binary(Vec<u8>)` body. Only the upload route receives the larger allowance;
+engine and RPC handlers only consume text. Reads use the existing HTTP framing
+decoder and absolute peer deadline. Declared oversize is refused before reading;
+chunked and fixed-length bodies are bounded to the cap plus one byte. Rejected
+bodies are never drained, preserving the transport's protection against stalled
+peers. A complete refusal response can therefore precede a TCP reset when
+unread request bytes remain; clients must respect HTTP response framing.
+
+The REST route uses the common project-resolution and change-publication path,
+then calls `AttachmentService::add`. Blob and event writes remain one transaction.
+There is no temporary-file, migration, or separate CLI invocation variant.
+
+| Verification | Coverage |
+|---|---|
+| Upload module unit/property tests | Filename decoding, Unicode round trips, duplicate media-type refusal |
+| `tests/attachment_upload.rs` | Real HTTP byte/hash round trip; all formats; 64 KiB and 10 MiB boundaries; chunked, incomplete and stalled bodies; admission, revocation, project/story rules, provenance and change signal |
+| `e2e/specs/attachment-upload.spec.ts` | Browser-generated PNG Blob, cookie admission, Unicode filename, SHA-256, and byte-for-byte authenticated download through real Fetch in Chromium and WebKit |
+| Existing targeted suites | REST routing/classification, CLI attachments, daemon RPC and deadline regressions |
+
 ## As built
 
 Matches this document as written — SH-387 shipped exactly the storage-and-CLI scope
 above, with the `next_attachment_id` counter added during implementation once
 `tests/story_attachments.rs` demonstrated the id-reuse defect a first draft would have
-shipped. The SH-388 extension follows below; SH-389 through SH-393 remain separate
-children, and SH-315 stays open until they land.
+shipped.
 
+SH-389 adds the raw binary upload contract above without widening the ordinary
+JSON request limit. Display, paste, drag/drop and remote URL work remain with
+the sibling stories; SH-315 stays open until its children land.
+
+Targeted verification for SH-389: 10 upload integration tests, 121 relevant unit
+tests, 50 existing integration regressions, and 21 repository-fence tests passed.
+The real Blob test passed in Chromium and WebKit. Formatting and targeted Clippy
+checks passed with warnings treated as errors. Full-suite verification belongs
+to the centralized verifier.
 
 ## As built — SH-388: authenticated bytes
 

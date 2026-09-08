@@ -98,6 +98,7 @@ const PROBES: &[(&str, Method)] = &[
     ("/api/repos/p/story/SH-1", Method::Patch),
     ("/api/repos/p/story/SH-1", Method::Delete),
     ("/api/repos/p/story/SH-1/move", Method::Post),
+    ("/api/repos/p/story/SH-1/attachments", Method::Post),
     ("/api/repos/p/story/SH-1/nope", Method::Post),
     ("/api/repos/p/story/SH-1/dispatch", Method::Post),
     ("/api/repos/p/story/SH-1/dispatch/h4nd1e", Method::Get),
