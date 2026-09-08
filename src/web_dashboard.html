@@ -996,6 +996,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); resize: vertical; font-family: inherit;
 }
+/* SH-392: applied only while a DataTransfer advertises files. Card drags carry
+   text/plain and never enter either state, so the board's existing move
+   affordance remains the sole feedback for them. */
+.attachment-drop-target { outline: 2px solid var(--accent); outline-offset: 2px; background: var(--accent-soft); }
+.attachment-drop-refused { outline: 2px solid var(--danger); outline-offset: 2px; cursor: not-allowed; }
 .description-field {
   /* max(), not a bare token -- see .field textarea's own comment above:
      this keeps the taller of the field's original 40px rest height and
@@ -3070,10 +3075,11 @@ svg.ctxmenu-disabled-warning {
   // API
   // ============================================================
 
-  /** Issues an authenticated request. Always sets the CSRF header, JSON
-   * content type, and the daemon's bearer token; resolves with the parsed
-   * body on 2xx, rejects with {status, message} otherwise. `opts.headers`
-   * adds extra headers; `opts.timeoutMs` overrides the default.
+  /** Issues an authenticated request. Always sets the CSRF header and sends
+   * JSON by default; `opts.rawBody` sends the supplied body unchanged with the
+   * attachment transport's octet-stream content type instead. Resolves with
+   * the parsed body on 2xx and rejects with {status, message} otherwise.
+   * `opts.headers` adds extra headers; `opts.timeoutMs` overrides the default.
    *
    * The default itself is method-derived (SH-312): a GET keeps the original
    * 10s (reads have no server-side write to wait out, and every hot read
@@ -3116,7 +3122,7 @@ svg.ctxmenu-disabled-warning {
         var xhr = new XMLHttpRequest();
         xhr.open(method, path, true);
         xhr.setRequestHeader("X-Storyhook", "1");
-        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("Content-Type", opts.rawBody ? "application/octet-stream" : "application/json");
         if (opts.headers) {
           Object.keys(opts.headers).forEach(function(name) {
             xhr.setRequestHeader(name, opts.headers[name]);
@@ -3146,7 +3152,7 @@ svg.ctxmenu-disabled-warning {
         };
         xhr.onerror = function() { refuse({ status: 0, message: "network error" }); };
         xhr.ontimeout = function() { refuse({ status: 0, message: "request timed out" }); };
-        xhr.send(body ? JSON.stringify(body) : null);
+        xhr.send(opts.rawBody ? body : (body ? JSON.stringify(body) : null));
       }
       attempt();
     });
@@ -10476,6 +10482,140 @@ svg.ctxmenu-disabled-warning {
     return repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments/" + encodeURIComponent(attachmentId);
   }
 
+  /** Whether a drag advertises at least one file without trying to read its
+   * protected payload. Browsers expose the bytes only at drop time; items is
+   * the precise hover-time signal and the literal Files type is its older
+   * cross-engine fallback. A card drag carries only text/plain. */
+  function transferHasFiles(transfer) {
+    if (!transfer) return false;
+    var items = Array.prototype.slice.call(transfer.items || []);
+    if (items.some(function(item) { return item.kind === "file"; })) return true;
+    var types = Array.prototype.slice.call(transfer.types || []);
+    return types.indexOf("Files") !== -1;
+  }
+
+  /** One sequential batch per story. Serial writes preserve the order in
+   * which the user dropped files; the captured repo/story identity keeps a
+   * late response from repainting whichever project is open by then. */
+  var attachmentUploadBatches = Object.create(null);
+
+  function attachmentUploadKey(repoId, storyId) {
+    return repoId + "/" + storyId;
+  }
+
+  /** Uploads every dropped file in order. A server refusal belongs to that
+   * file, so the rest continue. No-response failures are ambiguous mutations,
+   * and cancelled authentication is explicit batch-level intent; both stop
+   * without an automatic replay. */
+  function uploadDroppedAttachments(repoId, storyId, files) {
+    var key = attachmentUploadKey(repoId, storyId);
+    if (attachmentUploadBatches[key]) {
+      toast("Images are already being attached to " + storyId + ".", "error");
+      return Promise.resolve();
+    }
+    attachmentUploadBatches[key] = true;
+    var index = 0;
+    var attached = 0;
+
+    function finish() {
+      delete attachmentUploadBatches[key];
+      if (attached) {
+        toast("Attached " + attached + (attached === 1 ? " image" : " images") + " to " + storyId + ".", "success");
+      }
+    }
+
+    function next() {
+      if (index >= files.length) {
+        finish();
+        return Promise.resolve();
+      }
+      var file = files[index++];
+      var path = repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments";
+      return api("POST", path, file, {
+        rawBody: true,
+        headers: { "X-Storyhook-Attachment-Name": encodeURIComponent(file.name || "attachment") }
+      }).then(function(resp) {
+        attached++;
+        if (state.repoId === repoId) handleMutationSuccess(resp);
+        return next();
+      }, function(err) {
+        toast((file.name || "attachment") + ": " + describeFailure(err), "error");
+        if (err.status === 0 || err.status === 401) {
+          finish();
+          return;
+        }
+        // A definite refusal is local to this file; preserve the remaining
+        // files' drop order instead of throwing the whole selection away.
+        return next();
+      });
+    }
+
+    return next();
+  }
+
+  /** Makes one field a file-only drop target. `preventDefault` and
+   * `stopPropagation` live below the transferHasFiles guard: internal card
+   * drags and ordinary text/link drags remain wholly owned by their existing
+   * handlers. A depth count avoids flicker while crossing target children. */
+  function bindAttachmentDrop(target, st) {
+    var depth = 0;
+    var repoId = state.repoId;
+    var storyId = st.id;
+
+    function clearDropState() {
+      depth = 0;
+      target.classList.remove("attachment-drop-target", "attachment-drop-refused");
+    }
+
+    function currentStoryIsOpen() {
+      var current = state.repoId === repoId ? findStory(storyId) : null;
+      return !!current && current.story.superstate === "OPEN";
+    }
+
+    function canAttach() {
+      return currentStoryIsOpen()
+        && !attachmentUploadBatches[attachmentUploadKey(repoId, storyId)];
+    }
+
+    function claimFileDrag(e) {
+      if (!transferHasFiles(e.dataTransfer)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      var available = canAttach();
+      e.dataTransfer.dropEffect = "copy";
+      if (!available) e.dataTransfer.dropEffect = "none";
+      target.classList.toggle("attachment-drop-target", available);
+      target.classList.toggle("attachment-drop-refused", !available);
+      return true;
+    }
+
+    target.addEventListener("dragenter", function(e) {
+      if (!claimFileDrag(e)) return;
+      depth++;
+    });
+    target.addEventListener("dragover", function(e) { claimFileDrag(e); });
+    target.addEventListener("dragleave", function(e) {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      depth--;
+      if (depth <= 0) clearDropState();
+    });
+    target.addEventListener("drop", function(e) {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var files = Array.prototype.slice.call(e.dataTransfer.files);
+      clearDropState();
+      if (!currentStoryIsOpen()) {
+        toast("Reopen " + storyId + " before attaching images.", "error");
+        return;
+      }
+      if (!files.length) return;
+      uploadDroppedAttachments(repoId, storyId, files);
+    });
+  }
+
   /** Builds native keyboard controls with text-only filenames. The section's
    * normal drawer fingerprint preserves its nodes on unrelated refreshes. */
   function buildAttachmentsSection(storyId) {
@@ -10860,6 +11000,7 @@ svg.ctxmenu-disabled-warning {
 
     wrap.appendChild(view);
     wrap.appendChild(textarea);
+    bindAttachmentDrop(wrap, st);
     if (editing) requestAnimationFrame(function() { autoGrowTextarea(textarea); });
     return wrap;
   }
@@ -11128,6 +11269,7 @@ svg.ctxmenu-disabled-warning {
     var wrap = el("div", {}, [buildSectionToggle("comments", "Comments", comments.length)]);
     if (!state.drawerSections.comments) return wrap;
     var textarea = el("textarea", { placeholder: "Add a comment…", "aria-label": "Add comment", dataset: { field: "comment" } });
+    bindAttachmentDrop(textarea, st);
     var submit = el("button", { class: "btn", onClick: function() {
       if (!textarea.value.trim()) return;
       api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
