@@ -3081,9 +3081,30 @@ impl HttpInvoker {
     /// waiting for the command to finish, and how long that may legitimately
     /// take is not a property of the socket. [`Self::send`] bounds it from the
     /// daemon's own published record instead.
+    ///
+    /// # Why the proxy is switched off
+    ///
+    /// `config_builder()` starts from [`ureq::config::Config::default()`], and
+    /// ureq documents its proxy setting as "Picked up from environment when
+    /// using `Config::default()`". So without `.proxy(None)` this agent hands a
+    /// request for `127.0.0.1` to whatever `HTTPS_PROXY` names.
+    ///
+    /// On a managed corporate network that proxy cannot route to loopback, so
+    /// every command failed with `timeout: connect` while the daemon answered
+    /// `curl` on the same address in 2 ms. The reported cause was the daemon,
+    /// and the daemon was healthy — which is the expensive part, because it
+    /// sends the reader to the store, the portfile and the crash logs.
+    ///
+    /// This agent only ever talks to a daemon on loopback, so there is no case
+    /// where a proxy is wanted. `NO_PROXY` would be a weaker fix: it depends on
+    /// the user setting it, and its parsing is a convention rather than a
+    /// specification. `src/github/client.rs` and `src/update.rs` reach the
+    /// public internet and deliberately keep inheriting the proxy.
     fn agent() -> ureq::Agent {
         use std::time::Duration;
         ureq::Agent::config_builder()
+            // Loopback only. Never through a proxy — see above.
+            .proxy(None)
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_recv_body(Some(Duration::from_secs(30)))
             .build()
@@ -3284,6 +3305,37 @@ fn daemon_response_read_error(
         ),
     };
     Transport::Sent(detail)
+}
+
+#[cfg(test)]
+mod agent_proxy_tests {
+    use super::*;
+
+    /// The invoker only ever talks to a daemon on `127.0.0.1`, so it must never
+    /// inherit the environment's proxy.
+    ///
+    /// `Agent::config_builder()` starts from `Config::default()`, whose own
+    /// source reads `proxy: Proxy::try_from_env()`. Without `.proxy(None)` every
+    /// command hands a loopback request to whatever `HTTPS_PROXY` names. On a
+    /// managed corporate network that proxy cannot route to loopback, so every
+    /// command failed with `timeout: connect` while the daemon answered `curl`
+    /// on the same address in 2 ms.
+    ///
+    /// The misreported cause is what made this expensive. "The daemon stopped
+    /// answering" sends the reader to the store, the portfile and the crash
+    /// logs, and none of them is at fault.
+    ///
+    /// Asserted against the config rather than by setting an environment
+    /// variable and making a request. Environment variables are process-global
+    /// and Rust runs tests in parallel, so a test that set one would flake
+    /// against every other test in this binary.
+    #[test]
+    fn the_invoker_agent_never_uses_a_proxy() {
+        assert!(
+            HttpInvoker::agent().config().proxy().is_none(),
+            "the invoker must never be proxied: it only ever reaches loopback"
+        );
+    }
 }
 
 #[cfg(test)]
