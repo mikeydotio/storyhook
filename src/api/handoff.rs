@@ -675,7 +675,11 @@ mod tests {
         .expect("the redemption path is this module's");
 
         assert_eq!(reply.status, 204);
-        assert!(reply.body().is_empty(), "{}", reply.body());
+        assert!(
+            reply.text_body().expect("UTF-8 text response").is_empty(),
+            "{}",
+            reply.text_body().expect("UTF-8 text response")
+        );
 
         let cookie = reply.cookie().expect("a redemption must set a cookie");
         assert!(cookie.starts_with("storyhook_test="), "{cookie}");

@@ -112,3 +112,9 @@ test("a named-token cookie survives reload, a new tab, and daemon restart on an 
   await restartedPage.goto("/");
   await expectAuthenticatedHome(restartedPage);
 });
+
+// The same image read must also work where Fetch Metadata is unavailable.
+test("attachment bytes decode through the Referer fallback on an untrusted origin", async ({ page }) => {
+  const { expectCookieAttachment } = await import("./attachment-fixture");
+  await expectCookieAttachment(page);
+});

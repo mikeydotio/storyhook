@@ -2436,16 +2436,20 @@ mod tests {
         .expect("the log path is always claimed");
         assert_eq!(reply.status, 200);
         assert!(
-            reply.body().contains("\"dispatches\":[]"),
+            reply
+                .text_body()
+                .expect("UTF-8 text response")
+                .contains("\"dispatches\":[]"),
             "{}",
-            reply.body()
+            reply.text_body().expect("UTF-8 text response")
         );
         assert!(
             reply
-                .body()
+                .text_body()
+                .expect("UTF-8 text response")
                 .contains(&format!("\"records\":{RETAIN_FINISHED}")),
             "an empty list must still disclose the policy: {}",
-            reply.body()
+            reply.text_body().expect("UTF-8 text response")
         );
     }
 
