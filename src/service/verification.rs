@@ -27,7 +27,7 @@ pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
 
 /// Durable comment prefix for verifier infrastructure failures.
-pub const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
+pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
