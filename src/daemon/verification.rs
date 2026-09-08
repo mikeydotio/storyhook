@@ -24,7 +24,7 @@ use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VERIFICATION_INFRASTRUCTURE_PREFIX, VerificationCandidate, VerificationQueue,
+    VerificationCandidate, VerificationQueue,
 };
 use crate::store::{
     GlobalSeq, PrLink, ProjectId, ReadOps, Store, VerificationFailureDisposition,
@@ -39,9 +39,6 @@ pub const INFRASTRUCTURE_RETRY_ATTEMPTS: u32 = super::verification_progress::PUB
     .as_secs() as u32
     / RECOVERY_WAKE.as_secs() as u32
     + 1;
-
-/// Marker for the one edited infrastructure evidence comment.
-pub const INFRASTRUCTURE_COMMENT_PREFIX: &str = VERIFICATION_INFRASTRUCTURE_PREFIX;
 
 /// One verification generation currently owned by this daemon's serialized
 /// verifier. Queue rank is deliberately absent: priority may change while an
