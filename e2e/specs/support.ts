@@ -1625,11 +1625,24 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
   }, selector);
 }
 
-/** Parses a computed colour string. Chromium serialises every computed
- * `<color>` as `rgb(r, g, b)` or `rgba(r, g, b, a)`, so the numbers are taken
- * positionally; anything else is a change in the platform rather than in this
- * page, and throwing names it instead of silently scoring it as black. */
+/** Parses a computed colour string into 0–255 sRGB channels.
+ *
+ * Browsers serialize legacy colours as `rgb()`/`rgba()`, but preserve the
+ * normalized 0–1 channels of CSS Color 4 `color(srgb …)` values produced by
+ * `color-mix()`. Keep both paths explicit so one unit system can never be
+ * silently scored as the other. */
 export function parseColor(css: string): Rgba {
+  const srgb = css.match(
+    /^color\(srgb\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s*\/\s*(-?[\d.]+))?\)$/,
+  );
+  if (srgb) {
+    return {
+      r: Number(srgb[1]) * 255,
+      g: Number(srgb[2]) * 255,
+      b: Number(srgb[3]) * 255,
+      a: srgb[4] === undefined ? 1 : Number(srgb[4]),
+    };
+  }
   const nums = css.match(/-?[\d.]+/g);
   if (!nums || nums.length < 3) throw new Error(`unparseable computed colour: ${css}`);
   return {
