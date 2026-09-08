@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import tomllib
 
-from lifecycle_audit import analyze, embedded_json, timestamp
+from lifecycle_audit import analyze, archived_json, embedded_json, timestamp
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = ROOT / "docs/reports"
@@ -80,7 +80,7 @@ def main():
     args = parser.parse_args()
     if args.command == "collect":
         result = collect(args.store, args.pointer)
-        content = json.dumps(result, ensure_ascii=True, indent=2) + "\n"
+        content = archived_json(result)
     else:
         result = json.loads(args.evidence.read_text())
         findings = json.loads(args.findings.read_text())

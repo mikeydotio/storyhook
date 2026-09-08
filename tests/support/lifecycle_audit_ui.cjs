@@ -54,6 +54,17 @@ async function main() {
     assert.match(await page.locator('#evidence-meta').innerText(), /web:move/);
     assert.match(await page.locator('#evidence-meta').innerText(), /web:user/);
     await page.getByRole('button', { name: 'Close evidence' }).click();
+    await page.locator('#cohort-table a[href="#story-SH-353"]').click();
+    await expect(page.locator('#story-SH-353')).toHaveAttribute('open', '');
+    await page.locator('#story-SH-353').getByText(/source events/).click();
+    await page.locator('#story-SH-353').getByRole('link', { name: 'Event 5079', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.locator('#evidence-context')).toContainText('Historical quotation');
+    await expect(page.locator('#evidence-context')).toContainText('story show SH-353');
+    const frozenEvidence = JSON.parse(await readFile('docs/reports/SH-560-evidence.json', 'utf8'));
+    const original = frozenEvidence.events.find(event => event.global_seq === 5079).payload.description;
+    assert.equal(JSON.parse(await page.locator('#evidence-text').innerText()).description, original);
+    await page.getByRole('button', { name: 'Close evidence' }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(pathToFileURL(resolve('docs/reports/SH-560-lifecycle-audit.html')).href);
     const overflow = await page.evaluate(() => [...document.querySelectorAll('body *')]

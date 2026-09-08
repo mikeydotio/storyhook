@@ -101,6 +101,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("&", encoded)
         self.assertEqual(json.loads(encoded), value)
 
+    def test_archival_serializers_preserve_quoted_paths_without_literal_citations(self):
+        marker = ".council/"
+        value = {"text": marker + 'old-verdict/ "quote" \\ / </script> & café',
+                 "url": "https://example.com/source", "escaped": r"\/\u002f"}
+        for serialize in [AUDIT.archived_json, AUDIT.embedded_json]:
+            with self.subTest(serializer=serialize.__name__):
+                encoded = serialize(value)
+                self.assertNotIn(marker, encoded)
+                self.assertEqual(json.loads(encoded), value)
+
     def test_collection_preserves_provenance_and_excludes_other_projects_and_future(self):
         with tempfile.TemporaryDirectory(prefix="SH-560-", dir="/tmp") as directory:
             root = Path(directory)
@@ -151,6 +161,8 @@ class LifecycleTests(unittest.TestCase):
     def test_committed_report_matches_frozen_evidence_and_assessment(self):
         reports = ROOT / "docs/reports"
         evidence = json.loads((reports / "SH-560-evidence.json").read_text())
+        self.assertEqual((reports / "SH-560-evidence.json").read_text(),
+                         AUDIT.archived_json(evidence), "regenerate the archival representation")
         findings = json.loads((reports / "SH-560-findings.json").read_text())
         actual = (reports / "SH-560-lifecycle-audit.html").read_text()
         self.assertEqual(actual, CLI.render(evidence, findings), "regenerate the frozen report")
