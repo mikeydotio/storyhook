@@ -154,6 +154,8 @@ classify_land() {
     land_output="$2"
     landed_pr="$3"
     landed_tree="$4"
+    landed_base="$5"
+    landed_head="$6"
     case "$land_status" in
     (0)
         jq -n --arg tree "$landed_tree" --arg detail "$land_output" \
@@ -163,7 +165,10 @@ classify_land() {
         jq -n --arg detail "$land_output" '{result:"conflict", detail:$detail}'
         ;;
     (*)
-        die_json "land-pr.sh refused PR #$landed_pr after verification: $land_output"
+        refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)"
+        refresh_status=$?
+        reconcile_land_refusal "$refresh_status" "$refreshed_metadata" \
+            "$landed_pr" "$landed_base" "$landed_head" "$landed_tree" "$land_output"
         ;;
     esac
     exit 0
@@ -173,6 +178,7 @@ recover_merged() {
     recovered_base="$1"
     merge_oid="$2"
     recovered_pr="$3"
+    recovery_context="$4"
     git cat-file -e "$merge_oid^{commit}" 2>/dev/null \
         || die_json "merged PR #$recovered_pr reports $merge_oid, but the refreshed base does not carry its object"
     git merge-base --is-ancestor "$merge_oid" "$recovered_base" \
@@ -188,7 +194,10 @@ recover_merged() {
     gate | full) ;;
     *) die_json "merged PR #$recovered_pr landed tree $tree with insufficient '$tier' receipt" ;;
     esac
-    jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid after verifier restart" \
+    if [ "$recovery_context" = "after landing refusal" ]; then
+        gate_progress_emit_item "land pull request" passed
+    fi
+    jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
         '{result:"merged", tree:$tree, detail:$detail}'
     exit 0
 }
@@ -221,6 +230,74 @@ validate_metadata() {
         || invalid_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
 }
 
+reconcile_land_refusal() {
+    refresh_status="$1"
+    refreshed_metadata="$2"
+    expected_pr="$3"
+    expected_base="$4"
+    expected_head="$5"
+    verified_tree="$6"
+    land_detail="$7"
+
+    [ "$refresh_status" -eq 0 ] \
+        || retry_json "could not refresh PR #$expected_pr after landing refusal: $land_detail"
+    validate_metadata "$refreshed_metadata"
+    [ "$pr" = "$expected_pr" ] \
+        || invalid_json "landing refresh returned PR #$pr for submitted PR #$expected_pr"
+    case "$state" in
+    OPEN | MERGED) ;;
+    *) invalid_json "PR #$pr is $state after landing refusal, not OPEN or MERGED" ;;
+    esac
+    [ "$base" = "$expected_base" ] \
+        || invalid_json "PR #$pr changed base branch from $expected_base to $base after verification"
+    [ "$reported_head" = "$expected_head" ] \
+        || invalid_json "PR #$pr changed head from $expected_head to $reported_head after verification"
+
+    base_ref="refs/remotes/origin/$base"
+    head_ref="refs/remotes/origin/pr/$pr"
+    if [ "$state" = MERGED ]; then
+        merge_oid="$(printf '%s' "$refreshed_metadata" | jq -er '.mergeCommit.oid // empty')" \
+            || die_json "merged PR #$pr returned no merge commit after landing refusal"
+        git fetch -q origin "+refs/heads/$base:$base_ref" \
+            || retry_json "could not refresh origin/$base for merged PR #$pr after landing refusal"
+        recover_merged "$base_ref" "$merge_oid" "$pr" "after landing refusal"
+    fi
+
+    git fetch -q origin \
+        "+refs/heads/$base:$base_ref" \
+        "+refs/pull/$pr/head:$head_ref" \
+        || retry_json "could not refresh origin/$base and PR #$pr after landing refusal"
+    refreshed_head="$(git rev-parse "$head_ref" 2>/dev/null)" \
+        || die_json "could not resolve refreshed PR #$pr after landing refusal"
+    [ "$refreshed_head" = "$expected_head" ] \
+        || invalid_json "PR #$pr head moved from $expected_head to $refreshed_head while landing was reconciled"
+
+    refreshed_preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "$base_ref" "$head_ref" 2>&1)"
+    refreshed_status=$?
+    refreshed_tree="$(printf '%s\n' "$refreshed_preflight" | head -n1)"
+    case "$refreshed_status" in
+    (2)
+        jq -n --arg detail "$refreshed_preflight" '{result:"conflict", detail:$detail}'
+        ;;
+    (0)
+        if [ "$refreshed_tree" != "$verified_tree" ]; then
+            retry_json "PR #$pr base advanced after tree $verified_tree passed; refreshed tree $refreshed_tree is already certified and will be landed by the next bounded attempt. $land_detail"
+        fi
+        retry_json "land-pr.sh refused PR #$pr while its verified tree $verified_tree remains current and certified: $land_detail"
+        ;;
+    (1)
+        if [ "$refreshed_tree" != "$verified_tree" ]; then
+            retry_json "PR #$pr base advanced after tree $verified_tree passed; refreshed tree $refreshed_tree requires verification by the next bounded attempt. $land_detail"
+        fi
+        die_json "PR #$pr still resolves to verified tree $verified_tree, but that tree no longer has a qualifying release-gate receipt after landing refusal: $refreshed_preflight"
+        ;;
+    (*)
+        die_json "merge preflight returned unexpected status $refreshed_status while reconciling PR #$pr: $refreshed_preflight"
+        ;;
+    esac
+    exit 0
+}
+
 # Real-Git gate seam: exercise preparation, command exit and restoration
 # classification without substituting GitHub or the speculative executor.
 if [ "${1:-}" = --run-gate ]; then
@@ -250,7 +327,15 @@ fi
 if [ "${1:-}" = --classify-land ]; then
     [ "$#" -eq 5 ] \
         || die_json "private usage: verify-pr.sh --classify-land <status> <detail> <pr-number> <tree>"
-    classify_land "$2" "$3" "$4" "$5"
+    classify_land "$2" "$3" "$4" "$5" "" ""
+fi
+
+# Deterministic post-refusal seam. Tests supply GitHub's refreshed wire shape;
+# the function fetches and reasons over real refs and production receipts.
+if [ "${1:-}" = --reconcile-land-refusal ]; then
+    [ "$#" -eq 8 ] \
+        || die_json "private usage: verify-pr.sh --reconcile-land-refusal <refresh-status> <metadata> <pr-number> <base-name> <head-oid> <verified-tree> <detail>"
+    reconcile_land_refusal "$2" "$3" "$4" "$5" "$6" "$7" "$8"
 fi
 
 # Real-Git recovery seam. The public path refreshes GitHub's base before
@@ -258,7 +343,7 @@ fi
 if [ "${1:-}" = --recover-merged ]; then
     [ "$#" -eq 4 ] \
         || die_json "private usage: verify-pr.sh --recover-merged <base-ref> <merge-oid> <pr-number>"
-    recover_merged "$2" "$3" "$4"
+    recover_merged "$2" "$3" "$4" "after verifier restart"
 fi
 
 # Real-Git verifier repair seam. Production enters the same function before
@@ -295,7 +380,7 @@ if [ "$state" = MERGED ]; then
         || die_json "merged PR #$pr returned no merge commit"
     git fetch -q origin "+refs/heads/$base:$base_ref" \
         || retry_json "could not refresh origin/$base for merged PR #$pr"
-    recover_merged "$base_ref" "$merge_oid" "$pr"
+    recover_merged "$base_ref" "$merge_oid" "$pr" "after verifier restart"
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
@@ -342,4 +427,4 @@ land_status=$?
 gate_progress_emit_item "land pull request" \
     "$([ "$land_status" = 0 ] && echo passed || echo failed)" \
     "seconds=$(( $(date +%s) - _land_start ))"
-classify_land "$land_status" "$land_output" "$pr" "$tree"
+classify_land "$land_status" "$land_output" "$pr" "$tree" "$base" "$reported_head"
