@@ -1,7 +1,8 @@
-# Story attachments: storage, CLI, authenticated reads, and browser uploads
+# Story attachments: storage, transport, and dashboard viewer
 
 Design of record for **SH-315** (the epic), foundation child **SH-387**,
-byte-serving child **SH-388**, and upload transport child **SH-389**. Written
+byte-serving child **SH-388**, upload transport child **SH-389**, and drawer/viewer
+child **SH-390**. Written
 after implementation, for the reason [`dashboard-dispatch.md`](dashboard-dispatch.md) and
 [`responsive-dashboard.md`](responsive-dashboard.md) give: sharper against the actual code
 than against a proposal for it.
@@ -355,3 +356,38 @@ cookie spec passed. `cargo fmt --all -- --check`, `git diff --check`, and
 fixture used Node's API client, which could not resolve Chromium's test-only
 hostname; it now reads the project slug from the dashboard's actual catalog
 response, keeping the test wholly on the browser's configured origin.
+
+
+## Drawer and modal viewer (SH-390)
+
+Attachments appear below the description, in addition order, as a horizontally
+scrollable strip of native buttons with contained lazy-loaded thumbnails and
+text filenames. An empty list has no section. The existing same-origin byte
+route supplies thumbnails and the viewer; no URL, token, thumbnail blob, schema,
+or CSP additions are required.
+
+The viewer shows one contained image, its filename, loading/error status, and
+Close. Long filenames use an ellipsis, with the full text retained in the dialog
+label and hover tooltip. It participates in the existing backdrop/overlay registry. Close,
+backdrop, and topmost Escape restore focus to the invoking thumbnail (its current
+replacement if a refresh replaced the section), or to the drawer if it vanished.
+Escape leaves story detail open. Existing notice-layer keyboard behavior remains.
+A fresh image node per opening owns its callbacks; closing invalidates them and
+removes the source, so delayed events cannot overwrite a later selection.
+Opening is synchronous, and shared backdrop helpers cancel obsolete fade timers.
+
+The board's live story metadata owns attachments. An absent board story has no
+attachments; retained detail metadata cannot resurrect deleted content. Attachment-only board changes
+trigger drawer reconciliation independently of card-animation fields. Unrelated
+refreshes preserve thumbnail nodes and an open viewer. Removing the selected
+attachment, closing detail, or leaving its story/project closes the viewer.
+
+Acceptance: real stored images decode on Chromium and WebKit; filenames remain
+text; keyboard activation, modal focus, all dismissal paths, live addition and
+removal, section replacement, errors/retry, delayed responses, rapid reopening,
+and viewport containment work through production UI. Rust structural checks pin
+the named dialog and shared overlay lifecycle. Only new and directly impacted
+tests run in this lane; the centralized verifier runs the full suite.
+
+Upload controls, paste, drag/drop, remote URLs, zoom, and gallery navigation are
+outside SH-390. SH-391, SH-392, and SH-393 retain their planned scope.
