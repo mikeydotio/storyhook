@@ -39,8 +39,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::GraphMode;
 use crate::domain::{
     self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState, compute_display_state,
-    compute_integrity_issues, compute_progress, derive_family_relationships, has_children,
-    is_claimable, is_ready, last_activity_type, parse_duration,
+    compute_integrity_issues, compute_progress, derive_family_relationships, is_claimable,
+    is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -408,8 +408,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// The first result is ready now. Each later result is what becomes
     /// executable after every preceding result virtually completes, so an
     /// open dependency constrains order instead of making its successor
-    /// permanently absent (SH-450). Leaf stories only: a parent whose children
-    /// are ready is not itself work. Every available frontier is sorted by
+    /// permanently absent (SH-450). Typed epics are folders; ordinary parents
+    /// retain their own executable work. Every available frontier is sorted by
     /// [`domain::ready_order`]: own priority, parent epic priority, then story
     /// number — a total order, so
     /// asking twice with nothing changed in between always returns the same
@@ -1279,7 +1279,7 @@ fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>
 
 /// The execution queue `story next --count N` hands out, in full and in order.
 ///
-/// Kahn's topological traversal begins with every immediately claimable leaf.
+/// Kahn's topological traversal begins with every immediately claimable story.
 /// Popping one node virtually completes it: each successor loses that open
 /// predecessor and joins the frontier once none remain. The frontier's key is
 /// the exact [`domain::ready_order`] tuple, so priority is reconsidered every
@@ -1333,7 +1333,6 @@ fn execution_queue(
         .iter()
         .filter(|view| {
             is_claimable(&view.story, &no_open_blockers, active)
-                && !has_children(&view.story)
                 && !domain::is_human_only(&view.story)
                 && phase.is_none_or(|phase| view.story.labels.contains(&format!("phase:{phase}")))
                 && epic_descendants.is_none_or(|ids| ids.contains(&view.story.id))
