@@ -8,14 +8,16 @@ import {
 } from "./support";
 
 /**
- * SH-549's browser contract. The route clones real story views so the test
- * replaces only verifier status; the Rust API tests own the wire producer.
+ * SH-549's browser contract, extended for SH-603 supersession. The route
+ * clones real story views so the test replaces only verifier status; the Rust
+ * API tests own the wire producer.
  */
 
 const RUNNING_TITLE = "SH-549 active low priority";
 const ACTIVITY_TITLE = "SH-589 active lock wait";
 const QUEUED_TITLE = "SH-549 queued high priority";
 const STARTING_TITLE = "SH-549 active starting";
+const RESUBMITTED_TITLE = "SH-603 resubmitted generation";
 const MOVED_TITLE = "SH-549 moved out of verifying";
 
 test.beforeEach(async ({ page }) => {
@@ -25,6 +27,13 @@ test.beforeEach(async ({ page }) => {
 
 type Verification =
   | { status: "queued"; wait_seconds: number; position: number }
+  | {
+      status: "superseding";
+      generation: number;
+      superseded_generation: number;
+      wait_seconds: number;
+      active_elapsed_seconds: number;
+    }
   | {
       status: "running";
       elapsed_seconds: number;
@@ -48,6 +57,18 @@ async function injectVerificationCards(page: Page, slug: string): Promise<void> 
         state?: string;
         verification: Verification;
       }> = [
+        {
+          id: "SH-94906",
+          title: RESUBMITTED_TITLE,
+          priority: "high",
+          verification: {
+            status: "superseding",
+            generation: 123,
+            superseded_generation: 120,
+            wait_seconds: 30,
+            active_elapsed_seconds: 420,
+          },
+        },
         {
           id: "SH-94901",
           title: RUNNING_TITLE,
@@ -148,6 +169,17 @@ test("cards distinguish active ownership from priority-sorted waiting work", asy
     /Verifying · 20m 4s total · waiting for gate lock 8m 16s$/,
   );
   await expect(queued).toHaveAttribute("aria-label", /Queued · 1h 4m · position 1/);
+  const resubmitted = card(page, RESUBMITTED_TITLE);
+  await expect(resubmitted.locator(".verification-chip")).toHaveText(
+    /^Resubmitted · generation 123 reserved · generation 120 still running · 7m \d+s elapsed · \d+s waiting$/,
+  );
+  await expect(resubmitted.locator(".verification-chip")).toHaveClass(
+    /verification-chip-superseding/,
+  );
+  await expect(resubmitted).toHaveAttribute(
+    "aria-label",
+    /Resubmitted · generation 123 reserved · generation 120 still running · 7m \d+s elapsed · \d+s waiting$/,
+  );
   const moved = page.locator('.column[data-state="todo"] .card', { hasText: MOVED_TITLE });
   await expect(moved.locator(".verification-chip")).toHaveCount(0);
   await expect(moved).not.toHaveAttribute("aria-label", /Queued/);
