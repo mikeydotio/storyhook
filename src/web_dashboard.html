@@ -860,6 +860,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    own `border-radius`); `overflow-x: auto` is what makes the far columns
    reachable by a horizontal scroll instead of gone. */
 .list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; margin-top: 0.75rem; contain: layout; }
+.list-desktop { min-width: 0; }
 table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 thead th {
   text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
@@ -879,22 +880,80 @@ tbody tr:hover { background: var(--bg-sunken); }
 tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
 .col-order { font-family: var(--mono); white-space: nowrap; text-align: right; color: var(--fg-muted); font-size: 0.75rem; }
-.col-title { white-space: normal; overflow-wrap: anywhere; }
+.col-title { min-inline-size: 20ch; white-space: normal; overflow-wrap: anywhere; }
 .list-labels { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
+
+/* SH-614: the phone list is a separate semantic presentation of the same
+   sorted collection. `hidden`, synchronized in script at the 768px media
+   boundary, keeps the inactive table/list out of both focus order and the
+   accessibility tree. These rules therefore describe only the active phone
+   surface; no desktop override has to undo them. */
+.mobile-list { min-width: 0; margin-top: 0.75rem; }
+.mobile-sort-controls {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem; margin-bottom: 0.75rem;
+}
+.mobile-sort-control { display: grid; gap: 0.25rem; min-width: 0; color: var(--fg-muted); font-size: 0.8125rem; font-weight: 600; }
+.mobile-sort-control select {
+  width: 100%; min-width: 0; min-height: var(--tap-min); padding: 0.4rem 1.75rem 0.4rem 0.5rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-raised);
+  font-size: var(--control-font-md);
+}
+.mobile-list-body { display: grid; gap: 0.75rem; list-style: none; min-width: 0; }
+.mobile-story-row {
+  min-width: 0; padding: 0.75rem; overflow: hidden; background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.mobile-story-title {
+  display: block; width: 100%; min-width: 0; min-height: var(--tap-min); padding: 0;
+  border: 0; background: transparent; color: var(--fg); text-align: left;
+  font-size: 1rem; font-weight: 600; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+.mobile-story-primary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem;
+  min-width: 0; margin-top: 0.5rem; font-size: 0.8125rem;
+}
+.mobile-story-identity { display: inline-flex; align-items: center; gap: 0.25rem; min-width: 0; }
+.mobile-story-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
+.mobile-story-type { color: var(--fg-muted); overflow-wrap: anywhere; }
+.mobile-story-priority { display: inline-flex; align-items: center; }
+/* Width, not pointer precision, owns mobile-list visibility. Keep its action
+   rendered until the responsive synchronizer transfers focus and hides the
+   whole mobile presentation. */
+.mobile-story-actions {
+  display: inline-flex; align-items: center; justify-content: center; margin-left: auto;
+  min-width: var(--tap-min); min-height: var(--tap-min); border: 0;
+  border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted);
+}
+.mobile-story-actions:hover { color: var(--fg); background: var(--bg-sunken); }
+.mobile-story-details-btn {
+  display: inline-flex; align-items: center; gap: 0.375rem; min-height: var(--tap-min);
+  margin-top: 0.25rem; border: 0; background: transparent; color: var(--fg-muted);
+  font-size: 0.8125rem; font-weight: 600;
+}
+.mobile-story-details-btn:hover { color: var(--fg); }
+.mobile-story-details {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.75rem;
+  min-width: 0; padding-top: 0.5rem; border-top: 1px solid var(--border); font-size: 0.8125rem;
+}
+.mobile-story-details dt { color: var(--fg-muted); font-weight: 600; }
+.mobile-story-details dd { min-width: 0; overflow-wrap: anywhere; }
+.mobile-story-details .list-labels { min-width: 0; }
 /* SH-235: list-row actions remain coarse-pointer-only -- hidden entirely on
    a fine pointer (`display: none` on a <td>/<th> removes the actions column
    from the row's layout, not just its paint, so desktop's column count
    and widths stay exactly what they were). */
 .col-actions { display: none; width: 1%; white-space: nowrap; text-align: right; cursor: default; }
 .row-actions-btn {
-  display: none; border: none; background: none; color: var(--fg-muted);
+  border: none; background: none; color: var(--fg-muted);
   font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
 }
+.col-actions .row-actions-btn { display: none; }
 .row-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
 @media (pointer: coarse) {
   .col-actions { display: table-cell; }
-  .row-actions-btn {
+  .col-actions .row-actions-btn {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: var(--tap-min); min-height: var(--tap-min);
   }
@@ -1026,6 +1085,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); resize: vertical; font-family: inherit;
 }
+/* SH-392: applied only while a DataTransfer advertises files. Card drags carry
+   text/plain and never enter either state, so the board's existing move
+   affordance remains the sole feedback for them. */
+.attachment-drop-target { outline: 2px solid var(--accent); outline-offset: 2px; background: var(--accent-soft); }
+.attachment-drop-refused { outline: 2px solid var(--danger); outline-offset: 2px; cursor: not-allowed; }
 .description-field {
   /* max(), not a bare token -- see .field textarea's own comment above:
      this keeps the taller of the field's original 40px rest height and
@@ -1697,23 +1761,47 @@ svg.ctxmenu-disabled-warning {
 
   <span class="sr-only" id="list-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
   <main class="list" id="list-view" hidden>
-    <div class="list-table-wrap">
-      <table aria-describedby="list-kbd-hint">
-        <thead>
-          <tr>
-            <th data-col="id">ID <span class="sort-arrow" id="sort-id"></span></th>
-            <th data-col="order">Order <span class="sort-arrow" id="sort-order"></span></th>
-            <th data-col="title">Title <span class="sort-arrow" id="sort-title"></span></th>
-            <th data-col="state">State <span class="sort-arrow" id="sort-state"></span></th>
-            <th data-col="priority">Priority <span class="sort-arrow" id="sort-priority"></span></th>
-            <th data-col="labels">Labels</th>
-            <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
-            <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
-            <th class="col-actions"><span class="sr-only">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody id="list-body"></tbody>
-      </table>
+    <div class="list-desktop" id="list-desktop">
+      <div class="list-table-wrap">
+        <table aria-describedby="list-kbd-hint">
+          <thead>
+            <tr>
+              <th data-col="id">ID <span class="sort-arrow" id="sort-id"></span></th>
+              <th data-col="order">Order <span class="sort-arrow" id="sort-order"></span></th>
+              <th data-col="title">Title <span class="sort-arrow" id="sort-title"></span></th>
+              <th data-col="state">State <span class="sort-arrow" id="sort-state"></span></th>
+              <th data-col="priority">Priority <span class="sort-arrow" id="sort-priority"></span></th>
+              <th data-col="labels">Labels</th>
+              <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
+              <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
+              <th class="col-actions"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="list-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="mobile-list" id="mobile-list" hidden>
+      <div class="mobile-sort-controls" aria-label="List sorting controls">
+        <label class="mobile-sort-control">Sort
+          <select id="mobile-sort-column" aria-label="Sort stories by">
+            <option value="id">ID</option>
+            <option value="order">Order</option>
+            <option value="title">Title</option>
+            <option value="state">State</option>
+            <option value="priority">Priority</option>
+            <option value="assignee">Assignee</option>
+            <option value="updated">Updated</option>
+          </select>
+        </label>
+        <label class="mobile-sort-control">Direction
+          <select id="mobile-sort-direction" aria-label="Sort direction">
+            <option value="1">Ascending</option>
+            <option value="-1">Descending</option>
+          </select>
+        </label>
+      </div>
+      <ul class="mobile-list-body" id="mobile-list-body" aria-label="Stories" aria-describedby="list-kbd-hint"></ul>
     </div>
   </main>
 
@@ -2614,6 +2702,11 @@ svg.ctxmenu-disabled-warning {
       comments: sectionOpenDefault("comments", true),
       referencedBy: sectionOpenDefault("referencedBy", false)
     },
+    // SH-614: project-scoped, page-session-only mobile metadata disclosures.
+    // Unlike drawer section preferences, these answer a transient question
+    // about one story in one project and therefore belong in neither web
+    // storage nor the next project visited in this tab.
+    mobileListDetails: Object.create(null),
     drawerId: null,
     drawerDetail: null,
     pending: {},
@@ -3151,10 +3244,11 @@ svg.ctxmenu-disabled-warning {
   // API
   // ============================================================
 
-  /** Issues an authenticated request. Always sets the CSRF header, JSON
-   * content type, and the daemon's bearer token; resolves with the parsed
-   * body on 2xx, rejects with {status, message} otherwise. `opts.headers`
-   * adds extra headers; `opts.timeoutMs` overrides the default.
+  /** Issues an authenticated request. Always sets the CSRF header and sends
+   * JSON by default; `opts.rawBody` sends the supplied body unchanged with the
+   * attachment transport's octet-stream content type instead. Resolves with
+   * the parsed body on 2xx and rejects with {status, message} otherwise.
+   * `opts.headers` adds extra headers; `opts.timeoutMs` overrides the default.
    *
    * The default itself is method-derived (SH-312): a GET keeps the original
    * 10s (reads have no server-side write to wait out, and every hot read
@@ -3197,7 +3291,7 @@ svg.ctxmenu-disabled-warning {
         var xhr = new XMLHttpRequest();
         xhr.open(method, path, true);
         xhr.setRequestHeader("X-Storyhook", "1");
-        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("Content-Type", opts.rawBody ? "application/octet-stream" : "application/json");
         if (opts.headers) {
           Object.keys(opts.headers).forEach(function(name) {
             xhr.setRequestHeader(name, opts.headers[name]);
@@ -3227,7 +3321,7 @@ svg.ctxmenu-disabled-warning {
         };
         xhr.onerror = function() { refuse({ status: 0, message: "network error" }); };
         xhr.ontimeout = function() { refuse({ status: 0, message: "request timed out" }); };
-        xhr.send(body ? JSON.stringify(body) : null);
+        xhr.send(opts.rawBody ? body : (body ? JSON.stringify(body) : null));
       }
       attempt();
     });
@@ -7699,6 +7793,14 @@ svg.ctxmenu-disabled-warning {
     measureNoticeBands();
   }
 
+  /** Owns the shared 768px boundary. List focus transfers before the chrome
+   * moves controls or dismisses transient surfaces, while its invoker is
+   * still available to describe exactly which responsive peer should take it. */
+  function syncResponsivePresentation() {
+    syncListPresentation(true);
+    syncAdaptiveChrome();
+  }
+
   var openFilterDropdown = null;
 
   /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
@@ -8023,6 +8125,8 @@ svg.ctxmenu-disabled-warning {
    * card/row elements, delegated from one listener on `container` (bound
    * once in `bindShell`) rather than one per card/row -- consistent with
    * every card/row already being reconciled in place rather than rebuilt.
+   * Native button rows keep their own Enter/Space click activation; the
+   * delegated activation arm exists only for non-native card/row elements.
    * `move(current, key)` returns the next node for an arrow/Home/End key,
    * or a falsy value to leave focus where it is (e.g. an edge already
    * reached). Moving focus is all this does -- `next.focus()` itself is
@@ -8035,6 +8139,7 @@ svg.ctxmenu-disabled-warning {
       var current = e.target.closest && e.target.closest(selector);
       if (!current || !container.contains(current)) return;
       if (e.key === "Enter" || e.key === " ") {
+        if (current.matches("button")) return;
         e.preventDefault();
         openDrawer(current.dataset.id);
         return;
@@ -8091,7 +8196,10 @@ svg.ctxmenu-disabled-warning {
    * Up/Down/Home/End apply -- there is no column axis for Left/Right to
    * cross. */
   function listRovingMove(current, key) {
-    var rows = Array.prototype.slice.call($("list-body").querySelectorAll("tr[data-id]"));
+    var mobile = current.matches(".mobile-story-title");
+    var root = mobile ? $("mobile-list-body") : $("list-body");
+    var selector = mobile ? ".mobile-story-title[data-id]" : "tr[data-id]";
+    var rows = Array.prototype.slice.call(root.querySelectorAll(selector));
     var idx = rows.indexOf(current);
     if (key === "ArrowUp") return rows[idx - 1];
     if (key === "ArrowDown") return rows[idx + 1];
@@ -10132,27 +10240,77 @@ svg.ctxmenu-disabled-warning {
   // RENDER: LIST
   // ============================================================
 
-  /** Keyed reconcile, mirroring the board's: existing `<tr>`s are reused by
-   * `data-id` (`populateListRow`) and reordered via `appendChild` rather
-   * than torn down and rebuilt, so a changed row's flash animation
-   * (`applyRowFlash`) survives the render that triggers it. No FLIP here —
-   * a table row sliding vertically past its neighbors reads as noise, not
-   * signal, in a way a kanban card crossing columns doesn't; a flash is
-   * enough to say "this one changed." */
-  function renderList(stories, anims) {
-    var body = $("list-body");
-    var focusedId = focusedCardId(body, "tr[data-id]");
-    var ready = readySet(), blocked = blockedSet();
+  function clearMobileListDetails() {
+    state.mobileListDetails = Object.create(null);
+  }
 
+  /** Captures the focused List story plus the control role needed to transfer
+   * it into the other responsive presentation. */
+  function listFocusDescriptor() {
+    var active = document.activeElement;
+    if (!active || !$("list-view").contains(active)) return null;
+    var owner = active.closest && active.closest("[data-id]");
+    if (!owner) return null;
+    return {
+      id: owner.dataset.id,
+      role: active.closest(".row-actions-btn") ? "actions"
+        : active.closest(".mobile-story-details-btn") ? "details"
+          : "story"
+    };
+  }
+
+  function listFocusTarget(descriptor, mobile) {
+    if (!descriptor) return null;
+    var root = mobile ? $("mobile-list-body") : $("list-body");
+    var owner = root.querySelector('[data-id="' + descriptor.id + '"]');
+    if (!owner) return null;
+    if (descriptor.role === "actions") {
+      var actions = owner.querySelector(".row-actions-btn");
+      if (actions && actions.getClientRects().length) return actions;
+      return mobile ? owner.querySelector(".mobile-story-title") : owner;
+    }
+    if (mobile && descriptor.role === "details") {
+      return owner.querySelector(".mobile-story-details-btn") || owner.querySelector(".mobile-story-title");
+    }
+    return mobile ? owner.querySelector(".mobile-story-title") : owner;
+  }
+
+  /** Makes exactly one responsive List presentation active. When invoked by
+   * the media-query change event, focus follows the same story/control into
+   * the newly exposed DOM instead of remaining inside a hidden copy. */
+  function syncListPresentation(transferFocus) {
+    var descriptor = transferFocus ? listFocusDescriptor() : null;
+    var mobile = compactHeaderQuery.matches;
+    $("list-desktop").hidden = mobile;
+    $("mobile-list").hidden = !mobile;
+
+    var body = mobile ? $("mobile-list-body") : $("list-body");
+    var selector = mobile ? ".mobile-story-title[data-id]" : "tr[data-id]";
+    syncRoving(body, selector, null);
+
+    if (!descriptor || state.screen !== "repo" || state.view !== "list") return;
+    var target = listFocusTarget(descriptor, mobile);
+    if (!target) target = body.querySelector(selector + '[tabindex="0"]');
+    if (!target) return;
+    target.focus();
+    window.requestAnimationFrame(function() {
+      var inactive = mobile ? $("list-desktop") : $("mobile-list");
+      var active = document.activeElement;
+      if (state.screen !== "repo" || state.view !== "list"
+          || compactHeaderQuery.matches !== mobile || !target.isConnected
+          || (active !== document.body && !inactive.contains(active))) return;
+      target.focus();
+    });
+  }
+
+  /** The List view's one ordering function. Both responsive presentations
+   * receive this exact array, so mobile controls and desktop headers cannot
+   * disagree through duplicated comparator logic (SH-614). */
+  function sortedListStories(stories) {
     // No column here had a tiebreak before SH-336: a tie fell through to
     // whatever order `Array.prototype.sort`'s stability happened to preserve
-    // from the server's response, which is not an order this file specifies
-    // or tests. The "Updated" column is the board's "Modified" under another
-    // name and gets the same exact tiebreak, `compareWriteOrder`; every
-    // other column's residual key is canonical story-number order (SH-64),
-    // which does not reverse with `dir` any more than the board's
-    // `"priority"` branch does.
-    var sorted = stories.slice().sort(function(a, b) {
+    // from the server's response. Every residual order is now explicit.
+    return stories.slice().sort(function(a, b) {
       var col = state.sort.col, dir = state.sort.dir;
       var sa = a.story, sb = b.story;
       var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
@@ -10177,10 +10335,30 @@ svg.ctxmenu-disabled-warning {
       }
       return col === "updated" ? byNumber * dir : byNumber;
     });
+  }
+
+  /** Renders both keyed List presentations from one sorted collection, then
+   * exposes only the presentation matching the current media boundary. */
+  function renderList(stories, anims) {
+    var sorted = sortedListStories(stories);
 
     document.querySelectorAll(".sort-arrow").forEach(function(a) { a.textContent = ""; });
     var arrow = $("sort-" + state.sort.col);
     if (arrow) arrow.textContent = state.sort.dir === 1 ? "▲" : "▼";
+    $("mobile-sort-column").value = state.sort.col;
+    $("mobile-sort-direction").value = String(state.sort.dir);
+
+    renderDesktopList(sorted, anims);
+    renderMobileList(sorted, anims);
+    syncListPresentation(false);
+  }
+
+  /** Keyed desktop-table reconcile, retaining the SH-197/SH-425 DOM-identity
+   * contract for rows already in the correct position. */
+  function renderDesktopList(sorted, anims) {
+    var body = $("list-body");
+    var focusedId = focusedCardId(body, "tr[data-id]");
+    var ready = readySet(), blocked = blockedSet();
 
     var reduceMotion = prefersReducedMotion();
     var existingById = {};
@@ -10217,7 +10395,7 @@ svg.ctxmenu-disabled-warning {
     // List rows are removed immediately above (no exit animation, unlike
     // the board), so -- unlike `renderBoard` -- there is no deferred
     // removal path that needs its own reclaim hook; this one call covers it.
-    syncRoving(body, "tr[data-id]", focusedId);
+    if (!$("list-desktop").hidden) syncRoving(body, "tr[data-id]", focusedId);
   }
 
   function buildListRow(v, ready, blocked) {
@@ -10338,6 +10516,147 @@ svg.ctxmenu-disabled-warning {
     }
   }
 
+  /** Keyed mobile-list reconcile. The title button, rather than the `<li>`,
+   * owns roving focus; the list item keeps native list semantics while its
+   * three actions remain sibling native buttons (SH-614 decision D1). */
+  function renderMobileList(sorted, anims) {
+    var body = $("mobile-list-body");
+    var focusedId = focusedCardId(body, ".mobile-story-title[data-id]");
+    var ready = readySet(), blocked = blockedSet();
+    var reduceMotion = prefersReducedMotion();
+    var existingById = {};
+    Array.prototype.forEach.call(body.children, function(item) {
+      if (item.dataset && item.dataset.id) existingById[item.dataset.id] = item;
+    });
+
+    var claimed = {};
+    var cursor = body.firstElementChild;
+    sorted.forEach(function(v) {
+      var id = v.story.id;
+      claimed[id] = true;
+      var item = existingById[id];
+      if (item) populateMobileListItem(item, v, ready, blocked);
+      else item = buildMobileListItem(v, ready, blocked);
+      if (!reduceMotion && anims) applyRowFlash(item, id, anims);
+      if (item === cursor) cursor = cursor.nextElementSibling;
+      else body.insertBefore(item, cursor);
+    });
+
+    Object.keys(existingById).forEach(function(id) {
+      if (!claimed[id]) detach(existingById[id]);
+    });
+    if (!$("mobile-list").hidden) {
+      syncRoving(body, ".mobile-story-title[data-id]", focusedId);
+    }
+  }
+
+  function buildMobileListItem(v, ready, blocked) {
+    var id = v.story.id;
+    var item = el("li", { class: "mobile-story-row", dataset: { id: id } }, []);
+    item.addEventListener("contextmenu", function(e) {
+      e.preventDefault();
+      var current = findStory(id);
+      var invoker = e.target.closest && e.target.closest("button");
+      if (current) openStoryMenu(e, current, invoker || item);
+    });
+    populateMobileListItem(item, v, ready, blocked);
+    return item;
+  }
+
+  /** Adds one labelled mobile Details value. A node is accepted so Labels can
+   * retain the shared chip builder rather than flattening its semantics. */
+  function appendMobileDetail(details, label, value) {
+    details.appendChild(el("dt", {}, [label]));
+    details.appendChild(el("dd", {}, [value]));
+  }
+
+  /** Builds the mobile item off-tree and commits only changed output, the same
+   * listener-preserving SH-425 rule used by the desktop table row. */
+  function populateMobileListItem(item, v, ready, blocked) {
+    var st = v.story;
+    var id = st.id;
+    var expanded = !!state.mobileListDetails[id];
+    var engineLane = engineLaneForStory(id);
+    var engineLaneDesc = engineLaneDescription(engineLane);
+    var shownState = v.display_state || st.state;
+    var promoted = shownState !== st.state;
+    var order = nextRank(id);
+    var updated = (st.updated_at || "").slice(0, 10) || "—";
+    var detailsId = "mobile-story-details-" + id;
+    item.style.borderLeft = blocked[id] ? "3px solid var(--danger)" : "";
+
+    var next = el("li", {}, []);
+    var title = el("button", {
+      type: "button", class: "mobile-story-title", dataset: { id: id }, tabIndex: -1,
+      "aria-label": st.title + (engineLaneDesc ? " — " + engineLaneDesc : ""),
+      onClick: function() { openDrawer(id); }
+    }, [st.title, buildEngineLaneChip(engineLane)]);
+    next.appendChild(title);
+
+    var badge = buildTypeBadge(st.story_type);
+    var identity = el("span", { class: "mobile-story-identity" }, []);
+    if (badge) identity.appendChild(badge);
+    identity.appendChild(el("span", { class: "mobile-story-type" }, [st.story_type || "none"]));
+    identity.appendChild(el("span", { class: "mobile-story-id" }, [id]));
+
+    var actions = el("button", {
+      type: "button", class: "mobile-story-actions row-actions-btn",
+      "aria-label": "Actions for " + id,
+      onClick: function(e) {
+        e.stopPropagation();
+        var current = findStory(id);
+        if (current) openStoryMenu(e, current, actions);
+      }
+    }, [svgIcon([
+      ["circle", { cx: "5", cy: "12", r: "2" }],
+      ["circle", { cx: "12", cy: "12", r: "2" }],
+      ["circle", { cx: "19", cy: "12", r: "2" }]
+    ], { fill: "currentColor", stroke: "none" })]);
+    next.appendChild(el("div", { class: "mobile-story-primary" }, [
+      identity,
+      buildStatePill(v),
+      el("span", { class: "mobile-story-priority" }, [priorityDot(st.priority)]),
+      actions
+    ]));
+
+    var detailsButton = el("button", {
+      type: "button", class: "mobile-story-details-btn",
+      "aria-label": "Details for " + id, "aria-expanded": String(expanded),
+      "aria-controls": detailsId,
+      onClick: function(e) {
+        e.stopPropagation();
+        if (state.mobileListDetails[id]) delete state.mobileListDetails[id];
+        else state.mobileListDetails[id] = true;
+        renderView();
+        var replacement = item.querySelector(".mobile-story-details-btn");
+        if (replacement) replacement.focus();
+      }
+    }, [disclosureIcon(expanded ? "down" : "right"), "Details"]);
+    next.appendChild(detailsButton);
+
+    var details = el("dl", { id: detailsId, class: "mobile-story-details", hidden: !expanded }, []);
+    appendMobileDetail(details, "Order", order === Infinity ? "—" : String(order + 1));
+    appendMobileDetail(details, "Labels", (st.labels || []).length ? labelChips(st.labels) : "—");
+    appendMobileDetail(details, "Assignee", st.assignee ? memberName(st.assignee) : "—");
+    appendMobileDetail(details, "Updated", updated);
+    appendMobileDetail(details, "Type", st.story_type || "none");
+    appendMobileDetail(
+      details,
+      "State details",
+      promoted ? shownState + " (recorded state: " + st.state + ")" : shownState
+    );
+    appendMobileDetail(details, "Blocked", blocked[id] ? "Yes" : "No");
+    appendMobileDetail(details, "Full Auto", engineLaneDesc || "—");
+    next.appendChild(details);
+
+    var rendered = next.innerHTML;
+    if (item.dataset.rendered !== rendered) {
+      clear(item);
+      while (next.firstChild) item.appendChild(next.firstChild);
+      item.dataset.rendered = rendered;
+    }
+  }
+
   /** Briefly highlights a row that either just appeared or has a field
    * change recorded in `anims` — a single shared visual treatment, unlike
    * the board's per-field-type flash colors, since a table row has no
@@ -10391,6 +10710,16 @@ svg.ctxmenu-disabled-warning {
         savePersistedFilters();
         renderView();
       });
+    });
+    $("mobile-sort-column").addEventListener("change", function() {
+      state.sort.col = this.value;
+      savePersistedFilters();
+      renderView();
+    });
+    $("mobile-sort-direction").addEventListener("change", function() {
+      state.sort.dir = Number(this.value);
+      savePersistedFilters();
+      renderView();
     });
   }
 
@@ -10660,6 +10989,140 @@ svg.ctxmenu-disabled-warning {
   /** A cookie-authenticated, same-origin URL with no token in the address. */
   function attachmentUrl(repoId, storyId, attachmentId) {
     return repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments/" + encodeURIComponent(attachmentId);
+  }
+
+  /** Whether a drag advertises at least one file without trying to read its
+   * protected payload. Browsers expose the bytes only at drop time; items is
+   * the precise hover-time signal and the literal Files type is its older
+   * cross-engine fallback. A card drag carries only text/plain. */
+  function transferHasFiles(transfer) {
+    if (!transfer) return false;
+    var items = Array.prototype.slice.call(transfer.items || []);
+    if (items.some(function(item) { return item.kind === "file"; })) return true;
+    var types = Array.prototype.slice.call(transfer.types || []);
+    return types.indexOf("Files") !== -1;
+  }
+
+  /** One sequential batch per story. Serial writes preserve the order in
+   * which the user dropped files; the captured repo/story identity keeps a
+   * late response from repainting whichever project is open by then. */
+  var attachmentUploadBatches = Object.create(null);
+
+  function attachmentUploadKey(repoId, storyId) {
+    return repoId + "/" + storyId;
+  }
+
+  /** Uploads every dropped file in order. A server refusal belongs to that
+   * file, so the rest continue. No-response failures are ambiguous mutations,
+   * and cancelled authentication is explicit batch-level intent; both stop
+   * without an automatic replay. */
+  function uploadDroppedAttachments(repoId, storyId, files) {
+    var key = attachmentUploadKey(repoId, storyId);
+    if (attachmentUploadBatches[key]) {
+      toast("Images are already being attached to " + storyId + ".", "error");
+      return Promise.resolve();
+    }
+    attachmentUploadBatches[key] = true;
+    var index = 0;
+    var attached = 0;
+
+    function finish() {
+      delete attachmentUploadBatches[key];
+      if (attached) {
+        toast("Attached " + attached + (attached === 1 ? " image" : " images") + " to " + storyId + ".", "success");
+      }
+    }
+
+    function next() {
+      if (index >= files.length) {
+        finish();
+        return Promise.resolve();
+      }
+      var file = files[index++];
+      var path = repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments";
+      return api("POST", path, file, {
+        rawBody: true,
+        headers: { "X-Storyhook-Attachment-Name": encodeURIComponent(file.name || "attachment") }
+      }).then(function(resp) {
+        attached++;
+        if (state.repoId === repoId) handleMutationSuccess(resp);
+        return next();
+      }, function(err) {
+        toast((file.name || "attachment") + ": " + describeFailure(err), "error");
+        if (err.status === 0 || err.status === 401) {
+          finish();
+          return;
+        }
+        // A definite refusal is local to this file; preserve the remaining
+        // files' drop order instead of throwing the whole selection away.
+        return next();
+      });
+    }
+
+    return next();
+  }
+
+  /** Makes one field a file-only drop target. `preventDefault` and
+   * `stopPropagation` live below the transferHasFiles guard: internal card
+   * drags and ordinary text/link drags remain wholly owned by their existing
+   * handlers. A depth count avoids flicker while crossing target children. */
+  function bindAttachmentDrop(target, st) {
+    var depth = 0;
+    var repoId = state.repoId;
+    var storyId = st.id;
+
+    function clearDropState() {
+      depth = 0;
+      target.classList.remove("attachment-drop-target", "attachment-drop-refused");
+    }
+
+    function currentStoryIsOpen() {
+      var current = state.repoId === repoId ? findStory(storyId) : null;
+      return !!current && current.story.superstate === "OPEN";
+    }
+
+    function canAttach() {
+      return currentStoryIsOpen()
+        && !attachmentUploadBatches[attachmentUploadKey(repoId, storyId)];
+    }
+
+    function claimFileDrag(e) {
+      if (!transferHasFiles(e.dataTransfer)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      var available = canAttach();
+      e.dataTransfer.dropEffect = "copy";
+      if (!available) e.dataTransfer.dropEffect = "none";
+      target.classList.toggle("attachment-drop-target", available);
+      target.classList.toggle("attachment-drop-refused", !available);
+      return true;
+    }
+
+    target.addEventListener("dragenter", function(e) {
+      if (!claimFileDrag(e)) return;
+      depth++;
+    });
+    target.addEventListener("dragover", function(e) { claimFileDrag(e); });
+    target.addEventListener("dragleave", function(e) {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      depth--;
+      if (depth <= 0) clearDropState();
+    });
+    target.addEventListener("drop", function(e) {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var files = Array.prototype.slice.call(e.dataTransfer.files);
+      clearDropState();
+      if (!currentStoryIsOpen()) {
+        toast("Reopen " + storyId + " before attaching images.", "error");
+        return;
+      }
+      if (!files.length) return;
+      uploadDroppedAttachments(repoId, storyId, files);
+    });
   }
 
   /** Builds native keyboard controls with text-only filenames. The section's
@@ -11046,6 +11509,7 @@ svg.ctxmenu-disabled-warning {
 
     wrap.appendChild(view);
     wrap.appendChild(textarea);
+    bindAttachmentDrop(wrap, st);
     if (editing) requestAnimationFrame(function() { autoGrowTextarea(textarea); });
     return wrap;
   }
@@ -11314,6 +11778,7 @@ svg.ctxmenu-disabled-warning {
     var wrap = el("div", {}, [buildSectionToggle("comments", "Comments", comments.length)]);
     if (!state.drawerSections.comments) return wrap;
     var textarea = el("textarea", { placeholder: "Add a comment…", "aria-label": "Add comment", dataset: { field: "comment" } });
+    bindAttachmentDrop(textarea, st);
     var submit = el("button", { class: "btn", onClick: function() {
       if (!textarea.value.trim()) return;
       api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
@@ -11767,6 +12232,7 @@ svg.ctxmenu-disabled-warning {
   function selectRepo(id) {
     closeDrawer();
     closeFilterSheet();
+    clearMobileListDetails();
     state.repoId = id;
     state.screen = "repo";
     state.data = null;
@@ -11797,12 +12263,14 @@ svg.ctxmenu-disabled-warning {
   }
 
   function goHome() {
+    clearMobileListDetails();
     state.screen = "home";
     renderScreen();
     fetchReposOnce();
   }
 
   function goSettings() {
+    clearMobileListDetails();
     state.screen = "settings";
     state.settingsRepoId = null;
     state.statuses = null;
@@ -14169,7 +14637,7 @@ svg.ctxmenu-disabled-warning {
 
   function bindShell() {
     bindPressGate();
-    syncAdaptiveChrome();
+    syncResponsivePresentation();
     // Before anything is bound, and before anything is open: this is what
     // takes the eight *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
@@ -14211,9 +14679,9 @@ svg.ctxmenu-disabled-warning {
       items[next].focus();
     });
     if (compactHeaderQuery.addEventListener) {
-      compactHeaderQuery.addEventListener("change", syncAdaptiveChrome);
+      compactHeaderQuery.addEventListener("change", syncResponsivePresentation);
     } else {
-      compactHeaderQuery.addListener(syncAdaptiveChrome);
+      compactHeaderQuery.addListener(syncResponsivePresentation);
     }
     bindProjectSelector();
     // SH-197: one delegated listener per view, not one per card/row --
@@ -14223,6 +14691,8 @@ svg.ctxmenu-disabled-warning {
     bindRovingFocus($("board-view"), ".card[data-id]");
     bindRovingKeys($("list-body"), "tr[data-id]", listRovingMove);
     bindRovingFocus($("list-body"), "tr[data-id]");
+    bindRovingKeys($("mobile-list-body"), ".mobile-story-title[data-id]", listRovingMove);
+    bindRovingFocus($("mobile-list-body"), ".mobile-story-title[data-id]");
     $("home-btn").addEventListener("click", function() { closeMoreMenu(true); goHome(); });
     $("settings-btn").addEventListener("click", function() { closeMoreMenu(true); goSettings(); });
     // SH-175: the New Story modal no longer closes on a backdrop click or

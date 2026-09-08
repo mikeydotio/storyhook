@@ -391,3 +391,39 @@ tests run in this lane; the centralized verifier runs the full suite.
 
 Upload controls, paste, drag/drop, remote URLs, zoom, and gallery navigation are
 outside SH-390. SH-391, SH-392, and SH-393 retain their planned scope.
+
+## Existing-story file drops (SH-392)
+
+The open drawer's whole description section (rendered or editing) and comment
+textarea accept local file drops. A drop attaches bytes only: it never inserts
+text, changes the description, or submits the comment. The dashboard sends the
+existing raw upload request with the file's percent-encoded name; storage limits
+and magic-byte image validation remain server-authoritative.
+
+The handler claims a drag only when `DataTransfer.items` contains a file or the
+transfer advertises the `Files` type. It cancels `dragover`, shows a copy target,
+then reads `DataTransfer.files` during `drop`, when browser security permits it.
+Only that file branch prevents the default and stops propagation. The board's
+text/plain card payload therefore remains wholly owned by `bindColumnDrop`, and
+ordinary text/link drags retain native behavior. Closed stories consume file
+drops without uploading or allowing browser navigation and direct the user to
+reopen the story.
+
+Multiple files upload sequentially in selection order, one active batch per
+project/story. A definite file-specific refusal is reported with its filename
+and the batch continues. A transport failure with no response stops the batch
+without replay because the write may have landed; cancelling token exchange
+also stops because cancellation applies to the user's whole action. Successful
+responses update the current project only when it still matches the project
+captured at drop time. Navigation cannot apply a late response to another
+project, while the server still completes the upload against its original URL.
+
+`api()` keeps JSON serialization as its default and exposes raw-body delivery as
+an explicit internal option. It shares the existing CSRF marker, cookie/token
+authentication, mutation deadline, one safe retry after pre-handler 401, and
+error shape; there is no second transport implementation for dropped files.
+
+Acceptance is covered by `tests/web_test.rs` and the Chromium/WebKit
+`attachment-drop.spec.ts`: both field modes, ordered images, preserved value,
+selection and focus, validation continuation, ambiguous failure, project
+identity, closed stories, and file-only isolation from card drag/drop.
