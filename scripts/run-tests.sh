@@ -226,10 +226,18 @@ run_leg() {
         # would interleave into THIS run's real journal.
         env -u STORYHOOK_GATE_PROGRESS -u STORYHOOK_GATE_PROGRESS_PATH "$@" 2>&1 \
             | tee -a "$log" \
-            | awk -f "$script_dir/test-progress.awk" \
-            | while IFS=$'\t' read -r _bin _name outcome; do
-                gate_progress_emit_case "$gate_progress_case_path" \
-                    "$([ "$outcome" = PASS ] && echo pass || echo fail)"
+            | awk -v multiplex=1 -f "$script_dir/test-progress.awk" \
+            | while IFS= read -r record; do
+                case "$record" in
+                ($'raw\t'*)
+                    printf '%s\n' "${record#*$'\t'}"
+                    ;;
+                ($'case\t'*)
+                    IFS=$'\t' read -r _kind _bin _name outcome <<<"$record"
+                    gate_progress_emit_case "$gate_progress_case_path" \
+                        "$([ "$outcome" = PASS ] && echo pass || echo fail)"
+                    ;;
+                esac
             done
         return "${PIPESTATUS[0]}"
     fi

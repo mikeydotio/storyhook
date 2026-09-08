@@ -111,6 +111,143 @@ ensure_verifier_worktree() {
     fi
 }
 
+bounded_log_context() {
+    context_log="$1"
+    context_lines="$(awk 'END { print NR + 0 }' "$context_log")"
+    if [ "$context_lines" -gt 40 ]; then
+        printf 'Ancillary context — last 40 of %s log lines (%s earlier lines omitted):\n' \
+            "$context_lines" "$((context_lines - 40))"
+    else
+        printf 'Ancillary context — all %s log lines (no truncation):\n' "$context_lines"
+    fi
+    tail -n 40 "$context_log" | awk '
+        length($0) > 500 {
+            print substr($0, 1, 500) " … [line truncated at 500 characters]"
+            next
+        }
+        { print }
+    '
+}
+
+verification_failure_detail() {
+    failure_status="$1"
+    failure_log="$2"
+
+    raw_failed="$(awk -f "$script_dir/test-progress.awk" "$failure_log" \
+        | awk -F '\t' '$3 == "FAIL" { print $1 "::" $2 }')"
+    delta_failed="$(awk '
+        /^test-delta: (newly RED|still red) \([0-9]+\):$/ {
+            capture = 1
+            next
+        }
+        capture && /^  / {
+            line = $0
+            sub(/^  /, "", line)
+            print line
+            next
+        }
+        { capture = 0 }
+    ' "$failure_log")"
+    failed_tests="$(printf '%s\n%s\n' "$raw_failed" "$delta_failed" \
+        | awk 'NF && !seen[$0]++')"
+    failed_count="$(printf '%s\n' "$failed_tests" \
+        | awk 'NF { count += 1 } END { print count + 0 }')"
+
+    compiler_diagnostics="$(awk '
+        /^error(\[[^]]+\])?: / || /^error: / {
+            if ($0 !~ /^error: (test|doctest) failed/) print
+        }
+    ' "$failure_log" | awk 'NF && !seen[$0]++')"
+    compiler_count="$(printf '%s\n' "$compiler_diagnostics" \
+        | awk 'NF { count += 1 } END { print count + 0 }')"
+
+    reused_count="$(awk '/^leg [^:]+: REUSED / { count += 1 } END { print count + 0 }' \
+        "$failure_log")"
+    not_rerun_count="$(awk '
+        /^test-delta: not re-run since .* \([0-9]+\):$/ {
+            line = $0
+            sub(/^.*\(/, "", line)
+            sub(/\):$/, "", line)
+            count += line
+        }
+        END { print count + 0 }
+    ' "$failure_log")"
+
+    printf 'Verification failure summary\n'
+    printf 'The completed gate failed with exit status %s.\n' "$failure_status"
+    if [ "$failed_count" -gt 0 ]; then
+        if [ "$failed_count" -gt 20 ]; then
+            printf 'Failed tests (%s; showing first 20):\n' "$failed_count"
+        else
+            printf 'Failed tests (%s):\n' "$failed_count"
+        fi
+        printf '%s\n' "$failed_tests" | sed -n '1,20p' | awk '
+            {
+                if (length($0) > 500) {
+                    print "  - " substr($0, 1, 500) " … [line truncated at 500 characters]"
+                } else {
+                    print "  - " $0
+                }
+            }
+        '
+        if [ "$failed_count" -gt 20 ]; then
+            printf '  … %s additional failed tests omitted; see full log.\n' \
+                "$((failed_count - 20))"
+        fi
+    fi
+    if [ "$compiler_count" -gt 0 ]; then
+        if [ "$compiler_count" -gt 10 ]; then
+            printf 'Compiler/build diagnostics (%s; showing first 10):\n' "$compiler_count"
+        else
+            printf 'Compiler/build diagnostics (%s):\n' "$compiler_count"
+        fi
+        printf '%s\n' "$compiler_diagnostics" | sed -n '1,10p' | awk '
+            {
+                if (length($0) > 500) {
+                    print "  - " substr($0, 1, 500) " … [line truncated at 500 characters]"
+                } else {
+                    print "  - " $0
+                }
+            }
+        '
+        if [ "$compiler_count" -gt 10 ]; then
+            printf '  … %s additional compiler/build diagnostics omitted; see full log.\n' \
+                "$((compiler_count - 10))"
+        fi
+    fi
+    if [ "$failed_count" -eq 0 ] && [ "$compiler_count" -eq 0 ]; then
+        printf 'No failed test or compiler/build diagnostic was recognized; inspect the full log for the cause.\n'
+    fi
+    if [ "$reused_count" -gt 0 ]; then
+        printf 'Reused/cached legs (%s): these successful results were reused; they are not failures.\n' \
+            "$reused_count"
+    fi
+    if [ "$not_rerun_count" -gt 0 ]; then
+        printf 'Not re-run (%s): status unknown; not counted as pass or failure.\n' \
+            "$not_rerun_count"
+    fi
+    printf '\n'
+    bounded_log_context "$failure_log"
+}
+
+verification_infrastructure_detail() {
+    infrastructure_status="$1"
+    infrastructure_completed_status="$2"
+    infrastructure_log="$3"
+
+    printf 'Verification infrastructure failure\n'
+    printf 'Gate process exit status: %s.\n' "$infrastructure_status"
+    if [ -z "$infrastructure_completed_status" ]; then
+        printf 'Completion record: missing.\n'
+    else
+        printf 'Completion record: exit status %s, which does not match the gate process.\n' \
+            "$infrastructure_completed_status"
+    fi
+    printf 'Candidate test status: unknown — the gate did not complete with successful restoration, so this is not classified as a test failure.\n\n'
+    bounded_log_context "$infrastructure_log"
+    printf 'Verification log: %s\n' "$infrastructure_log"
+}
+
 run_verification_gate() {
     gate_pr="$1"
     gate_tree="$2"
@@ -135,15 +272,14 @@ run_verification_gate() {
     # Only a completed gate with successful restoration can blame tests.
     # Preparation failures, signals and cleanup failures leave no record.
     if [ "$completed_status" != "$gate_status" ]; then
-        tail_context="$(tail -n 40 "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$tail_context
-Verification log: $log" \
+        detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
             '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
     if [ "$gate_status" -ne 0 ]; then
-        tail_context="$(tail -n 40 "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$tail_context" \
+        detail="$(verification_failure_detail "$gate_status" "$log")"
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
             '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
