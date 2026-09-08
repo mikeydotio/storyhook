@@ -3336,9 +3336,10 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
-/// SH-235/SH-600: board cards expose the same menu as right-click through a
-/// visible action button on every pointer type. List rows retain SH-235's
-/// coarse-pointer-only actions column.
+/// SH-235/SH-600/SH-614: board cards and stacked mobile list rows expose the
+/// same menu as right-click through a visible action button on every pointer
+/// type. Desktop table rows retain SH-235's coarse-pointer-only actions
+/// column.
 ///
 /// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
 /// menu items actually match right-click's and that the coarse-pointer
@@ -3381,6 +3382,7 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     // role="button" and the button is a normal part of the a11y tree there.
     assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
     assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+    assert!(body.contains("class: \"mobile-story-actions row-actions-btn\""));
 
     let card_actions = declarations(css, ".card-actions-btn");
     for declaration in [
@@ -3394,8 +3396,17 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     }
     assert!(!card_actions.contains("display: none"));
 
-    assert!(declarations(css, ".row-actions-btn").contains("display: none"));
-    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
+    let mobile_row_actions = declarations(css, ".mobile-story-actions");
+    for declaration in [
+        "display: inline-flex",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
+    ] {
+        assert!(mobile_row_actions.contains(declaration));
+    }
+
+    assert!(declarations(css, ".col-actions .row-actions-btn").contains("display: none"));
+    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .col-actions .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
 
     // The list table's own overflow-x scroll must not let the browser's
     // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
