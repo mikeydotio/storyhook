@@ -1234,3 +1234,40 @@ fn the_poll_period_is_the_granularity_of_what_it_observes() {
         "the derivation assumes `ps -o lstart=` carries no sub-second field; it now prints {printed:?}, so the poll period needs re-deriving"
     );
 }
+
+#[test]
+fn lock_wait_evidence_requires_a_matching_live_identity() {
+    let pid = std::process::id();
+    for (started, expected_wait) in [
+        (started_of(pid), true),
+        (String::new(), true),
+        ("wrong identity".into(), false),
+    ] {
+        let fixture = Fixture::new();
+        let journal = fixture.path().join("progress.ndjson");
+        std::fs::write(&journal, "").unwrap();
+        fixture.plant("merge", &pid.to_string(), &started);
+        let output = fixture
+            .command(&["--max-wait", "0", "merge", "--", "true"])
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
+            .output()
+            .unwrap();
+        assert_eq!(
+            code(&output),
+            if expected_wait { 75 } else { 0 },
+            "{output:?}"
+        );
+        let evidence = std::fs::read_to_string(journal).unwrap();
+        if started == started_of(pid) {
+            let record: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+            assert_eq!(record["kind"], "lock-wait");
+            assert_eq!(record["name"], "merge");
+            assert_eq!(record["pid"], pid);
+        } else {
+            assert!(
+                evidence.is_empty(),
+                "unconfirmed identity published liveness: {evidence}"
+            );
+        }
+    }
+}

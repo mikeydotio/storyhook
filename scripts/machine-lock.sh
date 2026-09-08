@@ -298,6 +298,16 @@ while :; do
             continue
         fi
 
+        # SH-592: queue time is bounded by the holder's identity, not by a
+        # verifier's wall clock. Publish only a freshly verified identity;
+        # arbitrary stderr chatter must never keep a stalled verifier alive.
+        if [ -n "${STORYHOOK_GATE_PROGRESS:-}" ] && [ -n "$recorded" ] \
+            && [ "$live_started" = "$recorded" ]; then
+            printf '{"kind":"lock-wait","name":"%s","pid":%s}\n' "$name" "$holder" \
+                >> "$STORYHOOK_GATE_PROGRESS" \
+                || die "could not record live '$name' lock waiting in progress journal $STORYHOOK_GATE_PROGRESS"
+        fi
+
         # SH-306: waiting is never silent. Immediately, then once per nominal
         # suite this waiter is queued behind.
         if [ "$announced" = 0 ]; then
