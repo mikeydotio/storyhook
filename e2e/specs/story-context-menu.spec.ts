@@ -1,11 +1,16 @@
 import { test, expect } from "./support";
 import {
+  backdropOf,
   cleanUpCreatedStories,
+  contrastRatio,
   deleteStory,
+  MIN_CONTRAST,
   openProject,
+  parseColor,
   projectSlug,
   seedToken,
   settledBoundingBox,
+  THEMES,
 } from "./support";
 
 /**
@@ -119,6 +124,33 @@ test("the visible card actions button matches right-click without opening the dr
     rightClickItems,
   );
   await page.keyboard.press("Escape");
+  await deleteStory(page, title);
+});
+
+test("the card actions icon has sufficient contrast in every theme", async ({ page }) => {
+  const title = "SH-600 card actions contrast";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const appearance = await actions.evaluate((button) => {
+      const backgrounds: string[] = [];
+      for (let node: Element | null = button; node; node = node.parentElement) {
+        backgrounds.push(getComputedStyle(node).backgroundColor);
+      }
+      return { color: getComputedStyle(button).color, backgrounds };
+    });
+    const ratio = contrastRatio(
+      parseColor(appearance.color),
+      backdropOf(appearance.backgrounds),
+    );
+    expect(
+      ratio,
+      `${theme.name}: card actions icon contrast was ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+  }
+
   await deleteStory(page, title);
 });
 
