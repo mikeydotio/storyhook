@@ -2002,7 +2002,9 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
 /// worded differently from the badge's ("● blocked", "(no reason)") so the
 /// two fences' literal sets never overlap and neither can go vacuous by
 /// matching the wrong function. Same technique -- find the function by its
-/// exact signature, insist every owned literal falls inside its bounds.
+/// exact signature, insist every owned banner literal falls inside its bounds.
+/// Ordinary UI labels named "Blocked" are not banner sentences and therefore
+/// are deliberately outside this fence (SH-614).
 ///
 /// Comment lines (trimmed to start with `*` or `//`) are exempt, for the
 /// same reason the badge's own fence exempts them.
@@ -2041,7 +2043,7 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
     // different reason (assistive-tech text, not the rendered banner), so a
     // bare "no reason recorded" would false-positive there. The em dash is
     // what `blockBanner()` alone prefixes it with.
-    for needle in ["— no reason recorded", "\"Blocked\""] {
+    for needle in ["— no reason recorded"] {
         for (at, _) in script.match_indices(needle) {
             let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line = script[line_start..].lines().next().unwrap_or("");
@@ -2055,6 +2057,20 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
                  hand-written a second time"
             );
         }
+    }
+
+    for (at, _) in script.match_indices("\"Blocked\"") {
+        let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line = script[line_start..].lines().next().unwrap_or("");
+        if !line.contains("headline") {
+            continue;
+        }
+        assert!(
+            at >= fn_start && at < fn_end,
+            "a blocked-banner headline outside blockBanner() at script byte {at}: {line:?} \
+             -- every blocked-banner sentence must be derived from blockCauses(), not \
+             hand-written a second time"
+        );
     }
 
     // blockCauses() is the one deriver: neither blockedFlag() nor
@@ -3091,6 +3107,107 @@ fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
     assert!(
         body.contains(r#"var wrap = el("span", { class: "list-labels" }, []);"#),
         "labelChips must render the dedicated wrapping flex container"
+    );
+}
+
+/// SH-614: the List view has one data model and two responsive presentations.
+/// The desktop table remains complete and horizontally reachable, while the
+/// phone presentation is a semantic list whose title and controls are native
+/// buttons. `hidden` is the accessibility boundary: CSS alone must not leave
+/// the inactive copy focusable or exposed to assistive technology.
+#[test]
+fn sh_614_mobile_list_has_semantic_markup_and_shared_controls() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for markup in [
+        r#"<div class="list-desktop" id="list-desktop">"#,
+        r#"<div class="mobile-list" id="mobile-list" hidden>"#,
+        r#"<ul class="mobile-list-body" id="mobile-list-body" aria-label="Stories" aria-describedby="list-kbd-hint"></ul>"#,
+        r#"<select id="mobile-sort-column" aria-label="Sort stories by">"#,
+        r#"<select id="mobile-sort-direction" aria-label="Sort direction">"#,
+    ] {
+        assert!(
+            body.contains(markup),
+            "missing SH-614 list markup: {markup}"
+        );
+    }
+
+    let desktop_title = declarations(css, ".col-title");
+    assert!(
+        desktop_title.contains("min-inline-size: 20ch"),
+        "the desktop title column must retain a readable 20ch floor"
+    );
+
+    let mobile_title = declarations(css, ".mobile-story-title");
+    for declaration in [
+        "width: 100%",
+        "font-size: 1rem",
+        "line-height: 1.4",
+        "white-space: normal",
+        "overflow-wrap: anywhere",
+    ] {
+        assert!(
+            mobile_title.contains(declaration),
+            ".mobile-story-title must carry `{declaration}`; declarations were `{mobile_title}`"
+        );
+    }
+
+    let source = script(&body);
+    for function in [
+        "sortedListStories",
+        "renderDesktopList",
+        "renderMobileList",
+        "syncListPresentation",
+        "populateMobileListItem",
+    ] {
+        assert!(
+            source.contains(&format!("function {function}(")),
+            "missing SH-614 shared list function `{function}`"
+        );
+    }
+    assert!(
+        source.contains("state.sort.col = this.value;")
+            && source.contains("state.sort.dir = Number(this.value);"),
+        "both mobile sort controls must write the existing state.sort model"
+    );
+}
+
+/// SH-614's Details state is deliberately ephemeral and project-scoped: it
+/// survives polling and responsive presentation changes, but never follows a
+/// reader to another project or across a reload.
+#[test]
+fn sh_614_mobile_details_state_is_in_memory_and_cleared_on_project_exit() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+
+    assert!(
+        source.contains("mobileListDetails: Object.create(null)"),
+        "mobile disclosure state must live only in the page's in-memory state"
+    );
+    assert!(
+        source.contains("function clearMobileListDetails()")
+            && source.contains(
+                "function selectRepo(id) {\n    closeDrawer();\n    clearMobileListDetails();"
+            )
+            && source.contains("function goHome() {\n    clearMobileListDetails();")
+            && source.contains("function goSettings() {\n    clearMobileListDetails();"),
+        "switching or leaving projects must clear every mobile disclosure"
+    );
+    assert!(
+        !source.contains("storyhook.mobileListDetails"),
+        "mobile disclosure state must not be persisted across reloads"
     );
 }
 
