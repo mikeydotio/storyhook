@@ -235,7 +235,9 @@ SH-600 corrected the original visibility policy: the card button is visible for
 every pointer because right-click can be difficult or unavailable even when a
 fine pointer is primary. Its `--tap-min` target remains 24px normally and 44px on
 coarse pointers. The list-row button remains coarse-pointer-only so desktop table
-geometry is unchanged.
+geometry is unchanged. Its resting SVG uses `--fg-muted`, measured across all four
+palette resolutions, rather than light theme's 2.60:1 `--fg-faint`; this keeps the
+control-identifying icon above WCAG 2.2 SC 1.4.11's 3:1 threshold.
 
 **The accessibility trade-off, stated plainly.** `.card` is `div[role="button"]`; a
 nested interactive element inside an ARIA `button` role is *presentational* to
