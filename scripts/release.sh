@@ -119,9 +119,10 @@ confirm() {
   case "$reply" in [yY]*) return 0 ;; *) die "aborted" ;; esac
 }
 
-# Build the working tree, put it on PATH, refresh the plugin, and relaunch the
-# daemon onto it. Shared by --local-only and by --bump, so the version being
-# dogfooded is installed by exactly the same steps whichever way you got here.
+# Build the working tree, put it on PATH, refresh both provider plugins, and
+# relaunch the daemon onto it. Shared by --local-only and by --bump, so the
+# version being dogfooded is installed by exactly the same steps whichever way
+# you got here.
 install_locally() {
   step "Building and installing the binary"
   # The daemon is stopped BEFORE the binary is replaced: a running daemon holds
@@ -153,8 +154,9 @@ install_locally() {
   fi
 
   if [ "$skip_plugin" = 0 ]; then
-    step "Installing the Claude Code plugin embedded in this binary"
+    step "Installing the provider plugins embedded in this binary"
     run story plugin install claude
+    run story plugin install codex
   fi
 
   if [ "$skip_daemon" = 0 ]; then
@@ -195,7 +197,7 @@ Options:
   --skip-gate       Skip `make test-full`. Permitted with --local-only, or
                     for a public release only when STORYHOOK_RELEASE_UNGATED=1
                     is also set. No receipt is minted either way.
-  --skip-plugin     Local mode: leave the Claude Code plugin alone.
+  --skip-plugin     Local mode: leave the Claude Code and Codex plugins alone.
   --skip-daemon     Local mode: do not stop or start the daemon.
   --dry-run         Print every command instead of running it.
   --yes             Do not prompt for confirmation.
