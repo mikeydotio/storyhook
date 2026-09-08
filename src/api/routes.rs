@@ -139,6 +139,8 @@ pub enum ProjectRoute<'a> {
     StoryCreate,
     /// `GET .../story/{id}`
     StoryShow { id: &'a str },
+    /// `GET .../story/{id}/attachments/{attachment_id}` — stored image bytes.
+    StoryAttachment { id: &'a str, attachment_id: &'a str },
     /// `PATCH .../story/{id}`
     StoryPatch { id: &'a str },
     /// `DELETE .../story/{id}`
@@ -326,6 +328,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Delete => ProjectRoute::StoryDelete { id },
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["story", id, "attachments", attachment_id] => match method {
+            Method::Get => ProjectRoute::StoryAttachment { id, attachment_id },
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["story", id, "dispatch"] => match method {
             Method::Post => ProjectRoute::Dispatch { id },
             _ => ProjectRoute::MethodNotAllowed,
@@ -413,6 +419,7 @@ impl ProjectRoute<'_> {
             ProjectRoute::EngineActionUnknown => "EngineActionUnknown",
             ProjectRoute::StoryCreate => "StoryCreate",
             ProjectRoute::StoryShow { .. } => "StoryShow",
+            ProjectRoute::StoryAttachment { .. } => "StoryAttachment",
             ProjectRoute::StoryPatch { .. } => "StoryPatch",
             ProjectRoute::StoryDelete { .. } => "StoryDelete",
             ProjectRoute::StoryAction { .. } => "StoryAction",

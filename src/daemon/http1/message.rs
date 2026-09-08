@@ -154,10 +154,9 @@ fn reason_phrase(code: u16) -> &'static str {
 }
 
 /// An outgoing response: a status, a header list, and a body already in
-/// memory. Every response this daemon sends is small (JSON, HTML, or plain
-/// text — see `crate::api::http::MAX_BODY_BYTES` for the inbound analogue),
-/// so buffering the body rather than streaming it costs nothing observable
-/// and removes a whole class of partial-write bookkeeping.
+/// memory. Text responses and attachment blobs use the same framing; attachment
+/// uploads are bounded by `crate::service::MAX_ATTACHMENT_BYTES`. Buffering the
+/// already-loaded blob avoids a second streaming/partial-write protocol.
 pub struct Response {
     pub(super) status: StatusCode,
     pub(super) headers: Vec<Header>,
@@ -165,11 +164,17 @@ pub struct Response {
 }
 
 impl Response {
+    /// Constructs a UTF-8 response using the same framing as binary bodies.
     pub fn from_string(body: impl Into<String>) -> Response {
+        Self::from_bytes(body.into().into_bytes())
+    }
+
+    /// Constructs a response with uninterpreted bytes and computed framing.
+    pub fn from_bytes(body: Vec<u8>) -> Response {
         Response {
             status: StatusCode(200),
             headers: Vec::new(),
-            body: body.into().into_bytes(),
+            body,
         }
     }
 
@@ -265,6 +270,26 @@ mod tests {
     #[test]
     fn a_non_ascii_header_value_is_refused() {
         assert!(Header::from_bytes("X-Name", "café").is_err());
+    }
+
+    #[test]
+    fn binary_framing_preserves_every_byte_and_head_suppresses_only_the_body() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let response = Response::from_bytes(bytes.clone());
+        for suppress in [false, true] {
+            let mut wire = Vec::new();
+            write_response(&mut wire, &response, false, suppress).unwrap();
+            let boundary = wire
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .unwrap();
+            let head = std::str::from_utf8(&wire[..boundary]).unwrap();
+            assert!(head.contains("Content-Length: 256"));
+            assert_eq!(
+                &wire[boundary + 4..],
+                if suppress { &[] } else { bytes.as_slice() }
+            );
+        }
     }
 
     #[test]
