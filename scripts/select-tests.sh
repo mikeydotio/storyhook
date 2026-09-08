@@ -31,19 +31,21 @@
 #
 # COVERAGE ONLY EVER ADDS BINARIES. `coverage-map.sh`'s own header explains
 # why: ~57 test files in this repo read `CARGO_MANIFEST_DIR` at runtime and
-# ~19 shell out to `git ls-files`, both invisible to LLVM line coverage. Three
-# unconditional escape hatches sit on top of the map for exactly that reason,
-# and every one of them is checked BEFORE the map is ever consulted:
+# ~19 shell out to `git ls-files`, both invisible to LLVM line coverage. A
+# committed impact manifest makes those inputs reviewable, while three escape
+# hatches sit on top of the coverage map for exactly that reason:
 #
 #   1. No map for the resolved baseline           -> ALL
-#   2. Any changed path outside src/**.rs,
+#   2. Any UNDECLARED changed path outside src/**.rs,
 #      crates/**.rs, tests/*.rs                    -> ALL
 #   3. (never bypassed) every binary whose OWN test source names
 #      `git ls-files`, `CARGO_MANIFEST_DIR` or `include_str!` — derived by
 #      scanning `tests/*.rs` at selection time, never a hand-kept list
 #      (CLAUDE.md: SH-136, SH-198, SH-258, SH-260/276, SH-360 are five
 #      recorded costs of exactly that shape) — is added to the selection
-#      regardless of what the coverage map says.
+#      regardless of what the coverage map says. Every such target must also
+#      have at least one row in `scripts/test-impact.tsv`; a new reader without
+#      one fails closed to ALL and names the missing target.
 
 set -uo pipefail
 
@@ -181,7 +183,126 @@ if [ -z "$changed" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Escape hatch 2: any changed path outside src/**.rs, crates/**.rs, tests/*.rs
+# Declared checkout dependencies
+# ---------------------------------------------------------------------------
+
+impact_map="scripts/test-impact.tsv"
+tree_scanning="$(git grep -l -E 'git ls-files|CARGO_MANIFEST_DIR|include_str!' -- 'tests/*.rs' 2>/dev/null \
+    | sed -n 's#^tests/\(.*\)\.rs$#\1#p' | LC_ALL=C sort -u)"
+
+impact_rows=""
+impact_targets=""
+impact_invalid=""
+if [ ! -f "$impact_map" ]; then
+    impact_invalid="the checkout-impact manifest $impact_map is missing"
+else
+    previous=""
+    while IFS=$'\t' read -r target input extra; do
+        [ -n "$target" ] || continue
+        case "$target" in \#*) continue ;; esac
+        if [ -z "$input" ] || [ -n "$extra" ]; then
+            impact_invalid="$impact_map must contain exactly <test-target><TAB><git-pathspec>; bad row: $target"
+            break
+        fi
+        row="$target	$input"
+        if [ -n "$previous" ] && [[ "$row" < "$previous" || "$row" = "$previous" ]]; then
+            impact_invalid="$impact_map must be sorted and contain no duplicate rows; bad row: $row"
+            break
+        fi
+        previous="$row"
+        if [ ! -f "tests/$target.rs" ]; then
+            impact_invalid="$impact_map names missing integration-test target $target"
+            break
+        fi
+        if ! git ls-files --error-unmatch -- "$input" >/dev/null 2>&1; then
+            impact_invalid="$impact_map pathspec matches no tracked input: $input"
+            break
+        fi
+        impact_rows="$impact_rows$target	$input
+"
+        impact_targets="$impact_targets$target
+"
+    done <"$impact_map"
+fi
+
+if [ -z "$impact_invalid" ]; then
+    missing="$(comm -23 \
+        <(printf '%s' "$tree_scanning" | sed '/^$/d' | LC_ALL=C sort -u) \
+        <(printf '%s' "$impact_targets" | sed '/^$/d' | LC_ALL=C sort -u))"
+    if [ -n "$missing" ]; then
+        impact_invalid="checkout-reading test target(s) have no entry in $impact_map: $(printf '%s' "$missing" | tr '\n' ' ')"
+    fi
+fi
+
+if [ -n "$impact_invalid" ]; then
+    printf 'ALL\n'
+    note "$impact_invalid -- running everything"
+    exit 0
+fi
+
+# A shell fixture mapped to one top-level script also depends on every literal
+# repository-local file that script sources. Read executable source/dot lines;
+# ShellCheck declarations are corroborating inputs, not the authority, because
+# the shell accepts a literal source without one. Follow the closure recursively
+# so a newly sourced helper selects the fixture without a second manifest row.
+shell_seen="$objects/impact-shell-seen"
+: >"$shell_seen"
+shell_dependencies() {
+    local file="$1"
+    {
+        sed -n 's/^[[:space:]]*#[[:space:]]*shellcheck source=//p' "$file"
+        # These regexes intentionally match literal shell variable references.
+        # shellcheck disable=SC2016
+        sed -n -E \
+            -e 's#^[[:space:]]*(source|\.)[[:space:]]+"\$(SCRIPT_DIR|script_dir)/([^"[:space:]]+)".*#scripts/\3#p' \
+            -e 's#^[[:space:]]*(source|\.)[[:space:]]+"\$\{(SCRIPT_DIR|script_dir)\}/([^"[:space:]]+)".*#scripts/\3#p' \
+            -e 's#^[[:space:]]*(source|\.)[[:space:]]+"\$(root|REPO_ROOT|repo_root)/scripts/([^"[:space:]]+)".*#scripts/\3#p' \
+            -e 's#^[[:space:]]*(source|\.)[[:space:]]+"\$\{(root|REPO_ROOT|repo_root)\}/scripts/([^"[:space:]]+)".*#scripts/\3#p' \
+            "$file"
+    } | LC_ALL=C sort -u
+}
+
+shell_closure() {
+    local file="$1"
+    grep -Fqx "$file" "$shell_seen" 2>/dev/null && return 0
+    printf '%s\n' "$file" >>"$shell_seen"
+    printf '%s\n' "$file"
+    [ -f "$file" ] || return 0
+    while IFS= read -r dependency; do
+        [ -n "$dependency" ] || continue
+        shell_closure "$dependency"
+    done < <(shell_dependencies "$file")
+}
+
+impact_selected=""
+impact_covered=""
+while IFS=$'\t' read -r target input; do
+    [ -n "$target" ] || continue
+    inputs="$input"
+    case "$input" in
+    (scripts/*.sh)
+        : >"$shell_seen"
+        inputs="$(shell_closure "$input")"
+        ;;
+    esac
+    while IFS= read -r dependency; do
+        [ -n "$dependency" ] || continue
+        matches="$(git_with_objects diff --name-only "$baseline_tree" "$current_tree" -- "$dependency" 2>/dev/null)" \
+            || die "could not match impact dependency $dependency"
+        [ -n "$matches" ] || continue
+        impact_selected="$impact_selected$target
+"
+        # A universal row honestly says a dynamic reader can inspect anything,
+        # but it cannot justify narrowing an otherwise-uncovered non-Rust edit.
+        if [ "$dependency" != ":(glob)**/*" ]; then
+            impact_covered="$impact_covered$matches
+"
+        fi
+    done <<<"$inputs"
+done <<<"$impact_rows"
+
+# ---------------------------------------------------------------------------
+# Escape hatch 2: an undeclared path outside the coverage-visible Rust tree
 # ---------------------------------------------------------------------------
 
 outside=""
@@ -195,14 +316,18 @@ while IFS= read -r f; do
     (src/*.rs) ;;
     (crates/*/src/*.rs) ;;
     (tests/*.rs) ;;
-    (*) outside="$outside$f
-" ;;
+    (*)
+        if ! printf '%s' "$impact_covered" | grep -Fqx "$f"; then
+            outside="$outside$f
+"
+        fi
+        ;;
     esac
 done <<<"$changed"
 
 if [ -n "$outside" ]; then
     printf 'ALL\n'
-    note "changed path(s) outside src/**.rs, crates/**.rs, tests/*.rs -- running everything:"
+    note "changed path(s) outside src/**.rs, crates/**.rs, tests/*.rs have no declared impact coverage -- running everything:"
     printf '%s' "$outside" | sed 's/^/  /' >&2
     exit 0
 fi
@@ -219,9 +344,6 @@ fi
 # at selection time, never a hand-kept list -- CLAUDE.md's own
 # SH-136/SH-198/SH-258/SH-260-276/SH-360 doctrine, applied here rather than
 # repeated a sixth time.
-tree_scanning="$(git grep -l -E 'git ls-files|CARGO_MANIFEST_DIR|include_str!' -- 'tests/*.rs' 2>/dev/null \
-    | sed -n 's#^tests/\(.*\)\.rs$#\1#p')"
-
 # ---------------------------------------------------------------------------
 # Binaries the coverage map says are affected, plus any changed test file's
 # own binary (a file the map has never seen, because it is new)
@@ -230,6 +352,7 @@ tree_scanning="$(git grep -l -E 'git ls-files|CARGO_MANIFEST_DIR|include_str!' -
 selected="$(
     {
         printf '%s\n' "$tree_scanning"
+        printf '%s' "$impact_selected"
         while IFS= read -r f; do
             [ -n "$f" ] || continue
             # Leading `(` on every pattern: this case sits inside a $(...)
