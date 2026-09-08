@@ -249,7 +249,7 @@ test("Dispatch remembers submitted Codex and auto mode", async ({ page }) => {
   await deleteStory(page, nextTitle);
 });
 
-test("the item is aria-disabled while a dispatch for this story is in flight", async ({
+test("an in-flight dispatch disables the item with a warning and explanation", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
@@ -288,9 +288,33 @@ test("the item is aria-disabled while a dispatch for this story is in flight", a
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  await expect(
-    menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }),
-  ).toHaveAttribute("aria-disabled", "true");
+  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  await expect(dispatch).toHaveAttribute("aria-disabled", "true");
+  await expect(dispatch).toHaveAttribute(
+    "title",
+    "A dispatch is already in progress for this story",
+  );
+  const warning = dispatch.locator("svg.ctxmenu-disabled-warning");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveAttribute("aria-hidden", "true");
+  const warningBox = await warning.boundingBox();
+  expect(warningBox).not.toBeNull();
+  expect(warningBox!.width).toBeCloseTo(14, 1);
+  expect(warningBox!.height).toBeCloseTo(14, 1);
+  expect(
+    await warning.evaluate((node) => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--warn)";
+      document.body.appendChild(probe);
+      const matches =
+        getComputedStyle(node).color === getComputedStyle(probe).color;
+      probe.remove();
+      return matches;
+    }),
+  ).toBe(true);
+  await dispatch.click({ force: true });
+  await expect(menu).toBeVisible();
+  await expect(page.locator("#dispatch-modal")).not.toHaveClass(/open/);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
   await page.keyboard.press("Escape");
@@ -298,5 +322,16 @@ test("the item is aria-disabled while a dispatch for this story is in flight", a
   await expect(page.locator("#toast-stack .toast.success")).toBeVisible({
     timeout: 10_000,
   });
+
+  await card.click({ button: "right" });
+  const enabledDispatch = page.locator(".ctxmenu-item", {
+    hasText: /^Dispatch$/,
+  });
+  await expect(enabledDispatch).not.toHaveAttribute("aria-disabled", "true");
+  await expect(enabledDispatch).not.toHaveAttribute("title");
+  await expect(
+    enabledDispatch.locator("svg.ctxmenu-disabled-warning"),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await deleteStory(page, title);
 });
