@@ -184,6 +184,13 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
+  story daemon start [--port <PORT>]
+  story daemon restart                             (drain and replace the running daemon)
+  story daemon stop [--force]
+  story daemon status
+  story daemon install [--this-binary]
+  story daemon uninstall
+  story daemon token
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
