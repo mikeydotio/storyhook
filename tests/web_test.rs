@@ -3164,19 +3164,16 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
-/// SH-235 (D9): HTML5 native drag-and-drop (`card.draggable` + `dragstart`)
-/// never fires on touch, so before this the only touch path to a card's
-/// actions was an undocumented long-press. `.card-actions-btn` (board) and
-/// `.row-actions-btn` (list) open the exact same menu right-click does
-/// (`openStoryMenu`) -- coarse-pointer visible only, so desktop's rendering
-/// is untouched.
+/// SH-235/SH-600: board cards expose the same menu as right-click through a
+/// visible action button on every pointer type. List rows retain SH-235's
+/// coarse-pointer-only actions column.
 ///
 /// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
 /// menu items actually match right-click's and that the coarse-pointer
 /// sizing resolves correctly in a real browser; this is the cheap,
 /// browser-free layer pinning the source text of the mechanism.
 #[test]
-fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
+fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     let fixture = served();
     let port = fixture.port;
 
@@ -3213,33 +3210,20 @@ fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
     assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
     assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
 
-    // Hidden on a fine pointer (right-click already reaches this menu
-    // there); coarse-pointer-only, both axes -- an icon-only button is
-    // narrower than --tap-min once nothing else sets its width. Each
-    // button gets its own dedicated `@media (pointer: coarse)` block right
-    // beside its base rule (a third such block in the sheet, after the
-    // `:root` tokens' and `.card-actions-btn`'s own) -- checked as one
-    // literal snippet per button, the same way this file already pins
-    // `--tap-min`'s and `--control-font-*`'s own coarse-pointer values.
-    for (selector, coarse_block) in [
-        (
-            ".card-actions-btn",
-            "@media (pointer: coarse) {\n  .card-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
-        ),
-        (
-            ".row-actions-btn",
-            "@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
-        ),
+    let card_actions = declarations(css, ".card-actions-btn");
+    for declaration in [
+        "display: inline-flex",
+        "align-items: center",
+        "justify-content: center",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
     ] {
-        assert!(
-            declarations(css, selector).contains("display: none"),
-            "`{selector}` must default to display: none on a fine pointer"
-        );
-        assert!(
-            css.contains(coarse_block),
-            "`{selector}` must be revealed and sized to --tap-min inside its own coarse-pointer block"
-        );
+        assert!(card_actions.contains(declaration));
     }
+    assert!(!card_actions.contains("display: none"));
+
+    assert!(declarations(css, ".row-actions-btn").contains("display: none"));
+    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
 
     // The list table's own overflow-x scroll must not let the browser's
     // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
