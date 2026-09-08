@@ -1,6 +1,12 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use storyhook::store::{RawEvent, ReadOps, Store, StoredPayload, StoryNo};
 use storyhook_test_support::{TestEnv, scratch_dir};
+
+/// ureq's convenience JSON reader rejects a response at this encoded size.
+/// The regression must cross that dependency default rather than merely create
+/// a document that feels large.
+const UREQ_DEFAULT_RESPONSE_LIMIT: usize = 10 * 1024 * 1024;
 
 /// Every `story` invocation in this file runs in the shared test
 /// environment's private HOME/XDG directories, so nothing here can reach the
@@ -165,6 +171,89 @@ fn export_json_output() {
     // Export output is raw JSON (not wrapped in envelope)
     assert!(stdout.contains("\"schema\""));
     assert!(stdout.contains("\"stories\""));
+}
+
+/// SH-608: a project backup is allowed to be larger than the HTTP client's
+/// convenience-method default. The unknown event is deliberate: the transport
+/// must carry the exact opaque payload, not recover by decoding only the event
+/// kinds this build understands.
+#[test]
+fn export_carries_every_event_across_a_response_larger_than_ten_mibibytes() {
+    let env = TestEnv::isolated();
+    let project = env
+        .project()
+        .seed_story("A project with substantial history")
+        .build();
+
+    env.stop_daemon();
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    let opaque_payload = serde_json::json!({
+        "kind": "StoryLargeOpaqueRecord",
+        "at": "2030-01-01T00:00:00Z",
+        "payload": "x".repeat(UREQ_DEFAULT_RESPONSE_LIMIT),
+    })
+    .to_string();
+    storyhook::store::test_support::inject_raw_events(
+        &store,
+        project_id,
+        StoryNo::new(1),
+        &[RawEvent {
+            kind: "StoryLargeOpaqueRecord".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: opaque_payload.clone(),
+        }],
+    )
+    .expect("injecting a large unknown event");
+
+    let expected_events: Vec<serde_json::Value> = store
+        .read(|tx| tx.events_for(project_id, StoryNo::new(1)))
+        .expect("reading the source event log")
+        .into_iter()
+        .map(|event| match event.payload {
+            StoredPayload::Known(event) => {
+                serde_json::to_value(event).expect("serializing a known event")
+            }
+            StoredPayload::Unknown { json, .. } => {
+                serde_json::from_str(&json).expect("parsing an unknown event's stored JSON")
+            }
+        })
+        .collect();
+    drop(store);
+
+    let output = project
+        .story()
+        .arg("export")
+        .output()
+        .expect("running the large export");
+    assert!(
+        output.status.success(),
+        "large export failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.len() > UREQ_DEFAULT_RESPONSE_LIMIT,
+        "the fixture must cross ureq's default response limit"
+    );
+
+    let exported: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the complete export must be valid JSON");
+    assert_eq!(exported["stories"][0]["id"], "SH-1");
+    assert_eq!(
+        exported["stories"][0]["events"]
+            .as_array()
+            .expect("an events array"),
+        &expected_events
+    );
+    assert_eq!(
+        exported["stories"][0]["events"]
+            .as_array()
+            .expect("an events array")
+            .last()
+            .expect("the injected event"),
+        &serde_json::from_str::<serde_json::Value>(&opaque_payload)
+            .expect("parsing the expected opaque payload")
+    );
 }
 
 /// The global `--json` flag must not change *what* `story export` emits.
