@@ -174,7 +174,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 }
 
 #[test]
-fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
+fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_other_states() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let running_id = submitted(&fixture, "active low", Priority::Low, PR_ONE);
@@ -285,22 +285,64 @@ fn dashboard_data_exposes_running_and_queued_status_and_omits_other_states() {
     assert_eq!(story(&queued_id)["verification"]["status"], "queued");
     assert_eq!(story(&queued_id)["verification"]["position"], 1);
     assert!(story(&idle_id).get("verification").is_none());
+
+    StoryService::new(&fixture.ctx())
+        .set_state(&running_id, "verifying", None, Some("verifying"), None)
+        .unwrap();
+    let superseding = rest::route_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &activity,
+        rest::RouteRequest::new(
+            &Method::Get,
+            &path,
+            &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+            "",
+        ),
+        &TrustedHosts::default(),
+    );
+    let superseding_json: serde_json::Value =
+        serde_json::from_str(superseding.reply.body()).unwrap();
+    let superseding_status = superseding_json["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|view| view["story"]["id"] == running_id)
+        .and_then(|view| view.get("verification"))
+        .unwrap();
+    assert_eq!(superseding_status["status"], "superseding");
+    assert_eq!(
+        superseding_status["superseded_generation"],
+        running_candidate.verifying_generation.unwrap().get()
+    );
+    assert!(superseding_status["generation"].as_u64().is_some());
+    assert!(superseding_status["wait_seconds"].as_u64().is_some());
+    assert!(
+        superseding_status["active_elapsed_seconds"]
+            .as_u64()
+            .is_some()
+    );
 }
 
 #[test]
-fn a_different_verifying_generation_cannot_inherit_active_ownership() {
+fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_worker() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
-    submitted(&fixture, "resubmitted", Priority::High, PR_ONE);
+    let id = submitted(&fixture, "resubmitted", Priority::High, PR_ONE);
     let old_candidate = VerificationQueue::new(fixture.store())
         .next()
         .unwrap()
         .unwrap();
     let (activity, _guard) = active_for(&old_candidate);
-    let mut new_candidate = old_candidate.clone();
-    new_candidate.verifying_generation = Some(GlobalSeq::new(
-        old_candidate.verifying_generation.unwrap().get() + 1,
-    ));
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "verifying", None, Some("verifying"), None)
+        .unwrap();
+    let new_candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let old_generation = old_candidate.verifying_generation.unwrap();
+    let new_generation = new_candidate.verifying_generation.unwrap();
 
     let statuses = status_snapshot(
         &[new_candidate],
@@ -311,6 +353,48 @@ fn a_different_verifying_generation_cannot_inherit_active_ownership() {
 
     assert!(matches!(
         statuses[0].2,
+        VerificationStatus::Superseding {
+            generation,
+            superseded_generation,
+            wait_seconds: Some(0),
+            active_elapsed_seconds: 0,
+        } if generation == new_generation && superseded_generation == old_generation
+    ));
+    assert!(publish_once(fixture.store(), fixture.env(), FIXTURE_NOW, &activity).unwrap());
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+        .unwrap()
+        .unwrap();
+    let progress = row
+        .snapshot
+        .comments
+        .iter()
+        .find(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+        .unwrap();
+    assert!(progress.text.contains("Verification — RESUBMITTED"));
+    assert!(
+        progress
+            .text
+            .contains(&format!("Generation {}", new_generation.get()))
+    );
+    assert!(
+        progress
+            .text
+            .contains(&format!("generation {}", old_generation.get()))
+    );
+
+    let after_restart = status_snapshot(
+        &[VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()],
+        VerificationActivity::new().active().as_ref(),
+        fixture.env(),
+        FIXTURE_NOW,
+    );
+    assert!(matches!(
+        after_restart[0].2,
         VerificationStatus::Queued { position: 1, .. }
     ));
 }
@@ -796,6 +880,361 @@ impl VerificationActuator for FakeActuator {
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         self.reaped.lock().unwrap().push(candidate.story_id.clone());
         Ok(())
+    }
+}
+
+#[test]
+fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_exists() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let ctx = fixture.ctx();
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "legacy verification".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    PrLinkService::new(&ctx).link(&id, PR_ONE, true).unwrap();
+    let story_no = StoryNo::parse_id("SH", &id).unwrap();
+    fixture
+        .store()
+        .write(|tx| {
+            let row = tx
+                .story(fixture.project(), story_no)?
+                .expect("the fixture story must exist");
+            let mut snapshot = row.snapshot;
+            snapshot.state = "verifying".into();
+            tx.put_story(fixture.project(), &snapshot, row.head_seq)
+        })
+        .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(candidate.verifying_generation, None);
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::TestsFailed {
+            tree: "legacy-tree".into(),
+            log: "/tmp/legacy.log".into(),
+            detail: "legacy generation failed".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        TickResult::Returned
+    );
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("legacy generation failed"))
+    );
+}
+
+struct ResubmittingActuator<'a> {
+    fixture: &'a ServiceFixture,
+    outcomes: Mutex<VecDeque<VerificationOutcome>>,
+    verified_generations: Mutex<Vec<GlobalSeq>>,
+    notified: Mutex<Vec<GlobalSeq>>,
+    reaped: Mutex<Vec<GlobalSeq>>,
+}
+
+impl VerificationActuator for ResubmittingActuator<'_> {
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        let generation = candidate
+            .verifying_generation
+            .expect("every submitted fixture has a generation");
+        let first = {
+            let mut verified = self.verified_generations.lock().unwrap();
+            verified.push(generation);
+            verified.len() == 1
+        };
+        if first {
+            StoryService::new(&self.fixture.ctx())
+                .set_state(
+                    &candidate.story_id,
+                    "verifying",
+                    None,
+                    Some("verifying"),
+                    None,
+                )
+                .expect("same-state resubmission during the blocked actuator");
+        }
+        self.outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("every attempted generation has a fixture outcome")
+    }
+
+    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        self.notified
+            .lock()
+            .unwrap()
+            .push(candidate.verifying_generation.unwrap());
+        Ok(())
+    }
+
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        self.reaped
+            .lock()
+            .unwrap()
+            .push(candidate.verifying_generation.unwrap());
+        Ok(())
+    }
+}
+
+#[test]
+fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
+    let stale_outcomes = [
+        VerificationOutcome::Merged {
+            tree: "stale-tree".into(),
+            detail: "stale-merged".into(),
+        },
+        VerificationOutcome::Conflict {
+            detail: "stale-conflict".into(),
+        },
+        VerificationOutcome::InvalidSubmission {
+            detail: "stale-invalid".into(),
+        },
+        VerificationOutcome::TestsFailed {
+            tree: "stale-tree".into(),
+            log: "/tmp/stale.log".into(),
+            detail: "stale-tests-failed".into(),
+        },
+        VerificationOutcome::InfrastructureFailure {
+            detail: "stale-infrastructure".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        },
+    ];
+
+    for stale in stale_outcomes {
+        let fixture = ServiceFixture::new();
+        fixture.link_origin("https://github.com/acme/widgets");
+        let id = submitted(
+            &fixture,
+            "resubmitted while running",
+            Priority::High,
+            PR_ONE,
+        );
+        let activity = VerificationActivity::new();
+        std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(fixture.env().clone());
+        let actuator = ResubmittingActuator {
+            fixture: &fixture,
+            outcomes: Mutex::new(VecDeque::from([
+                stale,
+                VerificationOutcome::TestsFailed {
+                    tree: "current-tree".into(),
+                    log: "/tmp/current.log".into(),
+                    detail: "current-generation-failed".into(),
+                },
+            ])),
+            verified_generations: Mutex::new(Vec::new()),
+            notified: Mutex::new(Vec::new()),
+            reaped: Mutex::new(Vec::new()),
+        };
+
+        assert_eq!(
+            tick_with_reconciliation(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+                |_| Ok(None),
+            )
+            .unwrap(),
+            TickResult::Returned
+        );
+
+        let generations = actuator.verified_generations.lock().unwrap();
+        assert_eq!(generations.len(), 2, "the latest generation must run next");
+        assert_ne!(generations[0], generations[1]);
+        assert_eq!(
+            actuator.notified.lock().unwrap().as_slice(),
+            &[generations[1]],
+            "only the current red outcome may notify"
+        );
+        assert!(
+            actuator.reaped.lock().unwrap().is_empty(),
+            "a stale green outcome must not reap"
+        );
+        drop(generations);
+
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "in-progress");
+        assert!(row.snapshot.comments.iter().any(|comment| {
+            comment.text.contains("CENTRAL VERIFICATION RED")
+                && comment.text.contains("current-generation-failed")
+                && comment.text.contains("current-tree")
+        }));
+        assert!(
+            row.snapshot
+                .comments
+                .iter()
+                .all(|comment| !comment.text.contains("stale-")),
+            "a superseded outcome must leave no durable evidence"
+        );
+        assert!(
+            fixture
+                .store()
+                .read(|tx| tx.verification_incident())
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+struct WebMutationActuator<'a> {
+    fixture: &'a ServiceFixture,
+    activity: VerificationActivity,
+    reopen: bool,
+    outcome: VerificationOutcome,
+    reaped: Mutex<Vec<String>>,
+}
+
+impl WebMutationActuator<'_> {
+    fn post(&self, path: &str, body: &str) {
+        let headers = [
+            Header::from_bytes("Host", "127.0.0.1:3456").unwrap(),
+            Header::from_bytes("X-Storyhook", "1").unwrap(),
+            Header::from_bytes("Content-Type", "application/json").unwrap(),
+        ];
+        let routed = rest::route_with_activity(
+            self.fixture.store(),
+            self.fixture.env(),
+            &self.activity,
+            rest::RouteRequest::new(&Method::Post, path, &headers, body),
+            &TrustedHosts::default(),
+        );
+        assert_eq!(routed.reply.status, 200, "web mutation failed: {path}");
+    }
+}
+
+impl VerificationActuator for WebMutationActuator<'_> {
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        let base = format!(
+            "/api/repos/{}/story/{}",
+            candidate.project_slug, candidate.story_id
+        );
+        self.post(&format!("{base}/move"), r#"{"state":"done"}"#);
+        if self.reopen {
+            self.post(&format!("{base}/reopen"), "{}");
+        }
+        self.outcome.clone()
+    }
+
+    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        panic!("a stale UI-raced outcome must not notify")
+    }
+
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        self.reaped.lock().unwrap().push(candidate.story_id.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
+    let cases = [
+        (
+            false,
+            VerificationOutcome::InfrastructureFailure {
+                detail: "stale-after-ui-done".into(),
+                disposition: VerificationFailureDisposition::Permanent,
+            },
+            "done",
+        ),
+        (
+            false,
+            VerificationOutcome::Merged {
+                tree: "stale-tree".into(),
+                detail: "stale-after-ui-done".into(),
+            },
+            "done",
+        ),
+        (
+            true,
+            VerificationOutcome::TestsFailed {
+                tree: "stale-tree".into(),
+                log: "/tmp/stale.log".into(),
+                detail: "stale-after-ui-reopen".into(),
+            },
+            "todo",
+        ),
+    ];
+
+    for (reopen, outcome, expected_state) in cases {
+        let fixture = ServiceFixture::new();
+        fixture.link_origin("https://github.com/acme/widgets");
+        let id = submitted(&fixture, "UI raced verifier", Priority::High, PR_ONE);
+        let activity = VerificationActivity::new();
+        std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(fixture.env().clone());
+        let actuator = WebMutationActuator {
+            fixture: &fixture,
+            activity: activity.clone(),
+            reopen,
+            outcome,
+            reaped: Mutex::new(Vec::new()),
+        };
+
+        assert_eq!(
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+            )
+            .unwrap(),
+            TickResult::Returned
+        );
+
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, expected_state);
+        assert!(
+            row.snapshot
+                .comments
+                .iter()
+                .all(|comment| !comment.text.contains("stale-after-ui"))
+        );
+        assert!(actuator.reaped.lock().unwrap().is_empty());
+        assert!(
+            fixture
+                .store()
+                .read(|tx| tx.verification_incident())
+                .unwrap()
+                .is_none()
+        );
     }
 }
 
