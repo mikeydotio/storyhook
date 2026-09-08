@@ -143,6 +143,8 @@ pub enum ProjectRoute<'a> {
     StoryPatch { id: &'a str },
     /// `DELETE .../story/{id}`
     StoryDelete { id: &'a str },
+    /// `POST .../story/{id}/attachments` — one binary image upload.
+    StoryAttachmentUpload { id: &'a str },
     /// `POST .../story/{id}/{action}`, for an action that exists.
     StoryAction { id: &'a str, action: StoryAction },
     /// `POST .../story/{id}/{action}` for an action that does not exist.
@@ -326,6 +328,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Delete => ProjectRoute::StoryDelete { id },
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["story", id, "attachments"] => match method {
+            Method::Post => ProjectRoute::StoryAttachmentUpload { id },
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["story", id, "dispatch"] => match method {
             Method::Post => ProjectRoute::Dispatch { id },
             _ => ProjectRoute::MethodNotAllowed,
@@ -415,6 +421,7 @@ impl ProjectRoute<'_> {
             ProjectRoute::StoryShow { .. } => "StoryShow",
             ProjectRoute::StoryPatch { .. } => "StoryPatch",
             ProjectRoute::StoryDelete { .. } => "StoryDelete",
+            ProjectRoute::StoryAttachmentUpload { .. } => "StoryAttachmentUpload",
             ProjectRoute::StoryAction { .. } => "StoryAction",
             ProjectRoute::StoryActionUnknown => "StoryActionUnknown",
             ProjectRoute::Dispatch { .. } => "Dispatch",

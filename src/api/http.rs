@@ -610,6 +610,16 @@ fn proxy_hosts_from_env() -> Vec<String> {
 
 // --- Request body reading and parsing ---
 
+/// A fully acquired request body. Only the classified attachment-upload route
+/// may produce binary bytes; all other routes retain UTF-8 validation.
+#[derive(Debug)]
+pub(crate) enum RequestBody {
+    /// An ordinary UTF-8 request, bounded by `MAX_BODY_BYTES`.
+    Text(String),
+    /// An image upload bounded by the attachment service's limit.
+    Binary(Vec<u8>),
+}
+
 /// Maximum request body size accepted from a mutation route. Well above any
 /// legitimate story field (titles, comments, label lists), while bounding
 /// how much a single request can force the server to buffer.

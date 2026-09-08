@@ -80,14 +80,10 @@ pub(crate) fn canonicalize<S: Store>(
     Ok(())
 }
 
-/// [`canonicalize`] for a single id, for the one route that does not build an
-/// [`Invocation`].
-///
-/// `PATCH /api/repos/{id}/story/{story}` calls `StoryService::set_fields` and
-/// reads the view itself rather than dispatching twice, so it never passes the
-/// gate in [`crate::invoke::dispatch`]. Rather than leave that route as the one
-/// place a bare id does not work, it calls this — the same classifier, the same
-/// refusal, one call site more.
+/// [`canonicalize`] for service-backed REST routes that do not build an
+/// [`Invocation`]. Story PATCH and attachment upload both call their service
+/// and read the resulting view directly. This preserves the same bare-ID
+/// expansion and foreign-prefix refusal as [`crate::invoke::dispatch`].
 ///
 /// # Errors
 ///
