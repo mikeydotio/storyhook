@@ -21,7 +21,9 @@ cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
-  await page.setViewportSize({ width: 640, height: 844 });
+  // SH-614 reserves <=768px for the stacked mobile list. Exercise the table
+  // one CSS pixel above that boundary, under maximum desktop pressure.
+  await page.setViewportSize({ width: 769, height: 844 });
   await page.goto("/");
   await openProject(page, "Alpha Project");
 });
@@ -145,10 +147,26 @@ test("only titles and spaces between intact label chips wrap in list rows", asyn
     overflowX: getComputedStyle(wrap).overflowX,
     scrollWidth: wrap.scrollWidth,
     clientWidth: wrap.clientWidth,
-    pageWidth: document.documentElement.scrollWidth,
-    viewportWidth: window.innerWidth,
+    listScrollWidth: document.querySelector<HTMLElement>("#list-view")!.scrollWidth,
+    listClientWidth: document.querySelector<HTMLElement>("#list-view")!.clientWidth,
   }));
   expect(overflow.overflowX).toBe("auto");
   expect(overflow.scrollWidth).toBeGreaterThan(overflow.clientWidth);
-  expect(overflow.pageWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+  expect(overflow.listScrollWidth).toBeLessThanOrEqual(overflow.listClientWidth);
+});
+
+test("a mobile action falls back to its desktop row when fine-pointer actions are hidden", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 844 });
+  await page.locator('#view-toggle button[data-view="list"]').click();
+
+  const item = page.locator("#mobile-list-body > li").first();
+  const id = (await item.getAttribute("data-id"))!;
+  const actions = item.getByRole("button", { name: `Actions for ${id}` });
+  await actions.focus();
+  await expect(actions).toBeFocused();
+
+  await page.setViewportSize({ width: 769, height: 844 });
+  await expect(page.locator(`#list-body > tr[data-id="${id}"]`)).toBeFocused();
 });
