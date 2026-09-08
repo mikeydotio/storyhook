@@ -746,7 +746,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   display: block; width: 100%; box-sizing: border-box; margin: 0 0 0.4375rem;
   padding: 0.1875rem 0.4375rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-sunken); color: var(--fg-muted); font-size: 0.625rem; font-weight: 650;
-  font-variant-numeric: tabular-nums; line-height: 1.35;
+  /* Compiler paths and failure details can contain tokens wider than a card. */
+  font-variant-numeric: tabular-nums; line-height: 1.35; overflow-wrap: anywhere;
 }
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .verification-chip-superseding { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
