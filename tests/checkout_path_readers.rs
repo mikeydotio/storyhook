@@ -83,6 +83,14 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/daemon/engine.rs",
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
     ),
+    (
+        "src/service/cleanup.rs",
+        "manual cleanup chooses a working directory only after resolving the selected project",
+    ),
+    (
+        "src/daemon/cleanup.rs",
+        "scheduled cleanup chooses a working directory only after enumerating the store project by id",
+    ),
 ];
 
 /// Walks `src/`, skipping the store layer, and returns every `.rs` file whose

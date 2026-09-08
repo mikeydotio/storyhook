@@ -239,7 +239,12 @@ fn the_listing_names_every_key_and_says_which_values_are_defaults() {
     assert!(out.status.success(), "listing settings should succeed");
     let text = String::from_utf8_lossy(&out.stdout);
 
-    for key in ["sync.auto_transition", "doctor.stale_threshold"] {
+    for key in [
+        "sync.auto_transition",
+        "doctor.stale_threshold",
+        "cleanup.auto",
+        "cleanup.interval",
+    ] {
         assert!(
             text.contains(key),
             "`{key}` is missing from the listing:\n{text}"
@@ -283,7 +288,7 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
     let settings = listing["settings"]
         .as_array()
         .expect("`--json` must carry a settings array");
-    assert_eq!(settings.len(), 2);
+    assert_eq!(settings.len(), 4);
 
     let sync = &settings[0];
     assert_eq!(sync["key"], "sync.auto_transition");
@@ -301,6 +306,13 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
             .expect("the inert key carries a note")
             .contains("no command reads this yet")
     );
+
+    assert_eq!(settings[2]["key"], "cleanup.auto");
+    assert_eq!(settings[2]["source"], "default");
+    assert_eq!(settings[2]["value"], "true");
+    assert_eq!(settings[3]["key"], "cleanup.interval");
+    assert_eq!(settings[3]["source"], "default");
+    assert_eq!(settings[3]["value"], "1d");
 }
 
 /// A write answers with the value it wrote, so the user sees what took effect
@@ -452,7 +464,12 @@ fn the_settings_topic_separates_the_three_things_called_config() {
         text.contains(".storyhook.toml"),
         "the topic must say what `.storyhook.toml` is instead:\n{text}"
     );
-    for key in ["sync.auto_transition", "doctor.stale_threshold"] {
+    for key in [
+        "sync.auto_transition",
+        "doctor.stale_threshold",
+        "cleanup.auto",
+        "cleanup.interval",
+    ] {
         assert!(
             text.contains(key),
             "the topic must document `{key}`:\n{text}"

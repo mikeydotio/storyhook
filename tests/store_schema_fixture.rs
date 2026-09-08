@@ -108,14 +108,6 @@ fn build(path: &Path) {
                     created_at: "2026-01-01T00:00:00Z".into(),
                 },
             )?;
-            tx.put_settings(
-                project,
-                &storyhook::store::ProjectSettings {
-                    sync_auto_transition: Some(true),
-                    doctor_stale_threshold: Some("14d".into()),
-                },
-            )?;
-
             let state_map = tx.state_map(project)?;
             for (no, events) in [
                 (
@@ -178,6 +170,16 @@ fn build(path: &Path) {
         .unwrap();
 
     let conn = Connection::open(path).unwrap();
+
+    // Settings in raw SQL: the current writer names columns added after v1,
+    // while this fixture deliberately exercises the original table shape.
+    conn.execute(
+        "INSERT INTO project_settings
+             (project_id, sync_auto_transition, doctor_stale_threshold)
+         VALUES ((SELECT id FROM projects WHERE slug = 'fixture'), 1, '14d')",
+        [],
+    )
+    .unwrap();
 
     // Types, in raw SQL and without an `emoji` column — see the comment where
     // `tx.put_types` used to be called above.
