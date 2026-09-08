@@ -48,11 +48,15 @@ exactly matches the package that owns the helper. Missing, legacy, malformed,
 or mismatched hooks refuse and roll back. Attended dispatch is unchanged and
 continues to use screen readiness.
 
-Codex has no `ExitPlanMode` tool boundary corresponding to Claude's. Storyhook's built-in
-Codex prompts therefore require the plan presented for approval to make posting that exact
-plan to the story its first implementation step. Custom `STORY_PROMPT`, `STORY_AUTO_PROMPT`,
-and `STORY_AUTO_PROMPT_SOLO` values are wholesale overrides and must carry any equivalent
-requirement themselves; `STORY_PROMPT_EXTRA` still appends after the built-in requirement.
+Codex can surface a Claude-compatible `ExitPlanMode` hook event, but a bare
+`permissionDecision: "allow"` is unsupported and is not its plan-approval
+boundary. The hook recognizes Codex's required `turn_id` field and emits no
+decision; the exact-pane watcher approves the review UI. Storyhook's built-in
+Codex prompts therefore require the plan presented for approval to make posting
+that exact plan to the story its first implementation step. Custom `STORY_PROMPT`,
+`STORY_AUTO_PROMPT`, and `STORY_AUTO_PROMPT_SOLO` values are wholesale overrides
+and must carry any equivalent requirement themselves; `STORY_PROMPT_EXTRA` still
+appends after the built-in requirement.
 
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.

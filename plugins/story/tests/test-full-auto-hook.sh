@@ -50,13 +50,20 @@ claude_payload() {
   printf '"tool_use_id":"call_1","tool_input":%s}' "$2"
 }
 
-# The Codex envelope SH-459 measured against CLI 0.149.0: the same event and
-# decision vocabulary, plus turn_id and model, under a different tool name.
+# The Codex envelope SH-459 measured against CLI 0.149.0: the same event
+# vocabulary, plus turn_id and model, under a different question-tool name.
 codex_payload() {
   printf '{"session_id":"lane-1","turn_id":"turn-1","transcript_path":"/dev/null",'
   printf '"cwd":"%s","model":"gpt-5-codex","permission_mode":"auto",' "$repo"
   printf '"hook_event_name":"PreToolUse","tool_name":"request_user_input",'
   printf '"tool_use_id":"call_1","tool_input":{"questions":[{"question":"which?"}]}}'
+}
+
+codex_plan_payload() {
+  printf '{"session_id":"lane-1","turn_id":"turn-1","transcript_path":"/dev/null",'
+  printf '"cwd":"%s","model":"gpt-5-codex","permission_mode":"plan",' "$repo"
+  printf '"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode",'
+  printf '"tool_use_id":"call_1","tool_input":{"plan":"do the thing"}}'
 }
 
 decision_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecision // "none"'; }
@@ -74,6 +81,13 @@ case "$(reason_of "$out")" in
   *"$LANE_STORY"*) ;;
   *) fail_test "ExitPlanMode: the approval reason does not name the lane's story" ;;
 esac
+
+# Codex marks every PreToolUse payload with its required `turn_id` extension.
+# Its parser rejects a bare `permissionDecision: allow`; the provider-specific
+# watcher below owns Codex plan approval, so the hook must remain inert here.
+out=$(fire ExitPlanMode "$(codex_plan_payload)"); status=$?
+assert_eq "$status" "0" "Codex ExitPlanMode: exits 0"
+assert_eq "$out" "{}" "Codex ExitPlanMode: emits no unsupported allow decision"
 
 # Claude Code 2.1.261 still presents a separate plan-review pane but no longer
 # emits PermissionRequest for it. Dispatch starts this watcher against the
@@ -171,6 +185,8 @@ out=$(fire ExitPlanMode "$(claude_payload ExitPlanMode '{"plan":"do the thing"}'
 assert_eq "$(decision_of "$out")" "allow" "STORYHOOK_AUTO: the plan is approved"
 assert_contains "$(reason_of "$out")" "SH-511" \
   "STORYHOOK_AUTO: the approval reason names the autonomous story"
+out=$(fire ExitPlanMode "$(codex_plan_payload)")
+assert_eq "$out" "{}" "STORYHOOK_AUTO: Codex plan approval stays with the watcher"
 out=$(fire request_user_input "$(codex_payload)")
 assert_eq "$(decision_of "$out")" "deny" "STORYHOOK_AUTO: Codex questions are refused"
 assert_contains "$(reason_of "$out")" "SH-511" \

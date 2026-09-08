@@ -473,7 +473,8 @@ When active:
 
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
-| Plan tool (`PreToolUse: ExitPlanMode`) | allow | — |
+| Claude plan tool (`PreToolUse: ExitPlanMode`) | allow | — |
+| Codex-compatible `ExitPlanMode` event | no decision | Codex rejects a bare `allow`; its watcher owns approval. |
 | Claude plan review (watcher armed by dispatch) | bounded exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only while the original dispatched pane process remains live, and confirms the dialog leaves that process. |
 | Codex plan review (watcher armed after confirmed Plan mode) | bounded exact-gated tmux Return | Selects the already-highlighted “Yes, implement this plan” only while the original dispatched pane process remains live, and confirms the dialog leaves that process. |
 | Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
@@ -497,6 +498,13 @@ matching `rust-v0.149.0` source tag. A `PreToolUse` matcher named
   complete `tool_input`, and `tool_use_id`;
 - `session_id`, `turn_id`, `transcript_path`, `cwd`, `model`, and
   `permission_mode` (plus agent identity fields for a subagent).
+
+`turn_id` is Codex's required extension and is absent from Claude's hook
+contract. The shared hook uses its presence only to keep a Codex
+`ExitPlanMode` event inert: Codex treats `permissionDecision: "allow"` without
+an `updatedInput` rewrite as an unsupported hook result, and its exact-pane
+watcher already owns plan approval. Claude retains the explicit `allow` its
+plan tool requires.
 
 The supported denial and feedback fields are nested under
 `hookSpecificOutput`:
@@ -1121,10 +1129,10 @@ proof makes the direct private-mode refusal test fail. The module document in
 ### SH-460 / SH-511 — autonomous approval hooks
 
 `plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries in the
-plugin's existing `hooks.json`. It allows
-the `ExitPlanMode` tool, accepts Claude's separate plan-review pane with one
-exact-gated Return, denies `AskUserQuestion` and `request_user_input` with the
-feedback D6 specifies, and answers nothing else.
+plugin's existing `hooks.json`. It allows Claude's `ExitPlanMode` tool, leaves
+Codex's compatibility event undecided, accepts Claude's separate plan-review
+pane with one exact-gated Return, denies `AskUserQuestion` and
+`request_user_input` with the feedback D6 specifies, and answers nothing else.
 
 **`STORYHOOK_FULL_AUTO` carries an engine lane's story id, and any non-empty
 value activates.** SH-511 later added `STORYHOOK_AUTO` for an ordinary
@@ -1975,6 +1983,16 @@ reads. The measured timeout behavior is fail-open, matching the risk already
 recorded for Claude Code. That evidence removed the proposed Codex refusal:
 both providers use the shared Full Auto hook policy, with the timeout caveat
 made explicit rather than inferred from another host.
+
+### SH-599 — provider-specific plan-exit decisions
+
+Codex 0.149.0 through 0.153.4 accepts `deny` for blocking, but reports a bare
+`permissionDecision: "allow"` without `updatedInput` as an unsupported hook
+result. Storyhook had emitted that Claude decision for any `ExitPlanMode`
+payload, including Codex's provider-shaped envelope. The hook now recognizes
+Codex by its required `turn_id` extension and emits `{}` for that plan event;
+the existing exact-pane watcher remains the sole Codex plan-approval mechanism.
+Claude's explicit `allow` and both providers' question denials are unchanged.
 
 ### SH-462 — operational state outside the event fold
 
