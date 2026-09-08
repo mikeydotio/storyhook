@@ -9275,3 +9275,61 @@ fn attachment_viewer_is_a_registered_named_dialog() {
     assert!(html.contains(r#"id="attachment-close""#));
     assert!(html.contains(r#"id="attachment-status" role="status""#));
 }
+
+/// SH-392: attachment drops are a file-only layer over the existing card
+/// drag-and-drop behavior. This fast fence pins the shared transport and event
+/// boundaries; Playwright exercises the browser behavior end to end.
+#[test]
+fn attachment_drop_targets_preserve_json_and_card_drag_contracts() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let css = stylesheet(&html);
+    let script = script(&html);
+    let api = function_body(script, "api");
+    let transfer_has_files = function_body(script, "transferHasFiles");
+    let bind_drop = function_body(script, "bindAttachmentDrop");
+    let upload = function_body(script, "uploadDroppedAttachments");
+    let column_drop = function_body(script, "bindColumnDrop");
+
+    assert!(
+        api.contains("opts.rawBody")
+            && api.contains(
+                r#"Content-Type", opts.rawBody ? "application/octet-stream" : "application/json"#
+            )
+            && api.contains("xhr.send(opts.rawBody ? body : (body ? JSON.stringify(body) : null))"),
+        "api() must make raw uploads explicit while preserving JSON as its default"
+    );
+    assert!(
+        transfer_has_files.contains("item.kind === \"file\"")
+            && transfer_has_files.contains("types.indexOf(\"Files\")"),
+        "file-drag detection needs DataTransfer.items plus the Files-type fallback"
+    );
+    assert!(
+        bind_drop.contains("if (!transferHasFiles(e.dataTransfer)) return")
+            && bind_drop.contains("e.preventDefault()")
+            && bind_drop.contains("e.stopPropagation()")
+            && bind_drop.contains("e.dataTransfer.dropEffect = \"copy\"")
+            && bind_drop.contains("Array.prototype.slice.call(e.dataTransfer.files)")
+            && bind_drop.contains("findStory(storyId)")
+            && bind_drop.contains("current.story.superstate === \"OPEN\""),
+        "drop targets must claim only files and read them from the drop event"
+    );
+    assert!(
+        declarations(css, ".attachment-drop-target").contains("outline")
+            && declarations(css, ".attachment-drop-refused").contains("cursor: not-allowed"),
+        "accepted and refused file drops both need visible feedback"
+    );
+    assert!(
+        upload.contains("state.repoId === repoId")
+            && upload.contains("err.status === 0")
+            && upload.matches("return next()").count() >= 2,
+        "the upload batch must guard project identity, stop on ambiguity, and continue after definite refusals"
+    );
+    assert!(
+        column_drop.contains(r#"getData("text/plain")"#)
+            && !column_drop.contains("transferHasFiles"),
+        "the existing card-move handler must remain independent of attachment drops"
+    );
+}
