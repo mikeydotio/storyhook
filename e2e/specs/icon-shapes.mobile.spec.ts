@@ -1,5 +1,15 @@
 import { test, expect } from "./support";
-import { createStory, deleteStory, openProject, seedToken } from "./support";
+import {
+  backdropOf,
+  contrastRatio,
+  createStory,
+  deleteStory,
+  MIN_CONTRAST,
+  openProject,
+  parseColor,
+  seedToken,
+  THEMES,
+} from "./support";
 
 /**
  * SH-444's mobile half. `.card-actions-btn` (board) and `.row-actions-btn`
@@ -54,5 +64,38 @@ test("the card and list-row actions buttons render an svg icon, not a character"
 
   await page.locator('#view-toggle button[data-view="board"]').click();
   await expect(page.locator("#board-view")).toBeVisible();
+  await deleteStory(page, title);
+});
+
+test("both actions icons have sufficient contrast in every theme", async ({ page }) => {
+  const title = "SH-600 mobile actions contrast";
+  await openProject(page, "Alpha Project");
+  await createStory(page, title);
+
+  const card = page.locator(".card", { hasText: title });
+  const buttons = [card.locator(".card-actions-btn")];
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  buttons.push(
+    page.locator("tr[data-id]", { hasText: title }).locator(".row-actions-btn"),
+  );
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    for (const button of buttons) {
+      const appearance = await button.evaluate((node) => {
+        const backgrounds: string[] = [];
+        for (let current: Element | null = node; current; current = current.parentElement) {
+          backgrounds.push(getComputedStyle(current).backgroundColor);
+        }
+        return { color: getComputedStyle(node).color, backgrounds };
+      });
+      expect(
+        contrastRatio(parseColor(appearance.color), backdropOf(appearance.backgrounds)),
+        `${theme.name}: actions icon must meet SC 1.4.11`,
+      ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+    }
+  }
+
+  await page.locator('#view-toggle button[data-view="board"]').click();
   await deleteStory(page, title);
 });
