@@ -1111,9 +1111,13 @@ Standing rules for every wave:
   without a full run. `scripts/coverage-map.sh` captures a per-test-binary source-file map via
   LLVM instrumentation, but is never trusted to prove a binary unaffected — ~57 of this repo's
   test files read `CARGO_MANIFEST_DIR` at runtime and ~19 shell out to `git ls-files`, both
-  invisible to line coverage, so three unconditional escape hatches (no map for the baseline;
-  any changed path outside `src/**.rs`/`crates/**.rs`/`tests/*.rs`; a derived, never-hand-kept
-  tree-scanning set) sit on top of the map and are checked before it. `gate-receipt.sh` gained
+  invisible to line coverage. `scripts/test-impact.tsv` declares those filesystem dependencies;
+  the selector validates every derived checkout reader has a declaration, follows literal
+  repository-local shell sources transitively, and runs matching contracts for the actual
+  tracked diff. No map, an invalid declaration, or an undeclared non-Rust path still fails
+  closed to `ALL`; the derived tree-scanning set remains always-on. Work lanes consult the
+  selector before choosing direct test targets, but never call an `ALL` result a full gate.
+  `gate-receipt.sh` gained
   a third tier, `changed < gate < full`, carrying a `base <tree>` line; `.githooks/pre-push`
   accepts it for a push, but `scripts/merge-preflight.sh` never does for a merge — a council
   verdict (story SH-429): a merge tree is a two-parent combination no single branch's own
