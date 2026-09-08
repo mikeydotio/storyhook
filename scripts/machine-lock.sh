@@ -117,18 +117,19 @@ readonly LOCK_POLL_SECS=1
 # disagree with the first).
 readonly GATE_MEDIAN_SECS=36
 #
-# The number of Full Auto runs which can be live at once. It is the shell
-# rendering of api::dispatch::MAX_RUNNING; tests/machine_lock.rs binds the two
-# so changing the dispatch budget cannot leave this derivation stale.
-readonly GATE_CONCURRENT_RUNS=4
+# The largest observed contended gate (SH-347 and SH-536). Unlike the warm
+# median, this measurement includes the cold/contended work whose legitimate
+# silence the holder watchdog must tolerate. tests/machine_lock.rs binds this
+# to the verifier's copy of the same measured fact.
+readonly GATE_CONTENDED_MAX_SECS=873
 #
-# One further whole concurrency window is deliberate tolerance for the build,
-# fmt and clippy work other worktrees can still perform outside this lock.
+# One further complete measured window covers a quiet compiler/linker phase
+# without turning the silence watchdog into an unbounded heartbeat.
 readonly GATE_IDLE_MARGIN=2
 #
 # This is a ceiling on SILENCE, never on the suite. Every journal append resets
 # it, so a progressing gate may run indefinitely (SH-536).
-readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))
+readonly GATE_IDLE_CEILING_SECS=$((GATE_CONTENDED_MAX_SECS * GATE_IDLE_MARGIN))
 #
 # A waiter is told immediately, then once per typical suite it is queued
 # behind — so every follow-up line means "another whole nominal `make test`
@@ -258,6 +259,35 @@ emit_lock_activity() {
 # longer exists.
 process_started() {
     ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//; s/ *$//'
+}
+
+descendant_snapshot() {
+    root_pid="$1"
+    ps -axo pid=,ppid=,pgid=,stat=,etime=,time=,command= 2>/dev/null \
+        | awk -v root="$root_pid" '
+            {
+                pid = $1
+                parent[pid] = $2
+                row[pid] = $0
+            }
+            END {
+                selected[root] = 1
+                changed = 1
+                while (changed) {
+                    changed = 0
+                    for (pid in parent) {
+                        if (!selected[pid] && selected[parent[pid]]) {
+                            selected[pid] = 1
+                            changed = 1
+                        }
+                    }
+                }
+                print "  PID  PPID  PGID STAT ELAPSED      TIME COMMAND"
+                for (pid in row) {
+                    if (selected[pid]) print row[pid]
+                }
+            }
+        '
 }
 
 mkdir -p "$lock_root" || die "could not create the lock root at $lock_root"
@@ -482,9 +512,9 @@ if [ -n "$max_idle" ]; then
                 note "the '$name' holder made no progress for ${idle}s (ceiling ${max_idle}s)"
                 last="$(tail -n 1 "$journal" 2>/dev/null || true)"
                 note "last gate progress: ${last:-<journal is empty>}"
-                note "active process group $child:"
-                ps -o pid=,ppid=,etime=,command= -g "$child" >&2 2>/dev/null \
-                    || note "could not inspect process group $child"
+                note "active descendant tree rooted at $child:"
+                descendant_snapshot "$child" >&2 \
+                    || note "could not inspect descendant tree rooted at $child"
                 printf 'stalled after %ss\n' "$idle" > "$stalled"
                 printf '{"kind":"item","path":"release gate","status":"failed","at":"%s","seconds":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$idle" >> "$journal" 2>/dev/null || true
