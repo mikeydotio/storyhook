@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use storyhook::daemon::lifecycle::{
     self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, SPAWN_LOCK_DEADLINE,
 };
-use storyhook_test_support::{TestEnv, scratch_dir};
+use storyhook_test_support::{TestEnv, path_without_tailscale, scratch_dir};
 
 /// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
 /// refused TCP connection fails at the OS level in microseconds, so this is
@@ -180,7 +180,9 @@ fn forced_stop_does_not_let_a_silent_control_peer_spend_its_kill_budget() {
     let env = TestEnv::isolated();
     let _guard = Guard(&env);
     let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
     env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
         .assert()
         .success();
