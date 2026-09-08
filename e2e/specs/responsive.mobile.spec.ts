@@ -1448,3 +1448,115 @@ test("a wider phone keeps the board column at its original 18rem width", async (
     .evaluate((el) => el.getBoundingClientRect().width);
   expect(width).toBeCloseTo(288, 0);
 });
+
+/**
+ * SH-615: the dashboard's hierarchy is one responsive system rather than a
+ * collection of per-surface literals. Measure the browser-resolved roles at
+ * every supported mobile boundary, including the unhealthy connection copy
+ * that healthy-state compaction may hide.
+ */
+test("shared hierarchy resolves consistently across mobile widths", async ({
+  page,
+}) => {
+  for (const width of SWEEP_WIDTHS) {
+    await page.setViewportSize({ width, height: SWEEP_HEIGHT });
+    await page.goto("/");
+    await page.locator("#home-btn").click();
+    await expect(page.locator("#home-view")).toBeVisible();
+    await openProject(page, "Alpha Project");
+
+    const metrics = await page.evaluate(() => {
+      const px = (value: string) => parseFloat(value);
+      const root = getComputedStyle(document.documentElement);
+      const insetProbe = document.createElement("div");
+      insetProbe.style.cssText =
+        "position:absolute;visibility:hidden;width:var(--inset-main)";
+      document.body.appendChild(insetProbe);
+      const inset = px(getComputedStyle(insetProbe).width);
+      insetProbe.remove();
+      const board = getComputedStyle(document.querySelector(".board")!);
+      const card = getComputedStyle(document.querySelector(".card")!);
+      const title = getComputedStyle(document.querySelector(".card-title")!);
+      const id = getComputedStyle(document.querySelector(".card-id")!);
+      return {
+        inset,
+        boardInset: px(board.paddingLeft),
+        cardPadding: [
+          px(card.paddingTop),
+          px(card.paddingRight),
+          px(card.paddingBottom),
+          px(card.paddingLeft),
+        ],
+        titleSize: px(title.fontSize),
+        titleWeight: title.fontWeight,
+        titleLineHeight: px(title.lineHeight),
+        titleMarginTop: px(title.marginTop),
+        titleMarginBottom: px(title.marginBottom),
+        metadataSize: px(id.fontSize),
+        metadataLineHeight: px(id.lineHeight),
+        tapMin: px(root.getPropertyValue("--tap-min")),
+      };
+    });
+
+    expect(metrics.inset, `${width}px: mobile outer inset`).toBe(12);
+    expect(metrics.boardInset, `${width}px: board outer inset`).toBe(12);
+    expect(metrics.cardPadding, `${width}px: card padding`).toEqual([
+      12, 12, 12, 12,
+    ]);
+    expect(metrics.titleSize, `${width}px: story title size`).toBe(16);
+    expect(metrics.titleWeight, `${width}px: story title weight`).toBe("600");
+    expect(metrics.titleLineHeight, `${width}px: story title line height`).toBeCloseTo(
+      22.4,
+      1,
+    );
+    expect(metrics.titleMarginTop, `${width}px: space above story title`).toBe(4);
+    expect(metrics.titleMarginBottom, `${width}px: space below story title`).toBe(8);
+    expect(metrics.metadataSize, `${width}px: metadata size`).toBe(13);
+    expect(
+      metrics.metadataLineHeight,
+      `${width}px: metadata line height`,
+    ).toBeCloseTo(18.2, 1);
+    expect(metrics.tapMin, `${width}px: coarse target token`).toBe(44);
+
+    for (const selector of ["#new-story-btn", ".card-actions-btn"]) {
+      const box = await page.locator(selector).first().boundingBox();
+      expect(box, `${width}px: ${selector} has a box`).not.toBeNull();
+      expect(box!.width, `${width}px: ${selector} width`).toBeGreaterThanOrEqual(44);
+      expect(box!.height, `${width}px: ${selector} height`).toBeGreaterThanOrEqual(44);
+    }
+
+    await page.route("**/api/events", (route) => route.abort());
+    await page.reload();
+    await expect(page.locator("#conn-text")).toHaveText("Disconnected");
+    const connectionCopy = await page.locator("#conn-text").evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return { width: box.width, height: box.height, clip: style.clip };
+    });
+    expect(
+      connectionCopy.width,
+      `${width}px: disconnected copy must not use the visually-hidden box`,
+    ).toBeGreaterThan(1);
+    expect(connectionCopy.height, `${width}px: disconnected copy height`).toBeGreaterThan(1);
+    expect(connectionCopy.clip, `${width}px: disconnected copy clipping`).toBe("auto");
+    await page.unroute("**/api/events");
+
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = "200%";
+    });
+    const enlargedType = await page.evaluate(() => ({
+      title: parseFloat(getComputedStyle(document.querySelector(".card-title")!).fontSize),
+      metadata: parseFloat(getComputedStyle(document.querySelector(".card-id")!).fontSize),
+    }));
+    expect(enlargedType.title, `${width}px: enlarged story title`).toBe(32);
+    expect(enlargedType.metadata, `${width}px: enlarged metadata`).toBe(26);
+    await expectNoClippedElements(
+      page.locator(".card").first(),
+      `SH-615 card hierarchy at 200% text and ${width}px`,
+    );
+    await expectNoClippedElements(
+      page.locator(".connection"),
+      `SH-615 connection feedback at 200% text and ${width}px`,
+    );
+  }
+});
