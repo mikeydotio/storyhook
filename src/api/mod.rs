@@ -39,4 +39,5 @@ pub mod rest;
 pub mod routes;
 pub mod rpc;
 pub mod tokens;
+pub(crate) mod upload;
 pub mod wire;

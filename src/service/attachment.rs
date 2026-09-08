@@ -37,10 +37,10 @@ impl<'ctx, S: Store> AttachmentService<'ctx, S> {
         Self { ctx }
     }
 
-    /// Attaches `bytes` — already read off disk by the caller, since a
-    /// relative path means the invoking shell's directory, which only the
-    /// caller (CLI or REST handler) knows how to resolve against the
-    /// request's own `cwd` — to an open story.
+    /// Attaches bytes acquired by the caller to an open story. The CLI reads
+    /// its source path relative to the request's `cwd`; the browser supplies
+    /// a binary HTTP body. This service never interprets a name as a path to
+    /// read or write.
     ///
     /// Refuses a closed story (`Intent::Edit`, not `Intent::Append` — see
     /// [`super::Intent`]'s own doc comment on the pinned set of appends to a
