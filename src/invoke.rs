@@ -40,12 +40,12 @@ use crate::help_topics;
 use crate::output::{ConfirmationPlan, EngineRunView, Response, render_html_report};
 use crate::service::engine::{EngineService, ShellDispatcher, StartRequest, StoreOnlyDispatcher};
 use crate::service::{
-    AttachmentService, CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits,
-    GitService, GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService,
-    ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService,
-    ReadyQueueFilters, RelationOutcome, RelationService, SessionService, SetPrefixOutcome,
-    SettingsService, StateListing, StoryService, SystemService, TransferService, migrate, session,
-    system, transfer,
+    AttachmentService, CatalogService, CleanupService, Clock, ConfigService, Ctx, DeleteOutcome,
+    FieldEdits, GitService, GroupingService, ImportBatch, InitOptions, InitOutcome,
+    IntegrityService, ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService,
+    QueryService, ReadyQueueFilters, RelationOutcome, RelationService, SessionService,
+    SetPrefixOutcome, SettingsService, StateListing, StoryService, SystemService, TransferService,
+    migrate, session, system, transfer,
 };
 use crate::store::{EngineLaneState, EngineScope, ProjectId, ReadOps, Store};
 
@@ -700,6 +700,9 @@ pub fn dispatch<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
+        Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
+            .run(dry_run)
+            .map(|report| Response::Cleanup(Box::new(report))),
         Invocation::Summary => query(ctx, |service| service.summary())
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
@@ -2710,6 +2713,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -2916,6 +2920,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Engine { .. } => "engine",
+        Invocation::Cleanup { .. } => "cleanup",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -3848,6 +3853,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

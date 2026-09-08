@@ -2538,6 +2538,7 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".filter-toggle",
         ".filter-clear",
         ".engine-lanes-input",
+        ".open-pr-chip",
         ".column-archive-btn",
         ".section-toggle",
         ".field select, .field input[type=text], .field textarea",

@@ -574,8 +574,8 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
     let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
     env.story(dir.path())
         .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
@@ -601,8 +601,8 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
     let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
     env.story(dir.path())
         .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
