@@ -1688,6 +1688,17 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
                 info.pid
             )))
         }
+        DaemonAction::Restart => {
+            let restarted = crate::daemon::commands::restart(&env)?;
+            crate::daemon::commands::note_tailnet_pending(&restarted.running);
+            Ok(Response::Message(format!(
+                "storyhook daemon {} restarted at {} (PID {} -> {})",
+                restarted.running.version,
+                restarted.running.dashboard_url(),
+                restarted.stopped.pid,
+                restarted.running.pid
+            )))
+        }
         DaemonAction::Stop { force } => {
             crate::daemon::commands::stop(&env, force).map(Response::Message)
         }

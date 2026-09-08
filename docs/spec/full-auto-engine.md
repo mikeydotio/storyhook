@@ -450,12 +450,14 @@ reboot is three consecutive hard stops and halts the run exactly as three
 ordinary hard stops would, deliberately — a machine that just rebooted
 mid-run deserves a human look before it starts merging again.
 
-`crate::daemon::engine::poll_engine` is what runs this pass once at daemon
-startup, then wakes the ordinary pass on a project-change bus event or a
-coarse tick derived from `STALL_CEILING_SECS` — the trigger this document
-originally assigned to "the daemon wiring" without naming which story owned
-it. `EngineService::reconcile` had zero production callers before SH-466; see
-the As-built section below.
+`crate::daemon::lifecycle::run` runs this pass synchronously before binding or
+publishing the daemon's portfile. After server readiness,
+`crate::daemon::engine::poll_engine` wakes the ordinary pass on a
+project-change bus event or a coarse tick derived from
+`STALL_CEILING_SECS` — the trigger this document originally assigned to "the
+daemon wiring" without naming which story owned it. The startup ordering was
+made an explicit admission barrier in SH-617; `EngineService::reconcile` had
+zero production callers before SH-466. See the As-built section below.
 
 ## Enforcing unattendedness
 
@@ -1862,15 +1864,16 @@ scope-adopt rubric, and recorded on the story before implementation began.
 `ShellDispatcher` the same way `api::engine::EngineController::context` and
 `stop --now` already do — project-by-slug, its linked checkout or
 `env.home()` as a fallback, `resolve_engine_dispatch_script(run.agent)`.
-`poll_engine` runs the restart sweep once, on its own thread, before entering
-its steady loop — never a separate one-shot spawned elsewhere, because two
-threads racing to reconcile the same lane rows on their first pass is a
-correctness risk a sequential single thread removes by construction rather
-than by coordinating around it. Its wait is a computed `Instant` deadline
-re-derived from the remaining time on every wake, not `poll_verification`'s
-own "restart the budget on every `Ping`" idiom — correct for that worker's
-bare 30-second constant, but wrong for a 72-second tick riding a 20-second
-heartbeat, which would almost never land on schedule under that shape.
+`lifecycle::run` runs the restart sweep synchronously before listener binding
+and portfile publication. `serve` releases `poll_engine` only after readiness,
+so the first steady pass cannot race the startup pass or claim work before
+the successor is ready. This remains one sequential reconciliation path; two
+threads never race the same lane rows. `poll_engine`'s wait is a computed
+`Instant` deadline re-derived from the remaining time on every wake, not
+`poll_verification`'s own "restart the budget on every `Ping`" idiom — correct
+for that worker's bare 30-second constant, but wrong for a 72-second tick
+riding a 20-second heartbeat, which would almost never land on schedule under
+that shape.
 `RECONCILE_TICK_SECS`'s own doc comment and this document's "reconcile loop"
 section are corrected to name SH-466 rather than SH-468.
 
