@@ -201,25 +201,28 @@ test("every text-entry control the document ships with is at least 16px", async 
   );
 });
 
-test("the project header's text-entry controls are at least 16px", async ({ page }) => {
+test("the project header and Full Auto modal controls are at least 16px", async ({
+  page,
+}) => {
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
   await expectNoZoomingControls(page.locator(".topbar"), "the topbar", 1);
 
-  // Full Auto's number stepper shares the project header/filter-summary row.
-  // Number inputs raise the keyboard and zoom on WebKit exactly like text,
-  // so this is a positive measurement rather than the old empty-bar check.
-  const filterBarControls = await measureControls(
-    page.locator("#filter-bar"),
-    true,
+  // Full Auto's configuration moved from the filter row into the dedicated
+  // Run modal. Open the real surface: measuring its hidden static markup
+  // would miss a rule that only breaks once the modal is rendered.
+  const run = page.locator(".engine-run-btn");
+  await expect(run).toBeEnabled();
+  await run.click();
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
+  await expectNoZoomingControls(
+    page.locator("#engine-modal"),
+    "the Full Auto modal",
+    5,
   );
-  expect(
-    filterBarControls.length,
-    "the project header should expose exactly the Full Auto lanes stepper",
-  ).toBe(1);
-  expect(filterBarControls[0].describe).toContain("#engine-lanes");
-  expect(filterBarControls[0].fontSizePx).toBeGreaterThanOrEqual(16);
+  await page.locator("#engine-modal-cancel").click();
+  await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
 });
 
 test("the create-story modal's controls are at least 16px", async ({
