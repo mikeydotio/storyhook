@@ -454,6 +454,7 @@ story token new <name>
 story token list
 story token revoke <name>
 story daemon start [--port <PORT>]
+story daemon restart
 story daemon stop [--force]
 story daemon status
 story daemon install [--this-binary]

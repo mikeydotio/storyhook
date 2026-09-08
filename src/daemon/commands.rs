@@ -30,18 +30,27 @@ use crate::error::AppError;
 /// *starts*; it does not move an already-running one, because a request to start
 /// something that is already started is not a request to restart it.
 ///
-/// Deliberately nothing more than [`lifecycle::ensure`] with that override.
-/// `ensure` already returns a matching daemon untouched and replaces one that
-/// does not match, and an earlier version of this function short-circuited on
-/// "something is running" *before* that check — so `story daemon start` happily
-/// reported a daemon serving a different build as though it were the right one.
-/// Pinned by `a_daemon_from_another_build_is_replaced_rather_than_reused`.
+/// Deliberately nothing more than [`lifecycle::start`] with that override.
+/// `start` serializes explicit lifecycle operations, returns a matching daemon
+/// untouched, and replaces one that does not match. An earlier version of this
+/// function short-circuited on "something is running" *before* the build check,
+/// so `story daemon start` happily reported a daemon serving a different build
+/// as though it were the right one. Pinned by
+/// `a_daemon_from_another_build_is_replaced_rather_than_reused`.
 pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppError> {
     let env = match port {
         Some(port) => env.clone().daemon_port(port),
         None => env.clone(),
     };
-    lifecycle::ensure(&env)
+    lifecycle::start(&env)
+}
+
+/// Gracefully replaces the running daemon while preserving its loopback port.
+///
+/// The lifecycle layer owns serialization, draining, and replacement health;
+/// this command surface deliberately adds no force or port override.
+pub fn restart(env: &Environment) -> Result<lifecycle::RestartedDaemon, AppError> {
+    lifecycle::restart(env)
 }
 
 /// Notes, on stderr, that `info`'s tailnet bind is not known yet.
