@@ -84,7 +84,7 @@ Playwright's locator assertions wait for asynchronous hash navigation, following
 its [assertion guidance](https://playwright.dev/docs/test-assertions).
 
 Collection and rendering are deterministic; a contract rejects a stale committed
-HTML artifact. There are 15 Python contracts, also run through the Rust wrapper.
+HTML artifact. There are 16 Python contracts, also run through the Rust wrapper.
 Formatting and targeted warning-denied Clippy pass. Browser launch requires
 macOS bootstrap permission outside the filesystem sandbox; the ordinary sandbox
 launch failure was environmental, before report navigation.
@@ -96,3 +96,22 @@ opened; preserved excerpts, event provenance, source inspection, and five
 GitHub PR merge records provide the available evidence. Missing runtime timing
 stays unknown. Post-cutoff observations never alter the frozen cohort. Browser
 inspection is available through the command above; no user browser was operated.
+
+## Verification repair
+
+The first centralized verification rejected the historical council-worktree path
+quoted by SH-353 event 5079 in both archival artifacts. The repository citation
+guard remains unchanged. Both JSON serializers now escape every solidus using
+the lossless representation permitted by
+[RFC 8259 section 7](https://www.rfc-editor.org/rfc/rfc8259.html#section-7).
+Decoded evidence stays identical; the viewer explicitly labels historical
+quotations and supplies the durable `story show SH-N` record instead of relying
+on quoted local paths. No event was recollected or rewritten.
+
+The added serialization contract checks paths, URLs, existing escapes, Unicode,
+and HTML-like text round-trip unchanged. The real-browser regression opens
+event 5079, checks its historical label and durable story reference, and compares
+the displayed payload with the frozen evidence. Run `cargo test --test
+council_citations --test lifecycle_audit` plus the offline browser check for
+this repair. The user-provided verification log was read only to diagnose this
+post-submission failure; it does not change the frozen audit's evidence base.

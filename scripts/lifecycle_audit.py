@@ -97,7 +97,15 @@ def analyze(events, start, end):
             if (story := _story(number, history, start_time, end_time)) is not None]
 
 
+def archived_json(value):
+    """Serialize quoted historical data losslessly, distinct from live citations."""
+    # JSON's escaped solidus preserves paths in historical quotations without
+    # publishing literal worktree citations in the tracked archival source.
+    return json.dumps(value, ensure_ascii=True, indent=2).replace("/", "\\/") + "\n"
+
+
 def embedded_json(value):
     """Encode JSON safely for an HTML script data element."""
     return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
+            .replace("/", "\\/").replace("<", "\\u003c")
+            .replace(">", "\\u003e").replace("&", "\\u0026"))
