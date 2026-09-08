@@ -7,6 +7,7 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
+use crate::service::CleanupReport;
 use crate::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, EngineScope, PrLink,
 };
@@ -855,6 +856,8 @@ pub enum Response {
     },
     /// One Full Auto engine run after a start, read, or control mutation.
     EngineRun(Box<EngineRunView>),
+    /// Result of `story cleanup`.
+    Cleanup(Box<CleanupReport>),
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
@@ -1154,6 +1157,10 @@ fn render_json(response: &Response) -> String {
             "result": "ok",
             "run": run,
         })),
+        Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
+            "result": "ok",
+            "cleanup": report,
+        })),
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1440,6 +1447,42 @@ fn render_human(response: &Response) -> String {
             body
         }
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Cleanup(report) => {
+            let action = if report.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            };
+            let mut body = format!(
+                "cleanup {}: {action} {} workspace(s), {} bytes; {} skipped, {} failed\n",
+                report.project,
+                report.removed.len(),
+                report.reclaimed_bytes,
+                report.skipped.len(),
+                report.failed.len()
+            );
+            for item in &report.removed {
+                body.push_str(&format!(
+                    "  {}: {} ({})\n",
+                    item.story_id,
+                    item.worktree.display(),
+                    item.branch
+                ));
+            }
+            for item in &report.skipped {
+                body.push_str(&format!(
+                    "  preserved {} [{}]: {}\n",
+                    item.story_id, item.reason, item.detail
+                ));
+            }
+            for item in &report.failed {
+                body.push_str(&format!(
+                    "  failed {} [{}]: {}\n",
+                    item.story_id, item.reason, item.detail
+                ));
+            }
+            body
+        }
         Response::Summary(summary) => render_summary(summary),
         Response::Graph(graph) => render_graph(graph),
         Response::Issues(issues) => {
@@ -2292,6 +2335,62 @@ fn build_state_bar(summary: &SummaryView, total: usize, colors: &[&str]) -> Stri
         }
     }
     html
+}
+
+#[cfg(test)]
+mod cleanup_render_tests {
+    use super::*;
+    use crate::service::{CleanupFailure, CleanupRemoval, CleanupSkip};
+
+    fn response() -> Response {
+        Response::Cleanup(Box::new(CleanupReport {
+            project: "fixture".into(),
+            dry_run: true,
+            candidates: 2,
+            reclaimed_bytes: 4096,
+            removed: vec![CleanupRemoval {
+                story_id: "SH-7".into(),
+                worktree: "/repo/.codex/worktrees/SH-7".into(),
+                branch: "worktree-SH-7".into(),
+                removed_worktree: true,
+                removed_local_branch: true,
+                removed_remote_branch: true,
+                reclaimed_bytes: 4096,
+            }],
+            skipped: vec![CleanupSkip {
+                story_id: "SH-8".into(),
+                reason: "dirty-worktree".into(),
+                detail: "uncommitted work".into(),
+            }],
+            failed: vec![CleanupFailure {
+                story_id: "SH-9".into(),
+                reason: "fetch-failed".into(),
+                detail: "authentication required".into(),
+            }],
+        }))
+    }
+
+    #[test]
+    fn cleanup_human_output_distinguishes_dry_run_and_preservation() {
+        let rendered = render_response(&response(), false, false);
+        assert!(rendered.contains("would remove 1 workspace(s), 4096 bytes"));
+        assert!(rendered.contains("preserved SH-8 [dirty-worktree]"));
+        assert!(rendered.contains("failed SH-9 [fetch-failed]"));
+    }
+
+    #[test]
+    fn cleanup_json_output_is_structured() {
+        let rendered: serde_json::Value =
+            serde_json::from_str(&render_response(&response(), true, false)).unwrap();
+        assert_eq!(rendered["result"], "ok");
+        assert_eq!(rendered["cleanup"]["dry_run"], true);
+        assert_eq!(rendered["cleanup"]["removed"][0]["story_id"], "SH-7");
+        assert_eq!(
+            rendered["cleanup"]["skipped"][0]["reason"],
+            "dirty-worktree"
+        );
+        assert_eq!(rendered["cleanup"]["failed"][0]["reason"], "fetch-failed");
+    }
 }
 
 fn build_state_legend(summary: &SummaryView, total: usize, colors: &[&str]) -> String {

@@ -53,6 +53,8 @@ use super::Ctx;
 enum SettingField {
     SyncAutoTransition,
     DoctorStaleThreshold,
+    CleanupAuto,
+    CleanupInterval,
 }
 
 /// One row of the settings registry: everything both the renderer and the
@@ -103,7 +105,7 @@ impl SettingSpec {
 /// Dotted names rather than column names, matching what `story migrate`'s
 /// report already prints. Column names would freeze the schema as public
 /// contract; these can outlive a rename.
-static REGISTRY: [SettingSpec; 2] = [
+static REGISTRY: [SettingSpec; 4] = [
     SettingSpec {
         key: "sync.auto_transition",
         field: SettingField::SyncAutoTransition,
@@ -134,6 +136,24 @@ static REGISTRY: [SettingSpec; 2] = [
         // Deleting this line is the completion criterion for whichever story
         // makes `story doctor` read the value.
         note: Some("no command reads this yet"),
+    },
+    SettingSpec {
+        key: "cleanup.auto",
+        field: SettingField::CleanupAuto,
+        kind: SettingKind::Boolean,
+        description: "Whether the daemon automatically cleans eligible story workspaces.",
+        default: Some("true"),
+        managed_by: None,
+        note: None,
+    },
+    SettingSpec {
+        key: "cleanup.interval",
+        field: SettingField::CleanupInterval,
+        kind: SettingKind::Duration,
+        description: "How often the daemon runs workspace cleanup.",
+        default: Some("1d"),
+        managed_by: None,
+        note: None,
     },
 ];
 
@@ -293,6 +313,12 @@ fn apply(field: SettingField, settings: &mut ProjectSettings, value: Option<&str
         SettingField::DoctorStaleThreshold => {
             settings.doctor_stale_threshold = value.map(str::to_string);
         }
+        SettingField::CleanupAuto => {
+            settings.cleanup_auto = value.map(|value| value == "true");
+        }
+        SettingField::CleanupInterval => {
+            settings.cleanup_interval = value.map(str::to_string);
+        }
     }
 }
 
@@ -301,6 +327,8 @@ fn stored(field: SettingField, settings: &ProjectSettings) -> Option<String> {
     match field {
         SettingField::SyncAutoTransition => settings.sync_auto_transition.map(|on| on.to_string()),
         SettingField::DoctorStaleThreshold => settings.doctor_stale_threshold.clone(),
+        SettingField::CleanupAuto => settings.cleanup_auto.map(|on| on.to_string()),
+        SettingField::CleanupInterval => settings.cleanup_interval.clone(),
     }
 }
 
