@@ -1187,6 +1187,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .attachment-thumbnail img { width: 100%; height: 5rem; object-fit: contain; background: var(--bg-sunken); border-radius: var(--radius-sm); }
 .attachment-name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-preview-error { font-size: 0.75rem; color: var(--fg-muted); }
+.create-attachments { margin-top: 0.375rem; }
+.create-attachment-strip { display: flex; gap: 0.625rem; overflow-x: auto; padding: 0.25rem; }
+.create-attachment-preview {
+  position: relative; flex: 0 0 7rem; min-width: 0; display: flex; flex-direction: column;
+  gap: 0.25rem; padding: 0.375rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+.create-attachment-preview img { width: 100%; height: 5rem; object-fit: contain; border-radius: var(--radius-sm); }
+.create-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
+.create-attachment-state { color: var(--fg-muted); font-size: 0.6875rem; }
+.create-attachment-remove { align-self: flex-start; font-size: 0.75rem; padding: 0.25rem 0.5rem; }
+#create-attachment-status { min-height: 1em; margin: 0.25rem 0 0; color: var(--fg-muted); font-size: 0.75rem; }
 #attachment-modal { width: min(60rem, 92vw); }
 #attachment-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #attachment-image { display: flex; justify-content: center; min-width: 0; }
@@ -1217,6 +1229,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-body .field-grid { gap: 0.625rem; }
 .modal-body .field label { display: block; margin-bottom: 0.25rem; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.25rem; }
+#create-modal .modal-footer {
+  position: sticky; bottom: 0; z-index: 1; background: var(--bg-raised); border-top: 1px solid var(--border);
+}
 .modal-error { font-size: 0.75rem; color: var(--danger); }
 .modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
@@ -1775,7 +1790,12 @@ svg.ctxmenu-disabled-warning {
   <div class="modal-body">
     <div class="field" id="create-project-field"><label for="create-project">Project</label><select id="create-project"></select></div>
     <div class="field"><label for="create-title">Title</label><input type="text" id="create-title" autocomplete="off"></div>
-    <div class="field"><label for="create-description">Description (optional)</label><textarea id="create-description" rows="2"></textarea></div>
+    <div class="field"><label for="create-description">Description (optional)</label><textarea id="create-description" rows="2"></textarea>
+      <section class="create-attachments" id="create-attachments" aria-label="Images to attach" hidden>
+        <div class="create-attachment-strip" id="create-attachment-list"></div>
+        <p id="create-attachment-status" role="status" aria-live="polite"></p>
+      </section>
+    </div>
     <div class="field-grid">
       <div class="field"><label for="create-state">State</label><select id="create-state"></select></div>
       <div class="field"><label for="create-type">Type</label><select id="create-type"></select></div>
@@ -13473,6 +13493,120 @@ svg.ctxmenu-disabled-warning {
    * result. */
   var createModalInFlight = false;
 
+  /** Browser-local files awaiting an attachment id, and attachment metadata
+   * already persisted on the draft being edited. Pending bytes never enter
+   * story JSON; object URLs exist only while this singleton modal owns them. */
+  var createPendingAttachments = [];
+  var createPersistedAttachments = [];
+  var createAttachmentSerial = 0;
+  var createAttachmentSubmissionInFlight = false;
+  var CREATE_IMAGE_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp"
+  };
+
+  /** Rebuilds the create modal's small attachment strip from owned state.
+   * Pending previews are removable until a request starts; persisted draft
+   * images are facts and therefore render without a pretend removal control. */
+  function renderCreateAttachments() {
+    var list = $("create-attachment-list");
+    clear(list);
+    createPersistedAttachments.forEach(function(attachment) {
+      list.appendChild(el("div", {
+        class: "create-attachment-preview",
+        dataset: { createAttachmentState: "persisted" },
+        title: attachment.name
+      }, [
+        el("img", { src: attachmentUrl(createTargetProject, editingDraft.story.id, attachment.id), alt: "" }),
+        el("span", { class: "create-attachment-name" }, [attachment.name]),
+        el("span", { class: "create-attachment-state" }, ["Attached"])
+      ]));
+    });
+    createPendingAttachments.forEach(function(attachment) {
+      list.appendChild(el("div", {
+        class: "create-attachment-preview",
+        dataset: { createAttachmentState: "pending" },
+        title: attachment.name
+      }, [
+        el("img", { src: attachment.previewUrl, alt: "" }),
+        el("span", { class: "create-attachment-name" }, [attachment.name]),
+        el("span", { class: "create-attachment-state" }, ["Not uploaded"]),
+        el("button", {
+          type: "button", class: "btn create-attachment-remove",
+          disabled: createModalBusy(),
+          "aria-label": "Remove " + attachment.name,
+          onClick: function() { removePendingCreateAttachment(attachment.key); }
+        }, ["Remove"])
+      ]));
+    });
+    $("create-attachments").hidden = !list.children.length && !$("create-attachment-status").textContent;
+  }
+
+  /** Releases every object URL before forgetting its File. Called at both
+   * modal lifecycle boundaries so a later open cannot inherit bytes or leak
+   * browser-managed blob storage from the previous one. */
+  function resetCreateAttachments() {
+    createPendingAttachments.forEach(function(attachment) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    });
+    createPendingAttachments = [];
+    createPersistedAttachments = [];
+    $("create-attachment-status").textContent = "";
+    renderCreateAttachments();
+  }
+
+  function removePendingCreateAttachment(key) {
+    var index = createPendingAttachments.findIndex(function(attachment) { return attachment.key === key; });
+    if (index === -1 || createModalBusy()) return;
+    URL.revokeObjectURL(createPendingAttachments[index].previewUrl);
+    createPendingAttachments.splice(index, 1);
+    $("create-attachment-status").textContent = "";
+    renderCreateAttachments();
+  }
+
+  /** Takes image File entries from the synchronous paste event. Clipboard
+   * image representations win over accompanying HTML/text representations;
+   * a clipboard with no image is left completely to the textarea's native
+   * paste behavior. */
+  function stagePastedCreateAttachments(event) {
+    var items = event.clipboardData && event.clipboardData.items;
+    if (!items) return;
+    var files = [];
+    var unsupported = 0;
+    var sawImage = false;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (item.kind !== "file" || item.type.toLowerCase().indexOf("image/") !== 0) continue;
+      sawImage = true;
+      var mediaType = item.type.toLowerCase();
+      if (!CREATE_IMAGE_EXTENSIONS[mediaType]) {
+        unsupported++;
+        continue;
+      }
+      var file = item.getAsFile();
+      if (file) files.push({ file: file, mediaType: mediaType });
+    }
+    if (!sawImage) return;
+    event.preventDefault();
+    files.forEach(function(entry) {
+      var name = entry.file.name && entry.file.name.trim()
+        ? entry.file.name
+        : "pasted-image." + CREATE_IMAGE_EXTENSIONS[entry.mediaType];
+      createPendingAttachments.push({
+        key: ++createAttachmentSerial,
+        file: entry.file,
+        name: name,
+        previewUrl: URL.createObjectURL(entry.file)
+      });
+    });
+    $("create-attachment-status").textContent = unsupported
+      ? "Unsupported image skipped. Paste a PNG, JPEG, GIF, or WebP image."
+      : files.length + (files.length === 1 ? " image ready to attach." : " images ready to attach.");
+    renderCreateAttachments();
+  }
+
   /** Whether `#create-project`'s own vocabulary GET (SH-439) is still
    * deciding what project `#create-state`/`#create-type` describe. A second,
    * independent reason the modal must refuse a mutation — distinct from
@@ -13508,6 +13642,10 @@ svg.ctxmenu-disabled-warning {
     $("create-discard").disabled = busy;
     $("create-state").disabled = createVocabPending;
     $("create-type").disabled = createVocabPending;
+    $("create-project").disabled = !!editingDraft || createAttachmentSubmissionInFlight;
+    $("create-attachment-list").querySelectorAll("button").forEach(function(button) {
+      button.disabled = busy;
+    });
   }
 
   /** Sets {@link createModalInFlight} and resyncs the buttons it shares with
@@ -13600,6 +13738,7 @@ svg.ctxmenu-disabled-warning {
     draftOpenTicket++;
     editingDraft = draft || null;
     createTargetProject = draft ? draftProject : state.repoId;
+    createAttachmentSubmissionInFlight = false;
     // Cancels delayed work and invalidates any vocabulary GET a previous open
     // of this singleton modal left in flight (SH-439, SH-485) -- a timer from
     // that open must not start a read or revive pending state in this one.
@@ -13611,6 +13750,9 @@ svg.ctxmenu-disabled-warning {
     setCreateModalInFlight(false);
     setCreateVocabPending(false);
     var story = editingDraft ? editingDraft.story : null;
+    resetCreateAttachments();
+    createPersistedAttachments = (story && story.attachments) ? story.attachments.slice() : [];
+    renderCreateAttachments();
     $("create-modal-header").textContent = story ? "Edit draft" : "New story";
     $("create-submit").textContent = story ? "Publish" : "Create Story";
     $("create-title").value = story ? story.title : "";
@@ -13680,6 +13822,8 @@ svg.ctxmenu-disabled-warning {
   }
 
   function closeCreateModal() {
+    resetCreateAttachments();
+    createAttachmentSubmissionInFlight = false;
     editingDraft = null;
     // Cancels a delayed read and invalidates any vocabulary GET still in
     // flight (SH-439, SH-485) -- without both halves, work for a project the
@@ -13811,8 +13955,8 @@ svg.ctxmenu-disabled-warning {
    * accept a `labels` field at all (see that route's own comment). Returns
    * a promise so callers can chain a publish or a close after it settles;
    * resolves immediately with no request when nothing changed. */
-  function applyLabelDiff(id, originalLabels) {
-    var base = createApiBase();
+  function applyLabelDiff(id, originalLabels, capturedBase) {
+    var base = capturedBase || createApiBase();
     var next = createLabelCombobox ? createLabelCombobox.getLabels() : [];
     var before = originalLabels || [];
     var add = next.filter(function(l) { return before.indexOf(l) === -1; });
@@ -13821,6 +13965,106 @@ svg.ctxmenu-disabled-warning {
     if (add.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
     if (remove.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
     return Promise.all(calls);
+  }
+
+  /** Turns a confirmed story response into this modal's persisted draft.
+   * The project becomes immutable at the same boundary story identity does;
+   * every later retry PATCHes this id instead of POSTing a duplicate. */
+  function adoptPersistedCreateDraft(payload, targetProject) {
+    var view = payload && payload.story;
+    if (!view || !view.story) throw { status: 0, message: "the daemon returned no story" };
+    editingDraft = view;
+    createTargetProject = targetProject;
+    createPersistedAttachments = (view.story.attachments || []).slice();
+    $("create-project").value = targetProject;
+    $("create-project").disabled = true;
+    $("create-modal-header").textContent = "Edit draft";
+    $("create-submit").textContent = "Publish";
+    renderCreateAttachments();
+    return payload;
+  }
+
+  /** Uploads one staged File at a time. Attachment ids therefore follow the
+   * clipboard order, and a refusal leaves the failed item plus everything
+   * after it untouched for an explicit retry. */
+  function uploadPendingCreateAttachments(base, targetProject, firstPayload) {
+    if (!createPendingAttachments.length) return Promise.resolve(firstPayload);
+    var pending = createPendingAttachments[0];
+    var id = editingDraft.story.id;
+    return api(
+      "POST",
+      base + "/story/" + encodeURIComponent(id) + "/attachments",
+      pending.file,
+      {
+        rawBody: true,
+        headers: {
+          "X-Storyhook-Attachment-Name": encodeURIComponent(pending.name)
+        }
+      }
+    ).then(function(payload) {
+      if (createPendingAttachments[0] !== pending) {
+        throw { status: 0, message: "the staged attachment changed during upload" };
+      }
+      URL.revokeObjectURL(pending.previewUrl);
+      createPendingAttachments.shift();
+      $("create-attachment-status").textContent = createPendingAttachments.length
+        ? createPendingAttachments.length + (createPendingAttachments.length === 1
+          ? " image still to attach."
+          : " images still to attach.")
+        : "";
+      adoptPersistedCreateDraft(payload, targetProject);
+      return uploadPendingCreateAttachments(base, targetProject, firstPayload);
+    }).catch(function(err) {
+      if (!err.createAttachmentName) err.createAttachmentName = pending.name;
+      throw err;
+    });
+  }
+
+  /** Creates or updates a draft, then uploads every staged image. This is the
+   * only new path SH-391 adds: callers without pending images retain their
+   * existing single-request behavior. */
+  function persistCreateDraftWithAttachments(body, targetProject) {
+    var base = repoApiBase(targetProject);
+    var request;
+    if (editingDraft) {
+      var current = editingDraft;
+      var id = current.story.id;
+      request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
+        .then(function(payload) {
+          adoptPersistedCreateDraft(payload, targetProject);
+          return applyLabelDiff(id, current.story.labels, base).then(function() {
+            editingDraft.story.labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+            return payload;
+          });
+        });
+    } else {
+      body.draft = true;
+      var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+      if (labels.length) body.labels = labels;
+      request = api("POST", base + "/story", body)
+        .then(function(payload) { return adoptPersistedCreateDraft(payload, targetProject); });
+    }
+    return request.then(function(payload) {
+      return uploadPendingCreateAttachments(base, targetProject, payload);
+    });
+  }
+
+  /** Keeps a partially-persisted submission recoverable in the modal. A
+   * definite refusal can be retried after removing/fixing the named image;
+   * an unconfirmed transport outcome is never replayed automatically. */
+  function describeCreateAttachmentFailure(err, targetProject) {
+    var message = describeMutationFailure(err, targetProject);
+    if (!err || !err.createAttachmentName || !editingDraft) return message;
+    refreshAfterDraftMutation(targetProject);
+    var id = editingDraft.story.id;
+    if (err.status === 0) {
+      return id + " is saved as a draft. " + message.replace(
+        "Check the board, then try again if it didn't.",
+        err.createAttachmentName + " may already be attached; reload and check the draft before retrying."
+      );
+    }
+    return "Could not attach " + err.createAttachmentName + ": " + message
+      + ". " + id + " remains saved as a draft.";
   }
 
   /** How a mutation's `.catch` describes an outcome the client cannot prove
@@ -13930,14 +14174,19 @@ svg.ctxmenu-disabled-warning {
     if (createModalBusy()) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    var hasPendingAttachments = createPendingAttachments.length > 0;
+    createAttachmentSubmissionInFlight = hasPendingAttachments;
     setCreateModalInFlight(true);
     // Captured once (SH-439) -- see discardDraft()'s own comment on why,
-    // and not merely defensively: a fresh (non-draft) create leaves
-    // #create-project enabled for the whole request.
+    // and not merely defensively: the selector stays mutable for an ordinary
+    // fresh create, while an attachment sequence pins it before its draft
+    // write and every upload.
     var targetProject = createTargetProject;
     var base = createApiBase();
     var request;
-    if (editingDraft) {
+    if (hasPendingAttachments) {
+      request = persistCreateDraftWithAttachments(body, targetProject);
+    } else if (editingDraft) {
       var id = editingDraft.story.id;
       request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); });
@@ -13957,7 +14206,13 @@ svg.ctxmenu-disabled-warning {
         toastCrossProjectFiling(payload, targetProject, "saved as a draft in");
         refreshAfterDraftMutation(targetProject);
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
+      .catch(function(err) {
+        createAttachmentSubmissionInFlight = false;
+        setCreateModalInFlight(false);
+        $("create-error").textContent = hasPendingAttachments
+          ? describeCreateAttachmentFailure(err, targetProject)
+          : describeMutationFailure(err, targetProject);
+      });
   }
 
   /** Create Story / Publish (SH-175) — the button `submitCreate` always
@@ -13979,13 +14234,21 @@ svg.ctxmenu-disabled-warning {
     if (createModalBusy()) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    var hasPendingAttachments = createPendingAttachments.length > 0;
+    createAttachmentSubmissionInFlight = hasPendingAttachments;
     setCreateModalInFlight(true);
     // Captured once (SH-439) -- see discardDraft()'s own comment on why.
     var targetProject = createTargetProject;
-    var publishingDraft = !!editingDraft;
+    var publishingDraft = !!editingDraft || hasPendingAttachments;
     var base = createApiBase();
     var request;
-    if (editingDraft) {
+    if (hasPendingAttachments) {
+      request = persistCreateDraftWithAttachments(body, targetProject)
+        .then(function() {
+          var id = editingDraft.story.id;
+          return api("POST", base + "/story/" + encodeURIComponent(id) + "/publish", {});
+        });
+    } else if (editingDraft) {
       var id = editingDraft.story.id;
       request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
@@ -14015,7 +14278,13 @@ svg.ctxmenu-disabled-warning {
         if (publishingDraft) refreshAfterDraftMutation(targetProject);
         else fetchData();
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
+      .catch(function(err) {
+        createAttachmentSubmissionInFlight = false;
+        setCreateModalInFlight(false);
+        $("create-error").textContent = hasPendingAttachments
+          ? describeCreateAttachmentFailure(err, targetProject)
+          : describeMutationFailure(err, targetProject);
+      });
   }
 
   // ============================================================
@@ -14476,6 +14745,7 @@ svg.ctxmenu-disabled-warning {
     $("create-submit").addEventListener("click", submitCreate);
     bindEnterSubmit($("create-title"), submitCreate);
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
+    $("create-description").addEventListener("paste", stagePastedCreateAttachments);
     $("drafts-btn").addEventListener("click", openDraftsModal);
     $("drafts-close").addEventListener("click", closeDraftsModal);
     $("drafts-backdrop").addEventListener("click", closeDraftsModal);
