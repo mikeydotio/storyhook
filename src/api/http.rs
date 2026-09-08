@@ -32,7 +32,7 @@ fn security_header_frame() -> Header {
 /// response (via [`finish`]) and the hand-rolled `GET /api/events` response
 /// head, which bypasses `finish` entirely (see [`write_sse_head`]) — so the
 /// two paths can never drift apart.
-pub const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
+pub const CSP: &str = "default-src 'self'; img-src 'self' blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
 
 /// A legitimate same-origin dashboard request keeps sending `Referer`
 /// (SH-319's cookie-borne-read fallback,
@@ -781,6 +781,13 @@ mod tests {
         let text = text_reply(200, "café");
         assert_eq!(text.body(), "café".as_bytes());
         assert_eq!(text.text_body().unwrap(), "café");
+    }
+
+    #[test]
+    fn csp_allows_staged_blob_images_without_relaxing_other_resource_types() {
+        assert!(CSP.contains("img-src 'self' blob:"));
+        assert!(!CSP.contains("data:"));
+        assert_eq!(CSP.matches("blob:").count(), 1);
     }
 
     /// DeadlineExceeded is a client-side condition. If it ever reaches the
