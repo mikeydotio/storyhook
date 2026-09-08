@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# How far is `main` from the last tree `coverage-map.sh` captured? — SH-429.
+# How far is `dev` from the last tree `coverage-map.sh` captured? — SH-429.
 #
 # The exact reader `docs/spec/test-tiers.md`'s "The push gate narrowed"
 # section and this story's council verdict both point at: `scripts/select-
@@ -15,9 +15,9 @@
 # can already state, and a stale marker is one more thing to be wrong about).
 #
 # WHY FIRST-PARENT. Identical reasoning to `browser-status.sh`: `git log
-# --first-parent` walks the trees `main` actually HAD; a commit a merge
-# brought in was never main's own content, and a map captured against it says
-# nothing about main's tip.
+# --first-parent` walks the trees `dev` actually HAD; a commit a merge
+# brought in was never dev's own content, and a map captured against it says
+# nothing about dev's tip.
 #
 # WHY NO STALENESS THRESHOLD. This reports; it does not judge, for the same
 # reason `browser-status.sh` does not — a ceiling on "how stale is too stale"
@@ -26,7 +26,7 @@
 # status`) decides what the distance means.
 #
 # USAGE
-#   coverage-status.sh [<ref>]     default: origin/main
+#   coverage-status.sh [<ref>]     default: origin/dev
 #
 # EXIT CODES
 #   0   <ref>'s own tip tree carries a coverage map — current
@@ -49,7 +49,11 @@ note() {
     printf 'coverage-status: %s\n' "$1" >&2
 }
 
-ref="${1:-origin/main}"
+script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
+# shellcheck source=scripts/branch-policy.sh
+source "$script_dir/branch-policy.sh"
+
+ref="${1:-origin/$STORYHOOK_INTEGRATION_BRANCH}"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"

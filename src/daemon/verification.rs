@@ -890,7 +890,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into current origin/main. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;

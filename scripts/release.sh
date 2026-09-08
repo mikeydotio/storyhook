@@ -9,9 +9,10 @@
 #   ./scripts/release.sh --publish       # ship the draft you have been dogfooding
 #   ./scripts/release.sh --local-only    # just rebuild and reinstall what is checked out
 #
-# --bump bumps VERSION on a release branch, opens and merges a PR, builds and
-# verifies all four release archives on this machine, tags the release commit,
-# and uploads exactly one **draft** release. The tag itself triggers nothing.
+# --bump bumps VERSION on a release branch, lands guarded PRs into stable and
+# integration branches, builds and verifies all four release archives on this
+# machine, tags the release commit, and uploads exactly one **draft** release.
+# The tag itself triggers nothing.
 # The script verifies GitHub's digest for every uploaded asset before it
 # installs the new version locally, so what you dogfood is what would ship.
 #
@@ -55,6 +56,8 @@ set -euo pipefail
 REPO="mikeydotio/storyhook"
 PLUGIN_DIR="plugins/story"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/branch-policy.sh
+source "$SCRIPT_DIR/branch-policy.sh"
 # shellcheck source=scripts/release-targets.sh
 source "$SCRIPT_DIR/release-targets.sh"
 ARTIFACTS=("${RELEASE_ARTIFACTS[@]}")
@@ -412,11 +415,12 @@ if [ "$local_only" = 0 ]; then
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run \`gh auth login\`."
 
   branch="$(git rev-parse --abbrev-ref HEAD)"
-  [ "$branch" = "main" ] || die "public releases are cut from main; you are on \`$branch\`"
+  [ "$branch" = "$STORYHOOK_INTEGRATION_BRANCH" ] \
+    || die "public releases are cut from $STORYHOOK_INTEGRATION_BRANCH; you are on \`$branch\`"
 
-  git fetch --quiet origin main
-  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] \
-    || die "local main and origin/main disagree. Pull (or push your merges) first."
+  git fetch --quiet origin "$STORYHOOK_INTEGRATION_BRANCH"
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$STORYHOOK_INTEGRATION_BRANCH")" ] \
+    || die "local $STORYHOOK_INTEGRATION_BRANCH and origin/$STORYHOOK_INTEGRATION_BRANCH disagree. Pull (or push your merges) first."
 
   # This check is intentionally before semver creates a branch or commit. The
   # actual binaries are built after the bumped tree lands on main.
@@ -617,7 +621,7 @@ run git switch -c "$release_branch"
 #
 # `execute`, never `run` (SH-580). `run` is documented as "gather then execute
 # in one call WHEN NO QUESTIONS APPLY", and gather raises `wrong_branch` on any
-# branch that is not semver's configured `target_branch` -- which is `main`,
+# branch that is not semver's configured `target_branch` -- which is `dev`,
 # and which the `git switch -c` above has just deliberately left. Under
 # `--non-interactive` that question became an abort, so these two lines could
 # never both be satisfied and this command could never complete. `execute` is
@@ -648,30 +652,78 @@ fi
 
 run_release_gate
 
-step "Opening the pull request"
+step "Opening the stable-release pull request"
 # HTTPS with the gh credential helper: SSH auth here goes through 1Password's
 # agent, which wants an interactive approval.
 run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$release_branch"
-run gh pr create \
-  --base main \
-  --head "$release_branch" \
-  --title "chore: release $next_version" \
-  --body "Version bump and changelog for \`$next_version\`.
+stable_pr=""
+if [ "$dry_run" = 1 ]; then
+  run gh pr create \
+    --base "$STORYHOOK_STABLE_BRANCH" \
+    --head "$release_branch" \
+    --title "chore: release $next_version" \
+    --body "Version bump and changelog for \`$next_version\`.
 
 Merging this lands the bump on \`main\`; \`scripts/release.sh\` then assembles and verifies every release asset locally before it pushes the tag."
+  stable_pr="<stable-release-pr>"
+else
+  stable_pr="$(gh pr create \
+    --base "$STORYHOOK_STABLE_BRANCH" \
+    --head "$release_branch" \
+    --title "chore: release $next_version" \
+    --body "Version bump and changelog for \`$next_version\`.
 
-step "Merging (merge commit — the only method this org allows)"
-run gh pr merge --merge --delete-branch
+Merging this lands the bump on \`main\`; \`scripts/release.sh\` then assembles and verifies every release asset locally before it pushes the tag.")" \
+    || die "could not open the stable-release pull request"
+fi
 
-step "Returning to main"
-run git switch main
+step "Landing on $STORYHOOK_STABLE_BRANCH through the guarded merge path"
+run bash scripts/land-pr.sh "$stable_pr"
+
+step "Returning to $STORYHOOK_STABLE_BRANCH"
+run git switch "$STORYHOOK_STABLE_BRANCH"
 run git pull --ff-only
 
 if [ "$dry_run" = 0 ]; then
   landed="$(tr -d '[:space:]' < VERSION)"
   [ "$landed" = "$next_version" ] \
-    || die "main says $landed after the merge, expected $next_version. Not tagging."
+    || die "$STORYHOOK_STABLE_BRANCH says $landed after the merge, expected $next_version. Not tagging."
 fi
+
+step "Synchronizing the release commit back to $STORYHOOK_INTEGRATION_BRANCH"
+# land-pr removes the remote head after verifying a merge. Keep the local
+# release branch until both protected branches contain it, and deliberately
+# re-push that exact branch for the integration PR.
+run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$release_branch"
+integration_pr=""
+if [ "$dry_run" = 1 ]; then
+  run gh pr create \
+    --base "$STORYHOOK_INTEGRATION_BRANCH" \
+    --head "$release_branch" \
+    --title "chore: sync release $next_version to $STORYHOOK_INTEGRATION_BRANCH" \
+    --body "Synchronize the exact \`$next_version\` release commit back into \`$STORYHOOK_INTEGRATION_BRANCH\` after its guarded stable merge."
+  integration_pr="<integration-release-pr>"
+else
+  integration_pr="$(gh pr create \
+    --base "$STORYHOOK_INTEGRATION_BRANCH" \
+    --head "$release_branch" \
+    --title "chore: sync release $next_version to $STORYHOOK_INTEGRATION_BRANCH" \
+    --body "Synchronize the exact \`$next_version\` release commit back into \`$STORYHOOK_INTEGRATION_BRANCH\` after its guarded stable merge.")" \
+    || die "could not open the integration synchronization pull request"
+fi
+run bash scripts/land-pr.sh "$integration_pr"
+
+step "Confirming both long-lived branches contain $next_version"
+run git switch "$STORYHOOK_INTEGRATION_BRANCH"
+run git pull --ff-only
+if [ "$dry_run" = 0 ]; then
+  integrated="$(tr -d '[:space:]' < VERSION)"
+  [ "$integrated" = "$next_version" ] \
+    || die "$STORYHOOK_INTEGRATION_BRANCH says $integrated after the merge, expected $next_version. Not tagging."
+fi
+run git branch -d "$release_branch"
+run git switch "$STORYHOOK_STABLE_BRANCH"
+run git pull --ff-only
 
 artifact_dir="$repo_root/target/release-assets/$next_version"
 step "Building and verifying all release assets locally"
@@ -764,7 +816,8 @@ fi
 
 step "$next_version is cut, built on every platform, and NOT published"
 info "draft   https://github.com/$REPO/releases/tag/$next_version"
-info "main    in sync at $next_version"
+info "$STORYHOOK_STABLE_BRANCH    stable at $next_version"
+info "$STORYHOOK_INTEGRATION_BRANCH     in sync at $next_version"
 note "install.sh and \`story update\` still resolve the previous release: a draft is"
 note "invisible to /releases/latest, which is what lets your local version run ahead."
 printf '\n    %sWhen you have dogfooded it and want to ship:%s\n' "$bold" "$reset"

@@ -734,7 +734,7 @@ Standing rules for every wave:
   30 merges preceding the fix: **14 produced a tree matching neither parent** — content no
   receipt could possibly have covered; one of the 14 didn't compile. `scripts/merge-
   preflight.sh` asks the exact question before a merge happens rather than a proxy for it:
-  `git merge-tree --write-tree origin/main <pr-head>` computes the tree the merge WOULD
+  `git merge-tree --write-tree <base-ref> <pr-head>` computes the tree the merge WOULD
   produce (verified byte-identical to a real merge of the same two parents,
   `tests/merge_gate.rs::the_predicted_tree_matches_a_real_merges_tree_exactly`), and checks
   it against the same tree-oid-keyed receipt store `.githooks/pre-push` already reads — a
@@ -969,7 +969,8 @@ Standing rules for every wave:
   with neither `src/web_dashboard.html` nor `e2e/` in its diff, so a path predicate
   under-triggers by construction *and* is the hand-kept-list shape SH-136/SH-198/SH-258/
   SH-260/276/SH-360 already cost this project five times. `scripts/browser-watch.sh` runs
-  `make test-full` when `origin/main`'s tip tree carries no `full` receipt, in **its own**
+  `make test-full` when the integration branch tip (`origin/dev`) carries no `full`
+  receipt, in **its own**
   persistent worktree under a pid-checked lock — not folded into `merge-watch.sh`'s pass,
   decided on measurement: `main` took 11/24/16/9 merges on 2026-08-15..18 and the browser
   leg measured **1454s (24.2 minutes)** here, so sharing that script's 1-3 minute reconcile
@@ -977,7 +978,7 @@ Standing rules for every wave:
   cached marker**: a green pass writes an ordinary `tier full` receipt through the same
   `gate-receipt.sh postlude`, and `scripts/browser-status.sh` computes staleness *per read*
   as first-parent distance back to the nearest full-certified ancestor — so a dead poller, a
-  red `main`, and a machine that has never run the suite are three readings of one number
+  red `dev`, and a machine that has never run the suite are three readings of one number
   that only grows, and silence is `never` rather than a quiet pass. A marker file recording
   the last outcome was proposed and declined as a second notion of "certified"; the per-day
   log `browser-watch.sh` does write is forensics in SH-412's shape, read by no gate. The
@@ -1090,9 +1091,10 @@ Standing rules for every wave:
   `tests/tap_target_comparison.rs` is a **wiring** fence in SH-360's exact sense
   and its own module doc says so. Design of record:
   `docs/spec/responsive-dashboard.md`'s "Tap targets (D3)".
-- **The push gate protects `main` directly; `merge-preflight.sh` protects everything that
-  reaches it through a PR** (SH-429). `.githooks/pre-push` refuses only a direct push to
-  `main`/`master` with no receipt — every other ref is *reported*, never refused, since
+- **The push gate protects both long-lived branches directly; `merge-preflight.sh` protects
+  PR merges** (SH-429, SH-595). `.githooks/pre-push` refuses a direct push to
+  `dev`/`main`/`master` with no receipt — every feature ref is *reported*, never refused,
+  since
   SH-396 already made `merge-preflight.sh` (run by `merge-watch.sh`) the primitive that
   decides whether content actually lands, unconditionally, regardless of what any push
   carried. Refusing an ordinary feature-branch push was gating content that was never, on
@@ -1101,9 +1103,9 @@ Standing rules for every wave:
   pushes and opens the PR *before* running `make test`, so work is durable on the remote
   before that cost is paid, not after — the merge gate still requires the suite to pass
   before `gh pr merge --merge` may land anything. Design of record: `docs/spec/test-tiers.md`'s
-  "The push gate narrowed to main/master" section.
-- **`make test-changed` speeds up the developer loop; it never speeds up what reaches
-  `main`** (SH-429). `scripts/select-tests.sh` diffs the current tree against the NEAREST
+  "The push gate narrowed to long-lived branches" section.
+- **`make test-changed` speeds up the developer loop; it never weakens a protected merge**
+  (SH-429). `scripts/select-tests.sh` diffs the current tree against the NEAREST
   fully-certified (`gate`/`full`) ancestor — never a previous `changed`-tier run, so there is
   never more than one hop of drift and the selected set only grows the longer a branch goes
   without a full run. `scripts/coverage-map.sh` captures a per-test-binary source-file map via
@@ -1332,8 +1334,14 @@ Standing rules for every wave:
   toolchain had never assembled a release either.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
+- **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
+  Start feature branches from current `dev`; ordinary PRs target `dev`. Only the guarded
+  `scripts/release.sh` flow targets `main`, then synchronizes the exact release branch back
+  into `dev` before tagging. Browser and coverage observers track `origin/dev`; the release
+  observer remains on stable `origin/main`. Design of record:
+  `docs/spec/development-branch.md`.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
-  to `main`, no force-pushes, and no version bumps or deploys from a linked worktree.
+  to `dev` or `main`, no force-pushes, and no version bumps or deploys from a linked worktree.
 - Deviations from the spec get recorded in the spec's own "As built" section — one
   document to open rather than two. (During the rearchitecture they went to
   `docs/rearch/STATE.md`, which stays the record for those nine waves.)
