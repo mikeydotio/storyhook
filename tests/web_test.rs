@@ -9451,6 +9451,39 @@ fn attachment_drop_targets_preserve_json_and_card_drag_contracts() {
     );
 }
 
+/// SH-391: clipboard images stay local to the create modal until the story
+/// has an id, then travel through the authenticated raw upload path. Browser
+/// tests prove the complete lifecycle; this fast fence pins the wiring and
+/// cleanup boundaries that make the lifecycle possible.
+#[test]
+fn create_modal_stages_pasted_images_and_cleans_up_blob_urls() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert!(html.contains(r#"id="create-attachments""#));
+    assert!(html.contains(r#"id="create-attachment-list""#));
+    assert!(html.contains(r#"id="create-attachment-status" role="status""#));
+
+    let paste = function_body(script, "stagePastedCreateAttachments");
+    assert!(paste.contains("clipboardData") && paste.contains("items"));
+    assert!(paste.contains("getAsFile") && paste.contains("preventDefault"));
+
+    let reset = function_body(script, "resetCreateAttachments");
+    assert!(reset.contains("URL.revokeObjectURL"));
+    let remove = function_body(script, "removePendingCreateAttachment");
+    assert!(remove.contains("URL.revokeObjectURL"));
+    let upload = function_body(script, "uploadPendingCreateAttachments");
+    assert!(upload.contains("URL.revokeObjectURL") && upload.contains("rawBody: true"));
+    let close = function_body(script, "closeCreateModal");
+    assert!(close.contains("resetCreateAttachments"));
+
+    let submit = function_body(script, "submitCreate");
+    assert!(submit.contains("persistCreateDraftWithAttachments"));
+}
+
 /// SH-391: staged previews can make the create modal taller than a narrow
 /// viewport. Its actions must remain reachable without changing every modal.
 #[test]
