@@ -749,6 +749,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   font-variant-numeric: tabular-nums; line-height: 1.35;
 }
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.verification-chip-superseding { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .card-open-prs { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin: 0 0 0.4375rem; }
 /* SH-597: the anchor owns the pointer target; its child owns the paint. A
@@ -5222,6 +5223,22 @@ svg.ctxmenu-disabled-warning {
     if (verification.status === "stalled") {
       return (verification.halted ? "Verification halted" : "Verification retrying") +
         " · attempt " + verification.attempts + " · " + verification.detail;
+    }
+    if (verification.status === "superseding") {
+      var superseding = [
+        "Resubmitted",
+        "generation " + verification.generation + " reserved",
+        "generation " + verification.superseded_generation + " still running",
+        formatVerificationDuration(
+          liveVerificationSeconds(verification.active_elapsed_seconds)
+        ) + " elapsed"
+      ];
+      if (verification.wait_seconds !== undefined && verification.wait_seconds !== null) {
+        superseding.push(
+          formatVerificationDuration(liveVerificationSeconds(verification.wait_seconds)) + " waiting"
+        );
+      }
+      return superseding.join(" · ");
     }
     if (verification.status !== "running") return "";
     if (!verification.current_step && !verification.tests) return "Verifying · starting…";

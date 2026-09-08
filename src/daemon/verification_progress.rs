@@ -17,9 +17,10 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
-use crate::service::{Ctx, StoryService, VerificationCandidate, VerificationQueue};
+use crate::service::verification::GenerationWrite;
+use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::store::VerificationIncident;
-use crate::store::{ReadOps, Store};
+use crate::store::{GlobalSeq, ReadOps, Store};
 
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
@@ -45,6 +46,19 @@ pub enum VerificationStatus {
         current_step: Option<VerificationStep>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tests: Option<VerificationTests>,
+    },
+    /// A newer submission is durably queued while this story's prior
+    /// generation still owns the serialized verifier process.
+    Superseding {
+        /// New generation reserved for the next attempt.
+        generation: GlobalSeq,
+        /// Prior generation whose process is still finishing.
+        superseded_generation: GlobalSeq,
+        /// Seconds the replacement generation has waited for the reservation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wait_seconds: Option<u64>,
+        /// Seconds the superseded attempt has held the verifier.
+        active_elapsed_seconds: u64,
     },
     /// The head candidate is retrying infrastructure or has halted the queue.
     Stalled {
@@ -104,6 +118,14 @@ fn owns(candidate: &VerificationCandidate, active: &ActiveVerification) -> bool 
         && candidate.verifying_generation == active.generation
 }
 
+fn supersedes(candidate: &VerificationCandidate, active: &ActiveVerification) -> bool {
+    candidate.project == active.project
+        && candidate.story_id == active.story_id
+        && candidate.verifying_generation.is_some()
+        && active.generation.is_some()
+        && candidate.verifying_generation != active.generation
+}
+
 fn matching_progress(
     env: &Environment,
     candidate: &VerificationCandidate,
@@ -137,7 +159,9 @@ pub fn status_snapshot_with_incident(
 ) -> Vec<StoryVerificationStatus> {
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
-        .filter(|candidate| !active.is_some_and(|held| owns(candidate, held)))
+        .filter(|candidate| {
+            !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+        })
         .collect();
 
     ordered
@@ -179,6 +203,20 @@ pub fn status_snapshot_with_incident(
                     elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
                     current_step,
                     tests,
+                }
+            } else if let Some(held) = active.filter(|held| supersedes(candidate, held)) {
+                VerificationStatus::Superseding {
+                    generation: candidate
+                        .verifying_generation
+                        .expect("a superseding candidate has a generation"),
+                    superseded_generation: held
+                        .generation
+                        .expect("a superseded active attempt has a generation"),
+                    wait_seconds: candidate
+                        .verifying_since
+                        .as_deref()
+                        .and_then(|since| elapsed_secs(since, now)),
+                    active_elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
                 }
             } else {
                 let position = waiting
@@ -353,6 +391,19 @@ pub fn publish_once(
                 },
                 now,
             )
+        } else if let VerificationStatus::Superseding {
+            generation,
+            superseded_generation,
+            active_elapsed_seconds,
+            ..
+        } = &status
+        {
+            format!(
+                "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — RESUBMITTED\nGeneration {} is reserved while superseded generation {} finishes its verifier process ({}s elapsed).\n",
+                generation.get(),
+                superseded_generation.get(),
+                active_elapsed_seconds
+            )
         } else {
             let VerificationStatus::Queued {
                 position,
@@ -364,7 +415,11 @@ pub fn publish_once(
             };
             let waiting: Vec<VerificationCandidate> = ordered
                 .iter()
-                .filter(|candidate| !active.as_ref().is_some_and(|held| owns(candidate, held)))
+                .filter(|candidate| {
+                    !active
+                        .as_ref()
+                        .is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+                })
                 .cloned()
                 .collect();
             let (ahead_higher_priority, ahead_equal_priority_older) =
@@ -391,12 +446,11 @@ pub fn publish_once(
             }
             rendered
         };
-        let (_, wrote) = StoryService::new(&ctx).upsert_marked_comment(
-            &candidate.story_id,
-            GATE_PROGRESS_PREFIX,
-            &body,
-        )?;
-        moved |= wrote;
+        if let GenerationWrite::Applied(wrote) = VerificationQueue::new(store)
+            .upsert_generation_comment(&ctx, candidate, GATE_PROGRESS_PREFIX, &body)?
+        {
+            moved |= wrote;
+        }
     }
     Ok(moved)
 }
