@@ -1630,6 +1630,9 @@ fn invocation_corpus() -> Vec<Invocation> {
             action: DaemonAction::Status,
         },
         Invocation::Daemon {
+            action: DaemonAction::Restart,
+        },
+        Invocation::Daemon {
             action: DaemonAction::Stop { force: true },
         },
         Invocation::DoctorInstall,

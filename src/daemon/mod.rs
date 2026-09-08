@@ -10,13 +10,13 @@
 //! * [`backup`] — the daily verified snapshot of the store.
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
-//! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
+//! * [`commands`] — `story daemon start|restart|stop|status|install|uninstall|token`.
 //! * [`crash`] — the panic hook and the crash ledger: what the daemon leaves
 //!   behind when it does not exit cleanly, and what the next one does about
 //!   it (SH-287).
-//! * [`engine`] — wakes the Full Auto reconcile loop: a restart sweep once at
-//!   startup (D11), then the ordinary pass on every project-change bus event
-//!   or a coarse tick (SH-466).
+//! * [`engine`] — reconciles persisted Full Auto state before publication
+//!   (D11), then wakes the ordinary pass on every project-change bus event or
+//!   a coarse tick (SH-466, SH-617).
 //! * [`github_poll`] — the unattended background poll for merged pull
 //!   requests (SH-212), spending the credential `story github-auth login`
 //!   stored in the OS keychain. `github-pr`-gated: absent entirely from a

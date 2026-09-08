@@ -906,28 +906,17 @@ fn enter_stable_working_directory(env: &Environment) -> Result<(), AppError> {
 /// does from here on can panic unrecorded), enter the environment's stable home
 /// directory (so no child can inherit the request that started the daemon's
 /// working directory), take the lifetime lock (so a second daemon cannot
-/// start), harvest whatever residue that lock's previous holder left (SH-287 —
-/// the portfile still names *them*, and `write_info` below is about to overwrite
-/// it), bind loopback (so the port is real), publish the portfile (so a client
-/// can find it), then serve — and only from a background thread inside `serve`,
-/// after all of that, does anything ever probe the tailnet (SH-186). No step
-/// before `serve` waits on `tailscale` in any way.
+/// start), harvest whatever residue that lock's previous holder left (SH-287),
+/// reconcile durable Full Auto state, bind loopback, publish the portfile, then
+/// serve. Publication comes after reconciliation so no client can claim work
+/// against pre-restart lane state. Only a background thread inside `serve`
+/// probes the tailnet (SH-186).
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     crate::daemon::crash::install_panic_hook(env);
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     let _activity = crate::daemon::activity::start(env);
     crate::daemon::crash::harvest(env);
-    let (listeners, bound) = bind_preferred(env)?;
-    let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
-    write_info(env, &info)?;
-    eprintln!(
-        "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
-        info.version,
-        info.port,
-        info.pid,
-        info.store_path.display()
-    );
 
     // Before serving anything: one global database is one global blast radius,
     // and a daemon start is the only moment on this machine that reliably
@@ -939,6 +928,23 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         Ok(None) => {}
         Err(e) => eprintln!("warning: storyhook could not write a backup: {e}"),
     }
+
+    // Synchronous and ahead of the portfile: a discoverable successor has
+    // already classified every lane left by its predecessor. This pass never
+    // fills idle lanes or finishes runs; the steady poller is released only
+    // after the server reaches readiness.
+    crate::daemon::engine::reconcile_restart_tick(store, env);
+
+    let (listeners, bound) = bind_preferred(env)?;
+    let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
+    write_info(env, &info)?;
+    eprintln!(
+        "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
+        info.version,
+        info.port,
+        info.pid,
+        info.store_path.display()
+    );
 
     let bus = crate::daemon::bus::ChangeBus::new();
     let (info_for_late_bind, env_for_late_bind) = (info.clone(), env.clone());
@@ -984,6 +990,111 @@ pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
     spawn_locked(env)
 }
 
+/// Starts a daemon, serializing the explicit lifecycle request.
+///
+/// Unlike [`ensure`], this always enters the spawn lock before accepting an
+/// already-usable daemon. That distinction matters only during another
+/// lifecycle transition: an explicit `daemon start` concurrent with restart
+/// must wait for and adopt the successor, while an ordinary command admitted
+/// before shutdown may still use [`ensure`]'s lock-free fast path.
+pub fn start(env: &Environment) -> Result<DaemonInfo, AppError> {
+    spawn_locked(env)
+}
+
+/// The predecessor and successor observed by one completed restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestartedDaemon {
+    /// The daemon running when this restart request arrived.
+    pub stopped: DaemonInfo,
+    /// The healthy replacement, possibly started by a concurrent caller.
+    pub running: DaemonInfo,
+}
+
+/// Gracefully replaces a running daemon under the spawn lock.
+///
+/// The incumbent is observed before waiting for the lock. A caller that finds
+/// a healthy successor after the wait adopts it, so simultaneous restart and
+/// start requests converge on one daemon rather than serially replacing each
+/// other's work. The lock remains held through drain, spawn, and health
+/// confirmation; the lifetime pidfile lock still prevents overlap at the
+/// process boundary.
+pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
+    if !is_live(env) {
+        return Err(AppError::Usage(
+            "the storyhook daemon is not running — start one with `story daemon start`."
+                .to_string(),
+        ));
+    }
+    let observed = read_info(env).ok_or_else(|| {
+        AppError::Storage(format!(
+            "a daemon holds {} but published no readable portfile, so restart cannot \
+             authenticate a lossless shutdown. Inspect `story daemon status`; use \
+             `story daemon stop --force` only if abandoning its work is acceptable.",
+            env.daemon_pidfile().display()
+        ))
+    })?;
+
+    std::fs::create_dir_all(env.daemon_state_dir())?;
+    let arrived = std::time::SystemTime::now();
+    let lock = acquire_spawn_lock(&env.daemon_spawn_lock(), SPAWN_LOCK_DEADLINE)?;
+
+    let outcome = (|| -> Result<RestartedDaemon, AppError> {
+        if let Some(current) = read_info(env)
+            && is_live(env)
+            && current.token != observed.token
+        {
+            if current.is_this_binary()
+                && current.serves(env.store_path())
+                && hello(&current).is_ok()
+            {
+                return Ok(RestartedDaemon {
+                    stopped: observed.clone(),
+                    running: current,
+                });
+            }
+            return Err(AppError::Storage(
+                "the daemon changed while this restart waited for the spawn lock, but its \
+                 replacement is not a healthy daemon from this build. No process was stopped; \
+                 inspect `story daemon status` before retrying."
+                    .to_string(),
+            ));
+        }
+
+        if !is_live(env) {
+            if let Some(adopted) = attempt_verdict(env, arrived) {
+                return Err(adopted);
+            }
+            return Err(AppError::Storage(
+                "the daemon stopped while this restart waited for the spawn lock. It was not \
+                 started again because no running predecessor remained to hand over. Run \
+                 `story daemon start` after inspecting `story daemon status`."
+                    .to_string(),
+            ));
+        }
+
+        let stopped = stop(env, StopMode::Graceful)?.ok_or_else(|| {
+            AppError::Storage(
+                "the daemon disappeared before restart could drain it; no replacement was \
+                 started. Run `story daemon start` after inspecting `story daemon status`."
+                    .to_string(),
+            )
+        })?;
+        let replacement_env = env.clone().daemon_port(stopped.port);
+        let child = spawn_child(&replacement_env)?;
+        let running = await_healthy(&replacement_env, child)?;
+        Ok(RestartedDaemon { stopped, running })
+    })();
+
+    match &outcome {
+        Ok(_) => {
+            let _ = std::fs::remove_file(env.daemon_attempt());
+        }
+        Err(failure) => publish_attempt_failure(env, failure),
+    }
+    let _ = FileExt::unlock(&lock);
+    outcome
+}
+
 /// The daemon in this store's directory, if it is one this client may use.
 ///
 /// Three questions, and all three must answer yes: is a portfile there, was it
@@ -1010,6 +1121,9 @@ fn usable(env: &Environment) -> Option<DaemonInfo> {
 /// [`SPAWN_DEADLINE`]s — two [`wait_until`] calls and [`await_healthy`]. A
 /// waiter that gave up before that sum could abort a spawn that was going to
 /// succeed, which is a worse defect than the one this bound exists to fix.
+/// A graceful restart may hold the same lock longer while draining user work;
+/// this bound still applies to the competing client, but expiry reports that
+/// transition accurately instead of declaring its holder stuck.
 ///
 /// The two branches look mutually exclusive and are not: a daemon that answers
 /// its shutdown late clears its own portfile on the way out, which re-opens
@@ -1057,8 +1171,9 @@ fn acquire_spawn_lock(path: &Path, deadline: Duration) -> Result<File, AppError>
         if waited >= deadline {
             return Err(AppError::Storage(format!(
                 "gave up after {}s waiting for the daemon spawn lock. Another storyhook \
-                 client holds {} and has not finished starting a daemon in the longest \
-                 time that can legitimately take, so it is stuck rather than slow.",
+                 client holds {} and has not finished starting or gracefully restarting the \
+                 daemon. A restart may still be draining accepted work; inspect `story daemon \
+                 status` before retrying.",
                 deadline.as_secs(),
                 path.display(),
             )));
@@ -1177,6 +1292,11 @@ fn publish_attempt(env: &Environment, outcome: &Result<DaemonInfo, AppError>) {
         let _ = std::fs::remove_file(&path);
         return;
     };
+    publish_attempt_failure(env, failure);
+}
+
+fn publish_attempt_failure(env: &Environment, failure: &AppError) {
+    let path = env.daemon_attempt();
     let Ok(document) = serde_json::to_string(&crate::error::WireError::from(failure)) else {
         return;
     };
