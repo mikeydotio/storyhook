@@ -59,6 +59,16 @@
 //! environment, poller restoration, and signal cleanup are all real local Git
 //! behaviour. Those are provoked below without a GitHub imitation, following
 //! the same private-core pattern as `land-pr.sh --certified-run`.
+//!
+//! # The landing-convergence boundary
+//!
+//! SH-604 keeps GitHub outside the deterministic seam for the same reason.
+//! Tests supply the wire-shaped result of the authoritative refresh, then let
+//! `verify-pr.sh` fetch from a real local remote, recompute through the
+//! production preflight, and read receipts written by the production writer.
+//! This proves that an already-merged PR still needs actual-tree certification,
+//! while a changed base can request a bounded retry without granting its new
+//! tree the old tree's receipt.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -640,6 +650,55 @@ impl MergeRepo {
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run(self.path(), "bash", &arg_refs)
+    }
+
+    /// Publishes the current local branches through a real local Git remote,
+    /// including the pull-request ref shape GitHub exposes to `git fetch`.
+    fn publish_origin(&self, pr: u64, head: &str) {
+        assert_ok(
+            &self.git(&["update-ref", &format!("refs/pull/{pr}/head"), head]),
+            "publishing the pull-request ref",
+        );
+        assert_ok(
+            &self.git(&[
+                "remote",
+                "add",
+                "origin",
+                &self.path().display().to_string(),
+            ]),
+            "adding the local origin",
+        );
+    }
+
+    /// Runs the post-landing-refusal seam with authoritative metadata and real
+    /// refs. GitHub itself stays outside this deterministic boundary.
+    fn reconcile_landing_refusal(
+        &self,
+        refresh_status: i32,
+        metadata: &str,
+        expected_pr: u64,
+        expected_base: &str,
+        expected_head: &str,
+        verified_tree: &str,
+    ) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/verify-pr.sh")
+                    .display()
+                    .to_string(),
+                "--reconcile-land-refusal",
+                &refresh_status.to_string(),
+                metadata,
+                &expected_pr.to_string(),
+                expected_base,
+                expected_head,
+                verified_tree,
+                "land-pr refused after verification",
+            ],
+        )
     }
 }
 
@@ -1870,7 +1929,236 @@ fn verifier_restart_recovers_only_a_certified_merge_on_the_current_base() {
 }
 
 #[test]
-fn verifier_preserves_the_landing_scripts_conflict_classification() {
+fn landing_refusal_recovers_only_the_certified_actual_merged_tree() {
+    for tier in ["gate", "changed"] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let base_tree = repo.tree_of("main");
+        let head = repo.branch("feature", "main", "g", "new\n");
+        assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+        repo.enroll_and_certify();
+        assert_ok(
+            &repo.git(&["checkout", "-q", "-b", "merged", &base]),
+            "branching for the landed merge",
+        );
+        assert_ok(
+            &repo.git(&["merge", "-q", "--no-edit", &head]),
+            "creating the landed merge",
+        );
+        let merge_oid = repo.rev_parse("HEAD");
+        let merge_tree = repo.tree_of("HEAD");
+        assert_ok(&repo.gate("preflight"), "enrolling the landed tree");
+        assert_ok(
+            &repo.gate_postlude(tier, (tier == "changed").then_some(base_tree.as_str())),
+            "writing the landed-tree receipt",
+        );
+        assert_ok(
+            &repo.git(&["branch", "-f", "main", &merge_oid]),
+            "advancing the authoritative base",
+        );
+        repo.publish_origin(42, &head);
+        let metadata = serde_json::json!({
+            "number": 42,
+            "state": "MERGED",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "baseRefName": "main",
+            "headRefOid": head,
+            "mergeCommit": {"oid": merge_oid},
+        })
+        .to_string();
+
+        let out = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &merge_tree);
+        assert_ok(&out, "classifying the refreshed merged PR");
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if tier == "gate" {
+            assert_eq!(payload["result"], "merged", "{payload}");
+            assert_eq!(payload["tree"], merge_tree);
+            assert!(
+                payload["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("landing refusal")
+            );
+        } else {
+            assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+            assert_eq!(payload["disposition"], "permanent");
+            assert!(
+                payload["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("insufficient 'changed' receipt")
+            );
+        }
+    }
+}
+
+#[test]
+fn landing_refusal_retries_only_a_new_tree_for_the_same_submission() {
+    let repo = MergeRepo::new();
+    let original_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+    let verified_tree = stdout(&repo.preflight(&original_base, &head));
+    assert_ok(
+        &repo.git(&["checkout", "-q", "-b", "certified", &original_base]),
+        "branching for the certified merge",
+    );
+    assert_ok(
+        &repo.git(&["merge", "-q", "--no-edit", &head]),
+        "creating the certified merge",
+    );
+    repo.enroll_and_certify();
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.publish_origin(42, &head);
+    let metadata = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let unchanged = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &verified_tree);
+    let unchanged: serde_json::Value = serde_json::from_slice(&unchanged.stdout).unwrap();
+    assert_eq!(unchanged["result"], "infrastructure-failure", "{unchanged}");
+    assert_eq!(unchanged["disposition"], "retryable", "{unchanged}");
+    assert!(
+        unchanged["detail"]
+            .as_str()
+            .unwrap()
+            .contains("remains current and certified"),
+        "{unchanged}"
+    );
+
+    repo.write("h", "base advanced\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging the base advancement");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "base advances after verification"]),
+        "advancing the authoritative base",
+    );
+    let current_base = repo.rev_parse("main");
+    let refreshed_tree = stdout(&repo.preflight(&current_base, &head));
+    assert_ne!(refreshed_tree, verified_tree);
+
+    let out = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &verified_tree);
+    assert_ok(&out, "classifying the advanced base");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains(&verified_tree), "{detail}");
+    assert!(detail.contains(&refreshed_tree), "{detail}");
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/gate-receipts")
+            .join(refreshed_tree)
+            .exists(),
+        "reconciliation must not certify the changed tree"
+    );
+}
+
+#[test]
+fn landing_refusal_keeps_missing_proof_and_changed_identity_distinct() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.publish_origin(42, &head);
+    let open = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let missing = repo.reconcile_landing_refusal(0, &open, 42, "main", &head, &tree);
+    let missing: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing["result"], "infrastructure-failure", "{missing}");
+    assert_eq!(missing["disposition"], "permanent");
+
+    for changed in [
+        open.replace("\"number\":42", "\"number\":43"),
+        open.replace("\"state\":\"OPEN\"", "\"state\":\"CLOSED\""),
+        open.replace("\"baseRefName\":\"main\"", "\"baseRefName\":\"other\""),
+        open.replace(
+            &format!("\"headRefOid\":\"{head}\""),
+            "\"headRefOid\":\"deadbeef\"",
+        ),
+    ] {
+        let out = repo.reconcile_landing_refusal(0, &changed, 42, "main", &head, &tree);
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    }
+
+    let unavailable = repo.reconcile_landing_refusal(1, "", 42, "main", &head, &tree);
+    let unavailable: serde_json::Value = serde_json::from_slice(&unavailable.stdout).unwrap();
+    assert_eq!(
+        unavailable["result"], "infrastructure-failure",
+        "{unavailable}"
+    );
+    assert_eq!(unavailable["disposition"], "retryable");
+
+    assert_ok(
+        &repo.git(&["remote", "set-url", "origin", "/no/such/storyhook-origin"]),
+        "breaking the local origin",
+    );
+    let fetch_failure = repo.reconcile_landing_refusal(0, &open, 42, "main", &head, &tree);
+    let fetch_failure: serde_json::Value = serde_json::from_slice(&fetch_failure.stdout).unwrap();
+    assert_eq!(
+        fetch_failure["result"], "infrastructure-failure",
+        "{fetch_failure}"
+    );
+    assert_eq!(fetch_failure["disposition"], "retryable");
+}
+
+#[test]
+fn landing_refusal_reports_a_conflict_in_the_refreshed_tree() {
+    let repo = MergeRepo::new();
+    let head = repo.branch("feature", "main", "f", "feature changes the file\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("f", "base changes the file\n");
+    assert_ok(&repo.git(&["add", "f"]), "staging the base conflict");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "base conflicts after verification"]),
+        "advancing the conflicting base",
+    );
+    repo.publish_origin(42, &head);
+    let metadata = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let out = repo.reconcile_landing_refusal(
+        0,
+        &metadata,
+        42,
+        "main",
+        &head,
+        "previously-certified-tree",
+    );
+    assert_ok(&out, "classifying the refreshed conflict");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["result"], "conflict", "{payload}");
+    assert!(payload["detail"].as_str().unwrap().contains("CONFLICT"));
+}
+
+#[test]
+fn verifier_preserves_the_landing_scripts_terminal_classifications() {
     let repo = MergeRepo::new();
     let script = checkout().join("scripts/verify-pr.sh");
     let script = script.to_string_lossy().to_string();
@@ -1897,21 +2185,22 @@ fn verifier_preserves_the_landing_scripts_conflict_classification() {
             .contains("textual conflict")
     );
 
-    let infrastructure = run(
+    let merged = run(
         repo.path(),
         "bash",
         &[
             &script,
             "--classify-land",
-            "1",
-            "GitHub unavailable",
+            "0",
+            "merge landed and was certified",
             "42",
             "deadbeef",
         ],
     );
-    assert_ok(&infrastructure, "classifying a landing refusal");
-    let payload: serde_json::Value = serde_json::from_slice(&infrastructure.stdout).unwrap();
-    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_ok(&merged, "classifying a successful landing");
+    let payload: serde_json::Value = serde_json::from_slice(&merged.stdout).unwrap();
+    assert_eq!(payload["result"], "merged");
+    assert_eq!(payload["tree"], "deadbeef");
 }
 
 /// Missing arguments are refused with a message naming correct usage, in

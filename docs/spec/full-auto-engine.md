@@ -2116,6 +2116,24 @@ lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and
 cleanup idempotent.
 
+### SH-604 — landing refusals converge from refreshed authority
+
+A green gate is not proof that the later landing attempt still targets the
+same tree. `land-pr.sh` therefore remains fail-closed under the merge lock, and
+`verify-pr.sh` treats its generic refusal as a prompt to refresh rather than as
+a permanent verdict. The submitted PR number, base branch name, and head oid
+must remain exact. If only the base tip advanced, the verifier recomputes the
+merge tree and returns a retryable infrastructure result; the daemon's existing
+three-attempt budget then runs or reuses the gate for that exact new tree.
+
+A PR that became `MERGED` during the race is complete only when its reported
+merge commit exists locally after fetching the refreshed base, is an ancestor
+of that base, and its actual tree carries a `gate` or `full` receipt. Missing or
+insufficient proof remains a permanent infrastructure failure. Closed-unmerged
+or identity-changed submissions return for repair, textual conflicts retain
+their conflict outcome, and unavailable GitHub or fetch remains retryable.
+No diagnostic-text parsing participates in these decisions.
+
 ### SH-473 — close-out coverage and operator contract
 
 The browser harness gives every Playwright project invocation its own seed,
