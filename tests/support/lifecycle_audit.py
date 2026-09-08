@@ -148,6 +148,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("__AUDIT_DATA__", result)
         self.assertIn('"global_seq":103', result)
 
+    def test_committed_report_matches_frozen_evidence_and_assessment(self):
+        reports = ROOT / "docs/reports"
+        evidence = json.loads((reports / "SH-560-evidence.json").read_text())
+        findings = json.loads((reports / "SH-560-findings.json").read_text())
+        actual = (reports / "SH-560-lifecycle-audit.html").read_text()
+        self.assertEqual(actual, CLI.render(evidence, findings), "regenerate the frozen report")
+        stories = AUDIT.analyze(evidence["events"], evidence["window_start"], evidence["window_end"])
+        # These independent SQL-confirmed totals are the approved historical
+        # cohort, not predictions made from the generator's own output.
+        self.assertEqual(len(stories), 36)
+        self.assertEqual(sum(s["done_entries"] for s in stories), 40)
+        self.assertEqual(sum(len(s["generations"]) for s in stories), 75)
+
 
 if __name__ == "__main__":
     unittest.main()

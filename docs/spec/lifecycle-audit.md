@@ -50,5 +50,49 @@ new/directly affected tests run here; the central verifier owns the full suite.
 
 ## As built
 
-Implementation details, exact reproduction commands, and final limitations will
-be recorded here before submission.
+The committed collector, pure analysis module, and HTML template generate
+`docs/reports/SH-560-lifecycle-audit.html` from `SH-560-evidence.json` and
+`SH-560-findings.json` beside it. The dataset contains 4,243 events across the
+36 cohort stories plus SH-560. It includes `command` (daemon-derived) and
+`actor` (self-attested) separately. The evidence viewer labels both and marks
+retracted comments as historical statements.
+
+Independent SQL confirms 36 cohort members, 40 Done state writes, and 75
+Verifying state writes. Independent adjacent-state arithmetic confirms 105,645
+seconds of aggregate Verifying residence. This is **not** gate runtime.
+The report identifies 14 findings and six selected children, SH-603–SH-608,
+under Lifecycle Hardening SH-602. Existing host-hook work remains with
+Agentics AGE-63–65. No runtime code, installed artifact, public API, or store
+schema changed.
+
+| Action | Command |
+|---|---|
+| Regenerate from committed evidence | `python3 -B scripts/lifecycle-audit.py render` |
+| Recollect the frozen prefix from an explicit store | `python3 -B scripts/lifecycle-audit.py collect --store /path/to/store.db --output /tmp/SH-560-evidence.json` |
+| Run analysis and artifact contracts | `cargo test --test lifecycle_audit` |
+| Run Python contracts directly | `python3 -B tests/support/lifecycle_audit.py` |
+| Install pinned browser dependencies | `npm ci --prefix e2e --ignore-scripts` |
+| Run offline Chromium checks | `node tests/support/lifecycle_audit_ui.cjs` |
+| Open the report on macOS | `open docs/reports/SH-560-lifecycle-audit.html` |
+
+The browser check uses the existing Playwright browser cache, no daemon, and
+no network requests from the page. It validates filtering, cross-filter
+selection retention, JSON download, evidence navigation, command/actor display,
+Escape dismissal, and mobile width. It caught missing visible provenance and
+an overflowing long test name; both are covered by the same real-report test.
+Playwright's locator assertions wait for asynchronous hash navigation, following
+its [assertion guidance](https://playwright.dev/docs/test-assertions).
+
+Collection and rendering are deterministic; a contract rejects a stale committed
+HTML artifact. There are 15 Python contracts, also run through the Rust wrapper.
+Formatting and targeted warning-denied Clippy pass. Browser launch requires
+macOS bootstrap permission outside the filesystem sandbox; the ordinary sandbox
+launch failure was environmental, before report navigation.
+
+Limitations are also visible in the report. Completion-based sampling excludes
+still-open failures, full-history counts include pre-window work, and statements
+are not certificates. Raw verification logs under the main checkout were not
+opened; preserved excerpts, event provenance, source inspection, and five
+GitHub PR merge records provide the available evidence. Missing runtime timing
+stays unknown. Post-cutoff observations never alter the frozen cohort. Browser
+inspection is available through the command above; no user browser was operated.
