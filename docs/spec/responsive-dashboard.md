@@ -1,5 +1,11 @@
 # The dashboard's shape at phone and tablet widths
 
+**Planned successor:** [Mobile visual tune-up](mobile-visual-tune-up.md), the
+SH-610 audit and SH-612 implementation epic, replaces the narrow-layout filter
+disclosure and horizontally scrolling phone list when its children land. This
+document remains the record of current behavior until those changes are built;
+the successor explicitly preserves the accessibility and interaction contracts.
+
 Design of record for **SH-235**. Written after implementation, the same reason
 [`dashboard-dispatch.md`](dashboard-dispatch.md) gives for the same choice: sharper
 against the actual measurements and the actual code than against a proposal for
