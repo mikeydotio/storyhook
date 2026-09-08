@@ -131,8 +131,9 @@ before the versioned release projection is registered and installed. This
 order is necessary because neither provider promises that adding an existing
 marketplace name changes its source. The Codex launcher and sandbox rule remain
 unversioned; they still resolve the provider's exact enabled cache version at
-call time. The local release workflow delegates to the newly installed
-binary's `story plugin install claude` instead of registering its checkout.
+call time. The local release workflow delegates both `story plugin install
+claude` and `story plugin install codex` to the newly installed binary instead
+of registering its checkout, so neither provider retains an older release.
 
 This deliberately chooses binary/plugin lockstep over plugin-only releases.
 The rejected fifth release asset would preserve independent plugin delivery,

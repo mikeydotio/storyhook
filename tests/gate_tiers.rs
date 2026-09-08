@@ -473,13 +473,17 @@ fn release_sh_gates_public_releases_with_the_full_battery() {
 }
 
 #[test]
-fn release_sh_installs_the_plugin_owned_by_the_installed_binary() {
+fn release_sh_installs_both_provider_plugins_owned_by_the_installed_binary() {
     let src = std::fs::read_to_string(checkout().join("scripts/release.sh"))
         .expect("reading scripts/release.sh");
 
     assert!(
         src.contains("run story plugin install claude"),
-        "release installation must delegate to the binary that embeds the release payload"
+        "Claude installation must delegate to the binary that embeds the release payload"
+    );
+    assert!(
+        src.contains("run story plugin install codex"),
+        "Codex installation must delegate to the binary that embeds the release payload"
     );
     assert!(
         !src.contains("claude plugin marketplace add \"$repo_root\""),
