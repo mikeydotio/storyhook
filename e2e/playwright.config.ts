@@ -46,17 +46,18 @@ if (loadGraceEnabled()) {
  * needs daemon and browser configuration that would invalidate every ordinary
  * project's fixture, so both desktop projects exclude it and one dedicated
  * Chromium project selects it.
- * Full Auto close-out and the open-PR chip intentionally span desktop and
- * phone layouts. The mobile pair adds those exact filenames to this same
- * base set instead of maintaining independent per-engine globs (SH-473/SH-586).
+ * Full Auto close-out, the open-PR chip, and verification text layout span
+ * desktop and phone layouts. The mobile pair adds those exact filenames to
+ * this same base set instead of maintaining independent per-engine globs.
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
 const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
+const VERIFICATION_LAYOUT_SPECS = /verification-layout\.spec\.ts$/;
 const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
 const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];
 const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
-const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];
+const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS, VERIFICATION_LAYOUT_SPECS];
 
 export default defineConfig({
   testDir: "./specs",
