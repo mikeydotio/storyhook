@@ -157,8 +157,8 @@ witness: old order `[A, B]`, held `/data` reply producing desired order `[B]`, a
 a real press on B spanning delivery. It proves the old paint remains during the
 press, B's drawer opens, and only then does the deferred render move A away.
 
-Not covered, stated rather than implied: `.card-actions-btn` and `.rel-id` — SH-397's
-own two declared residues — are covered *by construction* (they sit under
-`populateCard`, reached through the gated `renderView`) but have no witness spec of
-their own here, because `.card-actions-btn` is `display: none` on a fine pointer
-(SH-235) and so is unpressable in the desktop projects where these specs run.
+Not covered by a held-press-across-render witness, stated rather than implied:
+`.card-actions-btn` and `.rel-id` — SH-397's own two declared residues. SH-600 gives
+the actions button ordinary desktop activation coverage, but that does not exercise
+the press gate across a concurrent render; `.rel-id` likewise remains covered only
+by construction.

@@ -6,8 +6,8 @@ import { createStory, deleteStory, openProject, seedToken } from "./support";
  * (list) used to render the same `⋯` (U+22EF MIDLINE HORIZONTAL ELLIPSIS)
  * character as `icon-shapes.spec.ts`'s desktop controls; converted to the
  * same `<svg class="icon">` shape for the same reason. Both are `display:
- * none` outside `pointer: coarse` (SH-235), which is why they belong here
- * rather than in the desktop spec -- this file only runs under
+ * none` outside `pointer: coarse` for rows (SH-235); SH-600 made the card
+ * button universal. This file still proves both shapes under
  * `mobile-chromium`/`mobile-webkit`, where that media query matches on
  * either engine (SH-348).
  */

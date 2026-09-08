@@ -5,6 +5,7 @@ import {
   openProject,
   projectSlug,
   seedToken,
+  settledBoundingBox,
 } from "./support";
 
 /**
@@ -82,6 +83,44 @@ async function createStory(
   await expect(card).toBeVisible();
   return card;
 }
+
+test("the visible card actions button matches right-click without opening the drawer", async ({
+  page,
+}) => {
+  const title = "SH-600 visible card actions";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+  const icon = actions.locator("svg.icon");
+
+  await expect(actions).toBeVisible();
+  const dimensions = await actions.evaluate(() => ({
+    tapMin: Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    ),
+  }));
+  const actionsBox = await settledBoundingBox(card, actions);
+  expect(dimensions.tapMin).toBe(24);
+  expect(actionsBox.width).toBeGreaterThanOrEqual(dimensions.tapMin);
+  expect(actionsBox.height).toBeGreaterThanOrEqual(dimensions.tapMin);
+  const iconBox = await icon.boundingBox();
+  expect(iconBox).not.toBeNull();
+  expect(iconBox!.width).toBeGreaterThan(0);
+  expect(iconBox!.height).toBeGreaterThan(0);
+
+  await card.click({ button: "right" });
+  const rightClickItems = await page.locator(".ctxmenu-item").allTextContents();
+  expect(rightClickItems.length).toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+
+  await actions.click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  expect(await page.locator(".ctxmenu-item").allTextContents()).toEqual(
+    rightClickItems,
+  );
+  await page.keyboard.press("Escape");
+  await deleteStory(page, title);
+});
 
 test("right-click a card shows Copy ID, Copy URL, Copy Description, in that order", async ({
   page,
