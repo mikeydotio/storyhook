@@ -231,7 +231,7 @@ impl Drop for DaemonGuard {
 /// promptly (which is every child on the happy path) is noticed at once, long
 /// enough that waiting out a multi-second deadline costs a few hundred
 /// `waitpid(WNOHANG)` calls rather than a spin.
-const REAP_POLL: Duration = Duration::from_millis(25);
+pub(crate) const REAP_POLL: Duration = Duration::from_millis(25);
 
 /// A harness deadline that deliberately outlives an ordinary `story` client.
 ///

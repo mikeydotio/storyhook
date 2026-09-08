@@ -224,7 +224,8 @@ fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_othe
         &TrustedHosts::default(),
     );
     assert_eq!(routed.reply.status, 200);
-    let json: serde_json::Value = serde_json::from_str(routed.reply.body()).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(routed.reply.text_body().expect("UTF-8 text response")).unwrap();
     let story = |id: &str| {
         json["stories"]
             .as_array()
@@ -271,7 +272,8 @@ fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_othe
         ),
         &TrustedHosts::default(),
     );
-    let resumed_json: serde_json::Value = serde_json::from_str(resumed.reply.body()).unwrap();
+    let resumed_json: serde_json::Value =
+        serde_json::from_str(resumed.reply.text_body().expect("UTF-8 text response")).unwrap();
     let resumed_running = resumed_json["stories"]
         .as_array()
         .unwrap()
@@ -302,7 +304,7 @@ fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_othe
         &TrustedHosts::default(),
     );
     let superseding_json: serde_json::Value =
-        serde_json::from_str(superseding.reply.body()).unwrap();
+        serde_json::from_str(superseding.reply.text_body().expect("UTF-8 text response")).unwrap();
     let superseding_status = superseding_json["stories"]
         .as_array()
         .unwrap()
@@ -2292,7 +2294,8 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         "",
         &TrustedHosts::default(),
     );
-    let json: serde_json::Value = serde_json::from_str(data.reply.body()).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(data.reply.text_body().expect("UTF-8 text response")).unwrap();
     assert_eq!(json["verification_incident"]["story_id"], id);
     assert_eq!(json["verification_incident"]["attempts"], 1);
 
@@ -2311,8 +2314,19 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         r#"{"incident_id":"an-older-incident"}"#,
         &TrustedHosts::default(),
     );
-    assert_eq!(stale.reply.status, 422, "{}", stale.reply.body());
-    assert!(stale.reply.body().contains("is stale"));
+    assert_eq!(
+        stale.reply.status,
+        422,
+        "{}",
+        stale.reply.text_body().expect("UTF-8 text response")
+    );
+    assert!(
+        stale
+            .reply
+            .text_body()
+            .expect("UTF-8 text response")
+            .contains("is stale")
+    );
     assert_eq!(
         fixture
             .store()
@@ -2333,7 +2347,12 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         &body,
         &TrustedHosts::default(),
     );
-    assert_eq!(ack.reply.status, 200, "{}", ack.reply.body());
+    assert_eq!(
+        ack.reply.status,
+        200,
+        "{}",
+        ack.reply.text_body().expect("UTF-8 text response")
+    );
     assert!(
         fixture
             .store()

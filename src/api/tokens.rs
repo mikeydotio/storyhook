@@ -1270,7 +1270,12 @@ mod tests {
         )
         .expect("claimed");
         assert_eq!(reply.status, 200);
-        assert!(!reply.body().contains("attacker-chosen"));
+        assert!(
+            !reply
+                .text_body()
+                .expect("UTF-8 text response")
+                .contains("attacker-chosen")
+        );
     }
 
     #[test]
@@ -1419,7 +1424,11 @@ mod tests {
         )
         .expect("the exchange path is this module's");
         assert_eq!(reply.status, 204);
-        assert!(reply.body().is_empty(), "{}", reply.body());
+        assert!(
+            reply.text_body().expect("UTF-8 text response").is_empty(),
+            "{}",
+            reply.text_body().expect("UTF-8 text response")
+        );
         let cookie = reply.cookie().expect("a successful exchange sets a cookie");
         assert!(cookie.starts_with("storyhook_test="), "{cookie}");
         assert!(cookie.contains(&minted.secret), "{cookie}");
@@ -1492,12 +1501,20 @@ mod tests {
             Instant::now(),
         )
         .expect("the exchange path is this module's");
-        assert_eq!(reply.status, 422, "{}", reply.body());
+        assert_eq!(
+            reply.status,
+            422,
+            "{}",
+            reply.text_body().expect("UTF-8 text response")
+        );
         assert!(reply.cookie().is_none());
         assert!(
-            reply.body().contains("story token new"),
+            reply
+                .text_body()
+                .expect("UTF-8 text response")
+                .contains("story token new"),
             "the refusal must name what to paste instead: {}",
-            reply.body()
+            reply.text_body().expect("UTF-8 text response")
         );
     }
 

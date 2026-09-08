@@ -34,12 +34,22 @@ test("a browser Blob uploads losslessly using the named-token cookie", async ({ 
     const body = await response.json();
     const read = await fetch(path, { headers: { "X-Storyhook": "1" } });
     const stored = await read.json();
+    const attachmentId = body.story.story.attachments[0].id;
+    const download = await fetch(`${path}/attachments/${attachmentId}`);
+    const downloaded = new Uint8Array(await download.arrayBuffer());
+    const identical = downloaded.length === bytes.length
+      && downloaded.every((byte, index) => byte === bytes[index]);
     const digest = await crypto.subtle.digest("SHA-256", bytes);
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-    return { status: response.status, body, stored, byteLength: bytes.length, sha256 };
+    return {
+      status: response.status, body, stored, byteLength: bytes.length, sha256,
+      downloadStatus: download.status, identical,
+    };
   }, { slug, id });
   expect(result.status).toBe(201);
   expect(result.body.result).toBe("ok");
+  expect(result.downloadStatus).toBe(200);
+  expect(result.identical).toBe(true);
   expect(result.stored).toMatchObject({ result: "ok" });
   expect(result.body.story.story.attachments).toEqual([
     expect.objectContaining({
