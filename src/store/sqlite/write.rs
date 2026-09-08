@@ -1392,14 +1392,19 @@ pub(super) fn put_settings(
     sql(
         conn.execute(
             "INSERT INTO project_settings (project_id, sync_auto_transition, \
-                 doctor_stale_threshold) VALUES (?1, ?2, ?3) \
+                 doctor_stale_threshold, cleanup_auto, cleanup_interval) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT (project_id) DO UPDATE SET \
                  sync_auto_transition = excluded.sync_auto_transition, \
-                 doctor_stale_threshold = excluded.doctor_stale_threshold",
+                 doctor_stale_threshold = excluded.doctor_stale_threshold, \
+                 cleanup_auto = excluded.cleanup_auto, \
+                 cleanup_interval = excluded.cleanup_interval",
             params![
                 project.get(),
                 settings.sync_auto_transition,
                 settings.doctor_stale_threshold,
+                settings.cleanup_auto,
+                settings.cleanup_interval,
             ],
         ),
         "writing project settings",

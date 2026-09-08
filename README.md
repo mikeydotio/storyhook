@@ -406,6 +406,7 @@ story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
 story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
+story cleanup [--dry-run]
 story summary
 story report [--html]
 story search <query>
@@ -471,6 +472,23 @@ the same label on write, removal, filtering, and queue exclusion.
 Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
+
+### Workspace cleanup
+
+Preview safe disk reclamation with `story cleanup --dry-run`, then run
+`story cleanup`. StoryHook considers only resources named by its versioned
+cleanup leases. It preserves a candidate unless the exact story tmux window
+is absent, the worktree is clean and unlocked, and every worktree, local, and
+origin branch tip is contained by the freshly fetched origin default branch.
+Eligible cleanup removes the worktree and its build artifacts plus the exact
+local and remote branches; it never removes the primary checkout.
+
+Automatic cleanup is enabled daily. Change it per project with
+`story project settings set cleanup.auto false` or
+`story project settings set cleanup.interval 12h`. Git authentication and
+network failures fail closed and are reported for later retry. See
+[`docs/spec/workspace-cleanup.md`](docs/spec/workspace-cleanup.md) for the
+complete safety and recovery contract.
 
 ### Story ids
 

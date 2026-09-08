@@ -775,6 +775,10 @@ pub struct ProjectSettings {
     pub sync_auto_transition: Option<bool>,
     /// `doctor.stale_threshold` — a duration string such as `14d`.
     pub doctor_stale_threshold: Option<String>,
+    /// `cleanup.auto` — whether the daemon cleans eligible story workspaces.
+    pub cleanup_auto: Option<bool>,
+    /// `cleanup.interval` — how often automatic cleanup runs.
+    pub cleanup_interval: Option<String>,
 }
 
 /// How [`crate::store::ReadOps::stories`] orders its results.
