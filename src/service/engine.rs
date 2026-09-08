@@ -55,6 +55,8 @@ pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
 pub const BREAKER_TRIPPED: &str = "breaker-tripped";
 /// The run-level stop reason a drained queue writes.
 pub const QUEUE_DRAINED: &str = "queue-drained";
+/// The selected epic no longer exists or is no longer typed as an epic.
+pub const SCOPE_UNAVAILABLE: &str = "scope-unavailable";
 
 /// The lane-level outcome recorded when a story reached a CLOSED superstate.
 pub const COMPLETED: &str = "completed";
@@ -734,11 +736,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             runs.into_iter()
                 .map(|run| {
                     let lanes = tx.engine_lanes(&run.id)?;
-                    let skipped_no_auto = if run.state.is_live() {
-                        needs_human_stories(tx, project, &now, &run.scope)?
-                    } else {
-                        Vec::new()
-                    };
+                    let skipped_no_auto =
+                        if run.state.is_live() && scope_is_available(tx, project, &run.scope)? {
+                            needs_human_stories(tx, project, &now, &run.scope)?
+                        } else {
+                            Vec::new()
+                        };
                     Ok(RunView {
                         run,
                         lanes,
@@ -869,6 +872,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             run_state: EngineRunState::Running,
             stop_reason: None,
         };
+
+        if self.halt_if_scope_unavailable(run_id)? {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
 
         // ---- observe + classify -------------------------------------------
         let observed = self.observe_lanes(&slug, run_id, pass)?;
@@ -1305,6 +1315,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             &serde_json::json!({
                 "event_type": "engine_run_halted",
                 "run_id": run_id,
+                "stop_reason": view.run.stop_reason,
+                "scope": view.run.scope.kind(),
+                "epic_id": view.run.scope.story_id(),
                 "consecutive_hard_stops": view.run.consecutive_hard_stops,
                 "last_quarantine_reasons": reasons,
                 "timestamp": self.ctx.now(),
@@ -1351,6 +1364,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     |tx| {
                         Ok(
                             run_for_project(tx, slug, run_id)?.state == EngineRunState::Running
+                                && scope_is_available(tx, self.ctx.project(), &view.run.scope)?
                                 && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
                                 && tx
                                     .engine_lanes(run_id)?
@@ -1486,9 +1500,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let project = self.ctx.project();
         let now = self.ctx.now();
         let just_drained = std::cell::Cell::new(false);
+        let just_halted = std::cell::Cell::new(false);
         self.ctx.store().write(|tx| {
             let slug = project_slug(tx, project)?;
             let mut run = run_for_project(tx, &slug, run_id)?;
+            if halt_invalid_scope(tx, project, &mut run, &now)? {
+                just_halted.set(true);
+                return Ok(());
+            }
             let lanes = tx.engine_lanes(run_id)?;
             let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
             // An empty fill may mean capacity contention, or the queue may
@@ -1533,7 +1552,40 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }),
             );
         }
-        self.one_view(run_id)
+        let view = self.one_view(run_id)?;
+        if just_halted.get() {
+            self.fire_run_halted_hook(run_id, &view);
+        }
+        Ok(view)
+    }
+
+    /// Scope loss halts allocation without touching any occupied lane. An
+    /// explicit drain needs no scope and remains owned by its stop request.
+    fn halt_if_scope_unavailable(&self, run_id: &RunId) -> Result<bool, AppError> {
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        // Project runs have no story identity to lose. Do not acquire a
+        // writer merely to re-prove that invariant on every tick.
+        if self.ctx.store().read(|tx| {
+            let slug = project_slug(tx, project)?;
+            Ok(run_for_project(tx, &slug, run_id)?.scope == EngineScope::Project)
+        })? {
+            return Ok(false);
+        }
+        let (just_halted, unavailable_halt) = self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            let changed = halt_invalid_scope(tx, project, &mut run, &now)?;
+            Ok((
+                changed,
+                run.state == EngineRunState::Halted
+                    && run.stop_reason.as_deref() == Some(SCOPE_UNAVAILABLE),
+            ))
+        })?;
+        if just_halted {
+            self.fire_run_halted_hook(run_id, &self.one_view(run_id)?);
+        }
+        Ok(unavailable_halt)
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
@@ -1549,6 +1601,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     EngineRunState::Running,
                     EngineRunState::Paused,
                     EngineRunState::Draining,
+                    EngineRunState::Halted,
                 ],
             )?;
             run.state = EngineRunState::Draining;
@@ -1839,6 +1892,40 @@ fn needs_human_stories(
             title: view.story.title,
         })
         .collect())
+}
+
+/// A stored scope is never widened when its epic disappears or changes type.
+fn scope_is_available(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    scope: &EngineScope,
+) -> Result<bool, StoreError> {
+    let EngineScope::Epic(id) = scope else {
+        return Ok(true);
+    };
+    let prefix = project_prefix(tx, project)?;
+    Ok(optional_lane_story(tx, project, &prefix, id)?.is_some_and(|row| is_epic(&row.snapshot)))
+}
+
+/// Persist scope loss only once, in the transaction that decides whether the
+/// run can allocate or finish. Draining is an explicit operator decision.
+fn halt_invalid_scope(
+    tx: &mut impl WriteOps,
+    project: crate::store::ProjectId,
+    run: &mut EngineRunRecord,
+    now: &str,
+) -> Result<bool, StoreError> {
+    if matches!(run.state, EngineRunState::Running | EngineRunState::Paused)
+        && !scope_is_available(tx, project, &run.scope)?
+    {
+        run.state = EngineRunState::Halted;
+        run.stop_reason = Some(SCOPE_UNAVAILABLE.into());
+        run.acknowledged_at = None;
+        run.updated_at = now.into();
+        tx.update_engine_run(run)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Absence is a store fact; an I/O or decoding error is never evidence of deletion.

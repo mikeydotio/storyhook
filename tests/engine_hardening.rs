@@ -368,3 +368,173 @@ fn an_unreadable_story_is_not_misreported_as_a_deleted_story() {
     assert!(record.recent_quarantines.is_empty());
     assert_eq!(record.consecutive_hard_stops, 0);
 }
+
+fn epic(ctx: &Ctx<'_, SqliteStore>) -> String {
+    storyhook::service::ConfigService::new(ctx)
+        .add_type("epic", None, None)
+        .unwrap();
+    StoryService::new(ctx)
+        .create(&NewStoryInput {
+            title: "scope".into(),
+            story_type: Some("epic".into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .id
+}
+
+#[test]
+fn missing_or_retyped_scope_halts_without_losing_status_or_recovery_controls() {
+    use storyhook::service::FieldEdits;
+    use storyhook::store::{EngineRunState, ReadOps, Store};
+    for delete in [false, true] {
+        for occupied in [false, true] {
+            let fixture = ServiceFixture::new();
+            fixture.write_hooks_toml(
+                "on_engine_run_halted = { command = \"cat >> halt.jsonl; echo >> halt.jsonl\" }\n",
+            );
+            let ctx = fixture.ctx();
+            let scope = epic(&ctx);
+            let child = story(&ctx, "scoped work");
+            RelationService::new(&ctx)
+                .relate(&scope, "parent-of", &child, false)
+                .unwrap();
+            let fake = FakeDispatcher::new([dispatched_with_pane()]);
+            let run = start(&ctx, &fake, EngineScope::Epic(scope.clone()), 1);
+            let engine = EngineService::new(&ctx, &fake);
+            if occupied {
+                engine.reconcile(&run).unwrap();
+            }
+            if delete {
+                StoryService::new(&ctx).delete(&scope).unwrap();
+            } else {
+                StoryService::new(&ctx)
+                    .set_fields(
+                        &scope,
+                        &FieldEdits {
+                            story_type: Some("feature".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+            }
+            story(&ctx, "outside work must not be taken");
+            assert!(
+                engine.status(Some(&run)).is_ok(),
+                "status must survive scope loss before the next tick"
+            );
+            let before = fixture.store().read(|tx| tx.engine_lanes(&run)).unwrap();
+            for _ in 0..2 {
+                let report = engine.reconcile(&run).unwrap();
+                assert_eq!(report.run_state, EngineRunState::Halted);
+                assert_eq!(report.stop_reason.as_deref(), Some("scope-unavailable"));
+                assert!(report.filled.is_empty());
+                assert!(report.quarantined.is_empty());
+            }
+            assert_eq!(
+                fixture.store().read(|tx| tx.engine_lanes(&run)).unwrap(),
+                before
+            );
+            let notifications = std::fs::read_to_string(fixture.cwd().join("halt.jsonl")).unwrap();
+            let notifications: Vec<serde_json::Value> = notifications
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(notifications.len(), 1, "scope loss must notify only once");
+            assert_eq!(notifications[0]["stop_reason"], "scope-unavailable");
+            assert_eq!(notifications[0]["epic_id"], scope);
+            assert!(
+                engine
+                    .acknowledge(&run)
+                    .unwrap()
+                    .run
+                    .acknowledged_at
+                    .is_some()
+            );
+            // Empty halted runs can be stopped immediately without any cleanup
+            // authority. Occupied runs retain the existing lease requirement.
+            if !occupied {
+                assert_eq!(
+                    engine.stop(&run, true).unwrap().run.state,
+                    EngineRunState::Finished
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn graceful_stop_can_finish_after_its_epic_is_deleted() {
+    use storyhook::store::EngineRunState;
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let scope = epic(&ctx);
+    let child = story(&ctx, "scoped work");
+    RelationService::new(&ctx)
+        .relate(&scope, "parent-of", &child, false)
+        .unwrap();
+    let fake = FakeDispatcher::new([dispatched()]);
+    let run = start(&ctx, &fake, EngineScope::Epic(scope.clone()), 1);
+    let engine = EngineService::new(&ctx, &fake);
+    engine.reconcile(&run).unwrap();
+    engine.stop(&run, false).unwrap();
+    StoryService::new(&ctx).delete(&scope).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&child, "done", None, None, None)
+        .unwrap();
+    let report = engine.reconcile(&run).unwrap();
+    assert_eq!(report.run_state, EngineRunState::Finished);
+    assert_eq!(report.stop_reason.as_deref(), Some("operator-stopped"));
+}
+
+#[test]
+fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
+    use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
+    use storyhook::store::EngineRunState;
+    use storyhook_test_support::DispatcherCall;
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let scope = epic(&ctx);
+    let child = story(&ctx, "scoped work");
+    RelationService::new(&ctx)
+        .relate(&scope, "parent-of", &child, false)
+        .unwrap();
+    let lease = StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: child.clone(),
+        repository_path: "/repos/original".into(),
+        worktree_path: "/tmp/preserved".into(),
+        branch: format!("worktree-{child}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: "/tmp/tmux-original/default".into(),
+        },
+    };
+    let fake = FakeDispatcher::new([
+        DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+            serde_json::json!({"ok": true, "cleanup_lease": lease}),
+        )),
+        DispatcherStep::Unclaim(DispatchOutcome::from_payload(
+            serde_json::json!({"ok": true}),
+        )),
+    ]);
+    let run = start(&ctx, &fake, EngineScope::Epic(scope.clone()), 1);
+    let engine = EngineService::new(&ctx, &fake);
+    engine.reconcile(&run).unwrap();
+    engine.pause(&run).unwrap();
+    StoryService::new(&ctx).delete(&scope).unwrap();
+    assert_eq!(
+        engine.reconcile_after_restart(&run).unwrap().run_state,
+        EngineRunState::Halted
+    );
+    assert_eq!(
+        engine.stop(&run, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    let calls = fake.calls();
+    assert!(
+        matches!(&calls[1], DispatcherCall::Unclaim(request) if request.cleanup_lease == lease)
+    );
+    assert_eq!(calls.len(), 2);
+}
