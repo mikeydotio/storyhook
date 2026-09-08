@@ -318,7 +318,9 @@ This reuses the existing gate rather than weakening it. The browser restriction
 in the response adds defense against cross-origin embedding. References:
 [Fetch Metadata](https://www.w3.org/TR/fetch-metadata/) and
 [Fetch's Cross-Origin-Resource-Policy](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
-`default-src 'self'` already allows these same-origin images, so CSP is unchanged.
+The explicit `img-src 'self' blob:` policy allows both these same-origin images
+and SH-391's browser-local staged previews without relaxing any other resource
+type or admitting remote or `data:` image sources.
 
 ### Metadata and consumers
 
@@ -427,3 +429,50 @@ Acceptance is covered by `tests/web_test.rs` and the Chromium/WebKit
 `attachment-drop.spec.ts`: both field modes, ordered images, preserved value,
 selection and focus, validation continuation, ambiguous failure, project
 identity, closed stories, and file-only isolation from card drag/drop.
+
+## Create-modal paste (SH-391)
+
+The create description textarea reads image `File` entries from the synchronous
+`ClipboardEvent.clipboardData.items` interface. PNG, JPEG, GIF, and WebP are
+accepted; an image representation wins when the clipboard also exposes HTML or
+plain text, while a text-only paste keeps the browser's native textarea behavior.
+Multiple images retain clipboard order. Clipboard filenames are preserved;
+unnamed entries receive `pasted-image.<canonical extension>`.
+
+Pasted bytes remain browser-local until the user saves or publishes. The modal
+shows contained object-URL thumbnails with text filenames and Remove controls,
+and revokes every object URL when its item leaves the pending list or the modal
+session ends. Existing attachments on an edited draft render in the same strip
+as persisted, non-removable facts. The server remains authoritative for the
+10 MiB limit and magic-byte validation. CSP admits `blob:` only through
+`img-src`; scripts, connections, frames, remote images, and `data:` images keep
+their existing restrictions.
+
+The upload endpoint requires an existing story id, so a new submission with
+pending images is created as a draft first. The client then uploads one raw Blob
+at a time through the shared authenticated request helper, preserving attachment
+id order, and publishes only after every upload succeeds. A Save Draft action
+stops after upload. Existing drafts follow the same PATCH, label-diff, ordered
+upload sequence before an optional publish. Submissions without pending images
+keep their original one-request path.
+
+Each confirmed upload replaces its local preview with the returned attachment
+metadata. A definite refusal leaves the failed image and every later image
+pending in the now-persisted draft editor, so retry cannot create another story.
+An unconfirmed network outcome is never replayed automatically: the modal says
+the image may already be attached and directs the user to reload and inspect the
+persisted draft before retrying. Discarding that draft uses ordinary story
+deletion, whose store transaction removes its attachment blobs.
+
+The project selector is pinned only for this multi-request sequence. Every
+request uses the project base captured before the draft write; once the draft
+exists, the existing draft-editor rule keeps its owner immutable. This prevents
+one paste submission from creating a draft in one project and uploading its
+images to another.
+
+Acceptance: Chromium and WebKit exercise pre-create previews, mixed clipboard
+representations, all accepted MIME declarations, filename fallback, removal,
+ordered persistence, draft save/reopen/publish, partial refusal and retry,
+ambiguous failure, and cross-project ownership through production UI and API
+paths. SH-392 still owns drag-and-drop onto existing stories; SH-393 owns remote
+image URLs.
