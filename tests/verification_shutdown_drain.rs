@@ -186,6 +186,89 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
 }
 
 #[test]
+fn resubmission_transfers_the_single_in_flight_reservation_between_generations() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let story_id = submitted(&fixture, "resubmitted under test", Priority::High, LOW_PR);
+    let original = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let daemon_in_flight = InFlight::new(fixture.env().clone());
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let actuator = BlockingActuator {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    };
+
+    thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &daemon_in_flight,
+            )
+        });
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            story_id
+        );
+
+        StoryService::new(&fixture.ctx())
+            .set_state(&story_id, "verifying", None, Some("verifying"), None)
+            .unwrap();
+        let replacement = VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            replacement.verifying_generation,
+            original.verifying_generation
+        );
+        assert_eq!(
+            activity.active().unwrap().generation,
+            original.verifying_generation
+        );
+        assert_eq!(daemon_in_flight.len(), 1);
+
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            story_id
+        );
+        assert_eq!(
+            activity.active().unwrap().generation,
+            replacement.verifying_generation
+        );
+        let published = lifecycle::read_inflight(fixture.env());
+        assert_eq!(published.len(), 1);
+        assert_eq!(
+            published[0].request_id,
+            format!(
+                "verify:fixture:{story_id}:{}",
+                replacement.verifying_generation.unwrap().get()
+            )
+        );
+
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), TickResult::RetryLater);
+    });
+
+    assert_eq!(activity.active(), None);
+    assert_eq!(daemon_in_flight.len(), 0);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+#[test]
 fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
