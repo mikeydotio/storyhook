@@ -2217,3 +2217,47 @@ drain likewise waits for occupied work to finish. A successful engine refresh
 repaints the current board or list through SH-401's press gate, and each
 renderer's output-derived fingerprint notices lane assignment and release, so
 the chip appears and clears without a page reload.
+
+### SH-609 — progress through interacting queue and lane states
+
+The execution queue uses typed-epic claimability rather than rejecting every
+story with a child edge. An ordinary parent remains executable, including when
+its own children depend on its completion. The earlier test named for `next`
+actually invoked `list --ready`; it now exercises `next`, alongside atomic
+`claim --next` and engine dispatch regressions.
+
+Capacity is shared across project runs in the same store. Admission counts
+`dispatching` and `working` lanes, including occupied lanes retained by halted
+runs, inside the transaction that claims the next story and reserves its lane.
+Idle and quarantined lanes consume no capacity. This uses existing store reads;
+there is no schema change or cross-store scheduler. An idle run with ready work
+waits when capacity is exhausted. Queue drain and ready `no-auto` waiting are
+rechecked in the transaction that finishes the run, so an empty fill alone
+cannot certify drain.
+
+Lane observations are provisional until applied. Each applying write checks
+both the exact lane record and the observed story sequence after the external
+pane probe. Changed facts defer the observation to the next pass. Quarantine
+appends its awaiting event and saves its lane evidence in one transaction.
+Confirmed story deletion produces `story-missing` quarantine evidence without
+writing to the deleted story; read or decoding failures remain errors. Existing
+breaker, completion, restart, and artifact-preservation rules still apply.
+
+A deleted or retyped scope halts a running or paused run with
+`scope-unavailable`; it never widens to the project backlog. The existing halt
+hook fires once and includes the stop reason and scope identity. Status remains
+readable. Explicit draining remains independent of the scope, and `stop --now`
+accepts halted runs through the same exact cleanup-lease requirement. No cleanup
+identity is inferred and no automatic restart is introduced.
+
+`engine_hardening` tests concurrent project admission, retained capacity,
+missing stories, stale observations, corrupt reads, scope loss, notifications,
+and recovery. `engine_graph_progress` drives real claims and completions through
+nested scopes, dependency diamonds and cycles, outside blockers, priority changes,
+multiple parents, age ties, and excluded high-priority work. These service tests
+substitute the external dispatcher only; existing shell/browser suites retain
+responsibility for real provider launch behavior. No provider UI changed here.
+
+Validation uses new and directly impacted targets. The selector returned `ALL`
+because the certified baseline had no coverage map; this work makes no full-suite
+certification claim. The centralized verifier owns that gate on the proposed merge.
