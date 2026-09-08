@@ -16,6 +16,14 @@
 # line looks like (CLAUDE.md: SH-136, SH-198, SH-260/276 already paid for
 # exactly that shape once).
 
+# `multiplex=1` preserves every raw input line as `raw\t<line>` and prefixes
+# parsed outcomes with `case\t`. run-tests.sh uses that synchronous stream to
+# keep the full gate log and live progress in order. The default remains the
+# original bare TSV contract consumed by test-delta.sh.
+{
+    if (multiplex) print "raw\t" $0
+}
+
 /^     Running / {
     line = $0
     sub(/^     Running /, "", line)
@@ -33,5 +41,9 @@
     sub(/ \.\.\. (ok|FAILED)$/, "", name)
     outcome = ($0 ~ / \.\.\. ok$/) ? "PASS" : "FAIL"
     bin = (current == "") ? "(unknown)" : current
-    print bin "\t" name "\t" outcome
+    if (multiplex) {
+        print "case\t" bin "\t" name "\t" outcome
+    } else {
+        print bin "\t" name "\t" outcome
+    }
 }
