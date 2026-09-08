@@ -486,6 +486,7 @@ fn every_hard_stop_kind_has_a_distinct_stable_spelling() {
         HardStopKind::Stalled,
         HardStopKind::Interrupted,
         HardStopKind::DispatchRefused,
+        HardStopKind::StoryMissing,
     ];
     let spellings: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
     let mut unique = spellings.clone();

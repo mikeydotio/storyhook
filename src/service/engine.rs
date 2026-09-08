@@ -152,6 +152,8 @@ pub enum HardStopKind {
     /// `story next` refused the claim the fill phase attempted (SH-120: the
     /// refusal is relayed verbatim, never composed here).
     DispatchRefused,
+    /// The story was deleted while its lane still held the claim.
+    StoryMissing,
 }
 
 impl HardStopKind {
@@ -164,6 +166,7 @@ impl HardStopKind {
             Self::Stalled => "stalled",
             Self::Interrupted => "interrupted",
             Self::DispatchRefused => "dispatch-refused",
+            Self::StoryMissing => "story-missing",
         }
     }
 }
@@ -883,21 +886,26 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     // (SH-521). The story DID move to reach this handoff, so
                     // the stall clock restarts the same way a Progressing
                     // lane's does.
-                    report.verifying.push(lane.lane_index);
-                    self.record_progress(&lane, observation.head_global_seq, pass)?;
+                    if self.record_progress(&lane, observation.head_global_seq, pass)? {
+                        report.verifying.push(lane.lane_index);
+                    }
                 }
                 LaneClassification::Completed => {
-                    report.completed.push(lane.lane_index);
-                    self.free_completed_lane(&lane)?;
+                    if self.free_completed_lane(&lane, observation.head_global_seq)? {
+                        report.completed.push(lane.lane_index);
+                    }
                 }
                 LaneClassification::HardStop(kind) => {
-                    report.quarantined.push((lane.lane_index, kind));
-                    hard_stops.push(self.quarantine_lane(
+                    if let Some(record) = self.quarantine_lane(
                         run_id,
                         &lane,
                         kind,
                         observation.awaiting_reason.as_deref(),
-                    )?);
+                        observation.head_global_seq,
+                    )? {
+                        report.quarantined.push((lane.lane_index, kind));
+                        hard_stops.push(record);
+                    }
                 }
             }
         }
@@ -986,12 +994,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .story_id
                     .clone()
                     .expect("a non-idle lane holds a story");
-                // A story that will not resolve states nothing about progress:
-                // `head_global_seq` stays `None` and `classify` declines to
-                // call that a stall (SH-372).
-                let row = resolve_story(tx, project, &prefix, &story)
-                    .ok()
-                    .map(|(_, row)| row);
+                let row = optional_lane_story(tx, project, &prefix, &story)?;
                 facts.push((lane, row));
             }
             Ok(facts)
@@ -1031,7 +1034,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .and_then(|at| elapsed_secs(at, &now)),
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
             };
-            let classification = classify(&observation, STALL_CEILING_SECS, pass);
+            let classification = if row.is_none() {
+                LaneClassification::HardStop(HardStopKind::StoryMissing)
+            } else {
+                classify(&observation, STALL_CEILING_SECS, pass)
+            };
             observed.push((lane, classification, observation));
         }
         Ok(observed)
@@ -1052,7 +1059,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         lane: &EngineLaneRecord,
         head_global_seq: Option<i64>,
         pass: ReconcilePass,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut updated = lane.clone();
         updated.last_observed_at = observed_at.clone();
@@ -1066,20 +1073,34 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             updated.last_progress_seq = head_global_seq.map(GlobalSeq::new);
             updated.last_progress_at = Some(observed_at);
         }
-        if &updated != lane {
-            self.ctx.store().write(|tx| tx.put_engine_lane(&updated))?;
-        }
-        Ok(())
+        Ok(self.ctx.store().write(|tx| {
+            if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
+                return Ok(false);
+            }
+            if &updated != lane {
+                tx.put_engine_lane(&updated)?;
+            }
+            Ok(true)
+        })?)
     }
 
     /// Frees a lane whose story reached a CLOSED superstate.
-    fn free_completed_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
+    fn free_completed_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        head_global_seq: Option<i64>,
+    ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = Some(COMPLETED.to_string());
         idle.outcome_detail = lane.story_id.clone();
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
-        Ok(())
+        Ok(self.ctx.store().write(|tx| {
+            if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
+                return Ok(false);
+            }
+            tx.put_engine_lane(&idle)?;
+            Ok(true)
+        })?)
     }
 
     /// Records a hard stop on the story and preserves the lane's evidence.
@@ -1107,10 +1128,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         lane: &EngineLaneRecord,
         kind: HardStopKind,
         existing_reason: Option<&str>,
-    ) -> Result<EngineQuarantineRecord, AppError> {
+        head_global_seq: Option<i64>,
+    ) -> Result<Option<EngineQuarantineRecord>, AppError> {
         let observed_at = self.ctx.now();
         let mut fired_reason = None;
-        if let Some(story) = lane.story_id.as_deref() {
+        if lane.story_id.is_some() {
             let provenance = format!(
                 "Full Auto: {} on lane {} of run {run_id}{}{}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
                 kind.as_str(),
@@ -1128,7 +1150,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 Some(existing) if !existing.is_empty() => format!("{existing} ({provenance})"),
                 _ => provenance,
             };
-            super::StoryService::new(self.ctx).set_awaiting(story, &reason)?;
             fired_reason = Some(reason);
         }
         let mut quarantined = lane.clone();
@@ -1136,9 +1157,36 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         quarantined.last_observed_at = observed_at.clone();
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
-        self.ctx
-            .store()
-            .write(|tx| tx.put_engine_lane(&quarantined))?;
+        let applied = self.ctx.store().write(|tx| {
+            let project = self.ctx.project();
+            if !observation_is_current(tx, project, lane, head_global_seq)? {
+                return Ok(false);
+            }
+            if kind != HardStopKind::StoryMissing {
+                let prefix = project_prefix(tx, project)?;
+                let story = lane.story_id.as_deref().expect("occupied lane has a story");
+                let (number, row) = resolve_story(tx, project, &prefix, story)?;
+                let states = tx.state_map(project)?;
+                super::append_and_fold(
+                    tx,
+                    project,
+                    number,
+                    &prefix,
+                    &states,
+                    crate::store::ExpectedSeq::Exact(row.head_seq),
+                    &[crate::domain::StoryEvent::StoryAwaitingSet {
+                        at: observed_at.clone(),
+                        awaiting: fired_reason.clone().expect("occupied lane has a reason"),
+                    }],
+                    self.ctx.provenance(),
+                )?;
+            }
+            tx.put_engine_lane(&quarantined)?;
+            Ok(true)
+        })?;
+        if !applied {
+            return Ok(None);
+        }
         self.fire_lane_quarantined_hook(
             run_id,
             lane.lane_index,
@@ -1148,7 +1196,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             lane.window_name.as_deref(),
             lane.worktree_path.as_deref(),
         );
-        Ok(EngineQuarantineRecord {
+        Ok(Some(EngineQuarantineRecord {
             lane_index: lane.lane_index,
             story_id: lane.story_id.clone(),
             kind: kind.as_str().to_string(),
@@ -1157,7 +1205,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             window_name: lane.window_name.clone(),
             worktree_path: lane.worktree_path.clone(),
             observed_at,
-        })
+        }))
     }
 
     /// Fires the `engine_lane_quarantined` hook for a lane just quarantined
@@ -1791,6 +1839,41 @@ fn needs_human_stories(
             title: view.story.title,
         })
         .collect())
+}
+
+/// Absence is a store fact; an I/O or decoding error is never evidence of deletion.
+fn optional_lane_story(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    prefix: &str,
+    id: &str,
+) -> Result<Option<crate::store::StoryRow>, StoreError> {
+    match resolve_story(tx, project, prefix, id) {
+        Ok((_, row)) => Ok(Some(row)),
+        Err(AppError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Subprocess probes run outside the store. Their observations authorize a
+/// write only while both the lane and story still match the observed snapshot.
+fn observation_is_current(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    lane: &EngineLaneRecord,
+    head_global_seq: Option<i64>,
+) -> Result<bool, StoreError> {
+    if !tx
+        .engine_lanes(&lane.run_id)?
+        .iter()
+        .any(|current| current == lane)
+    {
+        return Ok(false);
+    }
+    let prefix = project_prefix(tx, project)?;
+    let story = lane.story_id.as_deref().expect("occupied lane has a story");
+    let current = optional_lane_story(tx, project, &prefix, story)?;
+    Ok(current.map(|row| row.head_global_seq.get()) == head_global_seq)
 }
 
 /// Capacity belongs to occupied lanes, including evidence retained by a halted
