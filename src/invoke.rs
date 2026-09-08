@@ -3011,6 +3011,11 @@ pub struct HttpInvoker {
     announce_waits: bool,
 }
 
+// Large enough for the current project and one maximum-size attachment after
+// its worst-case JSON expansion, but still a finite defence against a broken
+// or hostile peer exhausting the client's memory (SH-608).
+const MAX_DAEMON_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+
 impl HttpInvoker {
     /// An invoker that runs commands from `cwd` through `env`'s daemon.
     pub fn new(env: Environment, cwd: impl Into<PathBuf>) -> Self {
@@ -3216,10 +3221,7 @@ impl HttpInvoker {
             .header("Content-Type", "application/json")
             .send(body)
             .map_err(Transport::from)?;
-        let envelope: crate::api::wire::WireResponse = response
-            .into_body()
-            .read_json()
-            .map_err(|e| Transport::Sent(format!("the daemon's answer was unreadable: {e}")))?;
+        let envelope = decode_daemon_response(response, MAX_DAEMON_RESPONSE_BYTES)?;
         // Recorded on THIS side of the hop, so `main` can print them to the
         // terminal the command was typed into. The daemon collected them; only
         // the client can show them (SH-530).
@@ -3227,6 +3229,143 @@ impl HttpInvoker {
             crate::store_notice::push(notice.clone());
         }
         Ok(envelope.into_result())
+    }
+}
+
+fn decode_daemon_response(
+    response: ureq::http::Response<ureq::Body>,
+    max_bytes: u64,
+) -> Result<crate::api::wire::WireResponse, Transport> {
+    let declared = response.body().content_length();
+    if let Some(bytes) = declared
+        && bytes > max_bytes
+    {
+        return Err(Transport::Sent(format!(
+            "the daemon declared a {bytes}-byte answer in Content-Length, over StoryHook's \
+             {max_bytes}-byte response limit"
+        )));
+    }
+
+    // ureq's limit raises before asking the underlying reader for EOF. One
+    // sentinel byte therefore lets an exactly-at-limit document prove it is
+    // complete while still refusing the first byte beyond the logical cap.
+    let reader_limit = max_bytes.saturating_add(1);
+    response
+        .into_body()
+        .into_with_config()
+        .limit(reader_limit)
+        .read_json()
+        .map_err(|error| daemon_response_read_error(error, declared, max_bytes))
+}
+
+fn daemon_response_read_error(
+    error: ureq::Error,
+    declared: Option<u64>,
+    max_bytes: u64,
+) -> Transport {
+    let detail = match &error {
+        ureq::Error::Json(json)
+            if json.is_eof() || json.io_error_kind() == Some(std::io::ErrorKind::UnexpectedEof) =>
+        {
+            match declared {
+                Some(bytes) => format!(
+                    "the daemon's answer was truncated before its declared {bytes}-byte \
+                     Content-Length: {error}"
+                ),
+                None => format!("the daemon's answer ended before its JSON was complete: {error}"),
+            }
+        }
+        ureq::Error::Json(json) if json.is_syntax() || json.is_data() => {
+            format!("the daemon's answer contained malformed JSON: {error}")
+        }
+        _ => format!(
+            "the daemon's answer could not be read within StoryHook's {max_bytes}-byte \
+             response limit: {error}"
+        ),
+    };
+    Transport::Sent(detail)
+}
+
+#[cfg(test)]
+mod http_response_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn envelope() -> Vec<u8> {
+        serde_json::to_vec(&crate::api::wire::WireResponse::new(
+            "request-1".to_string(),
+            Ok(Response::Message("complete".to_string())),
+        ))
+        .expect("serializing a wire response")
+    }
+
+    fn response(body: ureq::Body) -> ureq::http::Response<ureq::Body> {
+        ureq::http::Response::builder()
+            .status(200)
+            .body(body)
+            .expect("building a response")
+    }
+
+    fn sent_message(result: Result<crate::api::wire::WireResponse, Transport>) -> String {
+        match result.expect_err("the body must be refused") {
+            Transport::Sent(message) => message,
+            Transport::NotDelivered(message) => {
+                panic!("a received response was delivered: {message}")
+            }
+        }
+    }
+
+    #[test]
+    fn http_response_accepts_a_valid_envelope_exactly_at_the_limit() {
+        let bytes = envelope();
+        let limit = bytes.len() as u64;
+        let decoded = decode_daemon_response(response(ureq::Body::builder().data(bytes)), limit)
+            .expect("a body exactly at the configured limit must fit");
+
+        assert_eq!(decoded.request_id, "request-1");
+    }
+
+    #[test]
+    fn http_response_rejects_an_advertised_body_over_the_limit_before_reading() {
+        let limit = 128;
+        let declared = limit + 1;
+        let body = ureq::Body::builder().limit(declared).data(Vec::<u8>::new());
+        let message = sent_message(decode_daemon_response(response(body), limit));
+
+        assert!(message.contains(&declared.to_string()), "{message}");
+        assert!(message.contains(&limit.to_string()), "{message}");
+        assert!(message.contains("Content-Length"), "{message}");
+    }
+
+    #[test]
+    fn http_response_rejects_an_unadvertised_body_that_crosses_the_limit() {
+        let bytes = envelope();
+        let limit = (bytes.len() - 1) as u64;
+        let body = ureq::Body::builder().reader(Cursor::new(bytes));
+        let message = sent_message(decode_daemon_response(response(body), limit));
+
+        assert!(message.contains(&limit.to_string()), "{message}");
+        assert!(message.contains("limit"), "{message}");
+    }
+
+    #[test]
+    fn http_response_names_malformed_json() {
+        let body = ureq::Body::builder().data(b"not json".to_vec());
+        let message = sent_message(decode_daemon_response(response(body), 128));
+
+        assert!(message.contains("malformed JSON"), "{message}");
+    }
+
+    #[test]
+    fn http_response_names_a_body_truncated_before_its_content_length() {
+        let mut bytes = envelope();
+        let declared = bytes.len() as u64;
+        bytes.pop().expect("the envelope has a closing brace");
+        let body = ureq::Body::builder().limit(declared).data(bytes);
+        let message = sent_message(decode_daemon_response(response(body), declared));
+
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.contains(&declared.to_string()), "{message}");
     }
 }
 
