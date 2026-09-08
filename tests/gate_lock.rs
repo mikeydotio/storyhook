@@ -604,6 +604,10 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
         .expect("running the journalled suite");
 
     assert_eq!(code(&out), 0, "the journalled suite must pass: {out:?}");
+    assert!(
+        stdout(&out).contains("test proves_progress ... ok"),
+        "progress parsing must not remove raw test output from the full gate log: {out:?}"
+    );
     let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
     assert!(
         progress.contains(r#"{"kind":"case","path":"release gate/rust-suite","outcome":"pass"}"#),
@@ -631,6 +635,30 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
     assert!(
         !fixture.lock("gate").exists(),
         "a journalled run must release the gate normally"
+    );
+}
+
+#[test]
+fn a_journalled_compile_failure_remains_in_the_full_gate_output() {
+    let fixture = Fixture::new();
+    fixture.integration_test("does_not_compile");
+    fixture.fake_cargo(
+        "#!/bin/sh\nargs=\" $* \"\ncase \"$args\" in\n(*\" --list \"*)\n    case \"$args\" in\n    (*\" --ignored \"*) ;;\n    (*) printf 'never_runs: test\\n' ;;\n    esac\n    ;;\n(*)\n    printf 'error[E0425]: cannot find value `missing` in this scope\\n' >&2\n    printf 'error: could not compile `fixture` (test `does_not_compile`)\\n' >&2\n    exit 101\n    ;;\nesac\n",
+    );
+    let journal = fixture.path().join("gate-progress.ndjson");
+
+    let out = fixture
+        .command(&["--only-no-doc", "does_not_compile"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running the journalled compile failure");
+
+    assert_eq!(code(&out), 101, "the compiler status must survive: {out:?}");
+    let output = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        output.contains("error[E0425]: cannot find value `missing` in this scope")
+            && output.contains("error: could not compile `fixture`"),
+        "compiler diagnostics must remain in the full gate output: {output}"
     );
 }
 
