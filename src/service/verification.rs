@@ -10,10 +10,11 @@ use std::path::PathBuf;
 use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
 use crate::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery,
+    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
+    StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
-use super::story::state_transition_events;
+use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
 /// The required OPEN state that hands a published PR to the verifier.
@@ -24,6 +25,18 @@ pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
 /// Durable comment prefix proving post-merge resources were reclaimed.
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
+
+/// Durable comment prefix for verifier infrastructure failures.
+pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
+
+/// Result of a write whose authority belongs to one verification generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GenerationWrite<T> {
+    /// The candidate remained current and the write committed.
+    Applied(T),
+    /// A later state transition superseded the candidate before the write.
+    Superseded,
+}
 
 /// A malformed verification submission that must return to its author.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +147,282 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// could race the one [`Self::next`] itself used.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
+    }
+
+    /// Returns this story's current submitted generation, if it still has one.
+    pub(crate) fn current_for(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| {
+            Ok(ordered_candidates(tx)?.into_iter().find(|current| {
+                current.project == candidate.project && current.story_id == candidate.story_id
+            }))
+        })?)
+    }
+
+    /// Atomically records a green result only while `candidate` is current.
+    pub(crate) fn record_generation_merged(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        pull_request_url: &str,
+        green_comment: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let linked = tx
+                .open_pr_links_for_story(project, story_no)?
+                .into_iter()
+                .any(|link| link.close_on_merge && link.url == pull_request_url);
+            if !linked {
+                return Err(AppError::Validation(format!(
+                    "story `{}` no longer links submitted pull request `{pull_request_url}`",
+                    candidate.story_id
+                ))
+                .into());
+            }
+            let ordered_states = tx.states(project)?;
+            let done = ordered_states
+                .iter()
+                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "project has no required CLOSED `done` state; run `story doctor --fix`"
+                            .to_string(),
+                    )
+                })?;
+            let states = tx.state_map(project)?;
+            clear_candidate_incident(tx, candidate)?;
+            append_state_transition(
+                tx,
+                project,
+                story_no,
+                &row,
+                &prefix,
+                &states,
+                &done,
+                &now,
+                vec![
+                    StoryEvent::StoryCommentAdded {
+                        at: now.clone(),
+                        text: green_comment.to_string(),
+                    },
+                    StoryEvent::StoryPrMerged {
+                        at: now.clone(),
+                        url: pull_request_url.to_string(),
+                    },
+                ],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Atomically records a diagnosis and returns only the current generation.
+    pub(crate) fn record_generation_returned(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        diagnosis: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let states = tx.state_map(project)?;
+            let target = states.get("in-progress").cloned().ok_or_else(|| {
+                AppError::Validation(
+                    "project has no required OPEN `in-progress` state; run `story doctor --fix`"
+                        .to_string(),
+                )
+            })?;
+            clear_candidate_incident(tx, candidate)?;
+            append_state_transition(
+                tx,
+                project,
+                story_no,
+                &row,
+                &prefix,
+                &states,
+                &target,
+                &now,
+                vec![StoryEvent::StoryCommentAdded {
+                    at: now.clone(),
+                    text: diagnosis.to_string(),
+                }],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Records a failed remediation delivery only if no later submission has
+    /// replaced the generation that was returned for repair.
+    pub(crate) fn set_generation_awaiting(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        reason: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(AppError::Validation(
+                "awaiting reason must not be empty".to_string(),
+            ));
+        }
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if row.state != "in-progress" || !candidate_is_latest_generation(&*tx, &row, candidate)?
+            {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryAwaitingSet {
+                    at: now,
+                    awaiting: reason.to_string(),
+                }],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Atomically records an infrastructure incident for the current generation.
+    pub(crate) fn record_generation_incident(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        disposition: VerificationFailureDisposition,
+        detail: &str,
+        retry_attempts: u32,
+    ) -> Result<GenerationWrite<VerificationIncident>, AppError> {
+        let generation = candidate.verifying_generation.ok_or_else(|| {
+            AppError::Storage(format!(
+                "{} has no verification generation",
+                candidate.story_id
+            ))
+        })?;
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let incident_id = format!("{}:{}", candidate.project.get(), generation.get());
+            let mut incident = tx
+                .verification_incident()?
+                .filter(|current| current.incident_id == incident_id)
+                .unwrap_or(VerificationIncident {
+                    incident_id,
+                    project: candidate.project,
+                    story: story_no,
+                    generation,
+                    disposition,
+                    halted: false,
+                    attempts: 0,
+                    detail: String::new(),
+                    first_failed_at: now.clone(),
+                    last_failed_at: now.clone(),
+                });
+            incident.attempts = incident.attempts.saturating_add(1);
+            incident.disposition = disposition;
+            incident.detail = detail.to_string();
+            incident.last_failed_at = now.clone();
+            incident.halted = disposition == VerificationFailureDisposition::Permanent
+                || incident.attempts >= retry_attempts;
+            let state = if incident.halted {
+                "HALTED"
+            } else {
+                "RETRYING"
+            };
+            let body = format!(
+                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n\n{}",
+                incident.attempts,
+                incident.first_failed_at,
+                incident.last_failed_at,
+                incident.detail
+            );
+            let events = marked_comment_events(
+                &row,
+                VERIFICATION_INFRASTRUCTURE_PREFIX,
+                &body,
+                &now,
+            );
+            if !events.is_empty() {
+                let states = tx.state_map(project)?;
+                append_and_fold(
+                    tx,
+                    project,
+                    story_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &events,
+                    ctx.provenance(),
+                )?;
+            }
+            tx.put_verification_incident(&incident)?;
+            Ok(GenerationWrite::Applied(incident))
+        })?)
+    }
+
+    /// Rewrites a marked comment only while `candidate` remains current.
+    pub(crate) fn upsert_generation_comment(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        marker: &str,
+        body: &str,
+    ) -> Result<GenerationWrite<bool>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let events = marked_comment_events(&row, marker, body, &now);
+            if events.is_empty() {
+                return Ok(GenerationWrite::Applied(false));
+            }
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(true))
+        })?)
     }
 
     /// Returns a completed story whose post-merge resources still need reap.
@@ -274,6 +563,66 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 }
 
+fn candidate_is_current(
+    tx: &impl ReadOps,
+    row: &StoryRow,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    if row.state != VERIFYING_STATE {
+        return Ok(false);
+    }
+    candidate_is_latest_generation(tx, row, candidate)
+}
+
+fn candidate_is_latest_generation(
+    tx: &impl ReadOps,
+    row: &StoryRow,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    Ok(
+        verifying_entry(tx, candidate.project, row.story_no)?.map(|(_, generation)| generation)
+            == candidate.verifying_generation,
+    )
+}
+
+fn clear_candidate_incident(
+    tx: &mut impl WriteOps,
+    candidate: &VerificationCandidate,
+) -> Result<(), StoreError> {
+    if let Some(incident) = tx.verification_incident()?.filter(|incident| {
+        incident.project == candidate.project
+            && candidate.verifying_generation == Some(incident.generation)
+    }) {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    Ok(())
+}
+
+fn marked_comment_events(row: &StoryRow, marker: &str, body: &str, now: &str) -> Vec<StoryEvent> {
+    let existing = row
+        .snapshot
+        .comments
+        .iter()
+        .rev()
+        .find(|comment| comment.text.starts_with(marker));
+    if existing.is_some_and(|comment| comment.text == body) {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    if let Some(existing) = existing {
+        events.push(StoryEvent::StoryCommentRetracted {
+            at: now.to_string(),
+            comment_at: existing.at.clone(),
+            text: existing.text.clone(),
+        });
+    }
+    events.push(StoryEvent::StoryCommentAdded {
+        at: now.to_string(),
+        text: body.to_string(),
+    });
+    events
+}
+
 /// The timestamp `story` most recently entered [`VERIFYING_STATE`], read from
 /// the story's own `StoryStateChanged` history. `None` for the vanishingly
 /// unlikely case no such event survives (SH-372: absence states nothing —
@@ -283,7 +632,7 @@ fn verifying_entry(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
-) -> Result<Option<(String, GlobalSeq)>, AppError> {
+) -> Result<Option<(String, GlobalSeq)>, StoreError> {
     let events = tx.events_for(project, story)?;
     Ok(events.iter().rev().find_map(|event| match event.known() {
         Some(StoryEvent::StoryStateChanged { at, state }) if state == VERIFYING_STATE => {

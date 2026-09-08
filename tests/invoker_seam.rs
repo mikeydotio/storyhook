@@ -691,8 +691,8 @@ fn an_origin_is_registered_in_exactly_one_place() {
     );
 }
 
-/// **Exactly three writes may reach a closed story on a person's or the
-/// daemon's behalf** (SH-261, widened by SH-279 and SH-524).
+/// **Exactly two writes may reach a closed story on a person's or the
+/// daemon's behalf** (SH-261, widened by SH-279).
 ///
 /// `Intent::Append` resolves through `resolve_appendable_story`, which permits a
 /// closed story where `resolve_open_story` refuses one. That relaxation was
@@ -701,17 +701,15 @@ fn an_origin_is_registered_in_exactly_one_place() {
 /// `updated_at`, so it cannot touch the state, scope or rollups that closing a
 /// story is supposed to freeze. `commit-sync`'s commit link joined it in
 /// SH-279 on the identical argument: `StoryCommitLinked` reaches only
-/// `referenced_by_commits` and `updated_at`. The SH-524 verification progress
-/// publisher's `upsert_marked_comment` joined it the same way again: a
-/// retract-and-add pair is still only a comment-list rewrite, and it must be
-/// permitted concurrently with the verifier moving the SAME story to `done`
-/// once the gate goes green. Nothing about any of the three arguments
+/// `referenced_by_commits` and `updated_at`. Verification progress now checks
+/// its generation and rewrites the comment in the same transaction; a closed
+/// story fails that authority check. Nothing about either argument
 /// generalizes to a verb that has not made its own case.
 ///
 /// The failure this prevents is not someone deliberately widening the rule. It
-/// is someone writing an eighth single-story write, seeing three intents, and
+/// is someone writing another single-story write, seeing two intents, and
 /// picking the one that does not refuse — which is exactly how the relaxation
-/// stops being a decision and becomes an ambient permission. Adding a fourth
+/// stops being a decision and becomes an ambient permission. Adding a third
 /// `Intent::Append` fails here until whoever added it comes and says so on
 /// purpose.
 ///
@@ -719,7 +717,7 @@ fn an_origin_is_registered_in_exactly_one_place() {
 /// what a reviewer would do, it needs no build graph, and it cannot be satisfied
 /// by a re-export.
 #[test]
-fn only_comment_commit_link_and_progress_publish_append_to_a_closed_story() {
+fn only_comment_and_commit_link_append_to_a_closed_story() {
     use std::path::Path;
 
     fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
@@ -775,12 +773,11 @@ fn only_comment_commit_link_and_progress_publish_append_to_a_closed_story() {
 
     assert_eq!(
         appenders.len(),
-        3,
-        "`Intent::Append` reaches exactly three writes — `story comment` (SH-261), \
-         `commit-sync`'s commit link (SH-279), and the SH-524 progress publisher's \
-         `upsert_marked_comment` — each granted on its own argument about what derived \
-         state the write can touch. A fourth needs its own argument, and this assertion \
-         updated to record that it was made:\n  {}",
+        2,
+        "`Intent::Append` reaches exactly two writes — `story comment` (SH-261) and \
+         `commit-sync`'s commit link (SH-279) — each granted on its own argument about \
+         what derived state the write can touch. A third needs its own argument, and this assertion \
+         must be updated to record that it was made:\n  {}",
         appenders.join("\n  ")
     );
     assert_eq!(
@@ -788,9 +785,8 @@ fn only_comment_commit_link_and_progress_publish_append_to_a_closed_story() {
             .iter()
             .filter(|site| site.starts_with("src/service/story.rs:"))
             .count(),
-        2,
-        "two appends live in the story service — `comment` (SH-261) and `upsert_marked_comment` \
-         (SH-524) — got:\n  {}",
+        1,
+        "one append lives in the story service — `comment` (SH-261) — got:\n  {}",
         appenders.join("\n  ")
     );
     assert!(

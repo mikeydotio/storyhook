@@ -133,7 +133,7 @@ verification_failure_detail() {
     failure_status="$1"
     failure_log="$2"
 
-    raw_failed="$(awk -f "$script_dir/test-progress.awk" "$failure_log" \
+    raw_failed="$(python3 "$script_dir/test_output.py" <"$failure_log" \
         | awk -F '\t' '$3 == "FAIL" { print $1 "::" $2 }')"
     delta_failed="$(awk '
         /^test-delta: (newly RED|still red) \([0-9]+\):$/ {
@@ -257,7 +257,8 @@ run_verification_gate() {
     shift 5
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
-    log="$logs/pr-$gate_pr-$gate_tree.log"
+    log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
+        || die_json "could not create per-attempt verification log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
     verifier_window_tail "$log"
