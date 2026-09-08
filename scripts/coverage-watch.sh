@@ -2,7 +2,7 @@
 #
 # The producer half of the coverage tier's detection layer — SH-429.
 #
-# One pass: if `origin/main`'s tip tree has no coverage map yet
+# One pass: if `origin/dev`'s tip tree has no coverage map yet
 # (`scripts/coverage-status.sh`'s own decision — this script asks it and
 # obeys, never re-deciding), check that tip out in a persistent, locked
 # worktree, ensure it carries a `gate`/`full` receipt (running `make test`
@@ -16,7 +16,7 @@
 # piggybacking coverage capture onto every local `make test`'s own postlude,
 # for the identical reason SH-418's council already gave for the browser
 # tier: a per-worktree hook fires far more often than needed while doing
-# nothing to guarantee freshness relative to `main`'s actual tip, which is
+# nothing to guarantee freshness relative to `dev`'s actual tip, which is
 # the fact that matters for what a MERGE (and therefore `select-tests.sh`'s
 # own baseline resolution) will see.
 #
@@ -31,7 +31,7 @@
 #
 #   --plan      report the decision and the exact command a real pass would
 #               run, then stop.
-#   --ref REF   ask about REF instead of `origin/main`. Suppresses the fetch.
+#   --ref REF   ask about REF instead of `origin/dev`. Suppresses the fetch.
 #
 # EXIT CODES
 #   0   nothing to do (already current, or another pass holds the lock), or
@@ -65,6 +65,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
+# shellcheck source=scripts/branch-policy.sh
+source "$script_dir/branch-policy.sh"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
@@ -73,9 +75,9 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
     || die "cannot resolve the shared git directory"
 
 if [ -z "$ref" ]; then
-    ref="origin/main"
+    ref="origin/$STORYHOOK_INTEGRATION_BRANCH"
     note "fetching $ref"
-    git fetch -q origin main || die "could not fetch origin/main"
+    git fetch -q origin "$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
 fi
 
 status_out="$(bash "$script_dir/coverage-status.sh" "$ref" 2>/dev/null)"

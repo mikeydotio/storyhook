@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# How far is `main` from the last tree the browser suite certified? — SH-418.
+# How far is `dev` from the last tree the browser suite certified? — SH-418.
 #
 # `make test-full` writes a `tier full` receipt; `make test` writes `tier
 # gate`. Both satisfy `.githooks/pre-push` and `scripts/merge-preflight.sh`,
 # which is the entire point of SH-394's split — the reduced gate is what
-# protects `main`. So nothing has ever asked the *stronger* question the
+# protects `dev`. So nothing has ever asked the *stronger* question the
 # `tier` line was built to answer, and the answer on this machine when
 # SH-418 was filed was stark: 109 receipts in the store, **zero** carrying
 # `tier full`. The browser suite had never certified a tree here.
@@ -19,17 +19,17 @@
 # identical — and the obvious repair is a marker file recording the last
 # outcome. That was proposed and declined: a marker is a second notion of
 # "certified" for a fact the tree-keyed store can already state, and a stale
-# marker is one more thing that can be wrong about the world. Walking `main`
+# marker is one more thing that can be wrong about the world. Walking `dev`
 # back to the nearest full-certified ancestor answers the same question from
 # the store itself, and answers it as a DISTANCE — so a poller that has died,
-# a `main` that has been red for a day, and a machine that has never run the
+# a `dev` that has been red for a day, and a machine that has never run the
 # browser suite at all are three readings on one scale that only ever grows.
 # Silence is never a pass; it is `never`, which is the largest reading there
 # is.
 #
-# WHY FIRST-PARENT. `git log --first-parent` walks the trees `main` actually
+# WHY FIRST-PARENT. `git log --first-parent` walks the trees `dev` actually
 # HAD, one per merge or direct commit. The commits a merge brought in were
-# never `main`'s content and certifying one of them says nothing about the
+# never `dev`'s content and certifying one of them says nothing about the
 # tip — which is SH-396's whole finding, that a merge tree matches neither
 # parent.
 #
@@ -39,7 +39,7 @@
 # (SH-394). The caller decides what a distance means.
 #
 # USAGE
-#   browser-status.sh [<ref>]     default: origin/main
+#   browser-status.sh [<ref>]     default: origin/dev
 #
 # EXIT CODES
 #   0   <ref>'s own tip tree carries a `tier full` receipt — current
@@ -61,7 +61,11 @@ note() {
     printf 'browser-status: %s\n' "$1" >&2
 }
 
-ref="${1:-origin/main}"
+script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
+# shellcheck source=scripts/branch-policy.sh
+source "$script_dir/branch-policy.sh"
+
+ref="${1:-origin/$STORYHOOK_INTEGRATION_BRANCH}"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"

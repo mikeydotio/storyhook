@@ -13,8 +13,10 @@ those host capabilities. The explicit ungated-release option remains intact.
 | `make release-status` | Read-only status, no network or guest startup |
 | `make release-watch-plist` | Print hourly launchd configuration; never install it |
 
-The observer uses an independent checkout under the repository's shared Git
-directory, `storyhook/release-observer/checkout`. It fetches `main` and all tags
+The observer intentionally remains on stable `main`; browser and coverage
+observers track integration `dev` instead. It uses an independent checkout
+under the repository's shared Git directory,
+`storyhook/release-observer/checkout`. It fetches `main` and all tags
 into private remote-tracking namespaces with `--no-tags` and pruning. Remote
 tag moves/deletions are reflected without touching the developer's local tags.
 Git documents these [fetch/refspec semantics](https://git-scm.com/docs/git-fetch).

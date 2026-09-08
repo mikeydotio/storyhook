@@ -2,7 +2,7 @@
 #
 # The producer half of the browser tier's detection layer — SH-418.
 #
-# SH-394 split the gates: `make test` protects `main`, `make test-full` adds
+# SH-394 split the gates: `make test` protects `dev`, `make test-full` adds
 # the browser suite and protects a release. Nothing then ran the release tier
 # between releases, so a dashboard regression could merge and sit red until
 # somebody tried to cut a release, at which point it blocked one. SH-416 is
@@ -10,7 +10,7 @@
 # `blocked-drop-reason.spec.ts` asserting the shape it replaced; found by an
 # unrelated story running the suite incidentally, not by any gate).
 #
-# One pass: if `origin/main`'s tip tree carries no `tier full` receipt, run
+# One pass: if `origin/dev`'s tip tree carries no `tier full` receipt, run
 # `make test-full` against that tip and let the ordinary `gate-receipt.sh`
 # postlude certify it. That is the whole producer.
 #
@@ -59,7 +59,7 @@
 #   --plan      report the decision and the exact command a real pass would
 #               run, then stop. The command is one array, printed here and
 #               executed below, so this cannot drift from what runs.
-#   --ref REF   ask about REF instead of `origin/main`. Suppresses the fetch,
+#   --ref REF   ask about REF instead of `origin/dev`. Suppresses the fetch,
 #               which is what makes a test fixture possible without mocking.
 #
 # EXIT CODES
@@ -99,6 +99,8 @@ done
 # what lets `tests/browser_gate.rs` point the tracked pair at a disposable
 # fixture repository instead of mocking either of them.
 script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
+# shellcheck source=scripts/branch-policy.sh
+source "$script_dir/branch-policy.sh"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
@@ -110,9 +112,9 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
 # ref the caller already has, which is also what lets `tests/browser_gate.rs`
 # drive this against a real local repository with no remote at all.
 if [ -z "$ref" ]; then
-    ref="origin/main"
+    ref="origin/$STORYHOOK_INTEGRATION_BRANCH"
     note "fetching $ref"
-    git fetch -q origin main || die "could not fetch origin/main"
+    git fetch -q origin "$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
 fi
 
 status_out="$(bash "$script_dir/browser-status.sh" "$ref" 2>/dev/null)"

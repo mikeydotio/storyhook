@@ -22,6 +22,19 @@ fn scaffold_agents_md_contains_workflow_commands() {
 }
 
 #[test]
+fn scaffold_agents_md_targets_the_repository_default_branch() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["scaffold", "agents-md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "create a PR against the repository's default branch",
+        ))
+        .stdout(predicate::str::contains("create a PR against `main`").not());
+}
+
+#[test]
 fn scaffold_agents_md_keeps_durable_context_in_story_comments() {
     let dir = scratch_dir();
     story(dir.path())
