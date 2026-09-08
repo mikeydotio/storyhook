@@ -36,6 +36,7 @@
 //! * [`watch`] — attributes a store-wide change to specific projects, shared by
 //!   the request boundary and the `data_version` poller (SH-202).
 
+pub mod activity;
 pub mod agent;
 pub mod backup;
 pub mod bus;

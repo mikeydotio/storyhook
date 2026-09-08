@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# The SH-545 verifier tmux mirror -- a best-effort, read-only live view of
-# whatever scripts/verify-pr.sh is currently doing, so an operator can
-# check in on a possibly-hung release gate without knowing a log path.
+# The daemon activity view (SH-590), extending the SH-545 verifier mirror.
+# The daemon starts a continuous `story daemon logs --follow` reader;
+# verifier phases leave that reader in place and emit their banners to stderr.
+# Standalone verifier invocations retain the original tail/banner fallback.
+# Current contract: docs/spec/activity-log.md.
 #
 # DESIGN OF RECORD: a /council-vote convened for SH-545 on 2026-09-04
 # settled the choices below (unanimous ranked-choice runoff). Its own
@@ -23,8 +25,7 @@
 #     window named after the story id on THAT story's socket) structurally
 #     cannot reach this window regardless of its name -- and the name is
 #     still a fixed constant, never a story id, as defense in depth.
-#   - Content is a genuine `tail -F` READ of the log file
-#     scripts/verify-pr.sh already writes incrementally -- never a `tee`
+#   - Content is a READ of an independently written log -- never a `tee`
 #     or any pipe fused to the gate subprocess's own stdout/stderr, which
 #     would reintroduce the "descendant holds the daemon's output pipe
 #     forever" hazard tests/spawn_inventory.rs exists to prevent.
@@ -42,8 +43,8 @@
 #
 # WHEN MULTIPLE STORES/DAEMONS SHARE ONE MACHINE (SH-113 store isolation
 # explicitly permits this): the session name is machine-wide, not
-# store-scoped, so two daemons verifying concurrently share one pane --
-# whichever last respawned it wins the display. Deliberate simplicity for
+# store-scoped, so two daemons share one pane -- whichever last started
+# wins the display. Deliberate simplicity for
 # a single-operator, single-terminal workflow, not a defect: an operator
 # checking in wants one place to look, and D4 already makes each store's
 # own verification serial, so true concurrent writers are the rare case of
@@ -54,8 +55,8 @@
 # this file (a disposable test fixture repo with no scripts/ tree of its
 # own copied into it) gets no-op stub functions rather than a failure.
 #
-# The kill switch: STORYHOOK_VERIFIER_MIRROR=0 disables every function in
-# this file unconditionally, before any tmux call is attempted. It ships
+# The kill switch: STORYHOOK_VERIFIER_MIRROR=0 prohibits every tmux call.
+# Banners still enter the activity journal. The switch ships
 # in storyhook::env::test_environment::TEST_ENVIRONMENT (`story help
 # test-environment`) alongside every other variable that stops a storyhook
 # process reaching a developer's own real state, so `scripts/test-env.sh`'s
@@ -101,6 +102,8 @@ verifier_window_ensure() {
 # spaces or shell-special characters.
 verifier_window_tail() {
     local log="$1"
+    # The daemon now owns a continuous journal view. A phase must not replace it.
+    [ -z "${STORYHOOK_ACTIVITY_LOG_DIR:-}" ] || return 0
     verifier_window_ensure || return 1
     tmux respawn-pane -k -c "$HOME" -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
         tail -n +1 -F "$log" 2>/dev/null || return 1
@@ -114,6 +117,10 @@ verifier_window_tail() {
 # in <text> cannot be reinterpreted as shell syntax.
 verifier_window_banner() {
     local text="$1"
+    if [ -n "${STORYHOOK_ACTIVITY_LOG_DIR:-}" ]; then
+        printf '%s\n' "$text" >&2
+        return 0
+    fi
     verifier_window_ensure || return 1
     # shellcheck disable=SC2016 # deliberate: $1 must NOT expand here -- it
     # is bash -c's own positional parameter, populated at exec time from
@@ -123,16 +130,25 @@ verifier_window_banner() {
         2>/dev/null || return 1
 }
 
+# The daemon uses its own executable and explicit store; neither is shell code.
+verifier_window_logs() {
+    verifier_window_ensure || return 1
+    tmux respawn-pane -k -c "$HOME" -t "${VERIFIER_WINDOW_SESSION}:${VERIFIER_WINDOW_NAME}" \
+        "$1" --store-path "$2" daemon logs --follow || return 1
+}
+
 # Direct-invocation form, for manual smoke testing:
 #   bash scripts/verify-window.sh banner "text"
 #   bash scripts/verify-window.sh tail /path/to/log
+#   bash scripts/verify-window.sh logs /path/to/story /path/to/store.db
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     set -u
     case "${1:-}" in
     banner) verifier_window_banner "${2:?usage: verify-window.sh banner <text>}" ;;
     tail) verifier_window_tail "${2:?usage: verify-window.sh tail <log-path>}" ;;
+    logs) verifier_window_logs "${2:?story binary required}" "${3:?store path required}" ;;
     *)
-        echo "usage: verify-window.sh banner <text> | tail <log-path>" >&2
+        echo "usage: verify-window.sh banner <text> | tail <log-path> | logs <story-binary> <store-path>" >&2
         exit 64
         ;;
     esac

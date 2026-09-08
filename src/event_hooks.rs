@@ -576,13 +576,33 @@ pub fn fire_hook(
         }
     };
 
+    let output = match ScratchFile::empty() {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("warning: {event_name} hook could not stage stdout: {error}");
+            return;
+        }
+    };
+    let child_stdout = match output.for_child() {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("warning: {event_name} hook could not clone stdout: {error}");
+            return;
+        }
+    };
+    let source = format!("hook:{event_name}");
+    let context = root.display().to_string();
+    let observer =
+        crate::daemon::activity::OutputWatch::capture(&source, &context, &output.0, &diagnostics.0);
+    crate::daemon::activity::emit("INFO", &source, "event", &context, "hook started");
+
     // The payload is delivered in full, with a real end-of-file, from the
     // instant the hook starts — rather than written into a pipe afterwards,
     // which is what a hook reading stdin early used to block on.
     let child = Command::new("sh")
         .args(["-c", &hook.command])
         .stdin(payload.into_stdio())
-        .stdout(Stdio::null())
+        .stdout(child_stdout)
         .stderr(child_stderr)
         .current_dir(root)
         .env("STORYHOOK_HOOK_DEPTH", (depth + 1).to_string())
@@ -597,7 +617,11 @@ pub fn fire_hook(
     };
 
     let outcome = match child.wait_timeout(timeout) {
-        Ok(Some(status)) if status.success() => return,
+        Ok(Some(status)) if status.success() => {
+            drop(observer);
+            crate::daemon::activity::emit("INFO", &source, "event", &context, "hook completed");
+            return;
+        }
         Ok(Some(status)) => HookOutcome::Exited {
             status: status.to_string(),
             said: Diagnostics::read(&diagnostics),
@@ -620,6 +644,14 @@ pub fn fire_hook(
         }
         Err(e) => HookOutcome::NotWaitable(e.to_string()),
     };
+    drop(observer);
+    crate::daemon::activity::emit(
+        "ERROR",
+        &source,
+        "event",
+        &context,
+        &format!("hook {outcome}"),
+    );
     eprintln!("warning: {event_name} hook {outcome}");
 }
 

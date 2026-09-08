@@ -34,6 +34,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gate-progress.sh
 . "$script_dir/gate-progress.sh"
+# shellcheck source=activity-log.sh
+. "$script_dir/activity-log.sh"
 
 if [ "${1:-}" = "--skipped" ]; then
     label="${2:-}"
@@ -109,7 +111,9 @@ fi
 gate_progress_emit_item "release gate/$label" running
 start=$(date +%s)
 status=0
-"$@" || status=$?
+activity_source="$1"
+case "$activity_source" in bash | sh) activity_source="${2:-$1}" ;; esac
+activity_run "leg.sh/$label:$activity_source" "$@" || status=$?
 end=$(date +%s)
 elapsed=$((end - start))
 

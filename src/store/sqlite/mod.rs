@@ -592,6 +592,7 @@ impl Drop for SqliteReadTx<'_> {
 pub struct SqliteWriteTx<'a> {
     conn: PooledConn<'a>,
     open: bool,
+    activity: Vec<(String, String)>,
 }
 
 impl<'a> SqliteWriteTx<'a> {
@@ -607,7 +608,11 @@ impl<'a> SqliteWriteTx<'a> {
         // itself at the end of the transaction.
         conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")
             .map_err(|e| StoreError::from_sqlite(e, "beginning a write"))?;
-        Ok(Self { conn, open: true })
+        Ok(Self {
+            conn,
+            open: true,
+            activity: Vec::new(),
+        })
     }
 
     fn commit(mut self) -> Result<(), StoreError> {
@@ -623,7 +628,35 @@ impl<'a> SqliteWriteTx<'a> {
             .execute_batch("COMMIT")
             .map_err(|e| StoreError::from_sqlite(e, "committing"))?;
         self.open = false;
+        for (context, message) in &self.activity {
+            crate::daemon::activity::emit("INFO", "store", "event", context, message);
+        }
         Ok(())
+    }
+
+    fn record_activity(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        kind: &str,
+        state: Option<&str>,
+    ) {
+        if !crate::daemon::activity::enabled() {
+            return;
+        }
+        let identity: Result<(String, String), _> = self.conn.query_row(
+            "SELECT slug, prefix FROM projects WHERE id = ?1",
+            [project.get()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        let context = identity.map_or_else(
+            |_| format!("project={} story={}", project.get(), story.get()),
+            |(slug, prefix)| format!("project={slug} {prefix}-{}", story.get()),
+        );
+        let message =
+            state.map_or_else(|| kind.to_string(), |state| format!("{kind} state={state}"));
+        // Kept on the transaction: a rollback must never claim an event landed.
+        self.activity.push((context, message));
     }
 }
 
@@ -1074,7 +1107,16 @@ impl WriteOps for SqliteWriteTx<'_> {
         events: &[StoryEvent],
         provenance: &Provenance,
     ) -> Result<EventSeq, StoreError> {
-        write::append_events(&self.conn, project, story, expected, events, provenance)
+        let head = write::append_events(&self.conn, project, story, expected, events, provenance)?;
+        for event in events {
+            let state = match event {
+                StoryEvent::StoryStateChanged { state, .. }
+                | StoryEvent::StoryCreated { state, .. } => Some(state.as_str()),
+                _ => None,
+            };
+            self.record_activity(project, story, crate::domain::event_kind(event), state);
+        }
+        Ok(head)
     }
 
     fn append_raw_events(
@@ -1086,9 +1128,13 @@ impl WriteOps for SqliteWriteTx<'_> {
         source: LinkSource,
         provenance: &Provenance,
     ) -> Result<EventSeq, StoreError> {
-        write::append_raw_events(
+        let head = write::append_raw_events(
             &self.conn, project, story, expected, events, source, provenance,
-        )
+        )?;
+        for event in events {
+            self.record_activity(project, story, &event.kind, None);
+        }
+        Ok(head)
     }
 
     fn put_story(

@@ -177,7 +177,29 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
     }
 
     let command = crate::invoke::invocation_name(&request.invocation);
+    let activity_context = format!(
+        "request={} project={}",
+        request.request_id,
+        request
+            .project
+            .as_ref()
+            .map_or("-", |project| project.slug())
+    );
+    crate::daemon::activity::emit(
+        "INFO",
+        "rpc",
+        "event",
+        &activity_context,
+        &format!("{command} started"),
+    );
     if let Some(conflict) = concurrency_conflict(env, command, &request.cwd) {
+        crate::daemon::activity::emit(
+            "ERROR",
+            "rpc",
+            "event",
+            &activity_context,
+            &format!("{command} refused: {conflict}"),
+        );
         return answer(&request.request_id, Err(conflict), degraded_notice(store));
     }
 
@@ -212,6 +234,16 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
         ))
     });
 
+    crate::daemon::activity::emit(
+        if result.is_ok() { "INFO" } else { "ERROR" },
+        "rpc",
+        "event",
+        &activity_context,
+        &result.as_ref().map_or_else(
+            |error| format!("{command} failed: {error}"),
+            |_| format!("{command} completed"),
+        ),
+    );
     answer(&request.request_id, result, degraded_notice(store))
 }
 

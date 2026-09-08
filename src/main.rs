@@ -229,6 +229,18 @@ fn main() {
         Err(error) => fail(&error, json),
     };
 
+    if let Invocation::Daemon {
+        action: DaemonAction::Logs { follow },
+    } = &invocation
+    {
+        let environment = storyhook::env::Environment::from_process(flags.store_path.as_deref())
+            .unwrap_or_else(|error| fail(&error, json));
+        if let Err(error) = storyhook::daemon::activity::read_logs(&environment, *follow, json) {
+            fail(&error, json);
+        }
+        return;
+    }
+
     // Foreground daemon mode: `story daemon --serve` (and its `story web
     // --serve` alias). Runs the daemon in this process — what the background
     // spawner execs and what a launchd agent runs — so it never returns.
