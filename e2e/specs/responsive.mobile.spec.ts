@@ -1284,8 +1284,8 @@ test("the topbar and collapsed filter bar together stay within a measured chrome
  * proves it's genuinely the *same* menu -- not a second one that could
  * silently drift out of step with the first as items are added/removed.
  *
- * Both buttons are `display: none` outside `pointer: coarse` (see their
- * own CSS) -- this file only runs under the two mobile projects
+ * The row button is `display: none` outside `pointer: coarse`; the card button
+ * is visible for every pointer as of SH-600. This file runs under the mobile projects
  * (`mobile-chromium`, `mobile-webkit`), where that media query matches on
  * either engine, so no extra gating is needed to reach them here.
  */
