@@ -87,6 +87,11 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // Out-of-line process tests are visible to this file-based census.
+    // ChildGuard bounds/drains the isolated probe; its shell children use
+    // production file-backed capture and whole-group deadline cleanup.
+    ("src/process/activity_tests.rs", "test_binary", Kind::Reads),
+    ("src/process/activity_tests.rs", "\"sh\"", Kind::Waited),
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),
@@ -97,7 +102,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // JSON and diagnostics go to regular temporary files, repository tests
     // write their own log, and every timeout kills the whole process group.
     // Descendants therefore hold no output pipe and cannot outlive the
-    // daemon's wall-clock boundary.
+    // daemon's progress-supervision boundary.
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses

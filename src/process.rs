@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
 
+#[cfg(test)]
+mod activity_tests;
+mod progress;
+
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
@@ -80,10 +84,47 @@ pub(crate) fn run_captured_with_termination(
 /// Runs a command with capture while retaining a caller-owned registration
 /// guard for the child's complete lifetime.
 pub(crate) fn run_captured_with_registration<G>(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     termination: TerminationPolicy,
     register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(command, termination, None, register, || {
+        Ok(deadline.saturating_duration_since(Instant::now()))
+    })
+}
+
+/// Runs a command until its append-only journal stops advancing for `timeout`.
+/// Output chatter is deliberately not progress. An unreadable or damaged
+/// journal fails closed with the caller's ordinary process-group cleanup.
+pub(crate) fn run_captured_with_progress_and_registration<G>(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    journal: &std::path::Path,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let mut deadline =
+        progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
+    // Observe at least four times per idle window, capped to keep journal
+    // activity responsive even for the production multi-minute budget.
+    let poll = (timeout / 4).min(Duration::from_millis(100));
+    let captured = run_captured_until(command, termination, Some(poll), register, || {
+        deadline.remaining()
+    })?;
+    // A child can damage the journal and exit inside one poll interval. Check
+    // once more after reaping so a fast successful result cannot hide that.
+    deadline.remaining().map_err(CaptureError::Wait)?;
+    Ok(captured)
+}
+
+fn run_captured_until<G>(
+    mut command: Command,
+    termination: TerminationPolicy,
+    poll: Option<Duration>,
+    register: impl FnOnce(u32) -> Result<G, String>,
+    mut remaining: impl FnMut() -> std::io::Result<Duration>,
 ) -> Result<Captured, CaptureError> {
     let source = crate::daemon::activity::command_source(&command);
     crate::daemon::activity::configure(&mut command);
@@ -115,23 +156,33 @@ pub(crate) fn run_captured_with_registration<G>(
             return Err(CaptureError::Track(error));
         }
     };
-    let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let outcome = terminate_timed_out(&mut child, pid, termination);
-            crate::daemon::activity::emit(
-                "ERROR",
-                &source,
-                "event",
-                &context,
-                "process timed out; group terminated",
-            );
-            return Err(CaptureError::Timeout(outcome));
-        }
-        Err(error) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Wait(error));
+    let status = loop {
+        let budget = match remaining() {
+            Ok(budget) => budget,
+            Err(error) => {
+                terminate_timed_out(&mut child, pid, termination);
+                return Err(CaptureError::Wait(error));
+            }
+        };
+        match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
+            Ok(Some(status)) => break status,
+            Ok(None) if !budget.is_zero() => continue,
+            Ok(None) => {
+                let outcome = terminate_timed_out(&mut child, pid, termination);
+                crate::daemon::activity::emit(
+                    "ERROR",
+                    &source,
+                    "event",
+                    &context,
+                    "process timed out; group terminated",
+                );
+                return Err(CaptureError::Timeout(outcome));
+            }
+            Err(error) => {
+                kill_process_group(pid);
+                let _ = child.wait();
+                return Err(CaptureError::Wait(error));
+            }
         }
     };
     drop(observer);
@@ -242,30 +293,42 @@ mod tests {
 
     #[test]
     fn graceful_timeout_allows_the_process_group_to_exit_on_term() {
-        let marker = storyhook_test_support::scratch_dir();
-        let marker = marker.path().join("terminated");
+        let root = storyhook_test_support::scratch_dir();
+        let marker = root.path().join("terminated");
+        let ready = root.path().join("ready");
+        let grace = Duration::from_secs(1);
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'printf terminated > \"$1\"; exit 0' TERM; while :; do sleep 30; done",
+            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30; done",
             "graceful-timeout-probe",
             marker.to_str().unwrap(),
+            ready.to_str().unwrap(),
         ]);
 
-        let result = run_captured_with_termination(
+        let result = run_captured_with_registration(
             command,
-            Duration::from_millis(20),
-            TerminationPolicy::TerminateThenKill {
-                grace: Duration::from_secs(1),
+            Duration::ZERO,
+            TerminationPolicy::TerminateThenKill { grace },
+            |_| {
+                // A timeout may include spawn/staging time. Only ask whether
+                // TERM permits cleanup after the child has installed its trap.
+                let deadline = Instant::now() + grace;
+                while !ready.exists() {
+                    if Instant::now() >= deadline {
+                        return Err("timeout probe did not install its TERM handler".into());
+                    }
+                    thread::sleep(grace / 100);
+                }
+                Ok(())
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(CaptureError::Timeout(
-                TimeoutTermination::ExitedAfterTerminate
-            ))
-        ));
+        match result {
+            Err(CaptureError::Timeout(TimeoutTermination::ExitedAfterTerminate)) => {}
+            Err(error) => panic!("graceful timeout failed: {}", error.detail()),
+            Ok(_) => panic!("the probe exited without reaching its timeout"),
+        }
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "terminated");
     }
 }
