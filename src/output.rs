@@ -2337,62 +2337,6 @@ fn build_state_bar(summary: &SummaryView, total: usize, colors: &[&str]) -> Stri
     html
 }
 
-#[cfg(test)]
-mod cleanup_render_tests {
-    use super::*;
-    use crate::service::{CleanupFailure, CleanupRemoval, CleanupSkip};
-
-    fn response() -> Response {
-        Response::Cleanup(Box::new(CleanupReport {
-            project: "fixture".into(),
-            dry_run: true,
-            candidates: 2,
-            reclaimed_bytes: 4096,
-            removed: vec![CleanupRemoval {
-                story_id: "SH-7".into(),
-                worktree: "/repo/.codex/worktrees/SH-7".into(),
-                branch: "worktree-SH-7".into(),
-                removed_worktree: true,
-                removed_local_branch: true,
-                removed_remote_branch: true,
-                reclaimed_bytes: 4096,
-            }],
-            skipped: vec![CleanupSkip {
-                story_id: "SH-8".into(),
-                reason: "dirty-worktree".into(),
-                detail: "uncommitted work".into(),
-            }],
-            failed: vec![CleanupFailure {
-                story_id: "SH-9".into(),
-                reason: "fetch-failed".into(),
-                detail: "authentication required".into(),
-            }],
-        }))
-    }
-
-    #[test]
-    fn cleanup_human_output_distinguishes_dry_run_and_preservation() {
-        let rendered = render_response(&response(), false, false);
-        assert!(rendered.contains("would remove 1 workspace(s), 4096 bytes"));
-        assert!(rendered.contains("preserved SH-8 [dirty-worktree]"));
-        assert!(rendered.contains("failed SH-9 [fetch-failed]"));
-    }
-
-    #[test]
-    fn cleanup_json_output_is_structured() {
-        let rendered: serde_json::Value =
-            serde_json::from_str(&render_response(&response(), true, false)).unwrap();
-        assert_eq!(rendered["result"], "ok");
-        assert_eq!(rendered["cleanup"]["dry_run"], true);
-        assert_eq!(rendered["cleanup"]["removed"][0]["story_id"], "SH-7");
-        assert_eq!(
-            rendered["cleanup"]["skipped"][0]["reason"],
-            "dirty-worktree"
-        );
-        assert_eq!(rendered["cleanup"]["failed"][0]["reason"], "fetch-failed");
-    }
-}
-
 fn build_state_legend(summary: &SummaryView, total: usize, colors: &[&str]) -> String {
     let mut html = String::new();
     for (i, (state, count)) in summary.by_state.iter().enumerate() {
@@ -2512,4 +2456,60 @@ fn build_table_rows(
         ));
     }
     html
+}
+
+#[cfg(test)]
+mod cleanup_render_tests {
+    use super::*;
+    use crate::service::{CleanupFailure, CleanupRemoval, CleanupSkip};
+
+    fn response() -> Response {
+        Response::Cleanup(Box::new(CleanupReport {
+            project: "fixture".into(),
+            dry_run: true,
+            candidates: 2,
+            reclaimed_bytes: 4096,
+            removed: vec![CleanupRemoval {
+                story_id: "SH-7".into(),
+                worktree: "/repo/.codex/worktrees/SH-7".into(),
+                branch: "worktree-SH-7".into(),
+                removed_worktree: true,
+                removed_local_branch: true,
+                removed_remote_branch: true,
+                reclaimed_bytes: 4096,
+            }],
+            skipped: vec![CleanupSkip {
+                story_id: "SH-8".into(),
+                reason: "dirty-worktree".into(),
+                detail: "uncommitted work".into(),
+            }],
+            failed: vec![CleanupFailure {
+                story_id: "SH-9".into(),
+                reason: "fetch-failed".into(),
+                detail: "authentication required".into(),
+            }],
+        }))
+    }
+
+    #[test]
+    fn cleanup_human_output_distinguishes_dry_run_and_preservation() {
+        let rendered = render_response(&response(), false, false);
+        assert!(rendered.contains("would remove 1 workspace(s), 4096 bytes"));
+        assert!(rendered.contains("preserved SH-8 [dirty-worktree]"));
+        assert!(rendered.contains("failed SH-9 [fetch-failed]"));
+    }
+
+    #[test]
+    fn cleanup_json_output_is_structured() {
+        let rendered: serde_json::Value =
+            serde_json::from_str(&render_response(&response(), true, false)).unwrap();
+        assert_eq!(rendered["result"], "ok");
+        assert_eq!(rendered["cleanup"]["dry_run"], true);
+        assert_eq!(rendered["cleanup"]["removed"][0]["story_id"], "SH-7");
+        assert_eq!(
+            rendered["cleanup"]["skipped"][0]["reason"],
+            "dirty-worktree"
+        );
+        assert_eq!(rendered["cleanup"]["failed"][0]["reason"], "fetch-failed");
+    }
 }
