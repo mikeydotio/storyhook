@@ -4,21 +4,23 @@
 # Decision D6 of docs/spec/full-auto-engine.md. Inside an engine lane there is
 # nobody at the prompt, so two tool calls have to be answered by something other
 # than a person: the plan exit, which is normally approved by hand, and the
-# question, which normally waits for one. This hook allows the plan tool and
-# refuses questions at provider events. Dispatch separately arms an exact-pane
+# question, which normally waits for one. This hook allows Claude's plan tool
+# and refuses questions at provider events. Dispatch separately arms an exact-pane
 # watcher for each provider before it submits the autonomous charter, because
 # Claude Code 2.1.261 no longer emits the PermissionRequest event that used to
 # trigger its watcher. A changed or missing UI receives no input and remains
 # safely stopped.
 #
-#   PreToolUse: ExitPlanMode              -> allow the tool call
+#   Claude PreToolUse: ExitPlanMode       -> allow the tool call
+#   Codex PreToolUse: ExitPlanMode        -> no decision; the watcher approves
 #   AskUserQuestion | request_user_input  -> deny, with feedback the model reads
 #   anything else, or a payload it cannot read -> no decision
 #
-# Both providers share this vocabulary. SH-459 measured the Codex arm live
-# against CLI 0.149.0: a PreToolUse matcher named `request_user_input` runs
-# before the question UI, and `permissionDecisionReason` is returned to the
-# model as the blocking reason.
+# Both providers share the denial vocabulary. SH-459 measured the Codex arm
+# live against CLI 0.149.0: a PreToolUse matcher named `request_user_input`
+# runs before the question UI, and `permissionDecisionReason` is returned to
+# the model as the blocking reason. Codex rejects a bare `allow`, so its
+# required `turn_id` extension identifies the payload that must stay inert.
 #
 # INERT UNLESS AN AUTONOMOUS DISPATCH SAYS OTHERWISE. `STORYHOOK_AUTO` marks an
 # ordinary `dispatch --auto`; `STORYHOOK_FULL_AUTO` remains the engine lane
@@ -270,6 +272,10 @@ if event != "PreToolUse":
     emit("{}")
 
 if tool == PLAN_EXIT:
+    # Codex requires `turn_id` on every PreToolUse payload and rejects a bare
+    # `permissionDecision: allow`. Its exact-pane watcher owns plan approval.
+    if "turn_id" in payload:
+        emit("{}")
     emit(
         envelope(
             "allow",

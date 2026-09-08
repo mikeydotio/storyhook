@@ -217,6 +217,7 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
+  story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
   story search <query>
@@ -547,6 +548,11 @@ pub enum Invocation {
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
         action: EngineAction,
+    },
+    /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
+    Cleanup {
+        /// Preview eligible removals without changing Git or the filesystem.
+        dry_run: bool,
     },
     Summary,
     Report {
@@ -1694,6 +1700,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("run")],
     },
     VerbFlags {
+        verb: "cleanup",
+        subcommand: None,
+        flags: &[bare("dry-run")],
+    },
+    VerbFlags {
         verb: "set",
         subcommand: None,
         flags: &[
@@ -2165,6 +2176,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
         "engine" => parse_engine(args),
+        "cleanup" => parse_cleanup(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -2241,6 +2253,17 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
             args[0]
         ))),
     }
+}
+
+fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
+    let mut dry_run = false;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => return Err(AppError::Usage("usage: story cleanup [--dry-run]".into())),
+        }
+    }
+    Ok(Invocation::Cleanup { dry_run })
 }
 
 const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
@@ -5054,6 +5077,22 @@ mod tests {
     fn unknown_command_errors() {
         let result = parse_invocation(&["SH-1".to_string(), "is".to_string(), "done".to_string()]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cleanup_accepts_only_its_bare_dry_run_flag() {
+        assert_eq!(
+            parse_invocation(&["cleanup".to_string()]).unwrap(),
+            Invocation::Cleanup { dry_run: false }
+        );
+        assert_eq!(
+            parse_invocation(&["cleanup".to_string(), "--dry-run".to_string()]).unwrap(),
+            Invocation::Cleanup { dry_run: true }
+        );
+        assert!(
+            parse_invocation(&["cleanup".to_string(), "--force".to_string()]).is_err(),
+            "cleanup must not acquire a bypass for its safety gates"
+        );
     }
 
     #[test]

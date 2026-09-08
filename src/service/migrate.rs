@@ -626,6 +626,8 @@ impl MigrationPlan {
                 &ProjectSettings {
                     sync_auto_transition: self.project.sync_auto_transition,
                     doctor_stale_threshold: self.project.doctor_stale_threshold.clone(),
+                    cleanup_auto: None,
+                    cleanup_interval: None,
                 },
             )?;
 

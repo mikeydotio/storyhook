@@ -1,10 +1,16 @@
 import { test, expect } from "./support";
 import {
+  backdropOf,
   cleanUpCreatedStories,
+  contrastRatio,
   deleteStory,
+  MIN_CONTRAST,
   openProject,
+  parseColor,
   projectSlug,
   seedToken,
+  settledBoundingBox,
+  THEMES,
 } from "./support";
 
 /**
@@ -82,6 +88,71 @@ async function createStory(
   await expect(card).toBeVisible();
   return card;
 }
+
+test("the visible card actions button matches right-click without opening the drawer", async ({
+  page,
+}) => {
+  const title = "SH-600 visible card actions";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+  const icon = actions.locator("svg.icon");
+
+  await expect(actions).toBeVisible();
+  const dimensions = await actions.evaluate(() => ({
+    tapMin: Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    ),
+  }));
+  const actionsBox = await settledBoundingBox(card, actions);
+  expect(dimensions.tapMin).toBe(24);
+  expect(actionsBox.width).toBeGreaterThanOrEqual(dimensions.tapMin);
+  expect(actionsBox.height).toBeGreaterThanOrEqual(dimensions.tapMin);
+  const iconBox = await icon.boundingBox();
+  expect(iconBox).not.toBeNull();
+  expect(iconBox!.width).toBeGreaterThan(0);
+  expect(iconBox!.height).toBeGreaterThan(0);
+
+  await card.click({ button: "right" });
+  const rightClickItems = await page.locator(".ctxmenu-item").allTextContents();
+  expect(rightClickItems.length).toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+
+  await actions.click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  expect(await page.locator(".ctxmenu-item").allTextContents()).toEqual(
+    rightClickItems,
+  );
+  await page.keyboard.press("Escape");
+  await deleteStory(page, title);
+});
+
+test("the card actions icon has sufficient contrast in every theme", async ({ page }) => {
+  const title = "SH-600 card actions contrast";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const appearance = await actions.evaluate((button) => {
+      const backgrounds: string[] = [];
+      for (let node: Element | null = button; node; node = node.parentElement) {
+        backgrounds.push(getComputedStyle(node).backgroundColor);
+      }
+      return { color: getComputedStyle(button).color, backgrounds };
+    });
+    const ratio = contrastRatio(
+      parseColor(appearance.color),
+      backdropOf(appearance.backgrounds),
+    );
+    expect(
+      ratio,
+      `${theme.name}: card actions icon contrast was ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+  }
+
+  await deleteStory(page, title);
+});
 
 test("right-click a card shows Copy ID, Copy URL, Copy Description, in that order", async ({
   page,

@@ -23,11 +23,16 @@ use storyhook::service::{SettingsService, settings_registry};
 use storyhook::store::{ProjectSettings, ReadOps, Store};
 use storyhook_test_support::ServiceFixture;
 
-/// The two keys the registry is expected to hold, in order.
+/// The keys the registry is expected to hold, in order.
 ///
 /// Written out rather than derived from the registry so that *deleting* a key
 /// is a failing test rather than a silently smaller loop.
-const KEYS: [&str; 2] = ["sync.auto_transition", "doctor.stale_threshold"];
+const KEYS: [&str; 4] = [
+    "sync.auto_transition",
+    "doctor.stale_threshold",
+    "cleanup.auto",
+    "cleanup.interval",
+];
 
 /// A value the given kind accepts, for a test that must write *something*
 /// without caring what.
@@ -140,13 +145,12 @@ fn the_listing_is_every_registered_key_in_order() {
 /// destroys whatever a neighbouring column held — silently, on the first
 /// write. The github-sync document this test used to guard was one instance
 /// of that hazard (SH-49) — retired with the column itself (SH-408); the
-/// hazard is general, so the next test keeps the coverage over the two
-/// columns that remain.
+/// hazard is general, so the next test keeps the coverage over all columns.
 ///
 /// The other direction of the same invariant: two writable keys must not
 /// clobber each other either.
 #[test]
-fn writing_one_key_leaves_the_other_writable_key_alone() {
+fn writing_one_key_leaves_every_other_writable_key_alone() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = SettingsService::new(&ctx);
@@ -157,10 +161,18 @@ fn writing_one_key_leaves_the_other_writable_key_alone() {
     service
         .set("sync.auto_transition", "false")
         .expect("setting a boolean");
+    service
+        .set("cleanup.auto", "false")
+        .expect("setting cleanup policy");
+    service
+        .set("cleanup.interval", "2h")
+        .expect("setting cleanup cadence");
 
     let row = stored(&fixture);
     assert_eq!(row.doctor_stale_threshold.as_deref(), Some("21d"));
     assert_eq!(row.sync_auto_transition, Some(false));
+    assert_eq!(row.cleanup_auto, Some(false));
+    assert_eq!(row.cleanup_interval.as_deref(), Some("2h"));
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +196,21 @@ fn an_unwritten_boolean_reports_the_code_default_that_is_actually_in_force() {
     assert_eq!(view.default.as_deref(), Some("true"));
     assert!(view.settable);
     assert_eq!(view.managed_by, None);
+}
+
+#[test]
+fn cleanup_settings_report_the_daily_enabled_defaults() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = SettingsService::new(&ctx);
+
+    let automatic = service.get("cleanup.auto").unwrap();
+    assert_eq!(automatic.source, SettingSource::Default);
+    assert_eq!(automatic.value.as_deref(), Some("true"));
+
+    let interval = service.get("cleanup.interval").unwrap();
+    assert_eq!(interval.source, SettingSource::Default);
+    assert_eq!(interval.value.as_deref(), Some("1d"));
 }
 
 /// An unwritten `doctor.stale_threshold` has no default at all — nothing in

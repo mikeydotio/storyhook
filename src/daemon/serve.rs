@@ -379,6 +379,11 @@ where
             let bus = bus.clone();
             scope.spawn(move || crate::daemon::engine::poll_engine(store, &env, &bus, &stop));
         }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            scope.spawn(move || crate::daemon::cleanup::poll_cleanup(store, &env, &stop));
+        }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
             let serving = &serving;

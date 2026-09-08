@@ -686,25 +686,31 @@ pub(super) fn settings(
 ) -> Result<ProjectSettings, StoreError> {
     let row = one(
         conn,
-        "SELECT sync_auto_transition, doctor_stale_threshold \
+        "SELECT sync_auto_transition, doctor_stale_threshold, cleanup_auto, \
+                cleanup_interval \
          FROM project_settings WHERE project_id = ?1",
         params![project.get()],
         |row| {
             Ok((
                 row.get::<_, Option<bool>>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<bool>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         },
         "reading settings",
     )?;
     // A project with no settings row has no settings — not an error. What a
     // default means belongs to the caller, which is the layer that has one.
-    let Some((sync_auto_transition, doctor_stale_threshold)) = row else {
+    let Some((sync_auto_transition, doctor_stale_threshold, cleanup_auto, cleanup_interval)) = row
+    else {
         return Ok(ProjectSettings::default());
     };
     Ok(ProjectSettings {
         sync_auto_transition,
         doctor_stale_threshold,
+        cleanup_auto,
+        cleanup_interval,
     })
 }
 
