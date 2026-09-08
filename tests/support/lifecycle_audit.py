@@ -111,6 +111,24 @@ class LifecycleTests(unittest.TestCase):
                 self.assertNotIn(marker, encoded)
                 self.assertEqual(json.loads(encoded), value)
 
+    def test_pointer_parsers_preserve_toml_semantics_and_reject_invalid_documents(self):
+        from _vendor import tomli
+
+        documents = [
+            ('uuid = "chosen" # comment\n[plugin]\nuuid = "nested"',
+             {"uuid": "chosen", "plugin": {"uuid": "nested"}}),
+            ("'uuid' = 'chosen'", {"uuid": "chosen"}),
+            ('"uuid" = "cho\\u0073en"', {"uuid": "chosen"}),
+        ]
+        for parser in [CLI.tomllib, tomli]:
+            for document, expected in documents:
+                with self.subTest(parser=parser.__name__, document=document):
+                    self.assertEqual(parser.loads(document), expected)
+            for invalid in ['uuid = "first"\nuuid = "second"', 'uuid = "unterminated']:
+                with self.subTest(parser=parser.__name__, invalid=invalid):
+                    with self.assertRaises(parser.TOMLDecodeError):
+                        parser.loads(invalid)
+
     def test_collection_preserves_provenance_and_excludes_other_projects_and_future(self):
         with tempfile.TemporaryDirectory(prefix="SH-560-", dir="/tmp") as directory:
             root = Path(directory)

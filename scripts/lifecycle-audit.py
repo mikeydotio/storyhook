@@ -6,7 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
-import tomllib
+import sys
+
+# macOS's system Python predates tomllib; collection must also work offline there.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    from _vendor import tomli as tomllib
 
 from lifecycle_audit import analyze, archived_json, embedded_json, timestamp
 

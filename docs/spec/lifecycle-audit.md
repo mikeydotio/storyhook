@@ -84,7 +84,7 @@ Playwright's locator assertions wait for asynchronous hash navigation, following
 its [assertion guidance](https://playwright.dev/docs/test-assertions).
 
 Collection and rendering are deterministic; a contract rejects a stale committed
-HTML artifact. There are 16 Python contracts, also run through the Rust wrapper.
+HTML artifact. There are 17 Python contracts, also run through the Rust wrapper.
 Formatting and targeted warning-denied Clippy pass. Browser launch requires
 macOS bootstrap permission outside the filesystem sandbox; the ordinary sandbox
 launch failure was environmental, before report navigation.
@@ -115,3 +115,14 @@ the displayed payload with the frozen evidence. Run `cargo test --test
 council_citations --test lifecycle_audit` plus the offline browser check for
 this repair. The user-provided verification log was read only to diagnose this
 post-submission failure; it does not change the frozen audit's evidence base.
+
+The second verification failure exposed an interpreter dependency: the collector
+imported `tomllib` (Python 3.11+) while macOS system Python is 3.9. The audit now
+supports Python 3.9+ with an unmodified, pinned Tomli 2.4.1 fallback; see
+[`scripts/_vendor/README.md`](../../scripts/_vendor/README.md) for checksum and
+license provenance. This follows the upstream
+[Tomli compatibility guidance](https://pypi.org/project/tomli/2.4.1/#building-a-tomli-tomllib-compatibility-layer).
+The Rust wrapper always tests the ambient interpreter and, on macOS, also tests
+`/usr/bin/python3`. Both run all 17 contracts. Parser tests cover quoted keys,
+Unicode escapes, nested tables, and rejection of malformed or duplicate keys.
+This repair changes neither the frozen data nor the generated HTML.
