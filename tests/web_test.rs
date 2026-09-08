@@ -2239,6 +2239,59 @@ fn declarations(css: &str, selector: &str) -> String {
     grouped
 }
 
+/// SH-601: persistent controls must not borrow `--fg-faint`, whose light
+/// palette contrast is below both the text and non-text WCAG floors on the
+/// raised and sunken surfaces these controls occupy. The browser test in
+/// `e2e/specs/control-contrast.spec.ts` measures the rendered colours; this
+/// cheap fence pins the semantic token choice that makes those measurements
+/// hold without weakening the global palette.
+#[test]
+fn web_serve_root_html_gives_persistent_controls_contrast_safe_tokens() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, token) in [
+        (".status-reorder button", "--fg-muted"),
+        (".column-archive-btn", "--fg"),
+        (".column-sort-btn", "--fg-muted"),
+        (".section-toggle", "--fg-muted"),
+        (".label-chip button", "--fg"),
+        (".rel-remove", "--fg-muted"),
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains(&format!("color: var({token})")),
+            "`{selector}` must use contrast-safe `{token}`; declarations were `{rule}`"
+        );
+        assert!(
+            !rule.contains("color: var(--fg-faint)"),
+            "`{selector}` must not use low-contrast --fg-faint"
+        );
+    }
+
+    let section_hover = declarations(css, ".section-toggle:hover");
+    assert!(
+        section_hover.contains("color: var(--fg)"),
+        "the section toggle must keep visible hover feedback after its resting ink becomes --fg-muted"
+    );
+
+    let archive_hover = declarations(css, ".column-archive-btn:hover");
+    for declaration in ["color: var(--accent)", "background: var(--bg-raised)"] {
+        assert!(
+            archive_hover.contains(declaration),
+            "Archive hover needs `{declaration}` so its small text remains above 4.5:1"
+        );
+    }
+}
+
 /// SH-256: on a coarse pointer, no text-entry control may compute under 16
 /// CSS pixels -- the size below which iOS Safari zooms the viewport to the
 /// field being focused, and does not zoom back out when it blurs.
