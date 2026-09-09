@@ -2087,12 +2087,21 @@ pub fn verdict(seen: &Observed<'_>, override_bound: Option<ExchangeBound>) -> Ve
 /// `timeout_global` rather than a connect timeout, because for these two calls
 /// the *answer* is the point and there is no legitimate slow case. The invoker's
 /// own request is bounded differently, and says why there.
+///
+/// `.proxy(None)` for the same reason [`crate::invoke`]'s agent sets it: these
+/// calls only ever reach a daemon on loopback, and `config_builder()` would
+/// otherwise inherit `HTTPS_PROXY` from the environment. That inheritance made
+/// `story daemon start` report a daemon it had just started successfully as
+/// "stuck rather than broken", because the readiness probe below could not reach
+/// it through a proxy.
 fn control_agent() -> ureq::Agent {
     control_agent_with_timeout(CONTROL_DEADLINE)
 }
 
 fn control_agent_with_timeout(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
+        // Loopback only. Never through a proxy — see above.
+        .proxy(None)
         .timeout_global(Some(timeout))
         .build()
         .into()
@@ -2713,6 +2722,35 @@ mod tests {
             .prefix("storyhook-lifecycle-")
             .tempdir_in("/private/tmp")
             .expect("a scratch directory")
+    }
+
+    /// A control call reaches a daemon on loopback and nowhere else, so it must
+    /// never inherit the environment's proxy.
+    ///
+    /// `Agent::config_builder()` starts from `Config::default()`, whose own
+    /// source reads `proxy: Proxy::try_from_env()`. Without `.proxy(None)` the
+    /// readiness probe asks whatever `HTTPS_PROXY` names to reach `127.0.0.1`.
+    /// On a managed corporate network that cannot route to loopback, which made
+    /// `story daemon start` report a daemon it had just started successfully as
+    /// "stuck rather than broken".
+    ///
+    /// Asserted against the config rather than by setting an environment
+    /// variable and making a request. Environment variables are process-global
+    /// and Rust runs tests in parallel, so a test that set one would flake
+    /// against every other test in this binary.
+    #[test]
+    fn a_control_agent_never_uses_a_proxy() {
+        assert!(
+            control_agent().config().proxy().is_none(),
+            "a control call must never be proxied: it only ever reaches loopback"
+        );
+        assert!(
+            control_agent_with_timeout(Duration::from_secs(1))
+                .config()
+                .proxy()
+                .is_none(),
+            "the explicit-timeout constructor must not proxy either"
+        );
     }
 
     #[test]
