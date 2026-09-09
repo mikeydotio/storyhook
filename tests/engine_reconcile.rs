@@ -17,10 +17,10 @@ mod store_support;
 
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::service::engine::{
-    BREAKER_TRIPPED, COMPLETED, DispatchOutcome, ENGINE_LANE_BUDGET, EngineService,
-    GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, OPERATOR_STOPPED,
-    QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS, STALL_MARGIN,
-    StartRequest, classify,
+    BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, ENGINE_LANE_BUDGET,
+    EngineService, GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation,
+    OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS,
+    STALL_MARGIN, StartRequest, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -1641,7 +1641,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
 }
 
 #[test]
-fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
+fn a_run_uses_the_latest_configuration_for_future_claims() {
     let fixture = ServiceFixture::new();
     let story = new_story(&fixture, "configured claim", &[]);
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
@@ -1652,7 +1652,8 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         }),
     ))]);
     let ctx = fixture.ctx();
-    let run_id = EngineService::new(&ctx, &fake)
+    let service = EngineService::new(&ctx, &fake);
+    let run_id = service
         .start(StartRequest {
             scope: EngineScope::Project,
             lanes: 1,
@@ -1663,6 +1664,18 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         })
         .unwrap()
         .id;
+    service
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 1,
+                agent: EngineAgent::Claude,
+                model: Some("claude-opus-4-6".into()),
+                effort: Some("max".into()),
+                speed: Some(EngineSpeed::Standard),
+            },
+        )
+        .unwrap();
 
     let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
 
@@ -1671,12 +1684,101 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         storyhook::service::engine::DispatchRequest {
             project: "fixture".into(),
             story,
-            agent: EngineAgent::Codex,
-            model: Some("gpt-5.3-codex".into()),
-            effort: Some("high".into()),
-            speed: Some(EngineSpeed::Fast),
+            agent: EngineAgent::Claude,
+            model: Some("claude-opus-4-6".into()),
+            effort: Some("max".into()),
+            speed: Some(EngineSpeed::Standard),
         }
     )));
+}
+
+#[test]
+fn a_reduced_lane_cap_blocks_refill_until_occupancy_falls_below_it() {
+    let fixture = ServiceFixture::new();
+    let occupied_a = new_story(&fixture, "occupied a", &[]);
+    let occupied_b = new_story(&fixture, "occupied b", &[]);
+    let waiting = new_story(&fixture, "waiting", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{occupied_a}"),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{occupied_b}"),
+            alive: true,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 3);
+    occupy(&fixture, &run_id, 0, &occupied_a);
+    occupy(&fixture, &run_id, 1, &occupied_b);
+    let ctx = fixture.ctx();
+    EngineService::new(&ctx, &fake)
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 2,
+                agent: EngineAgent::Codex,
+                model: None,
+                effort: None,
+                speed: None,
+            },
+        )
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(report.filled.is_empty());
+    assert_eq!(run_state(&fixture, &run_id), EngineRunState::Running);
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DispatcherCall::Dispatch(_))),
+        "{waiting} must remain ready while occupancy equals the reduced cap"
+    );
+}
+
+#[test]
+fn a_surplus_occupied_lane_retires_after_its_story_completes() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "surplus occupied lane", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: true,
+    }]);
+    let run_id = started_run(&fixture, &fake, 2);
+    occupy(&fixture, &run_id, 1, &story);
+    let ctx = fixture.ctx();
+    EngineService::new(&ctx, &fake)
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 1,
+                agent: EngineAgent::Codex,
+                model: None,
+                effort: None,
+                speed: None,
+            },
+        )
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&story, "done", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.completed, [1]);
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run_id))
+            .unwrap()
+            .into_iter()
+            .map(|lane| lane.lane_index)
+            .collect::<Vec<_>>(),
+        [0],
+        "a lane above the new cap remains occupied until completion, then disappears"
+    );
 }
 
 /// The helper returns the pane id that tmux guarantees is stable for the

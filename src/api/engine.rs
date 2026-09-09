@@ -30,8 +30,8 @@ use crate::error::AppError;
 use crate::output::render_error;
 use crate::service::Ctx;
 use crate::service::engine::{
-    DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher, EngineService,
-    MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
+    ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher,
+    EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -92,6 +92,21 @@ impl EngineController {
         let ctx = self.context(project)?;
         let run = run.map(str::to_string);
         EngineService::new(&ctx, &NoopDispatcher).status(run.as_ref())
+    }
+
+    fn configure(&self, project: &str, body: &str) -> Result<RunView, AppError> {
+        let request: ConfigureBody = parse_body(body, "engine configure")?;
+        let ctx = self.context(project)?;
+        EngineService::new(&ctx, &NoopDispatcher).configure(
+            &request.run,
+            ConfigureRequest {
+                lanes: request.lanes,
+                agent: request.agent.into(),
+                model: request.model.map(|value| value.as_str().to_string()),
+                effort: request.effort.map(|value| value.as_str().to_string()),
+                speed: request.speed,
+            },
+        )
     }
 
     fn action(
@@ -253,6 +268,15 @@ pub(crate) fn intercept(
                 Err(error) => error_reply(&error),
             }
         }
+        (Method::Patch, ["api", "repos", _, "engine"]) => {
+            if !content_type_is_json(headers) {
+                return Some(text_reply(415, "Content-Type must be application/json"));
+            }
+            match controller.configure(project, body) {
+                Ok(run) => success_reply(200, RunEnvelope::new(run)),
+                Err(error) => error_reply(&error),
+            }
+        }
         (Method::Post, ["api", "repos", _, "engine", action]) => {
             let Some(action) = EngineAction::parse(action) else {
                 return Some(text_reply(404, "Not found"));
@@ -276,7 +300,7 @@ pub(crate) fn intercept(
 }
 
 fn publish_success(method: &Method, project: &str, status: u16, bus: &ChangeBus) {
-    if matches!(method, Method::Post) && (200..300).contains(&status) {
+    if matches!(method, Method::Post | Method::Patch) && (200..300).contains(&status) {
         bus.publish(Change::Project(project.to_string()));
     }
 }
@@ -357,6 +381,20 @@ struct StartBody {
     #[serde(default = "default_lanes")]
     lanes: u32,
     #[serde(default)]
+    agent: AgentBody,
+    #[serde(default)]
+    model: Option<OptionToken>,
+    #[serde(default)]
+    effort: Option<OptionToken>,
+    #[serde(default)]
+    speed: Option<EngineSpeed>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureBody {
+    run: String,
+    lanes: u32,
     agent: AgentBody,
     #[serde(default)]
     model: Option<OptionToken>,
@@ -657,9 +695,15 @@ mod tests {
 
         publish_success(&Method::Get, "p", 200, &bus);
         publish_success(&Method::Post, "p", 422, &bus);
+        publish_success(&Method::Patch, "p", 422, &bus);
         assert_eq!(subscription.recv(std::time::Duration::ZERO), None);
 
         publish_success(&Method::Post, "p", 200, &bus);
+        assert_eq!(
+            subscription.recv(std::time::Duration::ZERO),
+            Some(Change::Project("p".to_string()))
+        );
+        publish_success(&Method::Patch, "p", 200, &bus);
         assert_eq!(
             subscription.recv(std::time::Duration::ZERO),
             Some(Change::Project("p".to_string()))
