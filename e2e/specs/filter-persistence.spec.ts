@@ -115,7 +115,10 @@ test("a state filter absent from the next project is pruned, with a toast, not s
   ).toBeVisible();
   await expect(page.locator("#filter-count")).toHaveText("1 / 1");
   // The dropdown itself reflects the prune too: no lingering "(1)" badge.
-  await expect(page.locator("#fdd-states .fdd-btn")).toHaveText("State");
+  // Accessible name, not textContent: the aria-hidden emoji caret rides in this
+  // button's text since SH-620. See column-visibility.spec.ts for the rule
+  // (SH-622).
+  await expect(page.locator("#fdd-states .fdd-btn")).toHaveAccessibleName("State");
 });
 
 test("sort order carries over across a project switch", async ({ page }) => {

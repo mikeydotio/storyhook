@@ -75,7 +75,10 @@ test("opening detail compresses only the content workspace and keeps the toolbar
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   const close = page.getByRole("button", { name: "Close story details" });
-  await expect(close.locator("svg")).toHaveCount(1);
+  // The close control's glyph, whatever it is drawn with. SH-620 replaced the
+  // private SVG system with emoji, so an `svg` count asserted a rendering
+  // mechanism rather than the presence of an icon (SH-622).
+  await expect(close.locator('.emoji-icon[data-emoji="close"]')).toHaveCount(1);
   const closingTransitions = await startedPanelTransitions(close);
   expect(closingTransitions).toEqual(
     expect.arrayContaining(["transform", "width"]),
