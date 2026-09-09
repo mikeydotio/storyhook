@@ -219,7 +219,12 @@ test("the project header and Full Auto controls are at least 16px", async ({
   expect(headerControls[0].describe).toContain("#search-input");
   expect(headerControls[0].fontSizePx).toBeGreaterThanOrEqual(16);
 
-  await page.locator(".engine-run-btn").click();
+  // Full Auto's configuration moved from the filter row into the dedicated
+  // Run modal. Open the real surface: measuring its hidden static markup
+  // would miss a rule that only breaks once the modal is rendered.
+  const run = page.locator(".engine-run-btn");
+  await expect(run).toBeEnabled();
+  await run.click();
   await expect(page.locator("#engine-modal")).toHaveClass(/open/);
   // Lanes plus Provider/Model/Effort/Speed. The number input raises the
   // mobile keyboard just like text, and every select shares that surface.
@@ -229,6 +234,7 @@ test("the project header and Full Auto controls are at least 16px", async ({
     5,
   );
   await page.locator("#engine-modal-cancel").click();
+  await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
 });
 
 test("the create-story modal's controls are at least 16px", async ({
