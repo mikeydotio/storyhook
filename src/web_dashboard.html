@@ -5833,7 +5833,7 @@ svg.ctxmenu-disabled-warning {
   /** A request still in flight has not established that the selected
    * provider is launchable. Gate both the action and provider-dependent
    * arguments until success or the compatible unknown-availability fallback. */
-  function setDispatchAvailabilityLoading(prefix) {
+  function gateDispatchAvailability(prefix) {
     $(prefix + "-modal-submit").disabled = true;
     ["model", "effort", "speed"].forEach(function(field) {
       $(prefix + "-" + field).disabled = true;
@@ -5877,7 +5877,7 @@ svg.ctxmenu-disabled-warning {
     populateDispatchSelector("dispatch-model", null, "");
     populateDispatchSelector("dispatch-effort", null, "");
     populateDispatchSelector("dispatch-speed", null, "");
-    setDispatchAvailabilityLoading("dispatch");
+    gateDispatchAvailability("dispatch");
     fetchDispatchOptions().then(function(caps) {
       // The modal may have closed, reopened for a different story, or
       // switched provider while this was in flight -- reapply against
@@ -5951,7 +5951,7 @@ svg.ctxmenu-disabled-warning {
     populateDispatchSelector("engine-model", null, "");
     populateDispatchSelector("engine-effort", null, "");
     populateDispatchSelector("engine-speed", null, "");
-    setDispatchAvailabilityLoading("engine");
+    gateDispatchAvailability("engine");
     fetchDispatchOptions().then(function(caps) {
       if (engineModalProject === project && engineModalEpicId === epicId) {
         applyDispatchAvailability("engine", caps, $("engine-agent").value);
