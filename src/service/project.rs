@@ -285,20 +285,21 @@ fn refuse_project_burst(
 ///   [`prefix`](Self::prefix), written once by `story project new` so that a fresh
 ///   clone on another machine knows which project it is looking at before it
 ///   has any local database row to consult.
-/// * **Configuration** — the optional [`plugin`](Self::plugin) and
-///   [`hooks`](Self::hooks) tables, which are *user-authored* and which
-///   storyhook reads and never writes. They used to be
-///   `.storyhook/plugin-config.toml` and `.storyhook/hooks.toml`; they belong
-///   in the repository because they are decisions about *this* repository, not
-///   data about its stories, and folding them into the pointer means the
-///   directory can die without taking a shipped feature with it.
+/// * **Configuration** — the optional [`plugin`](Self::plugin),
+///   [`hooks`](Self::hooks), and [`github`](Self::github) tables, which are
+///   *user-authored* and which storyhook reads and never writes. The first two
+///   used to be `.storyhook/plugin-config.toml` and `.storyhook/hooks.toml`;
+///   all three belong in the repository because they are decisions about
+///   *this* repository, not data about its stories, and folding them into the
+///   pointer means the directory can die without taking a shipped feature
+///   with it.
 ///
 /// It deliberately does not carry states, types, members or stories. Those
 /// live in the store; a repository that carried its own copy would be a second
 /// source of truth, which is the thing this whole rearchitecture exists to
 /// delete.
 ///
-/// # Why the two config tables are untyped here
+/// # Why the config tables are untyped here
 ///
 /// They are [`toml::Value`], not typed structs, for two reasons that both
 /// matter. First, **resolution must not depend on configuration**: a typo in a
@@ -326,6 +327,10 @@ pub struct ProjectPointer {
     /// storyhook never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<toml::Value>,
+    /// The `[github]` table, if the repository has one. User-authored;
+    /// storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<toml::Value>,
 }
 
 impl ProjectPointer {
@@ -339,6 +344,7 @@ impl ProjectPointer {
             prefix,
             plugin: None,
             hooks: None,
+            github: None,
         }
     }
 }
@@ -917,7 +923,7 @@ pub fn pointer_path(root: &Path) -> PathBuf {
 ///
 /// Every failure names the file. That is not politeness: `.storyhook.toml` is
 /// **committed to the repository and hand-authored** — it carries the user's
-/// `[plugin]` and `[hooks]` tables beside the project's identity — so a syntax
+/// `[plugin]`, `[hooks]`, and `[github]` tables beside the project's identity — so a syntax
 /// error in it is an ordinary mistake made in an ordinary editor. Left to
 /// `toml`'s own words, `story list` reports `TOML parse error at line 1, column
 /// 6` and the user has no file to open. Resolution runs this on almost every
@@ -1248,7 +1254,8 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })?;
 
         // Never overwritten. The file is user-authored the moment it carries a
-        // `[plugin]` or `[hooks]` table, and `story project new` is idempotent — so a
+        // `[plugin]`, `[hooks]`, or `[github]` table, and `story project new` is
+        // idempotent — so a
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.

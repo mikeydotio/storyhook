@@ -32,12 +32,12 @@
 //! cannot hold a key that some other rule produced, because there is no way to
 //! make one.
 //!
-//! Nor is there a way to take one apart. [`RemoteUrl::path_on`] answers a
-//! *question* — "what do you name on this host?" — where a `host()` and a
-//! `path()` would hand out the pieces of [`RemoteUrl::key`]'s format and invite
-//! the next caller to reassemble them into a third grammar. It takes the host as
-//! an argument, which is also what keeps the promise below: this module does not
-//! know what `github.com` is.
+//! Nor is there a public way to take one apart. [`RemoteUrl::path_on`] answers
+//! a *question* — "what do you name on this host?" — where public `host()` and
+//! `path()` accessors would hand out the pieces of [`RemoteUrl::key`]'s format
+//! and invite callers to reassemble them into a third grammar. The one
+//! crate-private decomposition is for forge adapters: they must route a request
+//! to the host the remote actually names, without reparsing [`Self::raw`].
 //!
 //! # What the key collapses, and what it must never collapse
 //!
@@ -229,11 +229,20 @@ impl RemoteUrl {
     /// GitLab's nested subgroups legitimately allow more.
     #[must_use]
     pub fn path_on(&self, host: &str) -> Option<&str> {
+        let (key_host, path) = self.network_parts()?;
+        key_host.eq_ignore_ascii_case(host).then_some(path)
+    }
+
+    /// The normalized host and repository path of a network remote.
+    ///
+    /// Crate-private so forge adapters share this grammar without publishing
+    /// the key's representation as an assembly kit for downstream callers.
+    #[must_use]
+    pub(crate) fn network_parts(&self) -> Option<(&str, &str)> {
         if self.key.starts_with(LOCAL_PREFIX) {
             return None;
         }
-        let (key_host, path) = self.key.split_once('/')?;
-        key_host.eq_ignore_ascii_case(host).then_some(path)
+        self.key.split_once('/')
     }
 }
 
@@ -1151,9 +1160,9 @@ mod tests {
 
     #[test]
     fn path_on_matches_the_whole_host_never_a_suffix() {
-        // The failure this prevents is not cosmetic: a caller with a hardcoded
-        // api.github.com would otherwise accept `github.example.com` and query
-        // a same-named *public* repository — and `evilgithub.com` besides.
+        // The failure this prevents is not cosmetic: a caller authorizing one
+        // registered forge host would otherwise accept a same-named repository
+        // on `github.example.com` — and `evilgithub.com` besides.
         for raw in [
             "https://github.example.com/acme/widgets",
             "https://evilgithub.com/acme/widgets",

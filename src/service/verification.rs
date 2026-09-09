@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
 use crate::error::AppError;
 use crate::store::{
@@ -664,9 +665,12 @@ pub(crate) fn ordered_candidates(
             let pull_request = match (&checkout, links.as_slice()) {
                 (None, _) => Err(VerificationProblem::MissingCheckout),
                 (Some(_), [link])
-                    if registered.iter().any(|repo| {
-                        repo.owner.eq_ignore_ascii_case(&link.owner)
-                            && repo.repo.eq_ignore_ascii_case(&link.repo)
+                    if parse_pr_url(&link.url).is_ok_and(|reference| {
+                        registered.iter().any(|repo| {
+                            repo.host.eq_ignore_ascii_case(&reference.host)
+                                && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                                && repo.repo.eq_ignore_ascii_case(&reference.repo)
+                        })
                     }) =>
                 {
                     Ok(link.clone())
@@ -675,7 +679,7 @@ pub(crate) fn ordered_candidates(
                     url: link.url.clone(),
                     registered: registered
                         .iter()
-                        .map(|repo| format!("{}/{}", repo.owner, repo.repo))
+                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
                         .collect(),
                 }),
                 (Some(_), []) => Err(VerificationProblem::MissingPullRequest),

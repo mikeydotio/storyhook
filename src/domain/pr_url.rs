@@ -1,5 +1,4 @@
-//! Parses a GitHub pull request web URL into `(owner, repo, number)`
-//! (SH-49).
+//! Parses a GitHub pull request web URL into its host-aware identity.
 //!
 //! # Why this lives in `domain` rather than `github`
 //!
@@ -10,7 +9,7 @@
 //! decision, recorded on SH-49, is explicit that
 //! linking is "a pure event-sourced fact requiring no network access." This
 //! function has no dependency on anything gated — no [`crate::error`]
-//! aside, it only touches a local host constant — so it moved here rather
+//! aside — so it moved here rather
 //! than staying behind the feature boundary its callers cannot cross.
 //! [`crate::domain::remote::RemoteUrl`] already lives in `domain` for the
 //! same class of reason: a URL-parsing utility that several unrelated
@@ -22,19 +21,20 @@
 
 use crate::error::AppError;
 
-/// The one host a pull request URL can name.
-///
-/// A private duplicate of [`crate::domain::github_remote`]'s own copy — that
-/// module documents the same choice: threading a shared constant across two
-/// files that already agree on its value is not worth it for one that will
-/// never change. Matched by **whole-host equality**, never a suffix, for the
-/// identical reason that copy documents: a hardcoded `api.github.com` client
-/// must never be pointed at a same-named public repository on a lookalike
-/// host.
-const GITHUB_HOST: &str = "github.com";
+/// A pull request's host-aware identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestRef {
+    /// The exact case-folded web host, including a non-default port.
+    pub host: String,
+    /// The repository owner.
+    pub owner: String,
+    /// The repository name.
+    pub repo: String,
+    /// The positive pull request number.
+    pub number: u64,
+}
 
-/// Parses a GitHub pull request web URL into `(owner, repo, number)`, or
-/// refuses it (SH-49).
+/// Parses a GitHub pull request web URL, or refuses it.
 ///
 /// # A different grammar from `parse_github_url`
 ///
@@ -42,51 +42,46 @@ const GITHUB_HOST: &str = "github.com";
 /// every scheme `git clone` accepts, including the scp-like
 /// `[user@]github.com:owner/repo` form, and a path that is exactly
 /// `owner/repo`. A pull request URL is never a clone target: it is always a
-/// browser URL of the shape `https://github.com/{owner}/{repo}/pull/{number}`,
+/// browser URL of the shape `https://{host}/{owner}/{repo}/pull/{number}`,
 /// so this function has its own small grammar rather than reusing
 /// `RemoteUrl` — reusing it would mean stripping `pull/{number}` back off
 /// again to make the two-segment shape `path_on` expects, which loses the
 /// part this function exists to keep.
 ///
-/// It still shares the same [`GITHUB_HOST`], and matches it the same
-/// whole-host-equality way `path_on` does — never a suffix — for the
-/// identical reason `path_on`'s own documentation gives: a hardcoded
-/// `api.github.com` client must never be pointed at a same-named public
-/// repository on a lookalike host.
-///
 /// # What it accepts
 ///
-/// `https://github.com/{owner}/{repo}/pull/{number}`, `http://` as well, a
-/// trailing slash, and surrounding whitespace. `owner`/`repo` come back
-/// case-folded, matching `parse_github_url`'s convention that every consumer
-/// of a GitHub identity is case-insensitive.
+/// An HTTP(S) browser URL on any host with the exact
+/// `/{owner}/{repo}/pull/{number}` path, an optional trailing slash, and
+/// surrounding whitespace. Host, owner, and repo come back case-folded.
 ///
 /// # What it refuses
 ///
-/// Any other host; any scheme but `http`/`https`; a path that is not exactly
-/// `{owner}/{repo}/pull/{number}` (an issue URL, a PR's `/files` or
-/// `/commits` sub-page, a repository root); and a number that is not a
-/// positive integer.
-pub fn parse_pr_url(url: &str) -> Result<(String, String, u64), AppError> {
+/// Any scheme but `http`/`https`; credentials, query strings, or fragments;
+/// a path that is not exactly `{owner}/{repo}/pull/{number}`; and a number
+/// that is not a positive integer.
+pub fn parse_pr_url(url: &str) -> Result<PullRequestRef, AppError> {
     let invalid = || {
         AppError::Validation(format!(
             "invalid GitHub pull request URL `{}`: expected \
-             https://github.com/<owner>/<repo>/pull/<number>",
+             https://<github-host>/<owner>/<repo>/pull/<number>",
             url.trim()
         ))
     };
 
     let trimmed = url.trim();
-    let rest = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .ok_or_else(invalid)?;
-    let (host, path) = rest.split_once('/').ok_or_else(invalid)?;
-    if !host.eq_ignore_ascii_case(GITHUB_HOST) {
+    if trimmed.contains('#') {
+        return Err(invalid());
+    }
+    let uri: ureq::http::Uri = trimmed.parse().map_err(|_| invalid())?;
+    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.query().is_some() {
+        return Err(invalid());
+    }
+    let authority = uri.authority().ok_or_else(invalid)?;
+    if authority.as_str().contains('@') {
         return Err(invalid());
     }
 
-    let path = path.trim_end_matches('/');
+    let path = uri.path().trim_matches('/');
     let segments: Vec<&str> = path.split('/').collect();
     let [owner, repo, "pull", number] = segments[..] else {
         return Err(invalid());
@@ -99,7 +94,12 @@ pub fn parse_pr_url(url: &str) -> Result<(String, String, u64), AppError> {
         return Err(invalid());
     }
 
-    Ok((owner.to_lowercase(), repo.to_lowercase(), number))
+    Ok(PullRequestRef {
+        host: authority.as_str().to_lowercase(),
+        owner: owner.to_lowercase(),
+        repo: repo.to_lowercase(),
+        number,
+    })
 }
 
 #[cfg(test)]
@@ -108,26 +108,27 @@ mod tests {
 
     #[test]
     fn parse_pr_url_reads_owner_repo_and_number() {
-        let (owner, repo, number) = parse_pr_url("https://github.com/acme/widgets/pull/7").unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "widgets");
-        assert_eq!(number, 7);
+        let reference = parse_pr_url("https://github.com/acme/widgets/pull/7").unwrap();
+        assert_eq!(reference.host, "github.com");
+        assert_eq!(reference.owner, "acme");
+        assert_eq!(reference.repo, "widgets");
+        assert_eq!(reference.number, 7);
     }
 
     #[test]
     fn parse_pr_url_tolerates_a_trailing_slash() {
-        let (owner, repo, number) =
-            parse_pr_url("https://github.com/acme/widgets/pull/7/").unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "widgets");
-        assert_eq!(number, 7);
+        let reference = parse_pr_url("https://github.com/acme/widgets/pull/7/").unwrap();
+        assert_eq!(reference.owner, "acme");
+        assert_eq!(reference.repo, "widgets");
+        assert_eq!(reference.number, 7);
     }
 
     #[test]
     fn parse_pr_url_case_folds_owner_and_repo() {
-        let (owner, repo, _) = parse_pr_url("https://github.com/Acme/Widgets/pull/7").unwrap();
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "widgets");
+        let reference = parse_pr_url("https://GitHub.com/Acme/Widgets/pull/7").unwrap();
+        assert_eq!(reference.host, "github.com");
+        assert_eq!(reference.owner, "acme");
+        assert_eq!(reference.repo, "widgets");
     }
 
     #[test]
@@ -141,12 +142,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_pr_url_refuses_a_lookalike_host() {
-        // The identical whole-host-equality property `path_on` enforces:
-        // never a suffix match, so `evilgithub.com` and a GitHub Enterprise
-        // install are both refused rather than silently accepted.
-        assert!(parse_pr_url("https://evilgithub.com/acme/widgets/pull/7").is_err());
-        assert!(parse_pr_url("https://github.example.com/acme/widgets/pull/7").is_err());
+    fn parse_pr_url_accepts_an_enterprise_host_and_port() {
+        let reference =
+            parse_pr_url("https://github.example.com:8443/acme/widgets/pull/7").unwrap();
+        assert_eq!(reference.host, "github.example.com:8443");
     }
 
     #[test]
@@ -174,6 +173,17 @@ mod tests {
         // The git-clone grammar `parse_github_url` accepts is not this
         // function's grammar — a pull request is never a clone target.
         assert!(parse_pr_url("git@github.com:acme/widgets.git").is_err());
+    }
+
+    #[test]
+    fn parse_pr_url_refuses_credentials_query_strings_and_fragments() {
+        for invalid in [
+            "https://user@github.com/acme/widgets/pull/7",
+            "https://github.com/acme/widgets/pull/7?notification_referrer_id=1",
+            "https://github.com/acme/widgets/pull/7#issuecomment-1",
+        ] {
+            assert!(parse_pr_url(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
