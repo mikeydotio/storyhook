@@ -13,7 +13,7 @@ use storyhook::service::{
     ConfigService, NewStoryInput, PrLinkService, RelationService, StoryService,
 };
 use storyhook::store::{ReadOps, Store, WriteOps};
-use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture};
+use storyhook_test_support::{FakeGithubApiFactory, RecordedCall, ServiceFixture, scratch_dir};
 
 fn token() -> GithubToken {
     GithubToken::new("ghp_fake_token_value").expect("a usable token")
@@ -43,6 +43,25 @@ fn create_typed(fixture: &ServiceFixture, title: &str, story_type: Option<&str>)
 /// project's origins — `ServiceFixture::link_origin` under the hood.
 fn configure_remote(fixture: &ServiceFixture, owner: &str, repo: &str) {
     fixture.link_origin(&format!("https://github.com/{owner}/{repo}"));
+}
+
+fn configure_remote_on(fixture: &ServiceFixture, host: &str, owner: &str, repo: &str) {
+    fixture.link_origin(&format!("https://{host}/{owner}/{repo}"));
+}
+
+fn write_pointer_for(root: &std::path::Path, uuid: &str, github: Option<&str>) {
+    let github = github
+        .map(|api_url| format!("\n[github]\napi_url = \"{api_url}\"\n"))
+        .unwrap_or_default();
+    std::fs::write(
+        root.join(".storyhook.toml"),
+        format!("schema = 1\nuuid = \"{uuid}\"\nprefix = \"SH\"\n{github}"),
+    )
+    .expect("writing the project pointer");
+}
+
+fn write_pointer(root: &std::path::Path, github: Option<&str>) {
+    write_pointer_for(root, "fixture-uuid", github);
 }
 
 /// Unregisters a previously-configured origin — the store-level counterpart
@@ -90,6 +109,12 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
 
     run_check(&ctx, &fake, Some(id.as_str())).expect("checking pull requests");
 
+    assert!(fake.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "https://api.github.com".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
+
     let project = fixture.project();
     let story_no = storyhook::store::StoryNo::parse_id("SH", &id).unwrap();
     let row = fixture
@@ -113,6 +138,204 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
             .any(|e| matches!(e, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
         "a StoryPrMerged event must have been appended"
     );
+}
+
+#[test]
+fn check_routes_an_enterprise_pr_to_the_registered_remotes_api() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    let id = create(&fixture, "Enterprise merge");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+    run_check(&ctx, &fake, Some(id.as_str())).expect("checking the Enterprise pull request");
+
+    assert_eq!(
+        fake.recorded_calls(),
+        vec![
+            RecordedCall::Build {
+                api_base: "https://github.example.com/api/v3".into(),
+                owner: "acme".into(),
+                repo: "widgets".into(),
+            },
+            RecordedCall::GetPullRequest(7),
+        ]
+    );
+}
+
+#[test]
+fn check_routes_a_ghe_com_pr_to_its_dedicated_api_host() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "octocorp.ghe.com", "acme", "widgets");
+    let id = create(&fixture, "Data-resident Enterprise merge");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx)
+        .link(&id, "https://octocorp.ghe.com/acme/widgets/pull/7", true)
+        .unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+    run_check(&ctx, &fake, Some(id.as_str())).expect("checking the GHE.com pull request");
+
+    assert!(fake.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "https://api.octocorp.ghe.com".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
+}
+
+#[test]
+fn check_uses_the_current_checkouts_api_override() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    write_pointer(fixture.cwd(), Some("http://api.github.internal/custom/"));
+    let id = create(&fixture, "Custom Enterprise API");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+    run_check(&ctx, &fake, Some(id.as_str())).expect("checking through the override");
+
+    assert!(fake.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "http://api.github.internal/custom".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
+}
+
+#[test]
+fn check_falls_back_to_the_registered_checkout_for_unattended_calls() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    let checkout = scratch_dir();
+    write_pointer(checkout.path(), Some("https://proxy.example.test/github"));
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout.path())))
+        .unwrap();
+    let id = create(&fixture, "Unattended Enterprise API");
+    let link_ctx = fixture.ctx();
+    PrLinkService::new(&link_ctx)
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .unwrap();
+    let unattended = storyhook::service::Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.env().home(),
+        fixture.env().clone(),
+    )
+    .with_github_token(Some(token()));
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+    run_check(&unattended, &fake, Some(id.as_str())).expect("checking from the daemon context");
+
+    assert!(fake.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "https://proxy.example.test/github".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
+}
+
+#[test]
+fn check_refuses_a_registered_checkout_that_names_another_project() {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    let checkout = scratch_dir();
+    write_pointer_for(
+        checkout.path(),
+        "another-project-uuid",
+        Some("https://stale.example.test/api"),
+    );
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout.path())))
+        .unwrap();
+    let unattended = storyhook::service::Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.env().home(),
+        fixture.env().clone(),
+    )
+    .with_github_token(Some(token()));
+    let fake = FakeGithubApiFactory::new();
+
+    let error = run_check(&unattended, &fake, None)
+        .expect_err("configuration from another project must be refused");
+
+    assert!(error.to_string().contains("another-project-uuid"));
+    assert!(error.to_string().contains("fixture-uuid"));
+    assert!(fake.recorded_calls().is_empty());
+}
+
+#[test]
+fn a_matching_current_pointer_without_github_config_suppresses_stale_fallback_config() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    write_pointer(fixture.cwd(), None);
+    let checkout = scratch_dir();
+    write_pointer(checkout.path(), Some("https://stale.example.test/api"));
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout.path())))
+        .unwrap();
+    let id = create(&fixture, "Current checkout wins");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+    run_check(&ctx, &fake, Some(id.as_str())).unwrap();
+
+    assert!(fake.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "https://github.example.com/api/v3".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
+}
+
+#[test]
+fn malformed_api_override_refuses_before_building_a_client() {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    write_pointer(fixture.cwd(), Some("api.example.test"));
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    let fake = FakeGithubApiFactory::new();
+
+    let error = run_check(&ctx, &fake, None).expect_err("a relative API URL must be refused");
+    assert!(error.to_string().contains("[github].api_url"));
+    assert!(fake.recorded_calls().is_empty());
+}
+
+#[test]
+fn one_override_is_refused_when_matching_links_span_multiple_hosts() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.one.test", "acme", "one");
+    configure_remote_on(&fixture, "github.two.test", "acme", "two");
+    write_pointer(fixture.cwd(), Some("https://proxy.example.test/api"));
+    let first = create(&fixture, "First host");
+    let second = create(&fixture, "Second host");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx)
+        .link(&first, "https://github.one.test/acme/one/pull/1", true)
+        .unwrap();
+    PrLinkService::new(&ctx)
+        .link(&second, "https://github.two.test/acme/two/pull/2", true)
+        .unwrap();
+    let fake = FakeGithubApiFactory::new();
+
+    let error = run_check(&ctx, &fake, None).expect_err("one override cannot route two hosts");
+    assert!(error.to_string().contains("multiple GitHub hosts"));
+    assert!(fake.recorded_calls().is_empty());
 }
 
 #[test]

@@ -11,7 +11,7 @@
 //! cost is measured in HTTP round trips, so monomorphizing the caller per
 //! implementation buys nothing.
 //!
-//! [`GithubApiFactory`] exists because owner/repo are not known at
+//! [`GithubApiFactory`] exists because the endpoint and owner/repo are not known at
 //! [`crate::service::pr_check::run_check`]'s point of call — it groups a
 //! run's matching links by repository and builds one client per group.
 //! [`crate::service::github::RealGithubApiFactory`] is the production
@@ -20,6 +20,7 @@
 
 use super::client::GithubClient;
 use super::types::PullRequestStatus;
+use crate::domain::github_remote::GithubApiBase;
 use crate::error::AppError;
 
 /// The one GitHub REST call `story pr-check` makes (SH-49).
@@ -39,6 +40,12 @@ impl GithubApi for GithubClient {
 /// See the module doc for why this indirection exists rather than passing a
 /// ready-built client.
 pub trait GithubApiFactory {
-    /// A client for `owner/repo`, authenticated with `token`.
-    fn build(&self, token: String, owner: String, repo: String) -> Box<dyn GithubApi>;
+    /// A client for `owner/repo` at `api_base`, authenticated with `token`.
+    fn build(
+        &self,
+        token: String,
+        api_base: GithubApiBase,
+        owner: String,
+        repo: String,
+    ) -> Box<dyn GithubApi>;
 }

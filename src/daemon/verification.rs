@@ -12,6 +12,7 @@ use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
 use crate::domain::github_remote::parse_github_url;
+use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
 use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
@@ -638,23 +639,31 @@ fn checkout_repository_problem(
     let checkout_repo = origin
         .as_ref()
         .and_then(|origin| parse_github_url(origin.raw()));
-    match checkout_repo {
-        Some(repo)
-            if repo.owner.eq_ignore_ascii_case(&pull_request.owner)
-                && repo.repo.eq_ignore_ascii_case(&pull_request.repo) =>
+    let linked_repo = parse_pr_url(&pull_request.url).ok();
+    match (checkout_repo, linked_repo) {
+        (Some(checkout_repo), Some(linked_repo))
+            if checkout_repo.host.eq_ignore_ascii_case(&linked_repo.host)
+                && checkout_repo.owner.eq_ignore_ascii_case(&linked_repo.owner)
+                && checkout_repo.repo.eq_ignore_ascii_case(&linked_repo.repo) =>
         {
             None
         }
-        Some(repo) => Some(format!(
-            "linked pull request {} belongs to {}/{}, but registered checkout `{}` has origin {}/{}; centralized landing is origin-bound",
+        (Some(checkout_repo), Some(linked_repo)) => Some(format!(
+            "linked pull request {} belongs to {}/{}/{}, but registered checkout `{}` has origin {}/{}/{}; centralized landing is origin-bound",
             pull_request.url,
-            pull_request.owner,
-            pull_request.repo,
+            linked_repo.host,
+            linked_repo.owner,
+            linked_repo.repo,
             checkout.display(),
-            repo.owner,
-            repo.repo
+            checkout_repo.host,
+            checkout_repo.owner,
+            checkout_repo.repo
         )),
-        None => Some(format!(
+        (Some(_), None) => Some(format!(
+            "linked pull request URL {} is not a valid GitHub pull request URL; centralized landing requires its host and repository identity",
+            pull_request.url
+        )),
+        (None, _) => Some(format!(
             "registered checkout `{}` has no GitHub `remote.origin.url`; centralized landing requires the linked pull request {} to belong to that origin",
             checkout.display(),
             pull_request.url

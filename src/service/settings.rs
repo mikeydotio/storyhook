@@ -5,9 +5,9 @@
 //! - [`ConfigService`](super::config::ConfigService) is a project's *catalog* —
 //!   its states, its story types, its members. Different table, different
 //!   lifecycle, different verbs.
-//! - `.storyhook.toml`'s `[plugin]` and `[hooks]` tables are *repository*
-//!   configuration: decisions about one checkout, versioned with the branch and
-//!   carried by a clone. They stay in the file.
+//! - `.storyhook.toml`'s `[plugin]`, `[hooks]`, and `[github]` tables are
+//!   *repository* configuration: decisions about one checkout, versioned with
+//!   the branch and carried by a clone. They stay in the file.
 //!
 //! What is here is the handful of per-project values the store holds and the
 //! product reads.
