@@ -3,25 +3,11 @@ import { openProject, seedToken } from "./support";
 import type { Locator, Page } from "@playwright/test";
 
 /**
- * SH-444: the topbar's Home/Settings/Drafts icons, plus the board's column
- * sort control and the Settings-statuses back link, used to be single
- * Unicode characters (`⌂`/`⚙`/`✎`/`⇅`/`←`) rendered through whatever
- * fallback font the platform picked for a codepoint `--sans` doesn't cover
- * -- one of them (`⚙` GEAR) is additionally an *unqualified* emoji, so even
- * its text-vs-colour presentation was undetermined per platform. All five
- * are now inline `<svg class="icon">` shapes, matching the pattern the
- * search box's icon already used (`.search-wrap svg`).
- *
- * `tests/dashboard_icon_glyphs.rs` is the wiring fence -- it proves the
- * source no longer contains an unqualified pictographic character and that
- * every `.btn-icon` span holds a shape, not text. It cannot prove the shape
- * actually paints anything, which is what these tests are for: a real
- * browser layout, on both desktop engines, confirming `svg.icon` renders
- * with a non-zero box in the exact control it replaced.
- *
- * `.row-actions-btn` remains hidden outside `pointer: coarse` (SH-235).
- * Mobile coverage still checks both action icons; SH-600's desktop context-menu
- * regression now also proves the always-visible card icon paints a non-zero box.
+ * SH-620: dashboard controls use a small, explicit emoji vocabulary whose
+ * meaning matches the action. Emoji are decorative; visible text or the
+ * owning control's aria-label remains the accessible name. These tests run
+ * in Chromium and WebKit and prove the source-level vocabulary actually
+ * renders in the controls that consume it.
  */
 
 test.beforeEach(async ({ page }) => {
@@ -29,127 +15,110 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-async function expectIconShape(locator: Locator): Promise<void> {
+async function expectEmoji(
+  locator: Locator,
+  kind: string,
+  glyph: string,
+): Promise<void> {
   await expect(locator).toBeVisible();
+  await expect(locator).toHaveAttribute("data-emoji", kind);
+  await expect(locator).toHaveAttribute("aria-hidden", "true");
+  await expect(locator).toHaveText(glyph);
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.width).toBeGreaterThan(0);
   expect(box!.height).toBeGreaterThan(0);
 }
 
-async function expectDisclosureShape(
-  locator: Locator,
-  direction: "right" | "down",
-): Promise<void> {
-  await expectIconShape(locator);
-  await expect(locator).toHaveAttribute("aria-hidden", "true");
-  await expect(locator).toHaveAttribute("data-direction", direction);
-  await expect(locator).toHaveAttribute("stroke", "currentColor");
-  const box = await locator.boundingBox();
-  expect(box!.width).toBeCloseTo(14, 1);
-  expect(box!.height).toBeCloseTo(14, 1);
+function buttonEmoji(page: Page, id: string): Locator {
+  return page.locator(`#${id} .emoji-icon`);
 }
 
-function buttonIcon(page: Page, id: string): Locator {
-  return page.locator(`#${id} svg.icon`);
-}
-
-test("Home, Settings and Drafts render an svg icon, not a character", async ({
+test("topbar and search controls use emoji that name their purpose", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
 
-  for (const id of ["home-btn", "settings-btn", "drafts-btn"]) {
-    await expectIconShape(buttonIcon(page, id));
-  }
+  await expectEmoji(buttonEmoji(page, "home-btn"), "home", "🏠");
+  await expectEmoji(buttonEmoji(page, "settings-btn"), "settings", "⚙️");
+  await expectEmoji(buttonEmoji(page, "drafts-btn"), "drafts", "📝");
+  await expectEmoji(page.locator("#search-wrap .emoji-icon"), "search", "🔍");
 
-  // The accessible name comes from `.btn-text` (`.btn-icon` is
-  // `aria-hidden`), never the icon -- unaffected by the glyph-to-shape swap.
-  // `#drafts-btn-text` carries the live count on top of the static label, so
-  // it's matched loosely rather than exactly.
-  await expect(page.locator("#home-btn .btn-text")).toHaveText("Home");
-  await expect(page.locator("#settings-btn .btn-text")).toHaveText(
-    "Settings",
+  await expect(page.locator("#home-btn")).toHaveAccessibleName("Home");
+  await expect(page.locator("#settings-btn")).toHaveAccessibleName("Settings");
+  await expect(page.locator("#drafts-btn")).toHaveAccessibleName(/Drafts/);
+  await expect(page.locator("#search-input")).toHaveAccessibleName(
+    "Search stories, IDs, and labels",
   );
-  await expect(page.locator("#drafts-btn-text")).toContainText("Drafts");
 });
 
-test("a column's sort button renders an svg icon and keeps its own accessible name", async ({
+test("sort, back, and close controls use action-specific emoji and keep names", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
-  const sortBtn = page.locator('.column[data-state="todo"] .column-sort-btn');
-  await expectIconShape(sortBtn.locator("svg.icon"));
-  // `aria-label` is set per render from the active sort (`renderBoard`),
-  // independent of the icon -- still a real name after the glyph is gone.
-  await expect(sortBtn).toHaveAttribute("aria-label", /^Sort: /);
-});
+  const sort = page.locator('.column[data-state="todo"] .column-sort-btn');
+  await expectEmoji(sort.locator(".emoji-icon"), "sort", "↕️");
+  await expect(sort).toHaveAttribute("aria-label", /^Sort: /);
 
-test("the statuses editor's back link renders an svg icon alongside its text", async ({
-  page,
-}) => {
+  const card = page.locator(".card", { hasText: "Wire up the auth flow" });
+  await card.click();
+  await expectEmoji(buttonEmoji(page, "drawer-close"), "close", "✖️");
+  await expect(page.locator("#drawer-close")).toHaveAccessibleName(
+    "Close story details",
+  );
+  await page.locator("#drawer-close").click();
+
   await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
   await page
     .locator(".settings-table tbody tr", { hasText: "Alpha Project" })
     .getByRole("button", { name: "Statuses" })
     .click();
-  await expect(page.locator(".settings-head h2")).toHaveText(
-    "Statuses · Alpha Project",
-  );
-
-  // `.back-link` by class, not by accessible name: `#projsel-btn` can show
-  // the identical "All projects" text (no project selected), which would
-  // make a name-based role query strict-mode ambiguous.
-  const backLink = page.locator(".back-link");
-  await expectIconShape(backLink.locator("svg.icon"));
-  await expect(backLink).toHaveText(/All projects/);
+  const back = page.locator(".back-link");
+  await expectEmoji(back.locator(".emoji-icon"), "back", "⬅️");
+  await expect(back).toHaveAccessibleName("All projects");
 });
 
-test("every hidden-content control draws a consistently sized disclosure chevron", async ({
+test("disclosure emoji communicate each control's function and state", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
 
-  await expectDisclosureShape(
-    page.locator("#projsel-btn .disclosure-icon"),
-    "down",
-  );
+  const projectDropdown = page.locator("#projsel-btn .emoji-icon");
+  await expectEmoji(projectDropdown, "dropdown", "🔽");
+  await expect(projectDropdown).toHaveAttribute("data-direction", "down");
 
   const filterToggle = page.locator("#filter-toggle-btn");
-  const filterIcon = page.locator("#filter-toggle-chevron");
-  await expectDisclosureShape(filterIcon, "right");
+  const filterEmoji = page.locator("#filter-toggle-chevron");
+  await expectEmoji(filterEmoji, "filters", "🎛️");
+  await expect(filterEmoji).toHaveAttribute("data-direction", "right");
   await expect(filterToggle).toHaveAccessibleName("Filters");
-  expect(
-    await filterIcon.evaluate(
-      (icon) =>
-        getComputedStyle(icon).stroke ===
-        getComputedStyle(icon.parentElement!).color,
-    ),
-  ).toBe(true);
-
   await filterToggle.click();
-  await expectDisclosureShape(filterIcon, "down");
-  for (const icon of await page.locator(".fdd-btn .fdd-caret").all()) {
-    await expectDisclosureShape(icon, "down");
+  await expect(filterEmoji).toHaveAttribute("data-direction", "down");
+
+  for (const dropdown of await page.locator(".fdd-btn .emoji-icon").all()) {
+    await expectEmoji(dropdown, "dropdown", "🔽");
+    await expect(dropdown).toHaveAttribute("data-direction", "down");
   }
 
   const card = page.locator(".card", { hasText: "Wire up the auth flow" });
   await card.click();
-  const sectionIcons = page.locator(".section-toggle .disclosure-icon");
-  expect(await sectionIcons.count()).toBeGreaterThan(0);
-  for (const icon of await sectionIcons.all()) {
-    const direction = (await icon.getAttribute("data-direction")) as
-      | "right"
-      | "down";
-    await expectDisclosureShape(icon, direction);
+  const sectionEmoji = page.locator(".section-toggle .emoji-icon");
+  expect(await sectionEmoji.count()).toBeGreaterThan(0);
+  for (const emoji of await sectionEmoji.all()) {
+    const expanded = await emoji.getAttribute("data-direction");
+    await expectEmoji(
+      emoji,
+      expanded === "down" ? "collapse" : "expand",
+      expanded === "down" ? "➖" : "➕",
+    );
   }
   await page.locator("#drawer-close").click();
 
   await card.click({ button: "right" });
-  const submenuIcons = page.locator(".ctxmenu-arrow");
-  expect(await submenuIcons.count()).toBeGreaterThan(0);
-  for (const icon of await submenuIcons.all()) {
-    await expectDisclosureShape(icon, "right");
+  const submenuEmoji = page.locator(".ctxmenu-arrow");
+  expect(await submenuEmoji.count()).toBeGreaterThan(0);
+  for (const emoji of await submenuEmoji.all()) {
+    await expectEmoji(emoji, "submenu", "➡️");
+    await expect(emoji).toHaveAttribute("data-direction", "right");
   }
 });

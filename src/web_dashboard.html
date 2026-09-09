@@ -275,7 +275,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .brand h1 { font-size: 0.8125rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-muted); }
 .brand .subtitle { font-size: 0.8125rem; color: var(--fg-muted); }
 .search-wrap { flex: 1; max-width: 26rem; position: relative; }
-.search-wrap svg { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); opacity: 0.5; pointer-events: none; }
+.search-wrap .emoji-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); opacity: 0.65; pointer-events: none; }
 .search-input {
   width: 100%; padding: 0.4375rem 0.75rem 0.4375rem 2rem;
   background: var(--bg-sunken); border: 1px solid transparent; border-radius: var(--radius-sm);
@@ -325,34 +325,19 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
   padding: 0 0.25rem; border-radius: 999px; background: var(--accent); color: var(--accent-fg);
   font-size: 0.6875rem; line-height: 1; font-weight: 800;
 }
-/* Secondary navigation keeps one icon/text treatment both when exposed on
+/* SH-620: controls use platform emoji chosen for their meaning, not private
+   drawings that merely imitate generic icon geometry. Explicit emoji/text
+   presentation sequences live in UI_EMOJI. These spans are decorative --
+   visible text or the owning control's aria-label supplies its name. */
+.emoji-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  min-width: 1em; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-style: normal; font-weight: 400; line-height: 1;
+}
+/* Secondary navigation keeps one emoji/text treatment both when exposed on
    desktop and when the same controls become mobile menu items. */
 .btn-icon { line-height: 1; }
-/* SH-444: every control icon in this file is a shape the page draws, never a
-   character. U+2302 HOUSE, U+2699 GEAR and U+270E LOWER RIGHT PENCIL (the
-   three glyphs this class held before the fix) sat in Misc Technical/Misc
-   Symbols/Dingbats -- none covered by any font in `--sans` -- so each
-   rendered from an unspecified platform fallback font at an arbitrary
-   weight, unrelated to the 600-weight text beside it, and U+2699 is
-   additionally an *unqualified* emoji (no U+FE0F), so its text-vs-colour
-   presentation was undetermined per platform on top of that.
-   `currentColor` inherits the button's own colour, so the icon themes and
-   hovers with the rest of the control the way the search icon at
-   `.search-wrap svg` already does -- `tests/dashboard_icon_glyphs.rs`'s
-   `every_btn_icon_span_holds_a_shape` fences new instances of this class.
-   Naming those three glyphs above by codepoint rather than pasting the
-   character is deliberate, not squeamish: that same test's
-   `no_pictographic_character_is_left_unqualified` scans this file's raw
-   bytes, comments included, so a literal, un-suffixed glyph pasted into a
-   doc comment would trip its own fence. */
-svg.icon { width: 1em; height: 1em; display: block; flex: none; }
-/* SH-447: disclosure indicators are shapes, not font glyphs. The old
-   U+25B8/U+25BE characters occupied a 9-10px font box here while their
-   visible triangular ink occupied only a fraction of it, producing the
-   undersized controls in the report. A fixed 14px SVG keeps the compact
-   chrome compact while making the stroke legible and identical on every
-   platform; `currentColor` keeps theme, hover and active-state inheritance. */
-svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: none; }
+.disclosure-icon { font-size: 0.875rem; }
 .connection { display: flex; align-items: center; gap: var(--space-label); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); }
 .connection.disconnected { color: var(--danger-text); font-weight: 600; }
 .conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--fg-faint); transition: background 0.2s; }
@@ -528,9 +513,9 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .filter-toggle-btn:hover { border-color: var(--fg-functional); color: var(--fg); }
 /* Active means "the board isn't showing everything" (state.js's own
    updateFilterToggleActive) -- distinct from aria-expanded, which the
-   chevron glyph already communicates on its own. A reader who has never
-   opened the panel this session still sees that a filter is narrowing the
-   board. */
+   control exposes separately as the filter panel's visibility state. A
+   reader who has never opened the panel this session still sees that a
+   filter is narrowing the board. */
 .filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-toggle-btn .disclosure-icon { flex-shrink: 0; }
 .filter-active-indicator { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; flex: none; }
@@ -1322,9 +1307,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-item.danger { color: var(--danger); }
 .ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
 .ctxmenu-arrow { margin-left: auto; opacity: 0.7; }
-svg.ctxmenu-disabled-warning {
-  width: 0.875rem; height: 0.875rem; margin-left: auto; color: var(--warn);
-}
+.ctxmenu-disabled-warning { margin-left: auto; font-size: 0.875rem; }
 /* SH-305: the per-column sort menu's `role="menuitemradio"` items -- same
    always-reserve-the-width, toggle-visibility idiom as `.projsel-item-check`
    so the label doesn't shift left/right as the checked item changes. */
@@ -1701,14 +1684,14 @@ svg.ctxmenu-disabled-warning {
       <div class="projsel" id="projsel">
         <button type="button" class="projsel-btn" id="projsel-btn" aria-haspopup="true" aria-expanded="false" aria-controls="projsel-menu">
           <span class="projsel-label" id="projsel-label">Loading…</span>
-          <svg class="icon disclosure-icon fdd-caret" data-direction="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          <span class="emoji-icon disclosure-icon fdd-caret" data-emoji="dropdown" aria-hidden="true" data-direction="down">🔽</span>
         </button>
         <div class="fdd-panel projsel-panel" id="projsel-menu" role="menu" aria-label="Switch project" hidden></div>
       </div>
       <span class="subtitle" id="subtitle">Loading…</span>
     </div>
     <div class="search-wrap" id="search-wrap">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <span class="emoji-icon" data-emoji="search" aria-hidden="true">🔍</span>
       <input type="text" class="search-input" id="search-input" aria-label="Search stories, IDs, and labels" placeholder="Search stories, IDs, labels…">
     </div>
     <div class="view-toggle" id="view-toggle">
@@ -1722,9 +1705,9 @@ svg.ctxmenu-disabled-warning {
           More <span class="more-draft-count" id="more-draft-count" hidden></span>
         </button>
         <div class="secondary-nav" id="more-menu">
-          <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h3.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V21H18a1 1 0 0 0 1-1V9.5"/></svg></span><span class="btn-text">Home</span></button>
-          <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.34 4.88 9.35 2.77 14.65 2.77 14.66 4.88 15.15 5.08 16.65 3.6 20.4 7.35 18.92 8.85 19.12 9.34 21.23 9.35 21.23 14.65 19.12 14.66 18.92 15.15 20.4 16.65 16.65 20.4 15.15 18.92 14.66 19.12 14.65 21.23 9.35 21.23 9.34 19.12 8.85 18.92 7.35 20.4 3.6 16.65 5.08 15.15 4.88 14.66 2.77 14.65 2.77 9.35 4.88 9.34 5.08 8.85 3.6 7.35 7.35 3.6 8.85 5.08Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="btn-text">Settings</span></button>
-          <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 3.5 6 6L8 22H2v-6z"/><path d="m13 5 6 6"/></svg></span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon emoji-icon" data-emoji="home" aria-hidden="true">🏠</span><span class="btn-text">Home</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon emoji-icon" data-emoji="settings" aria-hidden="true">⚙️</span><span class="btn-text">Settings</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon emoji-icon" data-emoji="drafts" aria-hidden="true">📝</span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
         </div>
       </div>
       <div class="connection">
@@ -1737,7 +1720,7 @@ svg.ctxmenu-disabled-warning {
   <div class="filter-bar" id="filter-bar">
     <div class="filter-summary" id="filter-summary">
       <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
-        <svg class="icon disclosure-icon" id="filter-toggle-chevron" data-direction="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg> Filters
+        <span class="emoji-icon disclosure-icon" id="filter-toggle-chevron" data-emoji="filters" aria-hidden="true" data-direction="right">🎛️</span> Filters
         <span class="filter-active-indicator" id="filter-active-indicator" hidden><span class="sr-only">Active filters</span></span>
       </button>
       <span class="filter-count" id="filter-count"></span>
@@ -1832,7 +1815,7 @@ svg.ctxmenu-disabled-warning {
     <div class="drawer-header">
       <span id="drawer-type-badge"></span>
       <span class="drawer-id" id="drawer-id"></span>
-      <button type="button" class="btn btn-ghost drawer-close" id="drawer-close" aria-label="Close story details"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+      <button type="button" class="btn btn-ghost drawer-close" id="drawer-close" aria-label="Close story details"><span class="emoji-icon" data-emoji="close" aria-hidden="true">✖️</span></button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
     <div class="drawer-footer" id="drawer-footer"></div>
@@ -2863,76 +2846,46 @@ svg.ctxmenu-disabled-warning {
     return node;
   }
 
-  var SVG_NS = "http://www.w3.org/2000/svg";
+  /** The complete visual vocabulary for controls owned by this page
+   * (SH-620). Each choice names a purpose rather than copying the outline of
+   * the former private drawing. Variation selectors are explicit wherever
+   * Unicode's default presentation is text. */
+  var UI_EMOJI = {
+    actions: "🛠️",
+    back: "⬅️",
+    close: "✖️",
+    collapse: "➖",
+    drafts: "📝",
+    dropdown: "🔽",
+    expand: "➕",
+    filters: "🎛️",
+    home: "🏠",
+    search: "🔍",
+    settings: "⚙️",
+    sort: "↕️",
+    submenu: "➡️",
+    warning: "⚠️"
+  };
 
-  /** Builds an inline `<svg class="icon">` shape for a JS-constructed
-   * control (SH-444) -- `el()`'s own `document.createElement` only builds
-   * HTML-namespace elements, so an SVG needs `createElementNS` instead;
-   * this is that constructor, kept separate rather than taught to `el()`
-   * itself so `el()`'s "children become text nodes, never innerHTML" XSS
-   * doctrine stays untouched. `shapes` is an array of `[tag, attrs]` pairs
-   * (e.g. `["path", {d: "M3 3h18"}]`), appended as SVG children in order.
-   * `opts.fill`/`opts.strokeWidth` override the stroke-drawn default (used
-   * by every icon here except the actions buttons' three dots, which pass
-   * `{fill: "currentColor", stroke: "none"}`). The topbar's own three
-   * icons are static markup in the template, not built here -- only a
-   * JS-constructed control needs this helper. */
-  function svgIcon(shapes, opts) {
+  /** Builds a decorative emoji for a JS-constructed control. The owning
+   * control's text or aria-label carries its accessible name; `data-emoji`
+   * exposes the semantic choice without asking tests to infer it from pixels. */
+  function emojiIcon(kind, opts) {
     opts = opts || {};
-    var svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "icon");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("fill", opts.fill || "none");
-    var stroke = opts.stroke === undefined ? "currentColor" : opts.stroke;
-    svg.setAttribute("stroke", stroke);
-    if (stroke !== "none") {
-      svg.setAttribute("stroke-width", opts.strokeWidth || 2);
-      svg.setAttribute("stroke-linecap", "round");
-      svg.setAttribute("stroke-linejoin", "round");
+    if (!Object.prototype.hasOwnProperty.call(UI_EMOJI, kind)) {
+      throw new Error("Unknown UI emoji: " + kind);
     }
-    shapes.forEach(function(shape) {
-      var shapeNode = document.createElementNS(SVG_NS, shape[0]);
-      Object.keys(shape[1]).forEach(function(attr) { shapeNode.setAttribute(attr, shape[1][attr]); });
-      svg.appendChild(shapeNode);
-    });
-    return svg;
-  }
-
-  /** Builds the 14px directional indicator shared by every control that
-   * reveals hidden content (SH-447). Keeping the two paths here means a
-   * JS-built disclosure cannot drift from the static project/filter icons'
-   * geometry, while `data-direction` gives browser tests a semantic state
-   * to assert without coupling to path coordinates. */
-  function disclosureIcon(direction) {
-    var paths = {
-      right: "m9 18 6-6-6-6",
-      down: "m6 9 6 6 6-6"
-    };
-    var icon = svgIcon([["path", { d: paths[direction] }]], { strokeWidth: 2.5 });
-    icon.classList.add("disclosure-icon");
-    icon.dataset.direction = direction;
-    return icon;
-  }
-
-  /** Builds the fixed-size warning shape shown beside a disabled menu action
-   * whose temporary gate has a useful explanation (SH-596). The icon stays
-   * decorative because the menu item's title carries the reason in text. */
-  function menuDisabledWarningIcon() {
-    var icon = svgIcon([
-      ["path", { d: "M21.73 18 13.73 4a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }],
-      ["path", { d: "M12 9v4" }],
-      ["path", { d: "M12 17h.01" }]
-    ], { strokeWidth: 2.25 });
-    icon.classList.add("ctxmenu-disabled-warning");
-    return icon;
+    var dataset = { emoji: kind };
+    if (opts.direction) dataset.direction = opts.direction;
+    return el("span", {
+      class: "emoji-icon" + (opts.className ? " " + opts.className : ""),
+      "aria-hidden": "true",
+      dataset: dataset
+    }, [UI_EMOJI[kind]]);
   }
 
   function setDisclosureDirection(icon, direction) {
-    var path = icon && icon.querySelector("path");
-    if (!path) return;
-    path.setAttribute("d", direction === "down" ? "m6 9 6 6 6-6" : "m9 18 6-6-6-6");
-    icon.dataset.direction = direction;
+    if (icon) icon.dataset.direction = direction;
   }
 
   /** The only two low-level DOM removal doors. The static half of SH-401's
@@ -6772,7 +6725,7 @@ svg.ctxmenu-disabled-warning {
       }
       var disabled = !!entry.disabled;
       if (entry.submenu) {
-        var arrow = disclosureIcon("right");
+        var arrow = emojiIcon("submenu", { className: "disclosure-icon", direction: "right" });
         arrow.classList.add("ctxmenu-arrow");
         node.appendChild(el("div", {
           class: "ctxmenu-item",
@@ -6794,7 +6747,7 @@ svg.ctxmenu-disabled-warning {
         ? [entry.label]
         : [el("span", { class: "ctxmenu-check" }, ["✓"]), entry.label];
       var disabledReason = disabled ? entry.disabledReason : null;
-      if (disabledReason) children.push(menuDisabledWarningIcon());
+      if (disabledReason) children.push(emojiIcon("warning", { className: "ctxmenu-disabled-warning" }));
       node.appendChild(el("div", {
         class: "ctxmenu-item" + (entry.danger ? " danger" : ""),
         role: checked === undefined ? "menuitem" : "menuitemradio",
@@ -8043,7 +7996,7 @@ svg.ctxmenu-disabled-warning {
     clear(container);
     var label = FILTER_DROPDOWNS[key].label;
 
-    var caret = disclosureIcon("down");
+    var caret = emojiIcon("dropdown", { className: "disclosure-icon", direction: "down" });
     caret.classList.add("fdd-caret");
     var btn = el("button", { type: "button", class: "fdd-btn" }, [label, caret]);
     var panel = el("div", { class: "fdd-panel" }, []);
@@ -8089,7 +8042,7 @@ svg.ctxmenu-disabled-warning {
     var count = state.filter[key].length;
     clear(btn);
     btn.appendChild(document.createTextNode(FILTER_DROPDOWNS[key].label + (count ? " (" + count + ")" : "")));
-    var caret = disclosureIcon("down");
+    var caret = emojiIcon("dropdown", { className: "disclosure-icon", direction: "down" });
     caret.classList.add("fdd-caret");
     btn.appendChild(caret);
     btn.classList.toggle("active", count > 0 || openFilterDropdown === key);
@@ -8118,7 +8071,7 @@ svg.ctxmenu-disabled-warning {
     container.dataset.fingerprint = fingerprint;
     clear(container);
 
-    var caret = disclosureIcon("down");
+    var caret = emojiIcon("dropdown", { className: "disclosure-icon", direction: "down" });
     caret.classList.add("fdd-caret");
     var btn = el("button", { type: "button", class: "fdd-btn" }, ["Columns", caret]);
     var panel = el("div", { class: "fdd-panel" }, []);
@@ -8167,7 +8120,7 @@ svg.ctxmenu-disabled-warning {
     var count = state.hiddenColumns.length;
     clear(btn);
     btn.appendChild(document.createTextNode("Columns" + (count ? " (" + count + ")" : "")));
-    var caret = disclosureIcon("down");
+    var caret = emojiIcon("dropdown", { className: "disclosure-icon", direction: "down" });
     caret.classList.add("fdd-caret");
     btn.appendChild(caret);
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
@@ -8689,10 +8642,7 @@ svg.ctxmenu-disabled-warning {
               e.stopPropagation();
               openColumnSortMenu(e, stateDef.slug, e.currentTarget);
             }
-          }, [svgIcon([
-            ["path", { d: "M7 3v14M7 17l-3.5-3.5M7 17l3.5-3.5" }],
-            ["path", { d: "M17 21V7M17 7l3.5 3.5M17 7l-3.5 3.5" }]
-          ])])
+          }, [emojiIcon("sort")])
         ]),
         el("div", { class: "column-cards" }, [])
       ]);
@@ -9328,11 +9278,7 @@ svg.ctxmenu-disabled-warning {
         var current = findStory(st.id);
         if (current) openStoryMenu(e, current, cardActionsBtn);
       }
-    }, [svgIcon([
-      ["circle", { cx: "5", cy: "12", r: "2" }],
-      ["circle", { cx: "12", cy: "12", r: "2" }],
-      ["circle", { cx: "19", cy: "12", r: "2" }]
-    ], { fill: "currentColor", stroke: "none" })]);
+    }, [emojiIcon("actions")]);
     next.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
     next.appendChild(el("div", { class: "card-title" }, [st.title]));
     if (engineLane) next.appendChild(buildEngineLaneChip(engineLane));
@@ -10682,11 +10628,7 @@ svg.ctxmenu-disabled-warning {
         var current = findStory(st.id);
         if (current) openStoryMenu(e, current, rowActionsBtn);
       }
-    }, [svgIcon([
-      ["circle", { cx: "5", cy: "12", r: "2" }],
-      ["circle", { cx: "12", cy: "12", r: "2" }],
-      ["circle", { cx: "19", cy: "12", r: "2" }]
-    ], { fill: "currentColor", stroke: "none" })]);
+    }, [emojiIcon("actions")]);
     next.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
 
     var rendered = next.innerHTML;
@@ -10788,11 +10730,7 @@ svg.ctxmenu-disabled-warning {
         var current = findStory(id);
         if (current) openStoryMenu(e, current, actions);
       }
-    }, [svgIcon([
-      ["circle", { cx: "5", cy: "12", r: "2" }],
-      ["circle", { cx: "12", cy: "12", r: "2" }],
-      ["circle", { cx: "19", cy: "12", r: "2" }]
-    ], { fill: "currentColor", stroke: "none" })]);
+    }, [emojiIcon("actions")]);
     next.appendChild(el("div", { class: "mobile-story-primary" }, [
       identity,
       buildStatePill(v),
@@ -10812,7 +10750,9 @@ svg.ctxmenu-disabled-warning {
         var replacement = item.querySelector(".mobile-story-details-btn");
         if (replacement) replacement.focus();
       }
-    }, [disclosureIcon(expanded ? "down" : "right"), "Details"]);
+    }, [emojiIcon(expanded ? "collapse" : "expand", {
+      className: "disclosure-icon", direction: expanded ? "down" : "right"
+    }), "Details"]);
     next.appendChild(detailsButton);
 
     var details = el("dl", { id: detailsId, class: "mobile-story-details", hidden: !expanded }, []);
@@ -11970,7 +11910,9 @@ svg.ctxmenu-disabled-warning {
    * still says whether there's anything under it. */
   function buildSectionToggle(key, label, count) {
     var open = state.drawerSections[key];
-    var children = [disclosureIcon(open ? "down" : "right"), label];
+    var children = [emojiIcon(open ? "collapse" : "expand", {
+      className: "disclosure-icon", direction: open ? "down" : "right"
+    }), label];
     if (typeof count === "number") {
       children.push(el("span", { class: "section-count" }, [" (" + count + ")"]));
     }
@@ -13161,7 +13103,7 @@ svg.ctxmenu-disabled-warning {
 
     container.appendChild(el("div", { class: "settings-head" }, [
       el("button", { class: "back-link", onClick: goSettings }, [
-        svgIcon([["path", { d: "M19 12H5" }], ["path", { d: "m11 18-6-6 6-6" }]], { strokeWidth: 2.25 }),
+        emojiIcon("back"),
         "All projects"
       ]),
       el("h2", {}, ["Statuses · " + repoName(state.settingsRepoId)]),

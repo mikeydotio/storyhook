@@ -241,10 +241,10 @@ SH-600 corrected the original visibility policy: the card button is visible for
 every pointer because right-click can be difficult or unavailable even when a
 fine pointer is primary. Its `--tap-min` target remains 24px normally and 44px on
 coarse pointers. The list-row button remains coarse-pointer-only so desktop table
-geometry is unchanged. Its resting SVG uses `--fg-muted`, measured across all four
-palette resolutions, rather than light theme's 2.60:1 `--fg-faint`; this keeps the
-control-identifying icon above WCAG 2.2 SC 1.4.11's 3:1 threshold. The
-coarse-pointer row action uses the same token and measured four-theme contract.
+geometry is unchanged. Both buttons use the decorative 🛠️ emoji and retain their
+purpose-based accessible names; the button boundary, not an emoji foreground
+color, identifies the control across all four palette resolutions. The
+coarse-pointer row action uses the same target-size contract.
 
 **The accessibility trade-off, stated plainly.** `.card` is `div[role="button"]`; a
 nested interactive element inside an ARIA `button` role is *presentational* to
@@ -345,60 +345,30 @@ whatever internal viewport-fit heuristic caused the divergence is not one WebKit
 shares -- the `contain: layout` fix stays in place regardless, since it is harmless
 where the bug it targets doesn't exist.
 
-### An icon is a shape the page draws, never a character (SH-444)
+### Control decoration is semantic emoji (SH-620)
 
-Found independently of SH-235, on the same controls this section names: the topbar's
-Home/Settings/Drafts icons (and, once swept, the board's column-sort control, the
-card/list-row actions menus, and the Settings-statuses back link) were single Unicode
-characters, rendered through whatever fallback font the platform picked for a
-codepoint `--sans` doesn't cover. U+2302 HOUSE and U+270E LOWER RIGHT PENCIL are not
-emoji at all; U+2699 GEAR is emoji-capable but shipped *unqualified* (no U+FE0F), so
-its text-vs-colour presentation was undetermined per platform on top of that. All
-three rendered at an arbitrary weight unrelated to the 600-weight text beside them —
-exactly what the reported screenshot showed.
+SH-444 and SH-447 replaced inconsistent font glyphs with a private set of inline SVG
+drawings. SH-620 changes the product direction: platform emoji provide the dashboard's
+visual character, but each choice must describe what its control *does*, not merely
+copy the removed drawing. The one `UI_EMOJI` vocabulary therefore names purposes:
+Home uses a house, Drafts uses a memo (saved writing, not the act of editing), story
+Actions use tools, Filters use control knobs, and a disabled action uses a warning.
+Dropdowns and submenus describe the direction they reveal; expandable sections use
+plus/minus to describe the state change.
 
-**The rule going forward:** every control icon in this file is an inline `<svg
-class="icon" stroke="currentColor">`, reusing the pattern the search box's icon
-already used (`.search-wrap svg`). `currentColor` inherits the button's own colour,
-so the icon themes and hovers with the rest of the control for free, across all four
-theme resolutions this file supports. The three topbar icons are static markup; a
-JS-constructed control builds one through the `svgIcon()` helper beside `el()` (SVG
-needs `createElementNS`, which `el()`'s own `document.createElement` can't provide).
-`tests/dashboard_icon_glyphs.rs::every_btn_icon_span_holds_a_shape` fences the
-topbar's own `.btn-icon` class; the other four controls are covered behaviorally, by
-`e2e/specs/icon-shapes.spec.ts` and `icon-shapes.mobile.spec.ts`.
+Every `.emoji-icon` uses the platform emoji font stack and is `aria-hidden="true"`.
+The adjacent visible label or the owning control's purpose-based `aria-label` remains
+its accessible name; the emoji never becomes an assistive-technology label. Likewise,
+`aria-expanded` and `aria-haspopup` remain authoritative. `data-emoji` exposes the
+semantic choice for inspection and tests, while `data-direction` retains disclosure
+state independently of the artwork.
 
-**The boundary against typographic marks was narrowed by SH-447.** Sort/reorder
-arrows, checks, bullets and close marks (`▲ ▼ ↑ ↓ ● ✓ ×`) stay characters: they are
-covered by UI fonts, have deterministic text presentation, and several remain pinned
-as exact text by existing e2e contracts. A disclosure indicator is different even
-though its presentation is also deterministic. The reported Filters and dropdown
-triangles sat in 9–10px font boxes and their visible ink occupied only a fraction of
-that box, making every adjacent hidden-content affordance look undersized. All controls
-whose indicator means “reveals hidden content” therefore use one 14px inline SVG
-chevron: project and filter dropdowns, the Filters and drawer-section disclosures, and
-context-menu submenus. `data-direction=right|down` names their visual state without
-making the decorative SVG part of the accessible name; the owning button's existing
-`aria-expanded` remains authoritative where the control is persistent.
-
-`tests/dashboard_icon_glyphs.rs::no_raw_disclosure_triangle_is_left` fences the source
-against restoring U+25B8/U+25BE through either static markup or JS construction.
-`filter-bar-disclosure.spec.ts` and `icon-shapes.spec.ts` verify the live SVG geometry,
-direction, inherited colour, accessible name and ARIA state. Native `<select>` carets
+`tests/dashboard_icon_glyphs.rs` pins the complete vocabulary, presentation sequences,
+decorative treatment, static control wiring, and absence of the retired SVG machinery.
+`e2e/specs/icon-shapes.spec.ts`, `icon-shapes.mobile.spec.ts`, and
+`filter-bar-disclosure.spec.ts` prove the emoji render under both browser engines,
+retain accessible names, and track live control state. Native `<select>` indicators
 remain browser-owned for the cross-engine reasons in “Tap targets (D3)” above.
-
-**The same undetermined-presentation defect, generalized:** any pictographic
-character anywhere in this file — not just an icon control — must carry a trailing
-U+FE0F or it doesn't belong here at all. `tests/dashboard_icon_glyphs.rs::
-no_pictographic_character_is_left_unqualified` fences the whole file for exactly this,
-with U+2713 CHECK MARK as the one documented, deliberate exception (not an emoji,
-universal font coverage, pinned e2e text). It caught a second, independent instance of
-the same defect during this same investigation: the archived flag/banner's U+1F5C4
-FILE CABINET shipped with no U+FE0F, unlike this file's other emoji (U+1F3F7 LABEL,
-`typeGlyph()`'s fallback), which was already correctly qualified — the convention
-already existed and simply wasn't applied everywhere. Fixed by qualifying it
-(`🗄` → `🗄️`) rather than converting it to a shape: it sits inline inside prose, not
-a standalone icon control.
 
 ## What guards each defect
 
