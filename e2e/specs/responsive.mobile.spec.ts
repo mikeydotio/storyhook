@@ -1,6 +1,7 @@
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
+  clickHeaderAction,
   cleanUpCreatedStories,
   deleteStory,
   openFilters,
@@ -65,15 +66,13 @@ for (const width of SWEEP_WIDTHS) {
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) =>
         document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-      const topbar = rect(".topbar");
-      const filter = rect("#filter-bar");
+      const header = rect("#dashboard-header");
       const workspace = rect("#repo-workspace");
       const content = rect("#workspace-content");
       const panel = rect("#drawer");
       return {
         viewportWidth: document.documentElement.clientWidth,
-        topbarWidth: topbar.width,
-        filterWidth: filter.width,
+        headerWidth: header.width,
         workspaceTop: workspace.top,
         workspaceRight: workspace.right,
         contentRight: content.right,
@@ -83,13 +82,12 @@ for (const width of SWEEP_WIDTHS) {
       };
     });
 
-    expect(geometry.topbarWidth).toBe(geometry.viewportWidth);
-    expect(geometry.filterWidth).toBe(geometry.viewportWidth);
+    expect(geometry.headerWidth).toBe(geometry.viewportWidth);
     expect(geometry.panelTop).toBe(geometry.workspaceTop);
     expect(geometry.contentRight).toBe(geometry.panelLeft);
     expect(geometry.panelRight).toBe(geometry.workspaceRight);
     await expect(page.locator("#drawer-backdrop")).toHaveCount(0);
-    await expect(page.locator("#home-btn")).toBeVisible();
+    await expect(page.locator("#more-btn")).toBeVisible();
     await expectNoHorizontalOverflow(page, `the story detail peer @ ${width}px`);
 
     await page.getByRole("button", { name: "Close story details" }).click();
@@ -477,21 +475,11 @@ test("the app shell and an open modal fit inside a squeezed viewport height", as
 });
 
 /**
- * SH-235 (D2): `.list-table-wrap` is narrower than the table it holds at
- * phone widths -- seven columns (ID, Title, State, Priority, Labels,
- * Assignee, Updated) don't fit 350-ish CSS px. `overflow: hidden` there
- * doesn't shrink the table, it clips it: Labels, Assignee and Updated
- * render past the wrap's own right edge and are removed from the box
- * entirely, not merely scrolled out of view -- the story's own "text is
- * clipped", measured (390px viewport: table scrollWidth 630px inside
- * clientWidth 348px, ~45% of every row gone).
- *
- * `overflow-x: auto` doesn't make the table narrower either; the fix here
- * is reachability, not a redesign -- every column is still present,
- * reading a value the wrap has means a horizontal scroll rather than
- * `display: none`.
+ * SH-614 supersedes SH-235's phone-table compromise. The table remains the
+ * desktop presentation, but at <=768px it leaves both rendering and the
+ * accessibility tree while a semantic stacked list exposes the same stories.
  */
-test("the list table scrolls sideways to its far columns instead of clipping them", async ({
+test("the mobile list replaces the sideways-scrolling table", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -499,43 +487,9 @@ test("the list table scrolls sideways to its far columns instead of clipping the
   await openProject(page, "Alpha Project");
   await page.locator('#view-toggle button[data-view="list"]').click();
   await expect(page.locator("#list-view")).toBeVisible();
-  await expect(page.locator("#list-body tr").first()).toBeVisible();
-
-  const wrap = page.locator(".list-table-wrap");
-  const before = await wrap.evaluate((el) => ({
-    overflowX: getComputedStyle(el).overflowX,
-    scrollWidth: el.scrollWidth,
-    clientWidth: el.clientWidth,
-    scrollLeft: el.scrollLeft,
-  }));
-  // The premise: the table really is wider than the wrap at this width.
-  // If it weren't, scrolling it wouldn't prove anything either way.
-  expect(
-    before.scrollWidth,
-    `the table (${before.scrollWidth}px) is expected to be wider than ` +
-      `.list-table-wrap (${before.clientWidth}px) at 390px -- if it isn't, ` +
-      "this test can no longer tell a scrollable table from a clipped one",
-  ).toBeGreaterThan(before.clientWidth);
-  expect(
-    before.overflowX,
-    ".list-table-wrap must be horizontally scrollable (overflow-x: auto), " +
-      "not overflow: hidden, so the columns past its right edge stay reachable",
-  ).toBe("auto");
-
-  // Reachability, not just the declaration: actually scroll, and confirm
-  // a far column (Updated, the last one) becomes visible.
-  await wrap.evaluate((el) => {
-    el.scrollLeft = el.scrollWidth;
-  });
-  const after = await wrap.evaluate((el) => el.scrollLeft);
-  expect(
-    after,
-    "scrolling .list-table-wrap did not move it -- the far columns are " +
-      "still unreachable",
-  ).toBeGreaterThan(0);
-  await expect(
-    page.locator("thead th", { hasText: "Updated" }),
-  ).toBeInViewport();
+  await expect(page.locator("#list-desktop")).toBeHidden();
+  await expect(page.getByRole("list", { name: "Stories" })).toBeVisible();
+  await expect(page.getByRole("listitem").first()).toBeVisible();
 
   await expectNoClippedElements(page.locator("#list-view"), "the list view @ 390px");
 });
@@ -597,7 +551,12 @@ for (const width of SWEEP_WIDTHS) {
     await page.locator("#create-title").fill(`Long-name draft ${width}`);
     await page.locator("#create-save-draft").click();
     await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-    await page.locator("#drafts-btn").click();
+    await expect(page.locator("#more-draft-count")).toHaveText("1");
+    await expect(page.locator("#more-draft-count")).toBeVisible();
+    await expect(page.locator("#more-btn")).toHaveAccessibleName(
+      "More, 1 draft",
+    );
+    await clickHeaderAction(page, "drafts-btn");
     await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 
     const project = page.locator("#drafts-list .drafts-row-project");
@@ -819,12 +778,14 @@ async function sweepTapTargets(page: Page, selector: string): Promise<void> {
   // too, not just the always-visible summary row.
   await openFilters(page);
   await expectNoSmallTargets(page.locator("body"), "the board screen (filters open)", selector);
+  await page.locator("#filter-sheet-done").click();
 
   await page.locator('#view-toggle button[data-view="list"]').click();
-  await expect(page.locator("#list-body tr").first()).toBeVisible();
+  const firstListItem = page.locator("#mobile-list-body > li").first();
+  await expect(firstListItem).toBeVisible();
   await expectNoSmallTargets(page.locator("body"), "the list screen", selector);
 
-  await page.locator("#list-body tr").first().click();
+  await firstListItem.locator(".mobile-story-title").click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expectNoSmallTargets(page.locator("#drawer"), "the story drawer", selector);
   await page.locator("#drawer-close").click();
@@ -836,7 +797,7 @@ async function sweepTapTargets(page: Page, selector: string): Promise<void> {
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 
-  await page.locator("#settings-btn").click();
+  await clickHeaderAction(page, "settings-btn");
   await expect(page.locator("#settings-view")).toBeVisible();
   await expectNoSmallTargets(page.locator("body"), "the settings screen", selector);
 
@@ -1229,50 +1190,193 @@ async function expectNoSmallTargets(
 }
 
 /**
- * SH-235 (D4, the plan's own "chrome budget"). The plan's first cut set an
- * arbitrary 25% ceiling before real measurement; this test is what
- * replaced it with a measured one, and it's the reason the topbar was
- * compacted at all -- the filter bar's disclosure alone left the topbar
- * (unrelated to the disclosure, but sharing its "chrome eats the screen"
- * root cause) taking 251px by itself at 375px wide, four buttons' worth of
- * prose text and a full wordmark included.
- *
- * 25% (167px) turned out unreachable without cutting something a reader
- * actually needs on a phone -- the search bar or the Board/List toggle,
- * both of which stay full-width/full-text on purpose. Four irreducible
- * control groups (identity+project, search, view toggle, actions) each
- * anchored by a coarse-pointer 44px tap target is a real floor, not a
- * tuning parameter: three stacked rows of it is ~170px before the filter
- * bar's own 61px collapsed row is added.
- *
- * What the topbar compaction actually bought (measured, this test's own
- * numbers): 312px (disclosure only, unfixed topbar) -> 232px (icon-only
- * Home/Settings/Drafts, the wordmark and connection status text hidden --
- * visually, not from the accessibility tree -- and brand/view-toggle
- * merged onto one row). 40% (267px) is the guard here: comfortably above
- * the measured, now-optimized 232px, well below the pre-compaction 312px,
- * so a real regression -- a row that stops merging, a label that stops
- * hiding -- still fails this test without chasing a number the topbar's
- * actual content can't reach.
+ * SH-613: the compact project header has three stable control rows. These
+ * are content-derived budgets from the approved design, not viewport
+ * percentages: three 44px rows, two 8px gaps, and the 24px vertical inset
+ * total 172px, leaving measured font/segment rounding headroom at each
+ * supported phone width without allowing a fourth idle row back in.
  */
-test("the topbar and collapsed filter bar together stay within a measured chrome budget", async ({
+for (const phone of [
+  { width: 320, height: 568, budget: 208 },
+  { width: 375, height: 667, budget: 192 },
+  { width: 390, height: 844, budget: 192 },
+]) {
+  test(`the compact header stays within ${phone.budget}px at ${phone.width}x${phone.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: phone.width, height: phone.height });
+    await page.goto("/");
+    await openProject(page, "Alpha Project");
+
+    await expect(page.locator("#more-btn")).toBeVisible();
+    await expect(page.locator("#filter-panel")).toBeHidden();
+    await expect(page.locator(".engine-run-btn")).toHaveAccessibleName(
+      "Run Full Auto",
+    );
+    const geometry = await page.evaluate(() => {
+      const center = (selector: string) => {
+        const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      };
+      return {
+        chromeBottom: document
+          .querySelector<HTMLElement>("#repo-workspace")!
+          .getBoundingClientRect().top,
+        first: [center("#projsel-btn"), center("#new-story-btn"), center("#more-btn")],
+        second: [center("#search-input"), center("#filter-toggle-btn")],
+        third: [center("#view-toggle"), center("#filter-count"), center("#engine-control")],
+        run: (() => {
+          const style = getComputedStyle(
+            document.querySelector<HTMLElement>(".engine-run-btn")!,
+          );
+          return {
+            background: style.backgroundColor,
+            border: style.borderColor,
+            foreground: style.color,
+          };
+        })(),
+      };
+    });
+
+    expect(geometry.chromeBottom).toBeLessThanOrEqual(phone.budget);
+    for (const row of [geometry.first, geometry.second, geometry.third]) {
+      expect(Math.max(...row) - Math.min(...row)).toBeLessThanOrEqual(1);
+    }
+    expect(geometry.run.background).toBe("rgba(0, 0, 0, 0)");
+    expect(geometry.run.border).toBe(geometry.run.foreground);
+    await expectNoHorizontalOverflow(page, `the compact header @ ${phone.width}px`);
+  });
+}
+
+test("the mobile filter sheet is modal without moving the story region", async ({
   page,
 }) => {
-  const height = 667; // iPhone SE-class height, the tightest common phone
-  await page.setViewportSize({ width: 375, height });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await expect(page.locator("#filter-panel")).toBeHidden();
 
-  const chromeBottom = await page
-    .locator("#filter-bar")
-    .evaluate((el) => el.getBoundingClientRect().bottom);
-  const budget = height * 0.4;
-  expect(
-    chromeBottom,
-    `the topbar + collapsed filter bar take up ${chromeBottom}px of a ` +
-      `${height}px screen -- over the ${budget}px (40%) budget`,
-  ).toBeLessThanOrEqual(budget);
+  const workspace = page.locator("#repo-workspace");
+  const before = await workspace.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  });
+  await page.locator("#filter-toggle-btn").click();
+
+  const sheet = page.locator("#filter-sheet");
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toHaveAttribute("role", "dialog");
+  await expect(sheet).toHaveAttribute("aria-modal", "true");
+  await expect(page.locator("#filter-sheet-title")).toBeFocused();
+  await expect(page.locator("#app")).toHaveAttribute("inert", "");
+  await expect(page.locator("#filter-panel")).toBeVisible();
+  await expect(page.locator("#filter-clear")).toBeVisible();
+  await expect(page.locator("#filter-sheet #filter-panel")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Stories" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Board display" })).toBeVisible();
+
+  const after = await workspace.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  });
+  expect(after.top).toBeCloseTo(before.top, 1);
+  expect(after.height).toBeCloseTo(before.height, 1);
+
+  const done = page.locator("#filter-sheet-done");
+  await done.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.locator("#filter-clear")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(done).toBeFocused();
+
+  await page.locator("#fdd-states .fdd-btn").click();
+  await page
+    .locator("#fdd-states .fdd-option", { hasText: "review" })
+    .locator("input")
+    .check();
+  await expect(page.locator("#filter-count")).toHaveText("0 / 2");
+  await expect(page.locator("#filter-active-indicator")).toBeVisible();
+  await page.locator("#toggle-hide-empty-columns").check();
+  await page.locator("#filter-clear").click();
+  await expect(page.locator("#filter-count")).toHaveText("2 / 2");
+  await expect(page.locator("#filter-active-indicator")).toBeHidden();
+  await expect(page.locator("#toggle-hide-empty-columns")).toBeChecked();
+
+  await page.locator("#filter-sheet-done").click();
+  await expect(sheet).toBeHidden();
+  await expect(page.locator("#filter-panel")).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toBeFocused();
+  await expect(page.locator("#app")).not.toHaveAttribute("inert", "");
+
+  await openFilters(page);
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toBeFocused();
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  await openFilters(page);
+  await expect(page.locator("#board-filter-group")).toBeHidden();
+  await expect(page.locator("#toggle-hide-empty-columns")).toBeChecked();
+  await page.setViewportSize({ width: 390, height: 400 });
+  await expect(done).toBeVisible();
+  const compactSheet = await sheet.evaluate((node) => {
+    const body = node.querySelector<HTMLElement>("#filter-sheet-body")!;
+    return {
+      height: node.getBoundingClientRect().height,
+      bodyClientHeight: body.clientHeight,
+      bodyScrollHeight: body.scrollHeight,
+    };
+  });
+  expect(compactSheet.height).toBeLessThanOrEqual(340);
+  expect(compactSheet.bodyScrollHeight).toBeGreaterThan(
+    compactSheet.bodyClientHeight,
+  );
+  await page.locator("#filter-sheet-backdrop").click({
+    position: { x: 2, y: 2 },
+  });
+  await expect(sheet).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toBeFocused();
+});
+
+test("the mobile More menu exposes navigation and returns focus on Escape", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const more = page.locator("#more-btn");
+  await more.focus();
+  await page.keyboard.press("Enter");
+  const menu = page.locator("#more-menu");
+  await expect(menu).toBeVisible();
+  await expect(menu).toHaveAttribute("role", "menu");
+  await expect(page.locator("#home-btn")).toHaveAttribute("role", "menuitem");
+  await expect(page.locator("#settings-btn")).toHaveAttribute("role", "menuitem");
+  await expect(page.locator("#drafts-btn")).toHaveAttribute("role", "menuitem");
+  await expect(page.locator("#home-btn")).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator("#settings-btn")).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator("#drafts-btn")).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator("#home-btn")).toBeFocused();
+
+  await page.keyboard.press("End");
+  await expect(page.locator("#drafts-btn")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(more).toBeFocused();
+
+  await more.click();
+  await expect(menu).toBeVisible();
+  await page.locator("#repo-workspace").click({ position: { x: 2, y: 2 } });
+  await expect(menu).toBeHidden();
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+
+  await clickHeaderAction(page, "settings-btn");
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(menu).toBeHidden();
+  await expect(more).toBeFocused();
+  await clickHeaderAction(page, "home-btn");
+  await expect(page.locator("#home-view")).toBeVisible();
+  await expect(more).toBeFocused();
 });
 
 /**
@@ -1321,7 +1425,7 @@ test("the card and list-row actions menus have the same items as right-click", a
   await expect(page.locator(".ctxmenu")).not.toBeVisible();
 
   await page.locator('#view-toggle button[data-view="list"]').click();
-  const row = page.locator("tr[data-id]", { hasText: title });
+  const row = page.locator(".mobile-story-row", { hasText: title });
   await row.click({ button: "right" });
   await expect(page.locator(".ctxmenu")).toBeVisible();
   const rowRightClickItems = await page
@@ -1377,7 +1481,7 @@ test("the card's actions button is deliberately not a Tab stop; the list row's i
 
   await page.locator('#view-toggle button[data-view="list"]').click();
   const rowActionsBtn = page
-    .locator("tr[data-id]", { hasText: title })
+    .locator(".mobile-story-row", { hasText: title })
     .locator(".row-actions-btn");
   await expect(rowActionsBtn).not.toHaveAttribute("tabindex", "-1");
   await rowActionsBtn.focus();
@@ -1461,7 +1565,7 @@ test("shared hierarchy resolves consistently across mobile widths", async ({
   for (const width of SWEEP_WIDTHS) {
     await page.setViewportSize({ width, height: SWEEP_HEIGHT });
     await page.goto("/");
-    await page.locator("#home-btn").click();
+    await clickHeaderAction(page, "home-btn");
     await expect(page.locator("#home-view")).toBeVisible();
     await openProject(page, "Alpha Project");
 

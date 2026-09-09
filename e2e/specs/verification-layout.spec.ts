@@ -1,5 +1,13 @@
 import type { Locator } from "@playwright/test";
-import { test, expect, onAFrozenClock, openProject, projectSlug, seedToken } from "./support";
+import {
+  clickHeaderAction,
+  expect,
+  onAFrozenClock,
+  openProject,
+  projectSlug,
+  seedToken,
+  test,
+} from "./support";
 
 /** SH-611: text presence alone cannot detect a path painted outside its badge. */
 async function expectContainedText(chip: Locator): Promise<void> {
@@ -111,7 +119,7 @@ test("verification text stays inside cards on initial render, refresh, and timer
         });
         // Returning through the real project navigation obtains fresh status
         // data for the next sample rather than writing directly into the DOM.
-        await page.locator("#home-btn").click();
+        await clickHeaderAction(page, "home-btn");
       });
     }
   }

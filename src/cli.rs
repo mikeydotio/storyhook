@@ -184,6 +184,13 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
+  story daemon start [--port <PORT>]
+  story daemon restart                             (drain and replace the running daemon)
+  story daemon stop [--force]
+  story daemon status
+  story daemon install [--this-binary]
+  story daemon uninstall
+  story daemon token
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
@@ -932,6 +939,8 @@ pub enum DaemonAction {
         /// Bind this port instead of the environment's preferred one.
         port: Option<u16>,
     },
+    /// Gracefully replace the running daemon, preserving its loopback port.
+    Restart,
     /// Ask the running daemon to shut down.
     Stop {
         /// After a short grace period, signal the daemon's pid directly
@@ -4312,7 +4321,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
+    let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
                  install [--this-binary] | uninstall | token | logs [--follow]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
@@ -4328,6 +4337,10 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         "start" => DaemonAction::Start {
             port: parse_port_flag(&args[2..], usage)?,
         },
+        "restart" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Restart
+        }
         // Spelled as a flag rather than a subcommand because it is not one a
         // user runs: it is what the spawner execs, and what a launchd agent
         // runs, and both of those are storyhook talking to itself.

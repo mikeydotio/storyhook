@@ -435,6 +435,15 @@ const DIRECT_KEYDOWN_RECEIVERS: &[Receiver] = &[
         reason: "the project selector's menu of buttons",
     },
     Receiver {
+        name: "$(\"more-btn\")",
+        reason: "the compact More trigger — a menu button with no editable descendants",
+    },
+    Receiver {
+        name: "$(\"more-menu\")",
+        reason: "the compact More menu — a `role=\"menu\"` of command buttons, none \
+                 of which accepts text",
+    },
+    Receiver {
         name: "$(\"notice-dock\")",
         reason: "the notice dock, `refuseAutoRepeatActivation`'s only mount — a \
                  stack of dismiss buttons",

@@ -9,8 +9,8 @@
 //! actual approved scope was the HTTP control surface only, so
 //! `EngineService::reconcile` had zero production callers before this file.
 //!
-//! One restart sweep runs once, before any run resumes claiming (D11), then
-//! the ordinary pass runs on every bus change or on a coarse tick derived
+//! [`reconcile_restart_tick`] runs synchronously before daemon publication;
+//! then the ordinary pass runs on every bus change or on a coarse tick derived
 //! from [`crate::service::engine::STALL_CEILING_SECS`] — the shape
 //! [`crate::daemon::verification::poll_verification`] already uses for its
 //! own event-driven worker.
@@ -162,8 +162,7 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
     }
 }
 
-/// Runs the restart sweep once, then the steady pass on every bus wake or
-/// tick, until daemon shutdown.
+/// Runs the steady pass on every bus wake or tick, until daemon shutdown.
 ///
 /// # Why not `poll_verification`'s own wait idiom
 ///
@@ -183,17 +182,14 @@ pub(crate) fn poll_engine<S: Store>(
     env: &Environment,
     bus: &ChangeBus,
     stop: &AtomicBool,
+    draining: &AtomicBool,
 ) {
     let subscription = bus.subscribe();
-    // Before any run resumes claiming (D11) — on this same thread, ahead of
-    // the loop below, so there is no second thread that could race it over
-    // the same lane rows.
-    reconcile_restart_tick(store, env);
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !draining.load(Ordering::Relaxed) {
         reconcile_tick(store, env);
         let deadline = Instant::now() + reconcile_tick_interval();
         loop {
-            if stop.load(Ordering::Relaxed) {
+            if stop.load(Ordering::Relaxed) || draining.load(Ordering::Relaxed) {
                 return;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());

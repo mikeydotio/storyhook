@@ -2002,7 +2002,9 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
 /// worded differently from the badge's ("● blocked", "(no reason)") so the
 /// two fences' literal sets never overlap and neither can go vacuous by
 /// matching the wrong function. Same technique -- find the function by its
-/// exact signature, insist every owned literal falls inside its bounds.
+/// exact signature, insist every owned banner literal falls inside its bounds.
+/// Ordinary UI labels named "Blocked" are not banner sentences and therefore
+/// are deliberately outside this fence (SH-614).
 ///
 /// Comment lines (trimmed to start with `*` or `//`) are exempt, for the
 /// same reason the badge's own fence exempts them.
@@ -2041,7 +2043,7 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
     // different reason (assistive-tech text, not the rendered banner), so a
     // bare "no reason recorded" would false-positive there. The em dash is
     // what `blockBanner()` alone prefixes it with.
-    for needle in ["— no reason recorded", "\"Blocked\""] {
+    for needle in ["— no reason recorded"] {
         for (at, _) in script.match_indices(needle) {
             let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line = script[line_start..].lines().next().unwrap_or("");
@@ -2055,6 +2057,20 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
                  hand-written a second time"
             );
         }
+    }
+
+    for (at, _) in script.match_indices("\"Blocked\"") {
+        let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line = script[line_start..].lines().next().unwrap_or("");
+        if !line.contains("headline") {
+            continue;
+        }
+        assert!(
+            at >= fn_start && at < fn_end,
+            "a blocked-banner headline outside blockBanner() at script byte {at}: {line:?} \
+             -- every blocked-banner sentence must be derived from blockCauses(), not \
+             hand-written a second time"
+        );
     }
 
     // blockCauses() is the one deriver: neither blockedFlag() nor
@@ -2339,6 +2355,8 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         "thead th",
         ".settings-table th",
         ".column-header",
+        ".mobile-sort-control",
+        ".mobile-story-details-btn",
     ] {
         let rule = declarations(css, selector);
         for declaration in [
@@ -2361,6 +2379,22 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         (".list", "padding: 0 var(--inset-main) var(--inset-main)"),
         (".card", "padding: var(--space-card)"),
         (".repo-card", "padding: var(--space-card)"),
+        (".mobile-list", "margin-top: var(--space-card)"),
+        (".mobile-sort-controls", "gap: var(--space-control)"),
+        (".mobile-list-body", "gap: var(--space-card)"),
+        (".mobile-story-row", "padding: var(--space-card)"),
+        (".mobile-story-primary", "gap: var(--space-control)"),
+        (".mobile-story-identity", "gap: var(--space-label)"),
+        (
+            ".mobile-story-details",
+            "gap: var(--space-label) var(--space-card)",
+        ),
+        (".create-attachments", "margin-top: var(--space-label)"),
+        (".create-attachment-strip", "gap: var(--space-control)"),
+        (
+            ".create-attachment-preview",
+            "padding: var(--space-control)",
+        ),
         (".field", "gap: var(--space-label)"),
         (".card-id", "font-size: var(--type-metadata)"),
         (".state-pill", "font-size: var(--type-metadata)"),
@@ -2397,6 +2431,13 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         ".comment-meta",
         ".modal-error",
         ".modal-body p",
+        ".mobile-story-primary",
+        ".mobile-story-id",
+        ".mobile-story-type",
+        ".mobile-story-details",
+        ".create-attachment-name",
+        ".create-attachment-state",
+        "#create-attachment-status",
     ] {
         let rule = declarations(css, selector);
         for declaration in [
@@ -2424,6 +2465,7 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         ".description-field",
         ".modal-body input[type=text], .modal-body select",
         ".modal-body textarea",
+        ".mobile-sort-control select",
     ] {
         let rule = declarations(css, selector);
         assert!(
@@ -3256,6 +3298,108 @@ fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
     );
 }
 
+/// SH-614: the List view has one data model and two responsive presentations.
+/// The desktop table remains complete and horizontally reachable, while the
+/// phone presentation is a semantic list whose title and controls are native
+/// buttons. `hidden` is the accessibility boundary: CSS alone must not leave
+/// the inactive copy focusable or exposed to assistive technology.
+#[test]
+fn sh_614_mobile_list_has_semantic_markup_and_shared_controls() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for markup in [
+        r#"<div class="list-desktop" id="list-desktop">"#,
+        r#"<div class="mobile-list" id="mobile-list" hidden>"#,
+        r#"<ul class="mobile-list-body" id="mobile-list-body" aria-label="Stories" aria-describedby="list-kbd-hint"></ul>"#,
+        r#"<select id="mobile-sort-column" aria-label="Sort stories by">"#,
+        r#"<select id="mobile-sort-direction" aria-label="Sort direction">"#,
+    ] {
+        assert!(
+            body.contains(markup),
+            "missing SH-614 list markup: {markup}"
+        );
+    }
+
+    let desktop_title = declarations(css, ".col-title");
+    assert!(
+        desktop_title.contains("min-inline-size: 20ch"),
+        "the desktop title column must retain a readable 20ch floor"
+    );
+
+    let mobile_title = declarations(css, ".mobile-story-title");
+    for declaration in [
+        "width: 100%",
+        "font-size: 1rem",
+        "line-height: 1.4",
+        "white-space: normal",
+        "overflow-wrap: anywhere",
+    ] {
+        assert!(
+            mobile_title.contains(declaration),
+            ".mobile-story-title must carry `{declaration}`; declarations were `{mobile_title}`"
+        );
+    }
+
+    let source = script(&body);
+    for function in [
+        "sortedListStories",
+        "renderDesktopList",
+        "renderMobileList",
+        "syncListPresentation",
+        "populateMobileListItem",
+    ] {
+        assert!(
+            source.contains(&format!("function {function}(")),
+            "missing SH-614 shared list function `{function}`"
+        );
+    }
+    assert!(
+        source.contains("state.sort.col = this.value;")
+            && source.contains("state.sort.dir = Number(this.value);"),
+        "both mobile sort controls must write the existing state.sort model"
+    );
+}
+
+/// SH-614's Details state is deliberately ephemeral and project-scoped: it
+/// survives polling and responsive presentation changes, but never follows a
+/// reader to another project or across a reload.
+#[test]
+fn sh_614_mobile_details_state_is_in_memory_and_cleared_on_project_exit() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+
+    assert!(
+        source.contains("mobileListDetails: Object.create(null)"),
+        "mobile disclosure state must live only in the page's in-memory state"
+    );
+    assert!(
+        source.contains("function clearMobileListDetails()"),
+        "mobile disclosure state needs one clearing helper"
+    );
+    for function in ["selectRepo", "goHome", "goSettings"] {
+        assert!(
+            function_body(source, function).contains("clearMobileListDetails();"),
+            "{function} must clear every mobile disclosure"
+        );
+    }
+    assert!(
+        !source.contains("storyhook.mobileListDetails"),
+        "mobile disclosure state must not be persisted across reloads"
+    );
+}
+
 /// SH-217: three CSS rules ARE the description's read/edit mechanism --
 /// the field is `display: none` by default, shown only under `.editing`,
 /// while the read view flips the opposite way. A selector rename here
@@ -3380,9 +3524,10 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
-/// SH-235/SH-600: board cards expose the same menu as right-click through a
-/// visible action button on every pointer type. List rows retain SH-235's
-/// coarse-pointer-only actions column.
+/// SH-235/SH-600/SH-614: board cards and stacked mobile list rows expose the
+/// same menu as right-click through a visible action button on every pointer
+/// type. Desktop table rows retain SH-235's coarse-pointer-only actions
+/// column.
 ///
 /// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
 /// menu items actually match right-click's and that the coarse-pointer
@@ -3425,6 +3570,7 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     // role="button" and the button is a normal part of the a11y tree there.
     assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
     assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+    assert!(body.contains("class: \"mobile-story-actions row-actions-btn\""));
 
     let card_actions = declarations(css, ".card-actions-btn");
     for declaration in [
@@ -3438,8 +3584,17 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     }
     assert!(!card_actions.contains("display: none"));
 
-    assert!(declarations(css, ".row-actions-btn").contains("display: none"));
-    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
+    let mobile_row_actions = declarations(css, ".mobile-story-actions");
+    for declaration in [
+        "display: inline-flex",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
+    ] {
+        assert!(mobile_row_actions.contains(declaration));
+    }
+
+    assert!(declarations(css, ".col-actions .row-actions-btn").contains("display: none"));
+    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .col-actions .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
 
     // The list table's own overflow-x scroll must not let the browser's
     // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
@@ -9436,4 +9591,115 @@ fn attachment_viewer_is_a_registered_named_dialog() {
     assert!(html.contains(r#"data-overlay="attachment-modal""#));
     assert!(html.contains(r#"id="attachment-close""#));
     assert!(html.contains(r#"id="attachment-status" role="status""#));
+}
+
+/// SH-392: attachment drops are a file-only layer over the existing card
+/// drag-and-drop behavior. This fast fence pins the shared transport and event
+/// boundaries; Playwright exercises the browser behavior end to end.
+#[test]
+fn attachment_drop_targets_preserve_json_and_card_drag_contracts() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let css = stylesheet(&html);
+    let script = script(&html);
+    let api = function_body(script, "api");
+    let transfer_has_files = function_body(script, "transferHasFiles");
+    let bind_drop = function_body(script, "bindAttachmentDrop");
+    let upload = function_body(script, "uploadDroppedAttachments");
+    let column_drop = function_body(script, "bindColumnDrop");
+
+    assert!(
+        api.contains("opts.rawBody")
+            && api.contains(
+                r#"Content-Type", opts.rawBody ? "application/octet-stream" : "application/json"#
+            )
+            && api.contains("xhr.send(opts.rawBody ? body : (body ? JSON.stringify(body) : null))"),
+        "api() must make raw uploads explicit while preserving JSON as its default"
+    );
+    assert!(
+        transfer_has_files.contains("item.kind === \"file\"")
+            && transfer_has_files.contains("types.indexOf(\"Files\")"),
+        "file-drag detection needs DataTransfer.items plus the Files-type fallback"
+    );
+    assert!(
+        bind_drop.contains("if (!transferHasFiles(e.dataTransfer)) return")
+            && bind_drop.contains("e.preventDefault()")
+            && bind_drop.contains("e.stopPropagation()")
+            && bind_drop.contains("e.dataTransfer.dropEffect = \"copy\"")
+            && bind_drop.contains("Array.prototype.slice.call(e.dataTransfer.files)")
+            && bind_drop.contains("findStory(storyId)")
+            && bind_drop.contains("current.story.superstate === \"OPEN\""),
+        "drop targets must claim only files and read them from the drop event"
+    );
+    assert!(
+        declarations(css, ".attachment-drop-target").contains("outline")
+            && declarations(css, ".attachment-drop-refused").contains("cursor: not-allowed"),
+        "accepted and refused file drops both need visible feedback"
+    );
+    assert!(
+        upload.contains("state.repoId === repoId")
+            && upload.contains("err.status === 0")
+            && upload.matches("return next()").count() >= 2,
+        "the upload batch must guard project identity, stop on ambiguity, and continue after definite refusals"
+    );
+    assert!(
+        column_drop.contains(r#"getData("text/plain")"#)
+            && !column_drop.contains("transferHasFiles"),
+        "the existing card-move handler must remain independent of attachment drops"
+    );
+}
+
+/// SH-391: clipboard images stay local to the create modal until the story
+/// has an id, then travel through the authenticated raw upload path. Browser
+/// tests prove the complete lifecycle; this fast fence pins the wiring and
+/// cleanup boundaries that make the lifecycle possible.
+#[test]
+fn create_modal_stages_pasted_images_and_cleans_up_blob_urls() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert!(html.contains(r#"id="create-attachments""#));
+    assert!(html.contains(r#"id="create-attachment-list""#));
+    assert!(html.contains(r#"id="create-attachment-status" role="status""#));
+
+    let paste = function_body(script, "stagePastedCreateAttachments");
+    assert!(paste.contains("clipboardData") && paste.contains("items"));
+    assert!(paste.contains("getAsFile") && paste.contains("preventDefault"));
+
+    let reset = function_body(script, "resetCreateAttachments");
+    assert!(reset.contains("URL.revokeObjectURL"));
+    let remove = function_body(script, "removePendingCreateAttachment");
+    assert!(remove.contains("URL.revokeObjectURL"));
+    let upload = function_body(script, "uploadPendingCreateAttachments");
+    assert!(upload.contains("URL.revokeObjectURL") && upload.contains("rawBody: true"));
+    let close = function_body(script, "closeCreateModal");
+    assert!(close.contains("resetCreateAttachments"));
+
+    let submit = function_body(script, "submitCreate");
+    assert!(submit.contains("persistCreateDraftWithAttachments"));
+}
+
+/// SH-391: staged previews can make the create modal taller than a narrow
+/// viewport. Its actions must remain reachable without changing every modal.
+#[test]
+fn create_modal_alone_keeps_its_footer_sticky() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let rule = html
+        .split_once("#create-modal .modal-footer {")
+        .expect("the create modal needs its scoped footer rule")
+        .1
+        .split_once('}')
+        .expect("the scoped footer rule must close")
+        .0;
+
+    assert!(rule.contains("position: sticky"));
+    assert!(rule.contains("bottom: 0"));
 }
