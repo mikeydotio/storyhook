@@ -1,12 +1,8 @@
 import { test, expect } from "./support";
 import {
-  backdropOf,
   cleanUpCreatedStories,
-  contrastRatio,
   deleteStory,
-  MIN_CONTRAST,
   openProject,
-  parseColor,
   projectSlug,
   seedToken,
   settledBoundingBox,
@@ -95,9 +91,12 @@ test("the visible card actions button matches right-click without opening the dr
   const title = "SH-600 visible card actions";
   const card = await createStory(page, title);
   const actions = card.locator(".card-actions-btn");
-  const icon = actions.locator("svg.icon");
+  const icon = actions.locator('[data-emoji="actions"]');
 
   await expect(actions).toBeVisible();
+  await expect(actions).toHaveAccessibleName(/^Actions for [A-Z]+-\d+$/);
+  await expect(icon).toHaveText("🛠️");
+  await expect(icon).toHaveAttribute("aria-hidden", "true");
   const dimensions = await actions.evaluate(() => ({
     tapMin: Number.parseFloat(
       getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
@@ -127,28 +126,19 @@ test("the visible card actions button matches right-click without opening the dr
   await deleteStory(page, title);
 });
 
-test("the card actions icon has sufficient contrast in every theme", async ({ page }) => {
-  const title = "SH-600 card actions contrast";
+test("the card actions emoji stays present in every theme", async ({ page }) => {
+  const title = "SH-620 card actions emoji";
   const card = await createStory(page, title);
   const actions = card.locator(".card-actions-btn");
+  const emoji = actions.locator('[data-emoji="actions"]');
 
   for (const theme of THEMES) {
     await theme.apply(page);
-    const appearance = await actions.evaluate((button) => {
-      const backgrounds: string[] = [];
-      for (let node: Element | null = button; node; node = node.parentElement) {
-        backgrounds.push(getComputedStyle(node).backgroundColor);
-      }
-      return { color: getComputedStyle(button).color, backgrounds };
-    });
-    const ratio = contrastRatio(
-      parseColor(appearance.color),
-      backdropOf(appearance.backgrounds),
-    );
-    expect(
-      ratio,
-      `${theme.name}: card actions icon contrast was ${ratio.toFixed(2)}:1`,
-    ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+    await expect(emoji, theme.name).toHaveText("🛠️");
+    const box = await emoji.boundingBox();
+    expect(box, theme.name).not.toBeNull();
+    expect(box!.width, theme.name).toBeGreaterThan(0);
+    expect(box!.height, theme.name).toBeGreaterThan(0);
   }
 
   await deleteStory(page, title);
@@ -176,10 +166,12 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
   await expect(items.nth(1)).toHaveText("Copy URL");
   await expect(items.nth(2)).toHaveText("Copy Description");
   await expect(items.nth(3)).toHaveText("Dispatch");
-  // SH-447's submenu chevron is a decorative SVG, so the accessible label
-  // and text content are now exactly the action name.
-  await expect(items.nth(4)).toHaveText("Set Status");
-  await expect(items.nth(5)).toHaveText("Set Priority");
+  // SH-620's submenu emoji is decorative, so it does not change either
+  // menu item's accessible name.
+  await expect(items.nth(4)).toHaveAccessibleName("Set Status");
+  await expect(items.nth(5)).toHaveAccessibleName("Set Priority");
+  await expect(items.nth(4).locator(".ctxmenu-arrow")).toHaveText("➡️");
+  await expect(items.nth(5).locator(".ctxmenu-arrow")).toHaveText("➡️");
   await expect(items.nth(4).locator(".ctxmenu-arrow")).toHaveAttribute(
     "data-direction",
     "right",

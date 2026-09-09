@@ -78,7 +78,7 @@ test("Dispatch is present for a todo story with a checkout", async ({
 
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
-  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  const dispatch = menu.getByRole("menuitem", { name: "Dispatch", exact: true });
   await expect(dispatch).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
@@ -288,30 +288,21 @@ test("an in-flight dispatch disables the item with a warning and explanation", a
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  const dispatch = menu.getByRole("menuitem", { name: "Dispatch", exact: true });
   await expect(dispatch).toHaveAttribute("aria-disabled", "true");
   await expect(dispatch).toHaveAttribute(
     "title",
     "A dispatch is already in progress for this story",
   );
-  const warning = dispatch.locator("svg.ctxmenu-disabled-warning");
+  const warning = dispatch.locator(".ctxmenu-disabled-warning");
   await expect(warning).toBeVisible();
   await expect(warning).toHaveAttribute("aria-hidden", "true");
+  await expect(warning).toHaveAttribute("data-emoji", "warning");
+  await expect(warning).toHaveText("⚠️");
   const warningBox = await warning.boundingBox();
   expect(warningBox).not.toBeNull();
-  expect(warningBox!.width).toBeCloseTo(14, 1);
-  expect(warningBox!.height).toBeCloseTo(14, 1);
-  expect(
-    await warning.evaluate((node) => {
-      const probe = document.createElement("span");
-      probe.style.color = "var(--warn)";
-      document.body.appendChild(probe);
-      const matches =
-        getComputedStyle(node).color === getComputedStyle(probe).color;
-      probe.remove();
-      return matches;
-    }),
-  ).toBe(true);
+  expect(warningBox!.width).toBeGreaterThan(0);
+  expect(warningBox!.height).toBeGreaterThan(0);
   await dispatch.click({ force: true });
   await expect(menu).toBeVisible();
   await expect(page.locator("#dispatch-modal")).not.toHaveClass(/open/);
@@ -324,13 +315,14 @@ test("an in-flight dispatch disables the item with a warning and explanation", a
   });
 
   await card.click({ button: "right" });
-  const enabledDispatch = page.locator(".ctxmenu-item", {
-    hasText: /^Dispatch$/,
+  const enabledDispatch = page.getByRole("menuitem", {
+    name: "Dispatch",
+    exact: true,
   });
   await expect(enabledDispatch).not.toHaveAttribute("aria-disabled", "true");
   await expect(enabledDispatch).not.toHaveAttribute("title");
   await expect(
-    enabledDispatch.locator("svg.ctxmenu-disabled-warning"),
+    enabledDispatch.locator(".ctxmenu-disabled-warning"),
   ).toHaveCount(0);
   await page.keyboard.press("Escape");
   await deleteStory(page, title);
