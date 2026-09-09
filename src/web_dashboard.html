@@ -44,6 +44,22 @@
   --radius-sm: 0.375rem;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  /* Shared visual hierarchy (SH-615). These roles carry intent across the
+     board, list, detail, settings, and overlay surfaces; component rules
+     should not restate their values. The derived ink roles follow every
+     palette resolution without duplicating light/dark values. */
+  --space-label: 0.25rem;
+  --space-control: 0.5rem;
+  --space-card: 0.75rem;
+  --space-section: 1rem;
+  --inset-main: 1.25rem;
+  --type-functional: 0.8125rem;
+  --type-metadata: 0.8125rem;
+  --line-metadata: 1.4;
+  --fg-functional: var(--fg);
+  --fg-metadata: color-mix(in srgb, var(--fg-muted) 80%, var(--fg));
+  --control-boundary: var(--fg-metadata);
+  --danger-text: color-mix(in srgb, var(--danger) 75%, var(--fg));
   --p-critical: #e5484d;
   --p-high: #f2762e;
   --p-medium: #d9a413;
@@ -244,6 +260,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .workspace-content { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* ---- Topbar ---- */
+.dashboard-header { flex-shrink: 0; min-width: 0; }
 .topbar {
   display: flex; align-items: center; gap: 1rem;
   padding: 0.75rem 1.25rem;
@@ -295,12 +312,21 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .btn-ghost:hover { background: var(--bg-sunken); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .topbar-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; margin-left: auto; }
-/* SH-235: Home/Settings/Drafts go icon-only under the same <=768px block
-   that already wraps the topbar -- see that block's own comment for why.
-   `.btn-icon` carries no text a screen reader would read twice over
-   (aria-hidden); `.btn-text` is the real accessible name and stays in the
-   layout normally above the breakpoint, visually hidden (not display:none,
-   which would also remove it from the accessibility tree) below it. */
+.more-wrap { display: contents; }
+.more-btn { display: none; }
+.secondary-nav { display: contents; }
+#home-btn { order: 1; }
+#settings-btn { order: 2; }
+#new-story-btn { order: 3; }
+#drafts-btn { order: 4; }
+.topbar-right > .connection { order: 5; }
+.more-draft-count {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem;
+  padding: 0 0.25rem; border-radius: 999px; background: var(--accent); color: var(--accent-fg);
+  font-size: 0.6875rem; line-height: 1; font-weight: 800;
+}
+/* Secondary navigation keeps one icon/text treatment both when exposed on
+   desktop and when the same controls become mobile menu items. */
 .btn-icon { line-height: 1; }
 /* SH-444: every control icon in this file is a shape the page draws, never a
    character. U+2302 HOUSE, U+2699 GEAR and U+270E LOWER RIGHT PENCIL (the
@@ -327,7 +353,8 @@ svg.icon { width: 1em; height: 1em; display: block; flex: none; }
    chrome compact while making the stroke legible and identical on every
    platform; `currentColor` keeps theme, hover and active-state inheritance. */
 svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: none; }
-.connection { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
+.connection { display: flex; align-items: center; gap: var(--space-label); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); }
+.connection.disconnected { color: var(--danger-text); font-weight: 600; }
 .conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--fg-faint); transition: background 0.2s; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
@@ -336,11 +363,11 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .projsel { position: relative; flex-shrink: 0; }
 .projsel-btn {
   display: inline-flex; align-items: center; gap: 0.375rem; max-width: 14rem;
-  padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 0.3125rem 0.625rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: 0.8125rem; font-weight: 700; color: var(--fg); transition: all 0.12s;
   min-height: var(--tap-min);
 }
-.projsel-btn:hover { border-color: var(--fg-faint); }
+.projsel-btn:hover { border-color: var(--fg-functional); }
 .projsel-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .projsel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .projsel-btn .fdd-caret { flex-shrink: 0; }
@@ -364,18 +391,18 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   border: 1px solid var(--border-strong); border-radius: 0.1875rem; padding: 0.0625rem 0.25rem; flex-shrink: 0;
 }
 .projsel-empty { padding: 0.5rem 0.625rem; font-size: 0.8125rem; color: var(--fg-muted); }
-.home, .settings { flex: 1; overflow-y: auto; padding: 1.25rem; }
-.home-summary { display: flex; gap: 1.5rem; margin-bottom: 1.25rem; }
+.home, .settings { flex: 1; overflow-y: auto; padding: var(--inset-main); }
+.home-summary { display: flex; gap: var(--space-section); margin-bottom: var(--space-section); }
 .home-stat { font-size: 1.5rem; font-weight: 700; }
-.home-stat span { font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); margin-left: 0.25rem; }
-.home-empty { text-align: center; padding: 3rem 1rem; color: var(--fg-muted); display: flex; flex-direction: column; gap: 0.75rem; align-items: center; }
-.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.875rem; }
+.home-stat span { font-size: var(--type-metadata); line-height: var(--line-metadata); font-weight: 600; color: var(--fg-metadata); margin-left: var(--space-label); }
+.home-empty { text-align: center; padding: 3rem var(--space-section); color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); display: flex; flex-direction: column; gap: var(--space-card); align-items: center; }
+.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: var(--space-section); }
 .repo-card {
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 0.875rem 1rem; cursor: pointer; box-shadow: var(--shadow-sm); transition: box-shadow 0.12s, transform 0.12s;
+  padding: var(--space-card); cursor: pointer; box-shadow: var(--shadow-sm); transition: box-shadow 0.12s, transform 0.12s;
 }
 .repo-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.repo-card.unavailable { cursor: default; opacity: 0.65; border-style: dashed; }
+.repo-card.unavailable { cursor: default; border-style: dashed; }
 /* Openable, but nothing here can be changed: dashed like `unavailable` to say
    "not a normal repo", full opacity and a pointer because it is still worth
    clicking into. */
@@ -383,42 +410,42 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .delete-panel { border: 1px solid var(--danger); border-radius: var(--radius); padding: 0.875rem; margin-bottom: 1rem; }
 .delete-title { font-weight: 700; margin-bottom: 0.5rem; }
 .delete-line { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); }
-.delete-warning { color: var(--danger); font-weight: 600; margin-top: 0.5rem; }
+.delete-warning { color: var(--danger-text); font-weight: 600; margin-top: 0.5rem; }
 .delete-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
 .repo-card-name { font-weight: 700; font-size: 0.9375rem; margin-bottom: 0.25rem; }
-.repo-card-path { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); overflow-wrap: anywhere; margin-bottom: 0.625rem; }
-.repo-card-stats { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
-.repo-card-error { font-size: 0.75rem; color: var(--danger); }
-.settings-form { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; flex-wrap: wrap; align-items: flex-end; }
+.repo-card-path { font-family: var(--mono); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); overflow-wrap: anywhere; margin-bottom: var(--space-control); }
+.repo-card-stats { display: flex; gap: var(--space-card); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); font-weight: 600; }
+.repo-card-error { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--danger-text); }
+.settings-form { display: flex; gap: var(--space-control); margin-bottom: var(--space-section); flex-wrap: wrap; align-items: flex-end; }
 .settings-form .field { flex: 1; min-width: 10rem; }
 .settings-form .field:first-child { flex: 2; min-width: 14rem; }
 .settings-form input {
-  width: 100%; padding: 0.4375rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  width: 100%; padding: 0.4375rem 0.625rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: var(--control-font-sm);
 }
 .settings-form .modal-error { flex-basis: 100%; }
 .settings-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .settings-table th {
-  text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
-  font-weight: 700; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted);
+  text-align: left; padding: var(--space-card); background: var(--bg-sunken); border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: var(--type-functional); line-height: var(--line-metadata); text-transform: none; letter-spacing: normal; color: var(--fg-functional);
 }
-.settings-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.settings-table td { padding: var(--space-card); border-bottom: 1px solid var(--border); vertical-align: middle; }
 .settings-table tr:last-child td { border-bottom: none; }
-.settings-path { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+.settings-path { font-family: var(--mono); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); overflow-wrap: anywhere; }
 /* SH-322: the Settings screen grew a second category (user preferences beside
    the project registry), so it grew headings to tell them apart. */
-.settings-prefs { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; margin-bottom: 1.5rem; }
+.settings-prefs { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-label); margin-bottom: var(--space-section); }
 .settings-section-head { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
-.settings-prefs .settings-hint { font-size: 0.75rem; color: var(--fg-muted); max-width: 42rem; }
-.settings-about { margin: 1.5rem 0; }
-.settings-about-list { display: grid; grid-template-columns: max-content auto; gap: 0.375rem 0.75rem; margin: 0; font-size: 0.75rem; }
-.settings-about-list dt { color: var(--fg-muted); font-weight: 600; }
+.settings-prefs .settings-hint { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); max-width: 42rem; }
+.settings-about { margin: var(--space-section) 0; }
+.settings-about-list { display: grid; grid-template-columns: max-content auto; gap: var(--space-label) var(--space-card); margin: 0; font-size: var(--type-metadata); line-height: var(--line-metadata); }
+.settings-about-list dt { color: var(--fg-metadata); font-weight: 600; }
 .settings-about-list dd { margin: 0; color: var(--fg); font-family: var(--mono); }
 
 /* ---- Statuses editor (Settings -> a repo's statuses) ---- */
 .settings-head { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .settings-head h2 { font-size: 1rem; font-weight: 700; }
-.settings-head .settings-hint { font-size: 0.75rem; color: var(--fg-muted); }
+.settings-head .settings-hint { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); }
 .back-link {
   border: none; background: none; color: var(--accent); font-size: 0.8125rem; font-weight: 600;
   padding: 0; display: inline-flex; align-items: center; gap: 0.25rem; min-height: var(--tap-min);
@@ -427,7 +454,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .status-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
 .status-row {
   display: grid; grid-template-columns: auto minmax(6rem, 10rem) 7rem 6.5rem minmax(6rem, 1fr) auto auto;
-  align-items: center; gap: 0.625rem; padding: 0.5rem 0.75rem;
+  align-items: center; gap: var(--space-control); padding: var(--space-card);
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius);
 }
 .status-row.pending { opacity: 0.55; pointer-events: none; }
@@ -444,11 +471,11 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .status-reorder button:disabled { opacity: 0.3; cursor: not-allowed; }
 .status-slug { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
 .status-row select, .status-row input[type=text] {
-  padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 0.3125rem 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-xs); width: 100%; min-height: var(--tap-min);
 }
-.status-counts { font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
-.status-counts .zero { color: var(--fg-faint); }
+.status-counts { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); white-space: nowrap; }
+.status-counts .zero { color: var(--fg-metadata); }
 /* The destination prompt takes the full row width beneath the fields it
    belongs to — it is a continuation of that status, not a new one. */
 .status-move {
@@ -470,16 +497,16 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    sitting anywhere near the row's own controls above it. */
 .status-destination .btn-primary { margin-left: auto; }
 .status-add {
-  display: flex; gap: 0.5rem; align-items: flex-start; flex-wrap: wrap;
-  padding: 0.75rem; background: var(--bg-sunken); border-radius: var(--radius);
+  display: flex; gap: var(--space-control); align-items: flex-start; flex-wrap: wrap;
+  padding: var(--space-card); background: var(--bg-sunken); border-radius: var(--radius);
 }
 .status-add input[type=text], .status-add select {
-  padding: 0.375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 0.375rem 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: var(--control-font-sm); min-height: var(--tap-min);
 }
 .status-add .status-add-slug { flex: 0 0 9rem; }
 .status-add .status-add-desc { flex: 1; min-width: 10rem; }
-.status-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 1rem 0; }
+.status-empty { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); padding: var(--space-section) 0; }
 
 /* ---- Filter bar ---- */
 /* SH-235: collapsed behind a disclosure at every viewport size, not just a
@@ -492,13 +519,13 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    N-of-M count and Clear filters are how a reader knows a filter is
    active without opening the panel; `.filter-panel` is what collapses. */
 .filter-bar { flex-shrink: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
-.filter-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem; min-width: 0; }
+.filter-summary { display: flex; align-items: center; gap: var(--space-control); padding: var(--space-control) var(--inset-main); min-width: 0; }
 .filter-toggle-btn {
   display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.3125rem 0.625rem;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-raised);
+  border: 1px solid var(--control-boundary); border-radius: var(--radius-sm); background: var(--bg-raised);
   font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); min-height: var(--tap-min);
 }
-.filter-toggle-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
+.filter-toggle-btn:hover { border-color: var(--fg-functional); color: var(--fg); }
 /* Active means "the board isn't showing everything" (state.js's own
    updateFilterToggleActive) -- distinct from aria-expanded, which the
    chevron glyph already communicates on its own. A reader who has never
@@ -506,17 +533,20 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    board. */
 .filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-toggle-btn .disclosure-icon { flex-shrink: 0; }
+.filter-active-indicator { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; flex: none; }
 .filter-panel {
-  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-  padding: 0 1.25rem 0.75rem;
+  display: flex; align-items: center; gap: var(--space-control); flex-wrap: wrap;
+  padding: 0 var(--inset-main) var(--space-card);
 }
+.filter-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+.filter-group-title { font-size: 0.6875rem; font-weight: 800; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .fdd { position: relative; }
 .fdd-btn {
-  padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 0.3125rem 0.625rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: 0.75rem; font-weight: 600; color: var(--fg-muted);
   display: inline-flex; align-items: center; gap: 0.375rem; transition: all 0.12s; min-height: var(--tap-min);
 }
-.fdd-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
+.fdd-btn:hover { border-color: var(--fg-functional); color: var(--fg); }
 .fdd-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .fdd-caret { opacity: 0.7; }
 .fdd-panel {
@@ -534,50 +564,45 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    size instead of the filter bar's muted 0.75rem. */
 .filter-toggle, .pref-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
 .pref-toggle { font-size: 0.8125rem; color: var(--fg); cursor: pointer; }
-.filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
+.filter-count { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-width: var(--tap-min); min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
-.filter-clear-short { display: none; }
+/* The mobile filter sheet owns the one live filter subtree only while the
+   inclusive compact breakpoint matches. Above it, the same nodes sit in
+   #filter-inline-host and retain the desktop disclosure contract. */
+.filter-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 51;
+  display: flex; flex-direction: column; max-height: 85vh; max-height: 85dvh;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--bg-raised); border: 1px solid var(--border); border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0; box-shadow: var(--shadow-lg);
+}
+.filter-sheet-header {
+  display: flex; align-items: center; gap: 0.75rem; flex: none;
+  padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+}
+.filter-sheet-title { flex: 1; font-size: 1rem; font-weight: 700; }
+.filter-sheet-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 0.125rem; }
+.filter-sheet-body { min-height: 0; overflow-y: auto; padding: 0.75rem; }
+.filter-sheet-clear { display: flex; justify-content: flex-end; padding-top: 0.5rem; border-top: 1px solid var(--border); }
 
-/* ---- Full Auto project control (SH-470) ----
-   An operational instrument in the project header, not another card or
-   modal. It shares the always-visible filter-summary row so a phone pays no
-   extra vertical chrome for a control that is meaningful only on the repo
-   screen. The lane strip scrolls on its own axis: the engine permits up to
-   255 lanes, and wrapping that many records would consume the board. */
+/* ---- Full Auto project control (SH-470/SH-618) ---- */
 .engine-control {
   display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem;
-  min-width: 0; max-width: min(44rem, 65vw); margin-left: 0;
-}
-.engine-launch, .engine-live { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-.engine-live { flex: 1 1 auto; }
-.engine-actions { display: flex; align-items: center; gap: 0.375rem; flex: none; }
-.engine-actions .btn { white-space: nowrap; }
-.engine-wordmark {
-  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--fg-muted); white-space: nowrap;
+  min-width: 0; margin-left: 0;
 }
 .engine-lanes-label { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
 .engine-lanes-input {
   width: 3.75rem; min-height: var(--tap-min); padding: 0.3125rem 0.375rem;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: var(--control-font-sm); text-align: center;
 }
 .engine-lanes-input:focus { outline: none; border-color: var(--accent); background: var(--bg-raised); }
-.engine-run-short { display: none; }
-.engine-state {
-  flex: none; border-radius: 999px; padding: 0.1875rem 0.5rem;
-  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.04em;
-  text-transform: uppercase; white-space: nowrap;
-}
-.engine-state-running { color: var(--success); background: var(--success-soft); }
-.engine-state-paused { color: var(--accent); background: var(--accent-soft); }
-.engine-state-draining { color: var(--warn); background: var(--warn-soft); }
-.engine-lane-count { flex: none; font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
-.engine-config {
-  flex: none; max-width: 22rem; overflow: hidden; text-overflow: ellipsis;
-  font-size: 0.6875rem; color: var(--fg-muted); white-space: nowrap;
-}
+.engine-modal-status { margin-bottom: 0.75rem; color: var(--fg-muted); }
+.engine-modal-status strong { color: var(--fg); }
+.engine-modal-lanes { margin-top: 0.75rem; }
+.engine-modal-lanes[hidden] { display: none; }
+.engine-modal-lanes-summary { margin-bottom: 0.375rem; color: var(--fg-muted); font-size: 0.8125rem; }
 .engine-lane-strip { display: flex; gap: 0.375rem; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .engine-lane {
   flex: none; display: inline-flex; align-items: baseline; gap: 0.3rem;
@@ -593,7 +618,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 
 /* ---- Persistent central-verification alert (SH-573) ---- */
 .engine-banner-region {
-  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1.25rem 0;
+  display: flex; flex-direction: column; gap: var(--space-control); padding: var(--space-card) var(--inset-main) 0;
   flex-shrink: 0;
 }
 .engine-banner {
@@ -637,7 +662,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 
 /* ---- Board ---- */
 .board {
-  flex: 1; display: flex; gap: 0.875rem; padding: 1rem 1.25rem; overflow-x: auto; overflow-y: hidden;
+  flex: 1; display: flex; gap: var(--space-section); padding: var(--space-section) var(--inset-main); overflow-x: auto; overflow-y: hidden;
   align-items: flex-start;
 }
 .column {
@@ -647,8 +672,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 }
 .column.drag-over { border-color: var(--accent); background: var(--accent-soft); }
 .column-header {
-  display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 0.875rem 0.5rem;
-  font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted);
+  display: flex; align-items: center; gap: var(--space-control); padding: var(--space-card) var(--space-card) var(--space-control);
+  font-size: var(--type-functional); line-height: var(--line-metadata); font-weight: 600; text-transform: none; letter-spacing: normal; color: var(--fg-functional);
   flex-shrink: 0; position: sticky; top: 0;
 }
 .column-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0; }
@@ -673,12 +698,12 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
 .column-sort-btn:hover { color: var(--accent); background: var(--bg-raised); }
-.column-cards { flex: 1; overflow-y: auto; padding: 0.125rem 0.625rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; min-height: 3rem; }
-.column-empty { font-size: 0.75rem; color: var(--fg-faint); text-align: center; padding: 1rem 0; border: 1.5px dashed var(--border); border-radius: var(--radius-sm); }
+.column-cards { flex: 1; overflow-y: auto; padding: 0.125rem var(--space-control) var(--space-card); display: flex; flex-direction: column; gap: var(--space-control); min-height: 3rem; }
+.column-empty { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); text-align: center; padding: var(--space-section) 0; border: 1.5px dashed var(--control-boundary); border-radius: var(--radius-sm); }
 
 .card {
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--card-accent, var(--border));
-  border-radius: var(--radius-sm); padding: 0.625rem 0.75rem; cursor: grab; box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-sm); padding: var(--space-card); cursor: grab; box-shadow: var(--shadow-sm);
   transition: transform 0.12s, box-shadow 0.12s, opacity 0.12s;
 }
 .card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
@@ -719,8 +744,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    race for these controls a different way, at the render layer rather than
    here: populateCard()'s own doc comment covers it. */
 .card .card-actions-btn, .card .rel-id, .card .open-pr-chip { pointer-events: auto; }
-.card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
-.card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; white-space: nowrap; }
+.card-id-row { display: flex; align-items: center; gap: var(--space-label); }
+.card-id { font-family: var(--mono); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); font-weight: 600; white-space: nowrap; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
 /* SH-600: visible for every pointer. Right-click reaches the same menu, but
    is difficult or unavailable on some fine-pointer systems, so it cannot be
@@ -733,7 +758,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
 }
 .card-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
-.card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
+.card-title { font-size: 0.8125rem; font-weight: 600; margin: var(--space-label) 0 var(--space-control); line-height: 1.35; overflow-wrap: anywhere; }
 .engine-lane-chip {
   display: inline-flex; align-items: center; box-sizing: border-box;
   padding: 0.0625rem 0.375rem; border: 1px solid var(--engine-chip); border-radius: 9999px;
@@ -760,11 +785,11 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   display: inline-flex; align-items: center; box-sizing: border-box; min-height: var(--tap-min);
   color: var(--accent); text-decoration: none; white-space: nowrap;
 }
-.card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
-.card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.card-meta { display: flex; align-items: center; gap: var(--space-control); flex-wrap: wrap; }
+.card-labels { display: flex; gap: var(--space-label); flex-wrap: wrap; }
 .chip {
-  font-size: 0.625rem; padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-sunken);
-  border: 1px solid var(--border); color: var(--fg-muted); font-weight: 600; white-space: nowrap;
+  font-size: var(--type-metadata); line-height: var(--line-metadata); padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-sunken);
+  border: 1px solid var(--border); color: var(--fg-metadata); font-weight: 600; white-space: nowrap;
 }
 .open-pr-chip-visual {
   background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
@@ -782,7 +807,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .chip-reserved { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .avatar {
   width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
-  font-size: 0.625rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  font-size: var(--type-metadata); line-height: var(--line-metadata); font-weight: 700; display: flex; align-items: center; justify-content: center;
   margin-left: auto; flex-shrink: 0; text-transform: uppercase;
 }
 .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex-shrink: 0; }
@@ -807,10 +832,10 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    complete reference tokens inside its one mixed-content sentence. `.card`
    clips nothing (no `overflow` rule of its own), so both levels are needed
    to keep narrow columns from overflowing without splitting an id. */
-.card-flags { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin-top: 0.375rem; }
-.flag-blocked { color: var(--danger); flex-wrap: wrap; }
-.flag-archived { color: var(--fg-faint); }
-.flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
+.card-flags { display: flex; flex-wrap: wrap; gap: var(--space-label); margin-top: var(--space-label); }
+.flag-blocked { color: var(--danger-text); flex-wrap: wrap; }
+.flag-archived { color: var(--fg-metadata); }
+.flag { font-size: var(--type-metadata); line-height: var(--line-metadata); font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
 /* SH-203 consumer 2's cleared-blocker dwell -- see dwellingBlockerIds()
    and populateCard(). Every OPEN blocker moved into the blocked badge
    (SH-309, blockedFlag()); this row is now the dwell's home alone, since
@@ -821,7 +846,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .card-blockers { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }
 
 /* ---- List ---- */
-.list { flex: 1; overflow: auto; padding: 0 1.25rem 1.25rem; }
+.list { flex: 1; overflow: auto; padding: 0 var(--inset-main) var(--inset-main); }
 /* SH-235: seven columns don't fit a phone-width wrap -- `overflow: hidden`
    didn't shrink the table, it silently dropped Labels/Assignee/Updated
    past the wrap's own right edge. `overflow-y` stays `hidden` (the wrap
@@ -833,8 +858,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .list-desktop { min-width: 0; }
 table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 thead th {
-  text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
-  font-weight: 700; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted);
+  text-align: left; padding: var(--space-card); background: var(--bg-sunken); border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: var(--type-functional); line-height: var(--line-metadata); text-transform: none; letter-spacing: normal; color: var(--fg-functional);
   cursor: pointer; user-select: none; white-space: nowrap;
 }
 thead th:hover { color: var(--fg); }
@@ -843,36 +868,41 @@ thead th:hover { color: var(--fg); }
    cell to one atomic line so status slugs (notably `in-progress`), priority,
    assignee and any future metadata column cannot break internally. The title
    opts back into text wrapping below; labels wrap as flex items, not text. */
-tbody td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+tbody td { padding: var(--space-card); border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
 tbody tr { cursor: pointer; transition: background 0.1s; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--bg-sunken); }
 tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
-.col-order { font-family: var(--mono); white-space: nowrap; text-align: right; color: var(--fg-muted); font-size: 0.75rem; }
+.col-id { font-family: var(--mono); white-space: nowrap; font-size: var(--type-metadata); line-height: var(--line-metadata); }
+.col-order { font-family: var(--mono); white-space: nowrap; text-align: right; color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); }
 .col-title { min-inline-size: 20ch; white-space: normal; overflow-wrap: anywhere; }
 .list-labels { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-.col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
+.col-date { white-space: nowrap; color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); }
 
 /* SH-614: the phone list is a separate semantic presentation of the same
    sorted collection. `hidden`, synchronized in script at the 768px media
    boundary, keeps the inactive table/list out of both focus order and the
    accessibility tree. These rules therefore describe only the active phone
-   surface; no desktop override has to undo them. */
-.mobile-list { min-width: 0; margin-top: 0.75rem; }
+   surface; no desktop override has to undo them. SH-615's hierarchy roles
+   keep this later-added presentation aligned with the desktop list. */
+.mobile-list { min-width: 0; margin-top: var(--space-card); }
 .mobile-sort-controls {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 0.5rem; margin-bottom: 0.75rem;
+  gap: var(--space-control); margin-bottom: var(--space-card);
 }
-.mobile-sort-control { display: grid; gap: 0.25rem; min-width: 0; color: var(--fg-muted); font-size: 0.8125rem; font-weight: 600; }
+.mobile-sort-control {
+  display: grid; gap: var(--space-label); min-width: 0; color: var(--fg-functional);
+  font-size: var(--type-functional); line-height: var(--line-metadata); font-weight: 600;
+  text-transform: none; letter-spacing: normal;
+}
 .mobile-sort-control select {
   width: 100%; min-width: 0; min-height: var(--tap-min); padding: 0.4rem 1.75rem 0.4rem 0.5rem;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-raised);
+  border: 1px solid var(--control-boundary); border-radius: var(--radius-sm); background: var(--bg-raised);
   font-size: var(--control-font-md);
 }
-.mobile-list-body { display: grid; gap: 0.75rem; list-style: none; min-width: 0; }
+.mobile-list-body { display: grid; gap: var(--space-card); list-style: none; min-width: 0; }
 .mobile-story-row {
-  min-width: 0; padding: 0.75rem; overflow: hidden; background: var(--bg-raised);
+  min-width: 0; padding: var(--space-card); overflow: hidden; background: var(--bg-raised);
   border: 1px solid var(--border); border-radius: var(--radius);
 }
 .mobile-story-title {
@@ -881,30 +911,35 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   font-size: 1rem; font-weight: 600; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
 }
 .mobile-story-primary {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem;
-  min-width: 0; margin-top: 0.5rem; font-size: 0.8125rem;
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-control);
+  min-width: 0; margin-top: var(--space-control); color: var(--fg-metadata);
+  font-size: var(--type-metadata); line-height: var(--line-metadata);
 }
-.mobile-story-identity { display: inline-flex; align-items: center; gap: 0.25rem; min-width: 0; }
-.mobile-story-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
-.mobile-story-type { color: var(--fg-muted); overflow-wrap: anywhere; }
+.mobile-story-identity { display: inline-flex; align-items: center; gap: var(--space-label); min-width: 0; }
+.mobile-story-id { font-family: var(--mono); white-space: nowrap; font-size: var(--type-metadata); line-height: var(--line-metadata); }
+.mobile-story-type { color: var(--fg-metadata); overflow-wrap: anywhere; font-size: var(--type-metadata); line-height: var(--line-metadata); }
 .mobile-story-priority { display: inline-flex; align-items: center; }
+/* Width, not pointer precision, owns mobile-list visibility. Keep its action
+   rendered until the responsive synchronizer transfers focus and hides the
+   whole mobile presentation. */
 .mobile-story-actions {
   display: inline-flex; align-items: center; justify-content: center; margin-left: auto;
   min-width: var(--tap-min); min-height: var(--tap-min); border: 0;
-  border-radius: var(--radius-sm); background: transparent; color: var(--fg-muted);
+  border-radius: var(--radius-sm); background: transparent; color: var(--fg-metadata);
 }
 .mobile-story-actions:hover { color: var(--fg); background: var(--bg-sunken); }
 .mobile-story-details-btn {
-  display: inline-flex; align-items: center; gap: 0.375rem; min-height: var(--tap-min);
-  margin-top: 0.25rem; border: 0; background: transparent; color: var(--fg-muted);
-  font-size: 0.8125rem; font-weight: 600;
+  display: inline-flex; align-items: center; gap: var(--space-label); min-height: var(--tap-min);
+  margin-top: var(--space-label); border: 0; background: transparent; color: var(--fg-functional);
+  font-size: var(--type-functional); font-weight: 600; text-transform: none; letter-spacing: normal;
 }
-.mobile-story-details-btn:hover { color: var(--fg); }
+.mobile-story-details-btn:hover { color: var(--fg); background: var(--bg-sunken); }
 .mobile-story-details {
-  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.75rem;
-  min-width: 0; padding-top: 0.5rem; border-top: 1px solid var(--border); font-size: 0.8125rem;
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-label) var(--space-card);
+  min-width: 0; padding-top: var(--space-control); border-top: 1px solid var(--border);
+  color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata);
 }
-.mobile-story-details dt { color: var(--fg-muted); font-weight: 600; }
+.mobile-story-details dt { color: var(--fg-functional); font-weight: 600; }
 .mobile-story-details dd { min-width: 0; overflow-wrap: anywhere; }
 .mobile-story-details .list-labels { min-width: 0; }
 /* SH-235: list-row actions remain coarse-pointer-only -- hidden entirely on
@@ -913,13 +948,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    and widths stay exactly what they were). */
 .col-actions { display: none; width: 1%; white-space: nowrap; text-align: right; cursor: default; }
 .row-actions-btn {
-  display: none; border: none; background: none; color: var(--fg-muted);
+  border: none; background: none; color: var(--fg-muted);
   font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
 }
+.col-actions .row-actions-btn { display: none; }
 .row-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
 @media (pointer: coarse) {
   .col-actions { display: table-cell; }
-  .row-actions-btn {
+  .col-actions .row-actions-btn {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: var(--tap-min); min-height: var(--tap-min);
   }
@@ -941,7 +977,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    (1.4.1), same reasoning as storyLight()'s aria-label. */
 .state-pill {
   display: inline-flex; align-items: center; gap: 0.3rem;
-  font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem;
+  font-size: var(--type-metadata); line-height: var(--line-metadata); font-weight: 600; padding: 0.09375rem 0.5rem;
   border-radius: 9999px;
   background: var(--bg-sunken); border: 1px solid var(--border);
   --state-color: var(--border);
@@ -949,7 +985,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   border-color: color-mix(in srgb, var(--state-color) 45%, var(--border));
 }
 .state-pill .dot { background: var(--state-color); }
-.empty { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.875rem; }
+.empty { text-align: center; padding: 3rem var(--space-section); color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); }
 
 /* ---- Footer ---- */
 .footer { text-align: center; font-size: 0.6875rem; color: var(--fg-faint); padding: 0.375rem; flex-shrink: 0; }
@@ -968,21 +1004,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   display: flex; flex-direction: column; overflow: hidden;
 }
 .drawer.open { width: min(30rem, 100%); border-left-width: 1px; transform: translateX(0); }
-.drawer-header { display: flex; align-items: center; gap: 0.625rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.drawer-header { display: flex; align-items: center; gap: var(--space-control); padding: var(--space-section) var(--inset-main); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .drawer-id { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; color: var(--fg-muted); white-space: nowrap; }
 .drawer-close { margin-left: auto; min-width: var(--tap-min); justify-content: center; }
-.drawer-body { flex: 1; overflow-y: auto; padding: 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; }
+.drawer-body { flex: 1; overflow-y: auto; padding: var(--inset-main); display: flex; flex-direction: column; gap: var(--space-section); }
 .drawer-title {
   font-size: var(--control-font-lg); font-weight: 700; line-height: 1.3; width: 100%; border: 1px solid transparent;
   border-radius: var(--radius-sm); padding: 0.25rem 0.375rem; margin: -0.25rem -0.375rem; background: transparent; resize: none;
 }
 .drawer-title:hover { background: var(--bg-sunken); }
 .drawer-title:focus { outline: none; border-color: var(--accent); background: var(--bg-sunken); }
-.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-.field { display: flex; flex-direction: column; gap: 0.25rem; }
-.field label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); }
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-card); }
+.field { display: flex; flex-direction: column; gap: var(--space-label); }
+.field label { font-size: var(--type-functional); line-height: var(--line-metadata); font-weight: 600; text-transform: none; letter-spacing: normal; color: var(--fg-functional); }
 .field select, .field input[type=text], .field textarea {
-  padding: 0.375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 0.375rem 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); min-height: var(--tap-min);
 }
 /* SH-235: `max(2.25rem, var(--tap-min))`, not a bare token -- this
@@ -993,20 +1029,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .field textarea {
   width: 100%; font-family: inherit; resize: none; overflow: hidden; min-height: max(2.25rem, var(--tap-min));
 }
-.label-combobox { position: relative; display: flex; flex-direction: column; gap: 0.375rem; }
-.section-label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); margin-bottom: 0.5rem; }
+.label-combobox { position: relative; display: flex; flex-direction: column; gap: var(--space-label); }
+.section-label { font-size: var(--type-functional); line-height: var(--line-metadata); font-weight: 600; text-transform: none; letter-spacing: normal; color: var(--fg-functional); margin-bottom: var(--space-control); }
 .section-toggle {
-  display: flex; align-items: center; gap: 0.3125rem; width: 100%; margin-bottom: 0.5rem;
+  display: flex; align-items: center; gap: var(--space-label); width: 100%; margin-bottom: var(--space-control);
   padding: 0; border: none; background: none; cursor: pointer; text-align: left;
-  font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-  color: var(--fg-muted); min-height: var(--tap-min);
+  font-size: var(--type-functional); line-height: var(--line-metadata); font-weight: 600; text-transform: none; letter-spacing: normal;
+  color: var(--fg-functional); min-height: var(--tap-min);
 }
-.section-toggle:hover { color: var(--fg); }
+.section-toggle:hover { color: var(--fg); background: var(--bg-sunken); }
 .section-toggle .disclosure-icon { flex-shrink: 0; }
 .section-toggle .section-count { font-weight: 400; text-transform: none; letter-spacing: normal; }
 .referenced-by-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .referenced-by-row { display: flex; align-items: baseline; gap: 0.4375rem; font-size: 0.8125rem; }
-.referenced-by-meta { font-size: 0.6875rem; color: var(--fg-faint); white-space: nowrap; }
+.referenced-by-meta { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); white-space: nowrap; }
 .referenced-by-text { overflow-wrap: anywhere; }
 .referenced-by-text a { color: inherit; }
 /* Gap widened from 0.375rem (SH-235): each chip's delete button now grows
@@ -1020,8 +1056,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
 .label-chip button:hover { color: var(--danger); }
-.inline-add { display: flex; gap: 0.375rem; margin-top: 0.5rem; }
-.inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-xs); }
+.inline-add { display: flex; gap: var(--space-control); margin-top: var(--space-control); }
+.inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-xs); }
 /* A column, not a row (SH-398): `.banner-head` is the one-line row (icon-
    ish lead text, blocker chips, the trailing button); `.banner-body` is
    ordinary flowed prose beneath it. Before this, `.banner` itself was the
@@ -1033,12 +1069,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .banner { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
 .banner-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .banner-body { overflow-wrap: anywhere; }
-.banner-blocked { background: var(--danger-soft); color: var(--danger); }
+.banner-blocked { background: var(--danger-soft); color: var(--danger-text); }
 .banner-archived { background: var(--bg-raised); color: var(--fg-muted); }
 .banner-head button { margin-left: auto; }
 .comments { display: flex; flex-direction: column; gap: 0.625rem; }
 .comment { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; font-size: 0.8125rem; }
-.comment-meta { font-size: 0.6875rem; color: var(--fg-faint); margin-bottom: 0.1875rem; }
+.comment-meta { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); margin-bottom: 0.1875rem; }
 /* SH-217: `.comment-text` no longer carries `white-space: pre-wrap` --
    its content is now block-structured markdown (paragraphs, lists, ...),
    and pre-wrap would double every blank line the block parser already
@@ -1048,7 +1084,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .comment-text { overflow-wrap: anywhere; }
 .comment-add { display: flex; flex-direction: column; gap: 0.375rem; }
 .comment-add textarea {
-  width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); resize: vertical; font-family: inherit;
 }
 /* SH-392: applied only while a DataTransfer advertises files. Card drags carry
@@ -1060,7 +1096,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /* max(), not a bare token -- see .field textarea's own comment above:
      this keeps the taller of the field's original 40px rest height and
      --tap-min's own floor, rather than shrinking it on a fine pointer. */
-  width: 100%; min-height: max(2.5rem, var(--tap-min)); padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  width: 100%; min-height: max(2.5rem, var(--tap-min)); padding: 0.5rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); font-family: inherit; resize: none; overflow: hidden;
 }
 .description-field:hover { background: var(--bg-sunken); }
@@ -1085,7 +1121,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .description-view:hover { background: var(--bg-sunken); }
 .description-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.description-view.empty { color: var(--fg-faint); }
+.description-view.empty { color: var(--fg-metadata); }
 
 /* SH-217: rendered markdown (the description's read view, and comment
    bodies). Every colour reads an existing token, so dark mode and the
@@ -1173,8 +1209,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .comment-add + .comments,
 .inline-add + .rel-list,
 .inline-add + .label-chips { margin-top: 0.625rem; }
-.drawer-footer { display: flex; gap: 0.5rem; padding: 1rem 1.25rem; border-top: 1px solid var(--border); flex-shrink: 0; }
-.confirm-delete { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+.drawer-footer { display: flex; gap: var(--space-control); padding: var(--space-section) var(--inset-main); border-top: 1px solid var(--border); flex-shrink: 0; }
+.confirm-delete { display: flex; flex-direction: column; gap: var(--space-control); width: 100%; }
 .confirm-delete input { padding: 0.375rem 0.5rem; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-sm); }
 .confirm-delete-actions { display: flex; gap: 0.5rem; }
 .archive-modal-list { list-style: none; margin: 0.5rem 0 0; padding: 0; max-height: 12rem; overflow-y: auto; font-size: 0.8125rem; font-family: var(--mono); }
@@ -1185,20 +1221,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .attachment-thumbnail { flex: 0 0 7rem; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; white-space: normal; text-align: left; }
 .attachment-thumbnail > * { pointer-events: none; }
 .attachment-thumbnail img { width: 100%; height: 5rem; object-fit: contain; background: var(--bg-sunken); border-radius: var(--radius-sm); }
+.remote-image-placeholder { width: 100%; height: 5rem; display: flex; align-items: center; justify-content: center; background: var(--bg-sunken); border-radius: var(--radius-sm); color: var(--fg-muted); font-size: 1.5rem; }
+.remote-image-host { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); font-size: 0.6875rem; }
 .attachment-name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-preview-error { font-size: 0.75rem; color: var(--fg-muted); }
-.create-attachments { margin-top: 0.375rem; }
-.create-attachment-strip { display: flex; gap: 0.625rem; overflow-x: auto; padding: 0.25rem; }
+.create-attachments { margin-top: var(--space-label); }
+.create-attachment-strip { display: flex; gap: var(--space-control); overflow-x: auto; padding: var(--space-label); }
 .create-attachment-preview {
   position: relative; flex: 0 0 7rem; min-width: 0; display: flex; flex-direction: column;
-  gap: 0.25rem; padding: 0.375rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  gap: var(--space-label); padding: var(--space-control); border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-sunken);
 }
 .create-attachment-preview img { width: 100%; height: 5rem; object-fit: contain; border-radius: var(--radius-sm); }
-.create-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
-.create-attachment-state { color: var(--fg-muted); font-size: 0.6875rem; }
-.create-attachment-remove { align-self: flex-start; font-size: 0.75rem; padding: 0.25rem 0.5rem; }
-#create-attachment-status { min-height: 1em; margin: 0.25rem 0 0; color: var(--fg-muted); font-size: 0.75rem; }
+.create-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-functional); font-size: var(--type-metadata); line-height: var(--line-metadata); }
+.create-attachment-state { color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); }
+.create-attachment-remove { align-self: flex-start; font-size: var(--type-functional); padding: var(--space-label) var(--space-control); }
+#create-attachment-status { min-height: 1em; margin: var(--space-label) 0 0; color: var(--fg-metadata); font-size: var(--type-metadata); line-height: var(--line-metadata); }
 #attachment-modal { width: min(60rem, 92vw); }
 #attachment-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #attachment-image { display: flex; justify-content: center; min-width: 0; }
@@ -1216,24 +1254,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   max-height: 90vh; max-height: 90dvh; overflow-y: auto;
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
-.modal-header { padding: 1rem 1.25rem 0.5rem; font-size: 1rem; font-weight: 700; }
-.modal-body { padding: 0.75rem 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.modal-header { padding: var(--space-section) var(--inset-main) var(--space-control); font-size: 1rem; font-weight: 700; }
+.modal-body { padding: var(--space-card) var(--inset-main); display: flex; flex-direction: column; gap: var(--space-card); }
 .modal-body input[type=text], .modal-body select {
-  width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-md); min-height: var(--tap-min);
 }
 .modal-body textarea {
-  width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--control-boundary); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-md); font-family: inherit; resize: none; overflow: hidden; min-height: 2.5rem;
 }
-.modal-body .field-grid { gap: 0.625rem; }
-.modal-body .field label { display: block; margin-bottom: 0.25rem; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.25rem; }
+.modal-body .field-grid { gap: var(--space-control); }
+.modal-footer { display: flex; justify-content: flex-end; gap: var(--space-control); padding: var(--space-section) var(--inset-main); }
 #create-modal .modal-footer {
   position: sticky; bottom: 0; z-index: 1; background: var(--bg-raised); border-top: 1px solid var(--border);
 }
-.modal-error { font-size: 0.75rem; color: var(--danger); }
-.modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
+.modal-error { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--danger-text); }
+.modal-body p { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
 .delete-alternative {
   display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem;
@@ -1563,57 +1600,66 @@ svg.ctxmenu-disabled-warning {
 
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
-  .topbar { flex-wrap: wrap; gap: 0.375rem; }
-  .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
-  /* SH-303: this used to read `max-width: none`, removing the only ceiling
-     `.projsel-label`'s `text-overflow: ellipsis` had to elide against --
-     exactly at the widths that can least afford an unconstrained box. A long
-     project name then carried `.brand`, `.projsel` and the whole document
-     past the viewport's own width. `14rem` keeps the desktop ceiling rather
-     than widening it: `.projsel-btn` shares this row with `.view-toggle` and
-     `.topbar-right` once `.search-wrap` wraps below, and that row's own
-     chrome budget (this block's own comment, and
-     responsive.mobile.spec.ts's "topbar and collapsed filter bar" test) has
-     too little headroom to safely absorb a wider button with nothing here to
-     catch a regression -- council-decided over a wider mobile-only figure,
-     verdict on SH-303. `calc(100vw - 2.5rem)`
-     -- `.topbar`'s own horizontal padding -- is a backstop for viewports
-     narrower than anything this file's own sweep tests. */
-  .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
-  /* SH-235: the topbar's chrome budget (responsive.mobile.spec.ts's own
-     "topbar and collapsed filter bar" test) is what forced this -- at a
-     375px width every one of Home/Settings/+ New/Drafts/the connection
-     indicator, each already at a natural, un-compacted width, cannot share
-     a row with anything else; four buttons' worth of prose text was most
-     of the measured overage. The `.sr-only` recipe (see that class's own
-     rule above) hides each label from sighted readers without removing it
-     from the accessibility tree -- an icon-only button still announces
-     "Home", it just doesn't spend layout width saying so. */
-  .icon-compact-btn .btn-text, .conn-text, .brand h1 {
+  :root { --inset-main: 0.75rem; }
+  /* SH-613: display:contents lets the two desktop chrome bands contribute
+     their existing controls to one compact grid without cloning any stateful
+     control. The rows are identity/actions, search/Filters, and
+     view/results/automation. */
+  .dashboard-header {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: repeat(3, minmax(var(--tap-min), auto));
+    align-items: center; gap: 0.5rem; padding: 0.75rem;
+    background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  }
+  .topbar, .filter-bar, .filter-summary, .topbar-right { display: contents; }
+  .brand { grid-column: 1; grid-row: 1; min-width: 0; padding-left: 0.875rem; }
+  .brand h1, .connection:not(.disconnected) .conn-text {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
   }
-  /* WCAG 2.2 SC 2.5.8 needs both axes -- the icon alone, once its label
-     stops taking up width, is narrower than --tap-min on its own. */
-  .icon-compact-btn { gap: 0; justify-content: center; min-width: var(--tap-min); }
-  /* Keep Full Auto in the existing project-header row at phone widths. The
-     full accessible name stays on the button; only its visible copy shortens. */
-  .engine-wordmark, .engine-run-label { display: none; }
-  .engine-run-short { display: inline; }
-  .engine-control { max-width: none; flex: 1 1 auto; }
-  .engine-lanes-copy, .filter-clear-label { display: none; }
-  .filter-clear-short { display: inline; }
+  .brand .projsel { flex: 1 1 auto; min-width: 0; }
+  .brand .projsel-btn { min-width: 0; width: 100%; }
+  /* Keep SH-303's fixed ceiling and viewport backstop while the grid cell
+     still lets the control shrink below either limit. */
+  .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
+  .connection {
+    grid-column: 1; grid-row: 1; justify-self: start; z-index: 1;
+    flex: none; pointer-events: none;
+  }
+  #new-story-btn { grid-column: 2; grid-row: 1; }
+  .more-wrap { display: block; grid-column: 3; grid-row: 1; position: relative; }
+  .more-btn { display: inline-flex; }
+  .secondary-nav {
+    display: flex;
+    position: absolute; top: calc(100% + 0.375rem); right: 0; z-index: 30;
+    min-width: 12rem; padding: 0.375rem; flex-direction: column; align-items: stretch;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+  }
+  .secondary-nav .btn { width: 100%; justify-content: flex-start; border-color: transparent; }
+  .search-wrap { grid-column: 1 / 3; grid-row: 2; max-width: none; min-width: 0; }
+  .search-input { min-height: var(--tap-min); }
+  .filter-toggle-btn { grid-column: 3; grid-row: 2; }
+  .view-toggle { grid-column: 1; grid-row: 3; }
+  .view-toggle button { min-width: var(--tap-min); padding-left: 0.625rem; padding-right: 0.625rem; }
+  .filter-count { grid-column: 2; grid-row: 3; margin-left: 0; white-space: nowrap; }
+  .engine-control { grid-column: 3; grid-row: 3; max-width: none; min-width: 0; }
+  .filter-inline-host, .filter-clear-host { display: none; }
+  .filter-panel { padding: 0; flex-direction: column; align-items: stretch; gap: 1rem; }
+  .filter-group { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .filter-group-title { font-size: 0.8125rem; color: var(--fg); }
+  .filter-group .fdd-btn { width: 100%; justify-content: space-between; }
+  .filter-group .fdd-panel { position: static; margin-top: 0.375rem; box-shadow: none; }
+  .filter-toggle { font-size: 0.8125rem; color: var(--fg); min-height: var(--tap-min); }
+  .filter-clear { font-size: 0.8125rem; }
+  .engine-run-btn { background: transparent; color: var(--accent); border-color: var(--accent); }
+  .engine-lanes-copy { display: none; }
   .engine-lanes-input { width: 3rem; }
-  .engine-live { flex-wrap: wrap; justify-content: flex-end; }
-  .engine-lane-strip { order: 2; max-width: min(13rem, 42vw); }
-  .engine-actions { order: 1; }
+  .engine-lane-strip { flex: 1 1 auto; max-width: none; }
   .engine-banner-region { padding: 0.5rem 0.75rem 0; }
   .engine-banner-head { align-items: stretch; flex-direction: column; }
   .engine-banner-ack { align-self: flex-start; margin-left: 0; }
   .engine-alert-modal .modal-footer { align-items: stretch; flex-direction: column; }
   .engine-alert-impact { align-self: flex-start; }
-  /* Width, not pointer precision, owns mobile-list visibility. Actions must
-     stay visible on a narrow laptop window as well as on a touch device. */
-  .mobile-story-actions { display: inline-flex; }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
      project selector next to it -- the wordmark orients a reader arriving
      fresh; once a project is open, its name is what matters and the
@@ -1628,6 +1674,7 @@ svg.ctxmenu-disabled-warning {
      ceiling everywhere it already reads fine (375px+, a 23%+ peek) and
      only shrinks the column where it wouldn't otherwise peek at all. */
   .column { flex-basis: min(18rem, 85vw); max-width: min(18rem, 85vw); }
+  .card-title { font-size: 1rem; font-weight: 600; line-height: 1.4; }
   .field-grid { grid-template-columns: 1fr; }
   .home-grid { grid-template-columns: 1fr; }
   .settings-form { flex-direction: column; align-items: stretch; }
@@ -1647,7 +1694,8 @@ svg.ctxmenu-disabled-warning {
      open (SH-299). See `applyOverlayModality()` for what that buys and why the
      marker lives here rather than in a list inside the script. -->
 <div class="app" id="app" data-modal="covered">
-  <header class="topbar">
+  <header class="dashboard-header" id="dashboard-header">
+  <div class="topbar">
     <div class="brand">
       <h1>Storyhook</h1>
       <div class="projsel" id="projsel">
@@ -1668,40 +1716,55 @@ svg.ctxmenu-disabled-warning {
       <button type="button" data-view="list">List</button>
     </div>
     <div class="topbar-right">
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h3.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V21H18a1 1 0 0 0 1-1V9.5"/></svg></span><span class="btn-text">Home</span></button>
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.34 4.88 9.35 2.77 14.65 2.77 14.66 4.88 15.15 5.08 16.65 3.6 20.4 7.35 18.92 8.85 19.12 9.34 21.23 9.35 21.23 14.65 19.12 14.66 18.92 15.15 20.4 16.65 16.65 20.4 15.15 18.92 14.66 19.12 14.65 21.23 9.35 21.23 9.34 19.12 8.85 18.92 7.35 20.4 3.6 16.65 5.08 15.15 4.88 14.66 2.77 14.65 2.77 9.35 4.88 9.34 5.08 8.85 3.6 7.35 7.35 3.6 8.85 5.08Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="btn-text">Settings</span></button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 3.5 6 6L8 22H2v-6z"/><path d="m13 5 6 6"/></svg></span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
+      <div class="more-wrap" id="more-wrap">
+        <button type="button" class="btn btn-ghost more-btn" id="more-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu" hidden>
+          More <span class="more-draft-count" id="more-draft-count" hidden></span>
+        </button>
+        <div class="secondary-nav" id="more-menu">
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h3.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V21H18a1 1 0 0 0 1-1V9.5"/></svg></span><span class="btn-text">Home</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.34 4.88 9.35 2.77 14.65 2.77 14.66 4.88 15.15 5.08 16.65 3.6 20.4 7.35 18.92 8.85 19.12 9.34 21.23 9.35 21.23 14.65 19.12 14.66 18.92 15.15 20.4 16.65 16.65 20.4 15.15 18.92 14.66 19.12 14.65 21.23 9.35 21.23 9.34 19.12 8.85 18.92 7.35 20.4 3.6 16.65 5.08 15.15 4.88 14.66 2.77 14.65 2.77 9.35 4.88 9.34 5.08 8.85 3.6 7.35 7.35 3.6 8.85 5.08Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="btn-text">Settings</span></button>
+          <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 3.5 6 6L8 22H2v-6z"/><path d="m13 5 6 6"/></svg></span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
+        </div>
+      </div>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text" class="conn-text">Connecting…</span>
       </div>
     </div>
-  </header>
+  </div>
 
   <div class="filter-bar" id="filter-bar">
     <div class="filter-summary" id="filter-summary">
       <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
         <svg class="icon disclosure-icon" id="filter-toggle-chevron" data-direction="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg> Filters
+        <span class="filter-active-indicator" id="filter-active-indicator" hidden><span class="sr-only">Active filters</span></span>
       </button>
       <span class="filter-count" id="filter-count"></span>
-      <button type="button" class="filter-clear" id="filter-clear" aria-label="Clear filters">
-        <span class="filter-clear-label">Clear filters</span><span class="filter-clear-short" aria-hidden="true">Clear</span>
-      </button>
+      <span class="filter-clear-host" id="filter-clear-host"><button type="button" class="filter-clear" id="filter-clear" aria-label="Clear filters">Clear filters</button></span>
       <div class="engine-control" id="engine-control" hidden></div>
     </div>
-    <div class="filter-panel" id="filter-panel" hidden>
-      <div class="fdd" id="fdd-priorities"></div>
-      <div class="fdd" id="fdd-assignees"></div>
-      <div class="fdd" id="fdd-types"></div>
-      <div class="fdd" id="fdd-states"></div>
-      <div class="fdd" id="fdd-columns"></div>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
-      <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+    <div class="filter-inline-host" id="filter-inline-host">
+      <div class="filter-panel" id="filter-panel" hidden>
+        <section class="filter-group" aria-labelledby="story-filter-group-title">
+          <h2 class="filter-group-title" id="story-filter-group-title">Stories</h2>
+          <div class="fdd" id="fdd-priorities"></div>
+          <div class="fdd" id="fdd-assignees"></div>
+          <div class="fdd" id="fdd-types"></div>
+          <div class="fdd" id="fdd-states"></div>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
+        </section>
+        <section class="filter-group" id="board-filter-group" aria-labelledby="board-filter-group-title">
+          <h2 class="filter-group-title" id="board-filter-group-title">Board display</h2>
+          <div class="fdd" id="fdd-columns"></div>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+        </section>
+      </div>
     </div>
   </div>
+  </header>
 
   <div class="repo-workspace" id="repo-workspace">
   <div class="workspace-content" id="workspace-content">
@@ -1784,6 +1847,18 @@ svg.ctxmenu-disabled-warning {
      existing rather than by being remembered. `tests/web_test.rs` refuses to
      serve a backdrop that names no surface, or one whose surface is never
      handed to `activateOverlay()`/`releaseOverlay()`. -->
+<div class="backdrop" id="filter-sheet-backdrop" data-overlay="filter-sheet" hidden></div>
+<section class="filter-sheet" id="filter-sheet" role="dialog" aria-modal="true" aria-labelledby="filter-sheet-title" aria-hidden="true" tabindex="-1" hidden>
+  <div class="filter-sheet-header">
+    <h2 class="filter-sheet-title" id="filter-sheet-title" tabindex="-1">Filters</h2>
+    <button type="button" class="btn btn-primary" id="filter-sheet-done">Done</button>
+  </div>
+  <div class="filter-sheet-body" id="filter-sheet-body">
+    <div id="filter-sheet-panel-host"></div>
+    <div class="filter-sheet-clear" id="filter-sheet-clear-host"></div>
+  </div>
+</section>
+
 <div class="backdrop" id="modal-backdrop" data-overlay="create-modal" hidden></div>
 <div class="modal" id="create-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="create-modal-header">New story</div>
@@ -1911,6 +1986,7 @@ svg.ctxmenu-disabled-warning {
 <div class="modal" id="engine-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="engine-modal-header">
   <div class="modal-header" id="engine-modal-header">Run Full Auto</div>
   <div class="modal-body">
+    <div class="engine-modal-status" id="engine-modal-status"></div>
     <div class="field-grid">
       <div class="field"><label for="engine-lanes">Lanes</label>
         <input id="engine-lanes" class="engine-lanes-input" type="number" min="1" max="255" step="1" value="1"></div>
@@ -1923,10 +1999,16 @@ svg.ctxmenu-disabled-warning {
       <div class="field"><label for="engine-speed">Speed</label>
         <select id="engine-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="engine-modal-lanes" id="engine-modal-lanes" hidden>
+      <div class="engine-modal-lanes-summary" id="engine-modal-lanes-summary"></div>
+      <div class="engine-lane-strip" id="engine-modal-lane-strip" aria-label="Full Auto lanes"></div>
+    </div>
     <div class="modal-error" id="engine-modal-error"></div>
   </div>
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="engine-modal-cancel">Cancel</button>
+    <button type="button" class="btn engine-pause-btn" id="engine-modal-pause" hidden>Pause</button>
+    <button type="button" class="btn btn-warn engine-stop-btn" id="engine-modal-stop" hidden>Stop…</button>
     <button type="button" class="btn btn-primary" id="engine-modal-submit">Run Full Auto</button>
   </div>
 </div>
@@ -2428,6 +2510,7 @@ svg.ctxmenu-disabled-warning {
   // is known -- see `pruneCarriedFilters()`, called from `fetchData()`.
 
   var FILTER_STORAGE_KEY = "storyhookFilters";
+  var compactHeaderQuery = window.matchMedia("(max-width: 768px)");
 
   /** A fresh, independently-mutable default filter object — never a shared
    * literal, since `state.filter[key]` arrays are pushed/spliced in place
@@ -2629,6 +2712,11 @@ svg.ctxmenu-disabled-warning {
     // stays visible regardless, so a reader always sees whether a filter
     // is active without opening this.
     filtersOpen: sectionOpenDefault("filters", false),
+    // SH-613: unlike the desktop disclosure above, the mobile sheet is a
+    // transient overlay. It deliberately has no storage key and begins
+    // closed on every load and project switch.
+    mobileFiltersOpen: false,
+    compactHeader: null,
     // Drawer section open/closed state (SH-169). A durable cross-project
     // preference like `showArchived`/`hideEmptyColumns` above, not a
     // per-story or per-repo value — a reader who collapses "Referenced By"
@@ -3376,9 +3464,11 @@ svg.ctxmenu-disabled-warning {
           // be malformed has applied nothing, so it must not stop a later
           // (higher-ticket) reply from applying either.
           boardFetchFloor = ticket;
-          var oldAttachments = drawerAttachments();
+          var mediaStoryId = state.drawerId;
+          var oldMedia = mediaStoryId ? drawerMedia(mediaStoryId) : [];
           state.data = parsed;
-          var attachmentsChanged = JSON.stringify(oldAttachments) !== JSON.stringify(drawerAttachments());
+          var mediaChanged = !!mediaStoryId &&
+            JSON.stringify(oldMedia) !== JSON.stringify(drawerMedia(mediaStoryId));
           if (attachmentViewer && !storyReferenceExists(attachmentViewer.storyId)) closeAttachmentModal();
           state.verificationObservedAt = Date.now();
           state.lastFetchAt = Date.now();
@@ -3390,7 +3480,7 @@ svg.ctxmenu-disabled-warning {
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
-          if ((hasChanges || attachmentsChanged) && state.drawerId) renderDrawer();
+          if ((hasChanges || mediaChanged) && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
           // Nothing else re-renders once the dwell window closes (no
           // further fetch is guaranteed to land exactly then) -- one
@@ -5166,59 +5256,38 @@ svg.ctxmenu-disabled-warning {
     return "";
   }
 
-  function setEngineRunButtonText(button, full, short) {
-    if (button.getAttribute("aria-label") !== full) button.setAttribute("aria-label", full);
-    var fullLabel = button.querySelector(".engine-run-label");
-    var shortLabel = button.querySelector(".engine-run-short");
-    if (fullLabel.textContent !== full) fullLabel.textContent = full;
-    if (shortLabel.textContent !== short) shortLabel.textContent = short;
+  function engineButtonLabel() {
+    if (currentEngineStartPending()) return "Auto: Starting…";
+    if (state.engineReadiness === "failed") return "Auto: Unavailable";
+    if (state.engineReadiness !== "loaded") return "Auto: Checking…";
+    if (state.engineRun && state.engineRun.state === "paused") return "Auto: Paused";
+    if (state.engineRun && state.engineRun.state === "running") return "Auto: Running";
+    return "Auto: Stopped";
   }
 
-  /** Updates the stable idle launch button without replacing it under a
-   * pointer press. Configuration lives in the dedicated modal. */
-  function syncEngineLaunchControl(control) {
-    var button = control.querySelector(".engine-run-btn");
+  /** Updates the one persistent Full Auto control without replacing it under
+   * a pointer press. Every configuration and lifecycle detail lives in its
+   * modal instead of occupying the project header. */
+  function syncEngineControl(control) {
+    var button = control && control.querySelector(".engine-run-btn");
     if (!button) return;
-    var blocked = engineStartBlocked();
+    var blocked = state.engineProject !== state.repoId
+      || state.engineReadiness !== "loaded" || currentEngineStartPending();
     if (button.disabled !== blocked) button.disabled = blocked;
     var title = engineReadinessTitle();
     if (button.title !== title) button.title = title;
-    if (currentEngineStartPending()) {
-      setEngineRunButtonText(button, "Starting Full Auto…", "Starting…");
-    } else if (state.engineReadiness === "failed") {
-      setEngineRunButtonText(button, "Full Auto status unavailable", "Unavailable");
-    } else if (state.engineReadiness !== "loaded") {
-      setEngineRunButtonText(button, "Checking Full Auto status…", "Checking…");
-    } else {
-      setEngineRunButtonText(button, "Run Full Auto", "Run");
-    }
+    var label = engineButtonLabel();
+    if (button.textContent !== label) button.textContent = label;
   }
 
-  function buildEngineLaunchControl() {
+  function buildEngineControl() {
     var button = el("button", {
       type: "button", class: "btn btn-primary engine-run-btn",
       onClick: function(e) { openEngineModal(null, e.currentTarget); }
-    }, [
-      el("span", { class: "engine-run-label" }, ["Run Full Auto"]),
-      el("span", { class: "engine-run-short", "aria-hidden": "true" }, ["Run"])
-    ]);
-    var control = el("div", { class: "engine-launch" }, [
-      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
-      button
-    ]);
-    syncEngineLaunchControl(control);
+    }, ["Auto: Checking…"]);
+    var control = el("div", { class: "engine-launch" }, [button]);
+    syncEngineControl(control);
     return control;
-  }
-
-  function engineRunFingerprint(run) {
-    return JSON.stringify({
-      id: run.id, state: run.state, lane_count: run.lane_count,
-      agent: run.agent, model: run.model, effort: run.effort, speed: run.speed,
-      pending_action: engineActionPending(run.id),
-      lanes: (run.lanes || []).map(function(lane) {
-        return [lane.index, lane.state, lane.story, lane.dispatched_at];
-      })
-    });
   }
 
   function formatEngineElapsed(startedAt) {
@@ -5231,64 +5300,8 @@ svg.ctxmenu-disabled-warning {
     return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds / 60) % 60) + "m";
   }
 
-  function engineConfigurationText(run) {
-    var provider = run.agent === "codex" ? "Codex" : "Claude";
-    return [
-      provider,
-      run.model || "Default model",
-      run.effort ? run.effort + " effort" : "Default effort",
-      run.speed || "Default speed"
-    ].join(" · ");
-  }
-
-  function buildEngineLiveControl(run) {
-    var pending = engineActionPending(run.id);
-    var lanes = el("div", { class: "engine-lane-strip", "aria-label": "Full Auto lanes" }, []);
-    (run.lanes || []).forEach(function(lane) {
-      var subject = lane.story || lane.state;
-      var elapsed = formatEngineElapsed(lane.dispatched_at);
-      lanes.appendChild(el("div", {
-        class: "engine-lane",
-        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
-      }, [
-        el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
-        el("span", { class: "engine-lane-story" }, [subject]),
-        elapsed ? el("span", {
-          class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
-        }, [elapsed]) : null
-      ]));
-    });
-    var configuration = engineConfigurationText(run);
-    var actions = [];
-    if (run.state === "running") {
-      actions.push(el("button", {
-        type: "button", class: "btn engine-pause-btn", disabled: !!pending,
-        onClick: function() { runEngineAction(run.id, "pause"); }
-      }, [pending === "pause" ? "Pausing…" : "Pause new claims"]));
-    } else if (run.state === "paused") {
-      actions.push(el("button", {
-        type: "button", class: "btn engine-resume-btn", disabled: !!pending,
-        onClick: function() { runEngineAction(run.id, "resume"); }
-      }, [pending === "resume" ? "Resuming…" : "Resume"]));
-    }
-    actions.push(el("button", {
-      type: "button", class: "btn btn-warn engine-stop-btn", disabled: !!pending,
-      onClick: function(e) { openEngineStopModal(run.id, e.currentTarget); }
-    }, [pending === "drain" ? "Draining…" : pending === "stop-now" ? "Stopping…"
-      : run.state === "draining" ? "Stop (draining)" : "Stop"]));
-    return el("div", { class: "engine-live" }, [
-      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
-      el("span", { class: "engine-state engine-state-" + run.state }, [run.state]),
-      el("span", { class: "engine-lane-count" }, [run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")]),
-      el("span", { class: "engine-config", title: configuration }, [configuration]),
-      lanes,
-      el("div", { class: "engine-actions", "aria-label": "Full Auto controls" }, actions)
-    ]);
-  }
-
-  /** Paints the engine's project control through SH-401's press gate. The
-   * idle node is retained and updated in place; the live node is rebuilt
-   * only when its visible run/lane fingerprint changes. */
+  /** Paints the engine's one persistent project control through SH-401's
+   * press gate. The node is retained across every engine state. */
   function renderEngineControl() {
     if (pressDefer("engine", renderEngineControl)) return;
     var mount = $("engine-control");
@@ -5296,29 +5309,13 @@ svg.ctxmenu-disabled-warning {
     mount.hidden = !visible;
     if (!visible) {
       if (mount.firstChild) clear(mount);
-      delete mount.dataset.mode;
-      delete mount.dataset.fingerprint;
       return;
     }
-
-    if (isLiveEngineRun(state.engineRun)) {
-      var fingerprint = engineRunFingerprint(state.engineRun);
-      if (mount.dataset.mode === "live" && mount.dataset.fingerprint === fingerprint) return;
+    if (!mount.firstChild) {
       clear(mount);
-      mount.appendChild(buildEngineLiveControl(state.engineRun));
-      mount.dataset.mode = "live";
-      mount.dataset.fingerprint = fingerprint;
-      return;
+      mount.appendChild(buildEngineControl());
     }
-
-    if (mount.dataset.mode !== "launch") {
-      clear(mount);
-      mount.appendChild(buildEngineLaunchControl());
-      mount.dataset.mode = "launch";
-      delete mount.dataset.fingerprint;
-    } else {
-      syncEngineLaunchControl(mount.firstChild);
-    }
+    syncEngineControl(mount.firstChild);
   }
 
   function updateEngineElapsedLabels() {
@@ -5446,6 +5443,7 @@ svg.ctxmenu-disabled-warning {
         applyEngineRuns(runs);
         state.engineReadiness = "loaded";
         renderEngineControl();
+        syncOpenEngineModal(false);
         renderEngineAlert();
         // Lane membership is rendered on cards and rows. Route the repaint
         // through renderView so SH-401's press gate protects those nodes.
@@ -5536,6 +5534,7 @@ svg.ctxmenu-disabled-warning {
 
     state.engineActions[runId] = action;
     renderEngineControl();
+    syncOpenEngineModal(false);
     api("POST", apiBase() + "/engine/" + action, { run: runId }).then(function(response) {
       delete state.engineActions[runId];
       if (state.screen !== "repo" || state.repoId !== project) return;
@@ -5547,6 +5546,7 @@ svg.ctxmenu-disabled-warning {
         ? "Full Auto paused — current lane work continues"
         : "Full Auto resumed", "success");
       renderEngineControl();
+      syncOpenEngineModal(false);
       renderEngineAlert();
       fetchEngineRuns();
     }).catch(function(err) {
@@ -5556,6 +5556,7 @@ svg.ctxmenu-disabled-warning {
       // definite server response keeps its own message. Both reconcile.
       toastError(err);
       renderEngineControl();
+      syncOpenEngineModal(false);
       fetchEngineRuns();
     });
   }
@@ -5828,6 +5829,7 @@ svg.ctxmenu-disabled-warning {
     });
     $(prefix + "-modal-submit").disabled = !selected;
     applyProviderOptions(prefix, selected || "", caps);
+    return selected || "";
   }
 
   /** A request still in flight has not established that the selected
@@ -5933,32 +5935,139 @@ svg.ctxmenu-disabled-warning {
 
   var engineModalProject = null;
   var engineModalEpicId = null;
+  var engineModalRunId = null;
+  var engineAvailabilityPending = false;
+  var engineProviderAvailable = true;
 
-  /** Opens one shared Full Auto configuration surface for project and epic
-   * launches. Catalog and provider preferences are the attended Dispatch
-   * ones; lanes remain this page session's last submitted value. */
+  function engineModalRun() {
+    if (!engineModalRunId) return null;
+    return state.engineRuns.filter(function(run) { return run.id === engineModalRunId; })[0]
+      || (state.engineRun && state.engineRun.id === engineModalRunId ? state.engineRun : null);
+  }
+
+  function populateCurrentEngineSelector(selectId, entries, preferred) {
+    populateDispatchSelector(selectId, entries, preferred);
+    if (preferred && $(selectId).value !== preferred) {
+      $(selectId).appendChild(el("option", { value: preferred }, [preferred + " (current)"]));
+      $(selectId).value = preferred;
+    }
+  }
+
+  function applyCurrentEngineProviderOptions(run, caps) {
+    var providerCaps = (caps && caps[run.agent]) || {};
+    populateCurrentEngineSelector("engine-model", providerCaps.models, run.model || "");
+    populateCurrentEngineSelector("engine-effort", providerCaps.efforts, run.effort || "");
+    populateCurrentEngineSelector("engine-speed", providerCaps.speeds, run.speed || "");
+  }
+
+  function renderEngineModalLanes(run) {
+    var container = $("engine-modal-lanes");
+    var strip = $("engine-modal-lane-strip");
+    clear(strip);
+    if (!run) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    var occupied = (run.lanes || []).filter(function(lane) {
+      return lane.state === "dispatching" || lane.state === "working";
+    }).length;
+    $("engine-modal-lanes-summary").textContent = occupied + " active · target "
+      + run.lane_count + (run.lane_count === 1 ? " lane" : " lanes");
+    (run.lanes || []).forEach(function(lane) {
+      var subject = lane.story || lane.state;
+      var elapsed = formatEngineElapsed(lane.dispatched_at);
+      strip.appendChild(el("div", {
+        class: "engine-lane",
+        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
+      }, [
+        el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
+        el("span", { class: "engine-lane-story" }, [subject]),
+        elapsed ? el("span", {
+          class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
+        }, [elapsed]) : null
+      ]));
+    });
+  }
+
+  function syncOpenEngineModal(syncFields) {
+    if (!engineModalProject || !$("engine-modal").classList.contains("open")) return;
+    var run = engineModalRun();
+    var pending = run ? engineActionPending(run.id) : null;
+    var draining = !!run && run.state === "draining";
+    var availabilityBlocked = engineAvailabilityPending || !engineProviderAvailable;
+    if (syncFields && run) {
+      $("engine-lanes").value = String(run.lane_count);
+      $("engine-agent").value = run.agent;
+      applyCurrentEngineProviderOptions(run, dispatchOptionsCache);
+    }
+    $("engine-modal-status").textContent = run
+      ? "Current run · " + run.state
+      : "Configure the next Full Auto run.";
+    renderEngineModalLanes(run);
+    $("engine-lanes").disabled = draining || !!pending;
+    $("engine-agent").disabled = draining || !!pending
+      || (!engineAvailabilityPending && !engineProviderAvailable);
+    ["engine-model", "engine-effort", "engine-speed"].forEach(function(id) {
+      $(id).disabled = draining || !!pending || availabilityBlocked;
+    });
+    $("engine-modal-cancel").disabled = !!pending;
+    var pause = $("engine-modal-pause");
+    pause.hidden = !run || draining;
+    pause.disabled = !!pending;
+    pause.textContent = pending === "pause" ? "Pausing…"
+      : pending === "resume" ? "Resuming…"
+        : run && run.state === "paused" ? "Resume" : "Pause";
+    var stop = $("engine-modal-stop");
+    stop.hidden = !run;
+    stop.disabled = !!pending;
+    stop.textContent = draining ? "Stop now…" : "Stop…";
+    var submit = $("engine-modal-submit");
+    submit.hidden = draining;
+    submit.disabled = !!pending || availabilityBlocked;
+    submit.textContent = run
+      ? pending === "configure" ? "Saving…" : "Save changes"
+      : "Run Full Auto";
+  }
+
+  /** Opens one shared Full Auto configuration and lifecycle surface. */
   function openEngineModal(epicId, returnFocus) {
-    if (engineStartBlocked()) return;
     var project = state.repoId;
+    if (!project || state.engineProject !== project || state.engineReadiness !== "loaded"
+        || currentEngineStartPending() || (epicId && state.engineRun)) return;
+    var run = epicId ? null : state.engineRun;
     engineModalProject = project;
     engineModalEpicId = epicId;
+    engineModalRunId = run ? run.id : null;
+    engineAvailabilityPending = true;
+    engineProviderAvailable = false;
     $("engine-modal-header").textContent = epicId
       ? "Run Full Auto on " + epicId
-      : "Run Full Auto";
+      : run ? "Full Auto" : "Run Full Auto";
     $("engine-modal-error").textContent = "";
-    $("engine-lanes").value = String(state.engineLanes);
-    $("engine-agent").value = dispatchDefaults.agent;
+    $("engine-lanes").value = String(run ? run.lane_count : state.engineLanes);
+    $("engine-agent").value = run ? run.agent : dispatchDefaults.agent;
     populateDispatchSelector("engine-model", null, "");
     populateDispatchSelector("engine-effort", null, "");
     populateDispatchSelector("engine-speed", null, "");
     gateDispatchAvailability("engine");
     fetchDispatchOptions().then(function(caps) {
-      if (engineModalProject === project && engineModalEpicId === epicId) {
-        applyDispatchAvailability("engine", caps, $("engine-agent").value);
+      if (engineModalProject === project && engineModalEpicId === epicId
+          && engineModalRunId === (run ? run.id : null)) {
+        var selected = applyDispatchAvailability("engine", caps, $("engine-agent").value);
+        engineAvailabilityPending = false;
+        engineProviderAvailable = !!selected;
+        if (run && selected === run.agent) applyCurrentEngineProviderOptions(run, caps);
+        syncOpenEngineModal(false);
       }
     }).catch(function() {
-      if (engineModalProject === project && engineModalEpicId === epicId) {
-        applyDispatchAvailability("engine", null, $("engine-agent").value);
+      if (engineModalProject === project && engineModalEpicId === epicId
+          && engineModalRunId === (run ? run.id : null)) {
+        var selected = applyDispatchAvailability("engine", null, $("engine-agent").value);
+        engineAvailabilityPending = false;
+        engineProviderAvailable = !!selected;
+        if (run && selected === run.agent) applyCurrentEngineProviderOptions(run, null);
+        syncOpenEngineModal(false);
       }
     });
     showBackdrop("engine-modal-backdrop");
@@ -5966,15 +6075,26 @@ svg.ctxmenu-disabled-warning {
     if (returnFocus) overlayReturnFocus["engine-modal"] = returnFocus;
     $("engine-modal").classList.add("open");
     $("engine-modal").setAttribute("aria-hidden", "false");
+    syncOpenEngineModal(false);
   }
 
   function onEngineAgentChange() {
+    var run = engineModalRun();
+    if (run && $("engine-agent").value === run.agent) {
+      applyCurrentEngineProviderOptions(run, dispatchOptionsCache);
+      return;
+    }
     applyEngineProviderOptions($("engine-agent").value, dispatchOptionsCache);
   }
 
   function closeEngineModal() {
+    var run = engineModalRun();
+    if (run && engineActionPending(run.id)) return;
     engineModalProject = null;
     engineModalEpicId = null;
+    engineModalRunId = null;
+    engineAvailabilityPending = false;
+    engineProviderAvailable = true;
     hideBackdrop("engine-modal-backdrop");
     $("engine-modal").classList.remove("open");
     $("engine-modal").setAttribute("aria-hidden", "true");
@@ -5984,7 +6104,9 @@ svg.ctxmenu-disabled-warning {
   function submitEngineModal() {
     var project = engineModalProject;
     var epicId = engineModalEpicId;
-    if (!project || project !== state.repoId || engineStartBlocked()) return;
+    var run = engineModalRun();
+    if (!project || project !== state.repoId || (run && engineActionPending(run.id))
+        || (!run && engineStartBlocked())) return;
     var lanes = Number($("engine-lanes").value);
     if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) {
       $("engine-modal-error").textContent = "Lanes must be an integer from 1 through 255.";
@@ -5996,8 +6118,53 @@ svg.ctxmenu-disabled-warning {
     var speed = $("engine-speed").value;
     state.engineLanes = lanes;
     saveDispatchProviderDefaults(agent, model, effort, speed);
+    if (run) {
+      state.engineActions[run.id] = "configure";
+      syncOpenEngineModal(false);
+      renderEngineControl();
+      api("PATCH", apiBase() + "/engine", {
+        run: run.id, lanes: lanes, agent: agent,
+        model: model || null, effort: effort || null, speed: speed || null
+      }).then(function(response) {
+        delete state.engineActions[run.id];
+        if (state.screen !== "repo" || state.repoId !== project) return;
+        state.engineFetchTicket++;
+        if (response.run) applyEngineRun(response.run);
+        toast("Full Auto configuration updated", "success");
+        closeEngineModal();
+        renderEngineControl();
+        fetchEngineRuns();
+      }).catch(function(err) {
+        delete state.engineActions[run.id];
+        if (state.screen !== "repo" || state.repoId !== project) return;
+        if (err && err.status === 0) {
+          closeEngineModal();
+          toastError(err);
+        } else {
+          $("engine-modal-error").textContent = describeFailure(err);
+          syncOpenEngineModal(false);
+        }
+        renderEngineControl();
+        fetchEngineRuns();
+      });
+      return;
+    }
     closeEngineModal();
     startEngineRun(epicId, lanes, agent, model, effort, speed);
+  }
+
+  function toggleEngineModalPause() {
+    var run = engineModalRun();
+    if (!run) return;
+    runEngineAction(run.id, run.state === "paused" ? "resume" : "pause");
+  }
+
+  function stopEngineFromModal() {
+    var run = engineModalRun();
+    if (!run || engineActionPending(run.id)) return;
+    var runId = run.id;
+    closeEngineModal();
+    openEngineStopModal(runId, document.querySelector(".engine-run-btn"));
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
@@ -7463,6 +7630,11 @@ svg.ctxmenu-disabled-warning {
     var complete = state.reposReadiness === "loaded" && !catalogHasDraftErrors();
     var count = catalogDrafts().length;
     $("drafts-btn-text").textContent = complete ? (count || "No") + " Drafts" : "Drafts";
+    $("more-draft-count").hidden = !complete || count === 0;
+    $("more-draft-count").textContent = count ? String(count) : "";
+    $("more-btn").setAttribute("aria-label", complete && count
+      ? "More, " + count + (count === 1 ? " draft" : " drafts")
+      : "More");
     // Overlay ownership changes synchronously; `.open` follows one animation
     // frame later. A catalog reply inside that frame must still repaint the
     // activated surface rather than leave its first loading snapshot behind.
@@ -7624,7 +7796,10 @@ svg.ctxmenu-disabled-warning {
     // (the project changed, not the screen), and since it sets
     // `screen = "repo"` this one is false exactly when that one must fire.
     // No single rule covers both.
-    if (!isRepo) closeDrawer();
+    if (!isRepo) {
+      closeDrawer();
+      closeFilterSheet();
+    }
 
     if (isRepo) {
       renderView();
@@ -7708,6 +7883,103 @@ svg.ctxmenu-disabled-warning {
     buildColumnsDropdown(m.states);
   }
 
+  function moreMenuItems() {
+    return Array.prototype.slice.call($("more-menu").querySelectorAll("button"));
+  }
+
+  function closeMoreMenu(returnFocus) {
+    if (!state.compactHeader) return;
+    $("more-menu").hidden = true;
+    $("more-btn").setAttribute("aria-expanded", "false");
+    if (returnFocus && canTakeFocus($("more-btn"))) $("more-btn").focus();
+  }
+
+  function openMoreMenu(fromEnd) {
+    if (!state.compactHeader) return;
+    closeAllPopovers();
+    $("more-menu").hidden = false;
+    $("more-btn").setAttribute("aria-expanded", "true");
+    var items = moreMenuItems();
+    if (items.length) items[fromEnd ? items.length - 1 : 0].focus();
+  }
+
+  function moveAdaptiveFilterControls(compact) {
+    (compact ? $("filter-sheet-panel-host") : $("filter-inline-host")).appendChild($("filter-panel"));
+    (compact ? $("filter-sheet-clear-host") : $("filter-clear-host")).appendChild($("filter-clear"));
+  }
+
+  function openFilterSheet() {
+    if (!state.compactHeader || state.mobileFiltersOpen) return;
+    closeAllPopovers();
+    state.mobileFiltersOpen = true;
+    $("filter-panel").hidden = false;
+    $("filter-sheet").hidden = false;
+    $("filter-sheet").setAttribute("aria-hidden", "false");
+    showBackdrop("filter-sheet-backdrop");
+    activateOverlay("filter-sheet", "filter-sheet-title");
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+  }
+
+  function closeFilterSheet() {
+    if (!state.mobileFiltersOpen && overlayStack.indexOf("filter-sheet") === -1) return;
+    closeAllPopovers();
+    state.mobileFiltersOpen = false;
+    $("filter-panel").hidden = true;
+    $("filter-sheet").hidden = true;
+    $("filter-sheet").setAttribute("aria-hidden", "true");
+    hideBackdrop("filter-sheet-backdrop");
+    releaseOverlay("filter-sheet");
+    // WebKit can clear focus after a clicked Done button is hidden during its
+    // activation. Restore once more with the settled modal DOM before paint.
+    requestAnimationFrame(function() { restoreOverlayFocus($("filter-toggle-btn")); });
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+  }
+
+  /** Switches the same controls between desktop disclosure and mobile modal
+   * presentation. A breakpoint crossing always dismisses transient UI while
+   * leaving the desktop preference and every filter/display value intact. */
+  function syncAdaptiveChrome() {
+    var compact = compactHeaderQuery.matches;
+    var changed = state.compactHeader !== null && state.compactHeader !== compact;
+    if (changed && state.mobileFiltersOpen) closeFilterSheet();
+    if (changed) closeAllPopovers();
+
+    state.compactHeader = compact;
+    state.mobileFiltersOpen = false;
+    moveAdaptiveFilterControls(compact);
+
+    $("more-btn").hidden = !compact;
+    $("more-btn").setAttribute("aria-expanded", "false");
+    $("more-menu").hidden = compact;
+    if (compact) {
+      $("more-menu").setAttribute("role", "menu");
+      $("more-menu").setAttribute("aria-labelledby", "more-btn");
+      moreMenuItems().forEach(function(item) {
+        item.setAttribute("role", "menuitem");
+        item.tabIndex = -1;
+      });
+      $("filter-toggle-btn").setAttribute("aria-controls", "filter-sheet");
+    } else {
+      $("more-menu").removeAttribute("role");
+      $("more-menu").removeAttribute("aria-labelledby");
+      moreMenuItems().forEach(function(item) {
+        item.removeAttribute("role");
+        item.tabIndex = 0;
+      });
+      $("filter-toggle-btn").setAttribute("aria-controls", "filter-panel");
+    }
+    syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+    measureNoticeBands();
+  }
+
+  /** Owns the shared 768px boundary. List focus transfers before the chrome
+   * moves controls or dismisses transient surfaces, while its invoker is
+   * still available to describe exactly which responsive peer should take it. */
+  function syncResponsivePresentation() {
+    syncListPresentation(true);
+    syncAdaptiveChrome();
+  }
+
   var openFilterDropdown = null;
 
   /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
@@ -7737,6 +8009,7 @@ svg.ctxmenu-disabled-warning {
     document.querySelectorAll('[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
     projselFocusIndex = -1;
+    closeMoreMenu(false);
     closeStoryMenu(false);
     closeColumnSortMenu(false);
   }
@@ -7753,6 +8026,7 @@ svg.ctxmenu-disabled-warning {
    * apart either way, so timing alone can't tell them apart). */
   function dismissPopoversOnOutsideClick(e) {
     if (storyMenuInvoker && e.target && storyMenuInvoker.contains(e.target)) return;
+    if (e.target && $("more-wrap").contains(e.target)) return;
     closeAllPopovers();
   }
 
@@ -7899,22 +8173,26 @@ svg.ctxmenu-disabled-warning {
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
   }
 
-  /** Reflects `state.filtersOpen` onto the filter panel's visibility, the
-   * toggle button's `aria-expanded`/chevron, and (given `visible`/`total`,
-   * the same pair `renderView()` already computes for `#filter-count`)
-   * whether the toggle button reads as "active" -- so a reader who never
-   * opens the panel this session still sees that a filter is narrowing
-   * the board, per the same "collapsed but not hidden" shape
-   * `buildSectionToggle` (SH-169) uses for the drawer's own sections. */
+  /** Reflects the active presentation's open state without conflating the
+   * transient mobile sheet with the persisted desktop disclosure. */
   function syncFilterToggle(visible, total) {
-    $("filter-panel").hidden = !state.filtersOpen;
-    $("filter-toggle-btn").setAttribute("aria-expanded", String(state.filtersOpen));
-    setDisclosureDirection($("filter-toggle-chevron"), state.filtersOpen ? "down" : "right");
-    $("filter-toggle-btn").classList.toggle("active", !!total && visible !== total);
+    var open = state.compactHeader ? state.mobileFiltersOpen : state.filtersOpen;
+    var active = !!total && visible !== total;
+    $("filter-panel").hidden = !open;
+    $("filter-toggle-btn").setAttribute("aria-expanded", String(open));
+    setDisclosureDirection($("filter-toggle-chevron"), open ? "down" : "right");
+    $("filter-toggle-btn").classList.toggle("active", active);
+    $("filter-active-indicator").hidden = !active;
+    $("board-filter-group").hidden = state.view !== "board";
   }
 
   function bindFilterBar() {
     $("filter-toggle-btn").addEventListener("click", function() {
+      if (state.compactHeader) {
+        if (state.mobileFiltersOpen) closeFilterSheet();
+        else openFilterSheet();
+        return;
+      }
       state.filtersOpen = !state.filtersOpen;
       localStorage.setItem("storyhook.section.filters.open", String(state.filtersOpen));
       syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
@@ -7956,6 +8234,8 @@ svg.ctxmenu-disabled-warning {
       savePersistedFilters();
       renderView();
     });
+    $("filter-sheet-done").addEventListener("click", closeFilterSheet);
+    $("filter-sheet-backdrop").addEventListener("click", closeFilterSheet);
     document.addEventListener("click", dismissPopoversOnOutsideClick);
     bindTypedKeys(document, function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
@@ -9489,10 +9769,10 @@ svg.ctxmenu-disabled-warning {
    * CommonMark (the biggest: a single newline inside a paragraph is a soft
    * wrap that collapses to a space, per SH-217's council ruling -- not a
    * <br> the way GitHub's comment boxes render it). */
-  function renderMarkdown(text, selfId) {
+  function renderMarkdown(text, selfId, urlSink) {
     var frag = document.createDocumentFragment();
     var lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-    appendBlocks(frag, lines, selfId, 0);
+    appendBlocks(frag, lines, selfId, 0, urlSink);
     return frag;
   }
 
@@ -9563,7 +9843,7 @@ svg.ctxmenu-disabled-warning {
   /** Appends the block-level parse of `lines` to `parent`. First match wins
    * per line group: blank, fenced code, thematic break, ATX heading,
    * blockquote, GFM table, list, indented code, paragraph (fallback). */
-  function appendBlocks(parent, lines, selfId, depth) {
+  function appendBlocks(parent, lines, selfId, depth, urlSink) {
     var i = 0;
     while (i < lines.length) {
       var line = lines[i];
@@ -9605,7 +9885,7 @@ svg.ctxmenu-disabled-warning {
         var level = heading[1].length;
         var content = (heading[2] || "").replace(/[ \t]#+[ \t]*$/, "");
         var h = el("h" + level, {}, []);
-        appendInline(h, content, selfId, false);
+        appendInline(h, content, selfId, false, urlSink);
         parent.appendChild(h);
         i++;
         continue;
@@ -9621,10 +9901,10 @@ svg.ctxmenu-disabled-warning {
         }
         var bq = el("blockquote", {}, []);
         if (depth < MARKDOWN_MAX_DEPTH) {
-          appendBlocks(bq, quoteLines, selfId, depth + 1);
+          appendBlocks(bq, quoteLines, selfId, depth + 1, urlSink);
         } else {
           var fallback = el("p", {}, []);
-          appendInline(fallback, quoteLines.join(" "), selfId, false);
+          appendInline(fallback, quoteLines.join(" "), selfId, false, urlSink);
           bq.appendChild(fallback);
         }
         parent.appendChild(bq);
@@ -9649,7 +9929,7 @@ svg.ctxmenu-disabled-warning {
             {},
             headerCells.map(function(cellText, idx) {
               var th = el("th", { align: aligns[idx] || null }, []);
-              appendInline(th, cellText, selfId, false);
+              appendInline(th, cellText, selfId, false, urlSink);
               return th;
             })
           ),
@@ -9663,7 +9943,7 @@ svg.ctxmenu-disabled-warning {
               {},
               headerCells.map(function(_, idx) {
                 var td = el("td", { align: aligns[idx] || null }, []);
-                appendInline(td, row[idx] || "", selfId, false);
+                appendInline(td, row[idx] || "", selfId, false, urlSink);
                 return td;
               })
             );
@@ -9677,7 +9957,7 @@ svg.ctxmenu-disabled-warning {
       // List: nested by indentation, tight vs loose by inter-item blank lines.
       var listMatch = LIST_ITEM_RE.exec(line);
       if (listMatch) {
-        i = appendList(parent, lines, i, selfId, depth);
+        i = appendList(parent, lines, i, selfId, depth, urlSink);
         continue;
       }
 
@@ -9712,7 +9992,7 @@ svg.ctxmenu-disabled-warning {
         p++;
       }
       var pEl = el("p", {}, []);
-      appendInline(pEl, paraLines.join("\n"), selfId, false);
+      appendInline(pEl, paraLines.join("\n"), selfId, false, urlSink);
       parent.appendChild(pEl);
       i = p;
     }
@@ -9726,7 +10006,7 @@ svg.ctxmenu-disabled-warning {
    * continuation content, shallower ends the list. Deliberately no lazy
    * continuation: every content line of an item must be indented to at
    * least the item's own content column. */
-  function appendList(parent, lines, start, selfId, depth) {
+  function appendList(parent, lines, start, selfId, depth, urlSink) {
     var first = LIST_ITEM_RE.exec(lines[start]);
     var markerIndent = leadingSpaces(lines[start]);
     var isOrdered = /\d/.test(first[2]);
@@ -9800,10 +10080,10 @@ svg.ctxmenu-disabled-warning {
     var renderedItems = items.map(function(item) {
       var scratch = document.createDocumentFragment();
       if (depth < MARKDOWN_MAX_DEPTH) {
-        appendBlocks(scratch, item.lines, selfId, depth + 1);
+        appendBlocks(scratch, item.lines, selfId, depth + 1, urlSink);
       } else {
         var p = el("p", {}, []);
-        appendInline(p, item.lines.join(" "), selfId, false);
+        appendInline(p, item.lines.join(" "), selfId, false, urlSink);
         scratch.appendChild(p);
       }
       return scratch;
@@ -9856,7 +10136,7 @@ svg.ctxmenu-disabled-warning {
    * preceded by a hard-break marker (trailing 2+ spaces, or a backslash) --
    * SH-217's council-decided divergence point from GitHub's comment
    * rendering, which uses hard breaks by default. */
-  function appendInline(parent, text, selfId, inLink) {
+  function appendInline(parent, text, selfId, inLink, urlSink) {
     var buf = "";
     var i = 0;
     var n = text.length;
@@ -9927,7 +10207,7 @@ svg.ctxmenu-disabled-warning {
         var autoMatch = /^<((?:https?|mailto):[^<>\s]+)>/i.exec(text.slice(i));
         if (autoMatch) {
           flush();
-          appendChildren(parent, markdownLink([autoMatch[1]], autoMatch[1]));
+          appendChildren(parent, markdownLink([autoMatch[1]], autoMatch[1], urlSink));
           i += autoMatch[0].length;
           continue;
         }
@@ -9940,7 +10220,7 @@ svg.ctxmenu-disabled-warning {
         if (bareMatch && (i === 0 || !/[A-Za-z0-9]/.test(text.charAt(i - 1)))) {
           var url = trimBareUrlTrailingPunctuation(bareMatch[0]);
           flush();
-          appendChildren(parent, markdownLink([url], url));
+          appendChildren(parent, markdownLink([url], url, urlSink));
           i += url.length;
           continue;
         }
@@ -9953,6 +10233,7 @@ svg.ctxmenu-disabled-warning {
       if (c === "!" && text.charAt(i + 1) === "[") {
         var imgMatch = matchLink(text, i + 1);
         if (imgMatch) {
+          if (urlSink) urlSink(imgMatch.dest);
           buf += text.slice(i, imgMatch.end);
           i = imgMatch.end;
           continue;
@@ -9968,8 +10249,8 @@ svg.ctxmenu-disabled-warning {
         if (linkMatch) {
           flush();
           var tmp = document.createDocumentFragment();
-          appendInline(tmp, linkMatch.text, selfId, true);
-          appendChildren(parent, markdownLink(Array.prototype.slice.call(tmp.childNodes), linkMatch.dest));
+          appendInline(tmp, linkMatch.text, selfId, true, urlSink);
+          appendChildren(parent, markdownLink(Array.prototype.slice.call(tmp.childNodes), linkMatch.dest, urlSink));
           i = linkMatch.end;
           continue;
         }
@@ -9984,7 +10265,7 @@ svg.ctxmenu-disabled-warning {
         if (emMatch) {
           flush();
           var inner = document.createDocumentFragment();
-          appendInline(inner, emMatch.text, selfId, inLink);
+          appendInline(inner, emMatch.text, selfId, inLink, urlSink);
           parent.appendChild(el(emMatch.tag, {}, Array.prototype.slice.call(inner.childNodes)));
           i = emMatch.end;
           continue;
@@ -10024,9 +10305,10 @@ svg.ctxmenu-disabled-warning {
 
   /** Builds a live link if `dest` passes safeHref(); otherwise the link's
    * own children render as plain content with no anchor at all. */
-  function markdownLink(children, dest) {
+  function markdownLink(children, dest, urlSink) {
     var href = safeHref(dest);
     if (!href) return children;
+    if (urlSink) urlSink(href);
     return [el("a", { href: href, target: "_blank", rel: "noopener noreferrer" }, children)];
   }
 
@@ -10139,8 +10421,6 @@ svg.ctxmenu-disabled-warning {
   // RENDER: LIST
   // ============================================================
 
-  var mobileListMedia = window.matchMedia("(max-width: 768px)");
-
   function clearMobileListDetails() {
     state.mobileListDetails = Object.create(null);
   }
@@ -10181,7 +10461,7 @@ svg.ctxmenu-disabled-warning {
    * the newly exposed DOM instead of remaining inside a hidden copy. */
   function syncListPresentation(transferFocus) {
     var descriptor = transferFocus ? listFocusDescriptor() : null;
-    var mobile = mobileListMedia.matches;
+    var mobile = compactHeaderQuery.matches;
     $("list-desktop").hidden = mobile;
     $("mobile-list").hidden = !mobile;
 
@@ -10198,7 +10478,7 @@ svg.ctxmenu-disabled-warning {
       var inactive = mobile ? $("list-desktop") : $("mobile-list");
       var active = document.activeElement;
       if (state.screen !== "repo" || state.view !== "list"
-          || mobileListMedia.matches !== mobile || !target.isConnected
+          || compactHeaderQuery.matches !== mobile || !target.isConnected
           || (active !== document.body && !inactive.contains(active))) return;
       target.focus();
     });
@@ -10489,6 +10769,7 @@ svg.ctxmenu-disabled-warning {
     var next = el("li", {}, []);
     var title = el("button", {
       type: "button", class: "mobile-story-title", dataset: { id: id }, tabIndex: -1,
+      "aria-label": st.title + (engineLaneDesc ? " — " + engineLaneDesc : ""),
       onClick: function() { openDrawer(id); }
     }, [st.title, buildEngineLaneChip(engineLane)]);
     next.appendChild(title);
@@ -10891,6 +11172,70 @@ svg.ctxmenu-disabled-warning {
     return repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments/" + encodeURIComponent(attachmentId);
   }
 
+  /** Projects supported HTTPS image destinations out of the markdown parser.
+   * The parser owns what is a link rather than a code sample; this function
+   * owns the stricter remote-image contract. Nothing here performs I/O. */
+  function remoteImagesFromDescription(text) {
+    var seen = Object.create(null);
+    var images = [];
+    renderMarkdown(text || "", null, function(raw) {
+      var parsed;
+      try {
+        parsed = new URL(String(raw));
+      } catch (e) {
+        return;
+      }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) return;
+      var decodedPath;
+      try {
+        decodedPath = decodeURIComponent(parsed.pathname);
+      } catch (e) {
+        return;
+      }
+      if (!/\.(?:png|jpe?g|gif|webp)$/i.test(decodedPath)) return;
+      parsed.hash = "";
+      var normalized = parsed.href;
+      if (seen[normalized]) return;
+      seen[normalized] = true;
+      var slash = decodedPath.lastIndexOf("/");
+      images.push({
+        kind: "remote",
+        key: "remote:" + normalized,
+        name: decodedPath.slice(slash + 1) || parsed.hostname,
+        host: parsed.hostname,
+        url: normalized
+      });
+    });
+    return images;
+  }
+
+  /** The viewer's complete live source list. Remote entries are projections
+   * of description text, never attachment metadata or daemon-owned bytes. */
+  function drawerMedia(storyId) {
+    if (!state.drawerId || state.drawerId !== storyId) return [];
+    var view = findStory(storyId);
+    if (!view) return [];
+    var repoId = state.repoId;
+    var stored = (view.story.attachments || []).map(function(attachment) {
+      return {
+        kind: "stored",
+        key: "stored:" + attachment.id,
+        id: attachment.id,
+        name: attachment.name,
+        url: attachmentUrl(repoId, storyId, attachment.id)
+      };
+    });
+    return stored.concat(remoteImagesFromDescription(view.story.description || ""));
+  }
+
+  /** Finds a current thumbnail by exact dataset identity. A remote URL never
+   * enters selector syntax, where quotes or escapes could change its meaning. */
+  function mediaButton(mediaKey) {
+    return Array.prototype.slice.call(
+      $("drawer-body").querySelectorAll(".attachment-thumbnail")
+    ).find(function(button) { return button.dataset.mediaKey === mediaKey; }) || null;
+  }
+
   /** Whether a drag advertises at least one file without trying to read its
    * protected payload. Browsers expose the bytes only at drop time; items is
    * the precise hover-time signal and the literal Files type is its older
@@ -11025,57 +11370,93 @@ svg.ctxmenu-disabled-warning {
     });
   }
 
-  /** Builds native keyboard controls with text-only filenames. The section's
-   * normal drawer fingerprint preserves its nodes on unrelated refreshes. */
+  /** Builds native keyboard controls with text-only filenames. Stored images
+   * keep their eager-existing lazy previews. A remote control carries no src
+   * until activation, so merely reading a story contacts no third party. */
   function buildAttachmentsSection(storyId) {
-    var attachments = drawerAttachments();
-    if (!attachments.length) return null;
+    var mediaItems = drawerMedia(storyId);
+    if (!mediaItems.length) return null;
     var repoId = state.repoId;
-    var strip = el("div", { class: "attachment-strip" }, attachments.map(function(attachment) {
+    var strip = el("div", { class: "attachment-strip" }, mediaItems.map(function(media) {
       var error = el("span", { class: "attachment-preview-error", hidden: true }, ["Preview unavailable"]);
-      var image = el("img", {
-        src: attachmentUrl(repoId, storyId, attachment.id), alt: "", loading: "lazy",
-        onError: function() { image.hidden = true; error.hidden = false; }
-      });
+      var image;
+      var children;
+      var dataset = { mediaKey: media.key, mediaKind: media.kind };
+      if (media.kind === "remote") {
+        var placeholder = el("span", { class: "remote-image-placeholder", "aria-hidden": "true" }, ["↗"]);
+        image = el("img", {
+          alt: "", hidden: true, referrerPolicy: "no-referrer",
+          onLoad: function() { image.hidden = false; placeholder.hidden = true; error.hidden = true; },
+          onError: function() { image.hidden = true; placeholder.hidden = false; error.hidden = false; }
+        });
+        children = [
+          image, placeholder, error,
+          el("span", { class: "attachment-name" }, [media.name]),
+          el("span", { class: "remote-image-host" }, [media.host])
+        ];
+      } else {
+        dataset.attachmentId = String(media.id);
+        dataset.field = "attachment-" + media.id;
+        image = el("img", {
+          src: media.url, alt: "", loading: "lazy",
+          onError: function() { image.hidden = true; error.hidden = false; }
+        });
+        children = [image, error, el("span", { class: "attachment-name" }, [media.name])];
+      }
       return el("button", {
-        type: "button", class: "btn attachment-thumbnail", title: attachment.name,
-        "aria-label": "View " + attachment.name,
-        dataset: { attachmentId: String(attachment.id), field: "attachment-" + attachment.id },
-        onClick: function() { openAttachmentModal(repoId, storyId, attachment.id); }
-      }, [image, error, el("span", { class: "attachment-name" }, [attachment.name])]);
+        type: "button", class: "btn attachment-thumbnail" + (media.kind === "remote" ? " remote-image-thumbnail" : ""),
+        title: media.kind === "remote" ? media.url : media.name,
+        "aria-label": media.kind === "remote"
+          ? "Load remote image " + media.name + " from " + media.host
+          : "View " + media.name,
+        dataset: dataset,
+        onClick: function() { openAttachmentModal(repoId, storyId, media.key); }
+      }, children);
     }));
     return el("section", { "aria-label": "Attachments" }, [
       el("div", { class: "section-label" }, ["Attachments"]), strip
     ]);
   }
 
-  /** Opens only an attachment still owned by the current drawer. Each opening
-   * retries via a new image node; stale load/error events cannot affect it. */
-  function openAttachmentModal(repoId, storyId, attachmentId) {
+  /** Reveals a remote thumbnail only after its modal request succeeded. The
+   * browser may satisfy this second image element from its decoded cache; if
+   * the server forbids caching, it is still part of the same explicit act. */
+  function hydrateRemoteThumbnail(mediaKey, url) {
+    var button = mediaButton(mediaKey);
+    if (!button || button.dataset.mediaKind !== "remote") return;
+    var image = button.querySelector("img");
+    if (image) image.src = url;
+  }
+
+  /** Opens only media still owned by the current drawer. Each opening retries
+   * via a new image node; stale load/error events cannot affect it. */
+  function openAttachmentModal(repoId, storyId, mediaKey) {
     if (state.repoId !== repoId || state.drawerId !== storyId) return;
-    var attachment = drawerAttachments().find(function(a) { return a.id === attachmentId; });
-    if (!attachment) return;
+    var media = drawerMedia(storyId).find(function(item) { return item.key === mediaKey; });
+    if (!media) return;
     closeAttachmentModal();
-    var viewer = { repoId: repoId, storyId: storyId, attachmentId: attachmentId };
+    var viewer = { repoId: repoId, storyId: storyId, mediaKey: mediaKey };
     attachmentViewer = viewer;
-    $("attachment-title").textContent = attachment.name;
-    $("attachment-title").title = attachment.name;
+    $("attachment-title").textContent = media.name;
+    $("attachment-title").title = media.kind === "remote" ? media.url : media.name;
     $("attachment-status").textContent = readinessNote("image", false);
     var image = el("img", {
-      alt: attachment.name, hidden: true,
+      alt: media.name, hidden: true,
+      referrerPolicy: media.kind === "remote" ? "no-referrer" : null,
       onLoad: function() {
         if (attachmentViewer !== viewer) return;
         image.hidden = false;
         $("attachment-status").textContent = "";
+        if (media.kind === "remote") hydrateRemoteThumbnail(media.key, media.url);
       },
       onError: function() {
         if (attachmentViewer !== viewer) return;
         image.hidden = true;
-        $("attachment-status").textContent = "Could not load " + attachment.name + ". Close and reopen to retry.";
+        $("attachment-status").textContent = "Could not load " + media.name + ". Close and reopen to retry.";
       }
     });
     $("attachment-image").appendChild(image);
-    image.src = attachmentUrl(repoId, storyId, attachmentId);
+    image.src = media.url;
     showBackdrop("attachment-backdrop");
     $("attachment-modal").classList.add("open");
     $("attachment-modal").setAttribute("aria-hidden", "false");
@@ -11098,9 +11479,7 @@ svg.ctxmenu-disabled-warning {
     $("attachment-modal").classList.remove("open");
     $("attachment-modal").setAttribute("aria-hidden", "true");
     if (state.repoId === viewer.repoId && state.drawerId === viewer.storyId) {
-      overlayReturnFocus["attachment-modal"] = $("drawer-body").querySelector(
-        '[data-attachment-id="' + viewer.attachmentId + '"]'
-      ) || $("drawer");
+      overlayReturnFocus["attachment-modal"] = mediaButton(viewer.mediaKey) || $("drawer");
     }
     releaseOverlay("attachment-modal");
   }
@@ -11195,7 +11574,7 @@ svg.ctxmenu-disabled-warning {
     }
     body.dataset.storyId = st.id;
     body.dataset.repoId = state.repoId;
-    if (attachmentViewer && !drawerAttachments().some(function(a) { return a.id === attachmentViewer.attachmentId; })) {
+    if (attachmentViewer && !drawerMedia(st.id).some(function(media) { return media.key === attachmentViewer.mediaKey; })) {
       closeAttachmentModal();
     }
 
@@ -12131,6 +12510,7 @@ svg.ctxmenu-disabled-warning {
    * from `fetchData()`'s first successful load for this repo. */
   function selectRepo(id) {
     closeDrawer();
+    closeFilterSheet();
     clearMobileListDetails();
     state.repoId = id;
     state.screen = "repo";
@@ -14761,11 +15141,12 @@ svg.ctxmenu-disabled-warning {
    * "haven't heard from a poll in the last 10s" heuristic) when
    * `EventSource` itself isn't available. */
   function updateConnection() {
-    var dot = $("conn-dot"), text = $("conn-text");
+    var dot = $("conn-dot"), text = $("conn-text"), connection = dot.parentElement;
     var live = window.EventSource
       ? sse.connected
       : (function() { var p = activePollState(); return p.ok && (Date.now() - p.at) < 10000; })();
     dot.className = "conn-dot " + (live ? "live" : "disconnected");
+    connection.classList.toggle("disconnected", !live);
     text.textContent = live ? "Live" : "Disconnected";
   }
 
@@ -14785,6 +15166,7 @@ svg.ctxmenu-disabled-warning {
 
   function bindShell() {
     bindPressGate();
+    syncResponsivePresentation();
     // Before anything is bound, and before anything is open: this is what
     // takes the eight *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
@@ -14794,6 +15176,42 @@ svg.ctxmenu-disabled-warning {
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
     });
+    $("more-btn").addEventListener("click", function() {
+      if ($("more-menu").hidden) openMoreMenu(false);
+      else closeMoreMenu(true);
+    });
+    $("more-btn").addEventListener("keydown", function(e) {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      openMoreMenu(e.key === "ArrowUp");
+    });
+    $("more-menu").addEventListener("keydown", function(e) {
+      var items = moreMenuItems();
+      var at = items.indexOf(document.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMoreMenu(true);
+        return;
+      }
+      if (e.key === "Tab") {
+        closeMoreMenu(false);
+        return;
+      }
+      var next = null;
+      if (e.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = items.length - 1;
+      if (next === null || !items.length) return;
+      e.preventDefault();
+      items[next].focus();
+    });
+    if (compactHeaderQuery.addEventListener) {
+      compactHeaderQuery.addEventListener("change", syncResponsivePresentation);
+    } else {
+      compactHeaderQuery.addListener(syncResponsivePresentation);
+    }
     bindProjectSelector();
     // SH-197: one delegated listener per view, not one per card/row --
     // consistent with cards/rows already being reconciled in place rather
@@ -14804,10 +15222,8 @@ svg.ctxmenu-disabled-warning {
     bindRovingFocus($("list-body"), "tr[data-id]");
     bindRovingKeys($("mobile-list-body"), ".mobile-story-title[data-id]", listRovingMove);
     bindRovingFocus($("mobile-list-body"), ".mobile-story-title[data-id]");
-    mobileListMedia.addEventListener("change", function() { syncListPresentation(true); });
-    syncListPresentation(false);
-    $("home-btn").addEventListener("click", goHome);
-    $("settings-btn").addEventListener("click", goSettings);
+    $("home-btn").addEventListener("click", function() { closeMoreMenu(true); goHome(); });
+    $("settings-btn").addEventListener("click", function() { closeMoreMenu(true); goSettings(); });
     // SH-175: the New Story modal no longer closes on a backdrop click or
     // (see the shared Escape handler below) Escape — only its own three
     // footer buttons dismiss it. Every other modal in this file keeps that
@@ -14820,7 +15236,7 @@ svg.ctxmenu-disabled-warning {
     bindEnterSubmit($("create-title"), submitCreate);
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
     $("create-description").addEventListener("paste", stagePastedCreateAttachments);
-    $("drafts-btn").addEventListener("click", openDraftsModal);
+    $("drafts-btn").addEventListener("click", function() { closeMoreMenu(true); openDraftsModal(); });
     $("drafts-close").addEventListener("click", closeDraftsModal);
     $("drafts-backdrop").addEventListener("click", closeDraftsModal);
     $("token-cancel").addEventListener("click", cancelTokenModal);
@@ -14836,6 +15252,8 @@ svg.ctxmenu-disabled-warning {
     $("engine-modal-cancel").addEventListener("click", closeEngineModal);
     $("engine-modal-backdrop").addEventListener("click", closeEngineModal);
     $("engine-modal-submit").addEventListener("click", submitEngineModal);
+    $("engine-modal-pause").addEventListener("click", toggleEngineModalPause);
+    $("engine-modal-stop").addEventListener("click", stopEngineFromModal);
     $("engine-agent").addEventListener("change", onEngineAgentChange);
     $("engine-stop-cancel").addEventListener("click", closeEngineStopModal);
     $("engine-stop-modal-backdrop").addEventListener("click", closeEngineStopModal);
@@ -14883,6 +15301,10 @@ svg.ctxmenu-disabled-warning {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
+        if (overlayStack[overlayStack.length - 1] === "filter-sheet") {
+          closeFilterSheet();
+          return;
+        }
         if (overlayStack[overlayStack.length - 1] === "attachment-modal") {
           closeAttachmentModal();
           return;

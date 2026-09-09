@@ -136,11 +136,17 @@ pub(super) fn update_engine_run(
 ) -> Result<(), StoreError> {
     let updated = sql(
         conn.execute(
-            "UPDATE engine_runs SET state = ?2, consecutive_hard_stops = ?3, \
-                 stop_reason = ?4, acknowledged_at = ?5, updated_at = ?6, \
-                 recent_quarantines_json = ?7 WHERE id = ?1",
+            "UPDATE engine_runs SET lanes = ?2, agent = ?3, model = ?4, effort = ?5, \
+                 speed = ?6, state = ?7, consecutive_hard_stops = ?8, \
+                 stop_reason = ?9, acknowledged_at = ?10, updated_at = ?11, \
+                 recent_quarantines_json = ?12 WHERE id = ?1",
             params![
                 run.id,
+                run.lanes,
+                run.agent.as_str(),
+                run.model,
+                run.effort,
+                run.speed.map(|speed| speed.as_str()),
                 run.state.as_str(),
                 run.consecutive_hard_stops,
                 run.stop_reason,
@@ -207,6 +213,21 @@ pub(super) fn put_engine_lane(
             ],
         ),
         "writing an engine lane",
+    )?;
+    Ok(())
+}
+
+pub(super) fn delete_engine_lane(
+    conn: &Connection,
+    run_id: &str,
+    lane_index: u32,
+) -> Result<(), StoreError> {
+    sql(
+        conn.execute(
+            "DELETE FROM engine_lanes WHERE run_id = ?1 AND lane_index = ?2",
+            params![run_id, lane_index],
+        ),
+        "deleting an engine lane",
     )?;
     Ok(())
 }

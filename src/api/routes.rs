@@ -129,7 +129,7 @@ pub enum ProjectRoute<'a> {
     Data,
     /// `POST .../verification/ack` — acknowledge one exact halted incident.
     VerificationAck,
-    /// `GET|POST .../engine` — inspect or start Full Auto.
+    /// `GET|POST|PATCH .../engine` — inspect, start, or configure Full Auto.
     Engine,
     /// `POST .../engine/{action}` — control one engine run.
     EngineAction { action: EngineAction },
@@ -312,7 +312,7 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["engine"] => match method {
-            Method::Get | Method::Post => ProjectRoute::Engine,
+            Method::Get | Method::Post | Method::Patch => ProjectRoute::Engine,
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["engine", action] => match (method, EngineAction::parse(action)) {
@@ -564,6 +564,17 @@ mod tests {
             Route::Project {
                 id: "p",
                 route: ProjectRoute::MethodNotAllowed
+            }
+        );
+    }
+
+    #[test]
+    fn the_engine_collection_accepts_patch_for_live_configuration() {
+        assert_eq!(
+            at("/api/repos/p/engine", &Method::Patch),
+            Route::Project {
+                id: "p",
+                route: ProjectRoute::Engine
             }
         );
     }

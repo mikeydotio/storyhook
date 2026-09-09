@@ -54,7 +54,7 @@ being picked.
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
 | D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
-| D16 | **Provider configuration is immutable run state.** A start may select model, effort, and standard or fast speed; every lane fill reuses that exact selection, and status exposes it. | Reading mutable browser preferences or provider environment variables on each refill could change behavior halfway through one run. Snapshotting the selection makes a run reproducible. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
+| D16 | **Provider configuration is explicit, durable run state that operators may revise while a run is running or paused.** Each claim snapshots the current selection transactionally; occupied lanes keep the selection they launched with and future claims use the revision. | Browser preferences and provider environment variables remain outside the run, so neither can silently change it. Explicit reconfiguration gives an operator one auditable control point without interrupting work already in flight. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
 
 ## Assumptions recorded rather than asked
 
@@ -450,12 +450,14 @@ reboot is three consecutive hard stops and halts the run exactly as three
 ordinary hard stops would, deliberately — a machine that just rebooted
 mid-run deserves a human look before it starts merging again.
 
-`crate::daemon::engine::poll_engine` is what runs this pass once at daemon
-startup, then wakes the ordinary pass on a project-change bus event or a
-coarse tick derived from `STALL_CEILING_SECS` — the trigger this document
-originally assigned to "the daemon wiring" without naming which story owned
-it. `EngineService::reconcile` had zero production callers before SH-466; see
-the As-built section below.
+`crate::daemon::lifecycle::run` runs this pass synchronously before binding or
+publishing the daemon's portfile. After server readiness,
+`crate::daemon::engine::poll_engine` wakes the ordinary pass on a
+project-change bus event or a coarse tick derived from
+`STALL_CEILING_SECS` — the trigger this document originally assigned to "the
+daemon wiring" without naming which story owned it. The startup ordering was
+made an explicit admission barrier in SH-617; `EngineService::reconcile` had
+zero production callers before SH-466. See the As-built section below.
 
 ## Enforcing unattendedness
 
@@ -714,15 +716,18 @@ dropped (SH-357).
 
 Model and effort use the provider token grammar and remain open to new provider
 vocabulary. Speed is `standard` or `fast`; explicit `standard` preserves the
-legacy lane argv without a speed flag. The immutable selection appears in
-human and JSON output and is forwarded on every later lane fill.
+legacy lane argv without a speed flag. The current selection appears in human
+and JSON output and is snapshotted with each later lane claim. The CLI starts
+new runs with configuration; live reconfiguration belongs to the HTTP and web
+control surface.
 
 ### HTTP
 
 | Method | Path | Answers |
 |---|---|---|
 | POST | `/api/repos/{project}/engine` | start a run with scope, lanes, agent, model, effort, and speed; 409 if one is live |
-| GET | `/api/repos/{project}/engine` | the run view: immutable configuration, state, lanes, streak, stop reason |
+| PATCH | `/api/repos/{project}/engine` | replace a running or paused run's lane target and provider configuration; occupied lanes continue under their launch configuration |
+| GET | `/api/repos/{project}/engine` | the run view: current configuration, state, lanes, streak, stop reason |
 | POST | `/api/repos/{project}/engine/{action}` | `pause`, `resume`, `stop`, `ack` |
 
 Answered off the store thread where a dispatch is spawned, per
@@ -730,9 +735,14 @@ Answered off the store thread where a dispatch is spawned, per
 
 ### Web UI
 
-- **Project header**: a Full Auto launch button. Its dedicated modal selects
-  lanes, provider, model, effort, and speed. Live runs show that configuration,
-  state, lane count, and the current story per lane with elapsed time.
+- **Project header**: one persistent button reports `Auto: Stopped`,
+  `Auto: Paused`, or `Auto: Running`; transient request states use
+  `Checking…`, `Starting…`, or `Unavailable`. Its modal starts a run or edits
+  the current running/paused run's lane target, provider, model, effort, and
+  speed, and contains pause/resume and stop actions. Live runs show their exact
+  state, effective target, and current story per retained lane with elapsed
+  time. A draining run reads `Auto: Stopped`; its modal preserves the precise
+  draining state and stop-now action.
 - **Epic drawer**: "Run Full Auto on this epic" opens the same modal and scopes
   the resulting run to the subtree.
 - **Preferences**: Full Auto and attended Dispatch share submitted provider
@@ -1862,15 +1872,16 @@ scope-adopt rubric, and recorded on the story before implementation began.
 `ShellDispatcher` the same way `api::engine::EngineController::context` and
 `stop --now` already do — project-by-slug, its linked checkout or
 `env.home()` as a fallback, `resolve_engine_dispatch_script(run.agent)`.
-`poll_engine` runs the restart sweep once, on its own thread, before entering
-its steady loop — never a separate one-shot spawned elsewhere, because two
-threads racing to reconcile the same lane rows on their first pass is a
-correctness risk a sequential single thread removes by construction rather
-than by coordinating around it. Its wait is a computed `Instant` deadline
-re-derived from the remaining time on every wake, not `poll_verification`'s
-own "restart the budget on every `Ping`" idiom — correct for that worker's
-bare 30-second constant, but wrong for a 72-second tick riding a 20-second
-heartbeat, which would almost never land on schedule under that shape.
+`lifecycle::run` runs the restart sweep synchronously before listener binding
+and portfile publication. `serve` releases `poll_engine` only after readiness,
+so the first steady pass cannot race the startup pass or claim work before
+the successor is ready. This remains one sequential reconciliation path; two
+threads never race the same lane rows. `poll_engine`'s wait is a computed
+`Instant` deadline re-derived from the remaining time on every wake, not
+`poll_verification`'s own "restart the budget on every `Ping`" idiom — correct
+for that worker's bare 30-second constant, but wrong for a 72-second tick
+riding a 20-second heartbeat, which would almost never land on schedule under
+that shape.
 `RECONCILE_TICK_SECS`'s own doc comment and this document's "reconcile loop"
 section are corrected to name SH-466 rather than SH-468.
 
@@ -2185,7 +2196,7 @@ claiming that rollback completed. Successful partial mutations stay reported
 as such, so retry remains safe and diagnostics never erase what already
 happened.
 
-### SH-566 — immutable provider configuration per run
+### SH-566 — initial provider configuration per run
 
 Migration 32 adds nullable model, effort, and speed columns to engine runs.
 Start requests accept the same provider-scoped model, effort, and speed choices
@@ -2198,9 +2209,13 @@ preserve the historical helper argv.
 The project header and epic drawer open one Full Auto modal backed by the
 existing cached provider capability catalog. Submitted provider choices are
 remembered with attended Dispatch, while its Auto checkbox remains unchanged;
-dismissed drafts change neither. Live controls show provider, model, effort,
-and speed. The engine browser spec proves both scopes and the configured request
-across Chromium, WebKit, mobile Chromium, and mobile WebKit.
+dismissed drafts change neither. SH-618 extends that same modal into the sole
+project-header lifecycle surface: it displays lane state, edits a running or
+paused run through `PATCH /engine`, and owns pause/resume and stop. Downsizing
+removes surplus idle lanes immediately, preserves surplus occupied lanes until
+their stories settle, and prevents refill until occupancy falls below the new
+target. The engine browser spec proves both scopes and configuration across
+Chromium, WebKit, mobile Chromium, and mobile WebKit.
 
 ### SH-569 — lane membership on stories
 

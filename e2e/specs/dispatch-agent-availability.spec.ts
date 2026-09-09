@@ -40,6 +40,10 @@ async function openDispatchModal(page: Page): Promise<void> {
 
 async function closeDrawerAndOpenEngineModal(page: Page): Promise<void> {
   await page.locator("#drawer-close").click();
+  await openEngineModal(page);
+}
+
+async function openEngineModal(page: Page): Promise<void> {
   await expect(page.locator(".engine-run-btn")).toBeEnabled();
   await page.locator(".engine-run-btn").click();
   await expect(page.locator("#engine-modal")).toHaveClass(/open/);
@@ -160,4 +164,30 @@ test("an installed provider chosen while availability loads remains selected", a
 
   await expect(page.locator("#dispatch-agent")).toHaveValue("codex");
   await expect(page.locator("#dispatch-modal-submit")).toBeEnabled();
+});
+
+test("Full Auto lifecycle sync preserves the availability loading gate", async ({ page }) => {
+  const gate = latch();
+  await page.route("**/api/dispatch-options", async (route) => {
+    await gate.held;
+    await fulfillOptions(route, [
+      { id: "claude", label: "Claude", installed: true },
+      { id: "codex", label: "Codex", installed: true },
+    ]);
+  });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  await openEngineModal(page);
+  await expect(page.locator("#engine-agent")).toBeEnabled();
+  await expect(page.locator("#engine-model")).toBeDisabled();
+  await expect(page.locator("#engine-effort")).toBeDisabled();
+  await expect(page.locator("#engine-speed")).toBeDisabled();
+  await expect(page.locator("#engine-modal-submit")).toBeDisabled();
+  gate.release();
+
+  await expect(page.locator("#engine-model")).toBeEnabled();
+  await expect(page.locator("#engine-effort")).toBeEnabled();
+  await expect(page.locator("#engine-speed")).toBeEnabled();
+  await expect(page.locator("#engine-modal-submit")).toBeEnabled();
 });

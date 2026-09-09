@@ -16,6 +16,9 @@ coupled_snapshot	:(glob)**/*
 coupled_snapshot	:(glob)src/**/*.rs
 crash_matrix	:(glob)**/*
 create_modal_project_scope	:(glob)**/*
+daemon_lifecycle	src/daemon/engine.rs
+daemon_lifecycle	src/daemon/lifecycle.rs
+daemon_lifecycle	src/daemon/serve.rs
 dashboard_deadline_knobs	:(glob)**/*
 dashboard_dom_removal	:(glob)**/*
 dashboard_enter_submit_guard	:(glob)**/*

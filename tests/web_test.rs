@@ -20,6 +20,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
+use storyhook::api::http::CSP;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
@@ -2278,7 +2279,7 @@ fn web_serve_root_html_gives_persistent_controls_contrast_safe_tokens() {
         (".status-reorder button", "--fg-muted"),
         (".column-archive-btn", "--fg"),
         (".column-sort-btn", "--fg-muted"),
-        (".section-toggle", "--fg-muted"),
+        (".section-toggle", "--fg-functional"),
         (".label-chip button", "--fg"),
         (".rel-remove", "--fg-muted"),
     ] {
@@ -2294,10 +2295,12 @@ fn web_serve_root_html_gives_persistent_controls_contrast_safe_tokens() {
     }
 
     let section_hover = declarations(css, ".section-toggle:hover");
-    assert!(
-        section_hover.contains("color: var(--fg)"),
-        "the section toggle must keep visible hover feedback after its resting ink becomes --fg-muted"
-    );
+    for declaration in ["color: var(--fg)", "background: var(--bg-sunken)"] {
+        assert!(
+            section_hover.contains(declaration),
+            "the section toggle needs `{declaration}` for visible hover feedback after its resting ink becomes --fg-functional"
+        );
+    }
 
     let archive_hover = declarations(css, ".column-archive-btn:hover");
     for declaration in ["color: var(--accent)", "background: var(--bg-raised)"] {
@@ -2306,6 +2309,192 @@ fn web_serve_root_html_gives_persistent_controls_contrast_safe_tokens() {
             "Archive hover needs `{declaration}` so its small text remains above 4.5:1"
         );
     }
+}
+
+/// SH-615: hierarchy values are roles shared by every dashboard surface, not
+/// one-off literals that drift independently. Browser tests prove their
+/// resolved geometry and contrast; this source contract pins the shared
+/// vocabulary, its representative consumers, and the connection-state hook.
+#[test]
+fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    let root = declarations(css, ":root");
+    for declaration in [
+        "--space-label: 0.25rem;",
+        "--space-control: 0.5rem;",
+        "--space-card: 0.75rem;",
+        "--space-section: 1rem;",
+        "--inset-main: 1.25rem;",
+        "--type-functional: 0.8125rem;",
+        "--type-metadata: 0.8125rem;",
+        "--line-metadata: 1.4;",
+        "--fg-functional: var(--fg);",
+        "--fg-metadata: color-mix(in srgb, var(--fg-muted) 80%, var(--fg));",
+        "--control-boundary: var(--fg-metadata);",
+        "--danger-text: color-mix(in srgb, var(--danger) 75%, var(--fg));",
+    ] {
+        assert!(
+            root.contains(declaration),
+            "the root hierarchy vocabulary must define `{declaration}`"
+        );
+    }
+
+    for selector in [
+        ".field label",
+        ".section-label",
+        ".section-toggle",
+        "thead th",
+        ".settings-table th",
+        ".column-header",
+        ".mobile-sort-control",
+        ".mobile-story-details-btn",
+    ] {
+        let rule = declarations(css, selector);
+        for declaration in [
+            "font-size: var(--type-functional)",
+            "font-weight: 600",
+            "text-transform: none",
+            "letter-spacing: normal",
+            "color: var(--fg-functional)",
+        ] {
+            assert!(
+                rule.contains(declaration),
+                "`{selector}` must share functional-label `{declaration}`; declarations were `{rule}`"
+            );
+        }
+    }
+
+    for (selector, declaration) in [
+        (".home, .settings", "padding: var(--inset-main)"),
+        (".board", "padding: var(--space-section) var(--inset-main)"),
+        (".list", "padding: 0 var(--inset-main) var(--inset-main)"),
+        (".card", "padding: var(--space-card)"),
+        (".repo-card", "padding: var(--space-card)"),
+        (".mobile-list", "margin-top: var(--space-card)"),
+        (".mobile-sort-controls", "gap: var(--space-control)"),
+        (".mobile-list-body", "gap: var(--space-card)"),
+        (".mobile-story-row", "padding: var(--space-card)"),
+        (".mobile-story-primary", "gap: var(--space-control)"),
+        (".mobile-story-identity", "gap: var(--space-label)"),
+        (
+            ".mobile-story-details",
+            "gap: var(--space-label) var(--space-card)",
+        ),
+        (".create-attachments", "margin-top: var(--space-label)"),
+        (".create-attachment-strip", "gap: var(--space-control)"),
+        (
+            ".create-attachment-preview",
+            "padding: var(--space-control)",
+        ),
+        (".field", "gap: var(--space-label)"),
+        (".card-id", "font-size: var(--type-metadata)"),
+        (".state-pill", "font-size: var(--type-metadata)"),
+        (".modal-error", "color: var(--danger-text)"),
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains(declaration),
+            "`{selector}` must consume `{declaration}`; declarations were `{rule}`"
+        );
+    }
+
+    for selector in [
+        ".connection",
+        ".home-stat span",
+        ".repo-card-path",
+        ".repo-card-stats",
+        ".repo-card-error",
+        ".settings-path",
+        ".settings-prefs .settings-hint",
+        ".settings-about-list",
+        ".settings-head .settings-hint",
+        ".status-counts",
+        ".filter-count",
+        ".card-id",
+        ".chip",
+        ".avatar",
+        ".flag",
+        ".col-order",
+        ".col-date",
+        ".state-pill",
+        ".column-empty",
+        ".empty",
+        ".comment-meta",
+        ".modal-error",
+        ".modal-body p",
+        ".mobile-story-primary",
+        ".mobile-story-id",
+        ".mobile-story-type",
+        ".mobile-story-details",
+        ".create-attachment-name",
+        ".create-attachment-state",
+        "#create-attachment-status",
+    ] {
+        let rule = declarations(css, selector);
+        for declaration in [
+            "font-size: var(--type-metadata)",
+            "line-height: var(--line-metadata)",
+        ] {
+            assert!(
+                rule.contains(declaration),
+                "`{selector}` must share metadata `{declaration}`; declarations were `{rule}`"
+            );
+        }
+    }
+
+    for selector in [
+        ".projsel-btn",
+        ".settings-form input",
+        ".status-row select, .status-row input[type=text]",
+        ".status-add input[type=text], .status-add select",
+        ".filter-toggle-btn",
+        ".fdd-btn",
+        ".engine-lanes-input",
+        ".field select, .field input[type=text], .field textarea",
+        ".inline-add input, .inline-add select",
+        ".comment-add textarea",
+        ".description-field",
+        ".modal-body input[type=text], .modal-body select",
+        ".modal-body textarea",
+        ".mobile-sort-control select",
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains("border: 1px solid var(--control-boundary)"),
+            "`{selector}` must use the contrast-safe control boundary; declarations were `{rule}`"
+        );
+    }
+
+    let unavailable = declarations(css, ".repo-card.unavailable");
+    assert!(unavailable.contains("border-style: dashed"));
+    assert!(
+        !unavailable.contains("opacity:"),
+        "unavailable-card feedback must not lower every descendant's text contrast"
+    );
+
+    let mobile = css
+        .find("@media (max-width: 768px) {")
+        .map(|start| &css[start..])
+        .expect("the mobile hierarchy override exists");
+    assert!(mobile.contains(":root { --inset-main: 0.75rem; }"));
+    assert!(
+        mobile.contains(".connection:not(.disconnected) .conn-text"),
+        "mobile may hide healthy copy, but must not hide disconnected feedback"
+    );
+    assert!(
+        body.contains("connection.classList.toggle(\"disconnected\", !live);"),
+        "updateConnection must expose unhealthy state on the wrapper for responsive styling"
+    );
 }
 
 /// SH-256: on a coarse pointer, no text-entry control may compute under 16
@@ -3197,14 +3386,15 @@ fn sh_614_mobile_details_state_is_in_memory_and_cleared_on_project_exit() {
         "mobile disclosure state must live only in the page's in-memory state"
     );
     assert!(
-        source.contains("function clearMobileListDetails()")
-            && source.contains(
-                "function selectRepo(id) {\n    closeDrawer();\n    clearMobileListDetails();"
-            )
-            && source.contains("function goHome() {\n    clearMobileListDetails();")
-            && source.contains("function goSettings() {\n    clearMobileListDetails();"),
-        "switching or leaving projects must clear every mobile disclosure"
+        source.contains("function clearMobileListDetails()"),
+        "mobile disclosure state needs one clearing helper"
     );
+    for function in ["selectRepo", "goHome", "goSettings"] {
+        assert!(
+            function_body(source, function).contains("clearMobileListDetails();"),
+            "{function} must clear every mobile disclosure"
+        );
+    }
     assert!(
         !source.contains("storyhook.mobileListDetails"),
         "mobile disclosure state must not be persisted across reloads"
@@ -3335,9 +3525,10 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
-/// SH-235/SH-600: board cards expose the same menu as right-click through a
-/// visible action button on every pointer type. List rows retain SH-235's
-/// coarse-pointer-only actions column.
+/// SH-235/SH-600/SH-614: board cards and stacked mobile list rows expose the
+/// same menu as right-click through a visible action button on every pointer
+/// type. Desktop table rows retain SH-235's coarse-pointer-only actions
+/// column.
 ///
 /// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
 /// menu items actually match right-click's and that the coarse-pointer
@@ -3380,6 +3571,7 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     // role="button" and the button is a normal part of the a11y tree there.
     assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
     assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+    assert!(body.contains("class: \"mobile-story-actions row-actions-btn\""));
 
     let card_actions = declarations(css, ".card-actions-btn");
     for declaration in [
@@ -3393,8 +3585,17 @@ fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     }
     assert!(!card_actions.contains("display: none"));
 
-    assert!(declarations(css, ".row-actions-btn").contains("display: none"));
-    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
+    let mobile_row_actions = declarations(css, ".mobile-story-actions");
+    for declaration in [
+        "display: inline-flex",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
+    ] {
+        assert!(mobile_row_actions.contains(declaration));
+    }
+
+    assert!(declarations(css, ".col-actions .row-actions-btn").contains("display: none"));
+    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .col-actions .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
 
     // The list table's own overflow-x scroll must not let the browser's
     // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
@@ -4603,6 +4804,29 @@ fn engine_http_serves_every_control_and_stable_run_views() {
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
     let run = started["run"]["id"].as_str().unwrap().to_string();
 
+    let configured = patch_json(
+        &fixture,
+        &base,
+        &serde_json::json!({
+            "run": run,
+            "lanes": 3,
+            "agent": "claude",
+            "model": "claude-opus-4-6",
+            "effort": "high",
+            "speed": "standard"
+        })
+        .to_string(),
+    )
+    .expect("configuring a live engine run");
+    assert_eq!(configured.status(), 200);
+    let configured = response_json(configured);
+    assert_eq!(configured["run"]["lane_count"], 3);
+    assert_eq!(configured["run"]["agent"], "claude");
+    assert_eq!(configured["run"]["model"], "claude-opus-4-6");
+    assert_eq!(configured["run"]["effort"], "high");
+    assert_eq!(configured["run"]["speed"], "standard");
+    assert_eq!(configured["run"]["lanes"].as_array().unwrap().len(), 3);
+
     let duplicate = post_json(&fixture, &base, "{}").unwrap_err();
     assert_eq!(status_of(duplicate), 409);
 
@@ -4686,6 +4910,17 @@ fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
     );
     assert_eq!(
         status_of(
+            patch_json(
+                &fixture,
+                &base,
+                r#"{"run":"missing","lanes":1,"agent":"codex","unknown":true}"#,
+            )
+            .unwrap_err()
+        ),
+        400
+    );
+    assert_eq!(
+        status_of(
             post_json(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#).unwrap_err()
         ),
         404
@@ -4751,6 +4986,16 @@ fn engine_http_collection_and_actions_keep_the_existing_authorization_chain() {
                 .header("X-Storyhook", "1")
                 .content_type("application/json")
                 .send("{}")
+                .unwrap_err()
+        ),
+        401
+    );
+    assert_eq!(
+        status_of(
+            ureq::patch(base.as_str())
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send(r#"{"run":"missing","lanes":1,"agent":"codex"}"#)
                 .unwrap_err()
         ),
         401
@@ -9391,6 +9636,39 @@ fn attachment_viewer_is_a_registered_named_dialog() {
     assert!(html.contains(r#"data-overlay="attachment-modal""#));
     assert!(html.contains(r#"id="attachment-close""#));
     assert!(html.contains(r#"id="attachment-status" role="status""#));
+}
+
+/// SH-393: remote description images widen only image loading and remain a
+/// consent-gated browser concern; Playwright proves the runtime boundary.
+#[test]
+fn remote_description_images_are_constrained_to_https_and_explicit_activation() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert_eq!(
+        CSP,
+        "default-src 'self'; img-src 'self' blob: https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    );
+    assert!(html.contains("function remoteImagesFromDescription"));
+    assert!(html.contains("function drawerMedia"));
+    assert!(html.contains(r#"referrerPolicy: "no-referrer""#));
+    assert!(html.contains("var dataset = { mediaKey: media.key, mediaKind: media.kind }"));
+
+    let build = function_body(script, "buildAttachmentsSection");
+    assert!(
+        build.contains("media.kind === \"remote\"")
+            && build.contains("remote-image-placeholder")
+            && build.contains("openAttachmentModal(repoId, storyId, media.key)"),
+        "remote controls must begin as explicit, unloaded activation targets"
+    );
+    assert!(
+        !build.contains("querySelector('[data-media-key=\"")
+            && !build.contains("querySelector(\"[data-media-key="),
+        "untrusted URLs must never be interpolated into selectors"
+    );
 }
 
 /// SH-392: attachment drops are a file-only layer over the existing card
