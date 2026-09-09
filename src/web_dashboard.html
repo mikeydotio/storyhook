@@ -586,23 +586,10 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .filter-sheet-body { min-height: 0; overflow-y: auto; padding: 0.75rem; }
 .filter-sheet-clear { display: flex; justify-content: flex-end; padding-top: 0.5rem; border-top: 1px solid var(--border); }
 
-/* ---- Full Auto project control (SH-470) ----
-   An operational instrument in the project header, not another card or
-   modal. It shares the always-visible filter-summary row so a phone pays no
-   extra vertical chrome for a control that is meaningful only on the repo
-   screen. The lane strip scrolls on its own axis: the engine permits up to
-   255 lanes, and wrapping that many records would consume the board. */
+/* ---- Full Auto project control (SH-470/SH-618) ---- */
 .engine-control {
   display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem;
-  min-width: 0; max-width: min(44rem, 65vw); margin-left: 0;
-}
-.engine-launch, .engine-live { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-.engine-live { flex: 1 1 auto; }
-.engine-actions { display: flex; align-items: center; gap: 0.375rem; flex: none; }
-.engine-actions .btn { white-space: nowrap; }
-.engine-wordmark {
-  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--fg-muted); white-space: nowrap;
+  min-width: 0; margin-left: 0;
 }
 .engine-lanes-label { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
 .engine-lanes-input {
@@ -611,20 +598,11 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   background: var(--bg-raised); font-size: var(--control-font-sm); text-align: center;
 }
 .engine-lanes-input:focus { outline: none; border-color: var(--accent); background: var(--bg-raised); }
-.engine-run-short { display: none; }
-.engine-state {
-  flex: none; border-radius: 999px; padding: 0.1875rem 0.5rem;
-  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.04em;
-  text-transform: uppercase; white-space: nowrap;
-}
-.engine-state-running { color: var(--success); background: var(--success-soft); }
-.engine-state-paused { color: var(--accent); background: var(--accent-soft); }
-.engine-state-draining { color: var(--warn); background: var(--warn-soft); }
-.engine-lane-count { flex: none; font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
-.engine-config {
-  flex: none; max-width: 22rem; overflow: hidden; text-overflow: ellipsis;
-  font-size: 0.6875rem; color: var(--fg-muted); white-space: nowrap;
-}
+.engine-modal-status { margin-bottom: 0.75rem; color: var(--fg-muted); }
+.engine-modal-status strong { color: var(--fg); }
+.engine-modal-lanes { margin-top: 0.75rem; }
+.engine-modal-lanes[hidden] { display: none; }
+.engine-modal-lanes-summary { margin-bottom: 0.375rem; color: var(--fg-muted); font-size: 0.8125rem; }
 .engine-lane-strip { display: flex; gap: 0.375rem; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .engine-lane {
   flex: none; display: inline-flex; align-items: baseline; gap: 0.3rem;
@@ -1671,19 +1649,10 @@ svg.ctxmenu-disabled-warning {
   .filter-group .fdd-panel { position: static; margin-top: 0.375rem; box-shadow: none; }
   .filter-toggle { font-size: 0.8125rem; color: var(--fg); min-height: var(--tap-min); }
   .filter-clear { font-size: 0.8125rem; }
-  /* The full accessible name stays on the idle button while its visible
-     label shortens. A live run gets the one optional status row instead of
-     forcing the three idle rows to wrap unpredictably. */
-  .engine-wordmark, .engine-run-label { display: none; }
-  .engine-run-short { display: inline; }
   .engine-run-btn { background: transparent; color: var(--accent); border-color: var(--accent); }
-  .engine-control[data-mode="live"] { grid-column: 1 / -1; grid-row: 4; max-height: 3.5rem; }
   .engine-lanes-copy { display: none; }
   .engine-lanes-input { width: 3rem; }
-  .engine-live { width: 100%; flex-wrap: nowrap; justify-content: flex-start; overflow: hidden; }
-  .engine-config { display: none; }
   .engine-lane-strip { flex: 1 1 auto; max-width: none; }
-  .engine-actions { order: 1; }
   .engine-banner-region { padding: 0.5rem 0.75rem 0; }
   .engine-banner-head { align-items: stretch; flex-direction: column; }
   .engine-banner-ack { align-self: flex-start; margin-left: 0; }
@@ -2015,6 +1984,7 @@ svg.ctxmenu-disabled-warning {
 <div class="modal" id="engine-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="engine-modal-header">
   <div class="modal-header" id="engine-modal-header">Run Full Auto</div>
   <div class="modal-body">
+    <div class="engine-modal-status" id="engine-modal-status"></div>
     <div class="field-grid">
       <div class="field"><label for="engine-lanes">Lanes</label>
         <input id="engine-lanes" class="engine-lanes-input" type="number" min="1" max="255" step="1" value="1"></div>
@@ -2027,10 +1997,16 @@ svg.ctxmenu-disabled-warning {
       <div class="field"><label for="engine-speed">Speed</label>
         <select id="engine-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="engine-modal-lanes" id="engine-modal-lanes" hidden>
+      <div class="engine-modal-lanes-summary" id="engine-modal-lanes-summary"></div>
+      <div class="engine-lane-strip" id="engine-modal-lane-strip" aria-label="Full Auto lanes"></div>
+    </div>
     <div class="modal-error" id="engine-modal-error"></div>
   </div>
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="engine-modal-cancel">Cancel</button>
+    <button type="button" class="btn engine-pause-btn" id="engine-modal-pause" hidden>Pause</button>
+    <button type="button" class="btn btn-warn engine-stop-btn" id="engine-modal-stop" hidden>Stop…</button>
     <button type="button" class="btn btn-primary" id="engine-modal-submit">Run Full Auto</button>
   </div>
 </div>
@@ -5276,59 +5252,38 @@ svg.ctxmenu-disabled-warning {
     return "";
   }
 
-  function setEngineRunButtonText(button, full, short) {
-    if (button.getAttribute("aria-label") !== full) button.setAttribute("aria-label", full);
-    var fullLabel = button.querySelector(".engine-run-label");
-    var shortLabel = button.querySelector(".engine-run-short");
-    if (fullLabel.textContent !== full) fullLabel.textContent = full;
-    if (shortLabel.textContent !== short) shortLabel.textContent = short;
+  function engineButtonLabel() {
+    if (currentEngineStartPending()) return "Auto: Starting…";
+    if (state.engineReadiness === "failed") return "Auto: Unavailable";
+    if (state.engineReadiness !== "loaded") return "Auto: Checking…";
+    if (state.engineRun && state.engineRun.state === "paused") return "Auto: Paused";
+    if (state.engineRun && state.engineRun.state === "running") return "Auto: Running";
+    return "Auto: Stopped";
   }
 
-  /** Updates the stable idle launch button without replacing it under a
-   * pointer press. Configuration lives in the dedicated modal. */
-  function syncEngineLaunchControl(control) {
-    var button = control.querySelector(".engine-run-btn");
+  /** Updates the one persistent Full Auto control without replacing it under
+   * a pointer press. Every configuration and lifecycle detail lives in its
+   * modal instead of occupying the project header. */
+  function syncEngineControl(control) {
+    var button = control && control.querySelector(".engine-run-btn");
     if (!button) return;
-    var blocked = engineStartBlocked();
+    var blocked = state.engineProject !== state.repoId
+      || state.engineReadiness !== "loaded" || currentEngineStartPending();
     if (button.disabled !== blocked) button.disabled = blocked;
     var title = engineReadinessTitle();
     if (button.title !== title) button.title = title;
-    if (currentEngineStartPending()) {
-      setEngineRunButtonText(button, "Starting Full Auto…", "Starting…");
-    } else if (state.engineReadiness === "failed") {
-      setEngineRunButtonText(button, "Full Auto status unavailable", "Unavailable");
-    } else if (state.engineReadiness !== "loaded") {
-      setEngineRunButtonText(button, "Checking Full Auto status…", "Checking…");
-    } else {
-      setEngineRunButtonText(button, "Run Full Auto", "Run");
-    }
+    var label = engineButtonLabel();
+    if (button.textContent !== label) button.textContent = label;
   }
 
-  function buildEngineLaunchControl() {
+  function buildEngineControl() {
     var button = el("button", {
       type: "button", class: "btn btn-primary engine-run-btn",
       onClick: function(e) { openEngineModal(null, e.currentTarget); }
-    }, [
-      el("span", { class: "engine-run-label" }, ["Run Full Auto"]),
-      el("span", { class: "engine-run-short", "aria-hidden": "true" }, ["Run"])
-    ]);
-    var control = el("div", { class: "engine-launch" }, [
-      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
-      button
-    ]);
-    syncEngineLaunchControl(control);
+    }, ["Auto: Checking…"]);
+    var control = el("div", { class: "engine-launch" }, [button]);
+    syncEngineControl(control);
     return control;
-  }
-
-  function engineRunFingerprint(run) {
-    return JSON.stringify({
-      id: run.id, state: run.state, lane_count: run.lane_count,
-      agent: run.agent, model: run.model, effort: run.effort, speed: run.speed,
-      pending_action: engineActionPending(run.id),
-      lanes: (run.lanes || []).map(function(lane) {
-        return [lane.index, lane.state, lane.story, lane.dispatched_at];
-      })
-    });
   }
 
   function formatEngineElapsed(startedAt) {
@@ -5341,64 +5296,8 @@ svg.ctxmenu-disabled-warning {
     return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds / 60) % 60) + "m";
   }
 
-  function engineConfigurationText(run) {
-    var provider = run.agent === "codex" ? "Codex" : "Claude";
-    return [
-      provider,
-      run.model || "Default model",
-      run.effort ? run.effort + " effort" : "Default effort",
-      run.speed || "Default speed"
-    ].join(" · ");
-  }
-
-  function buildEngineLiveControl(run) {
-    var pending = engineActionPending(run.id);
-    var lanes = el("div", { class: "engine-lane-strip", "aria-label": "Full Auto lanes" }, []);
-    (run.lanes || []).forEach(function(lane) {
-      var subject = lane.story || lane.state;
-      var elapsed = formatEngineElapsed(lane.dispatched_at);
-      lanes.appendChild(el("div", {
-        class: "engine-lane",
-        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
-      }, [
-        el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
-        el("span", { class: "engine-lane-story" }, [subject]),
-        elapsed ? el("span", {
-          class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
-        }, [elapsed]) : null
-      ]));
-    });
-    var configuration = engineConfigurationText(run);
-    var actions = [];
-    if (run.state === "running") {
-      actions.push(el("button", {
-        type: "button", class: "btn engine-pause-btn", disabled: !!pending,
-        onClick: function() { runEngineAction(run.id, "pause"); }
-      }, [pending === "pause" ? "Pausing…" : "Pause new claims"]));
-    } else if (run.state === "paused") {
-      actions.push(el("button", {
-        type: "button", class: "btn engine-resume-btn", disabled: !!pending,
-        onClick: function() { runEngineAction(run.id, "resume"); }
-      }, [pending === "resume" ? "Resuming…" : "Resume"]));
-    }
-    actions.push(el("button", {
-      type: "button", class: "btn btn-warn engine-stop-btn", disabled: !!pending,
-      onClick: function(e) { openEngineStopModal(run.id, e.currentTarget); }
-    }, [pending === "drain" ? "Draining…" : pending === "stop-now" ? "Stopping…"
-      : run.state === "draining" ? "Stop (draining)" : "Stop"]));
-    return el("div", { class: "engine-live" }, [
-      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
-      el("span", { class: "engine-state engine-state-" + run.state }, [run.state]),
-      el("span", { class: "engine-lane-count" }, [run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")]),
-      el("span", { class: "engine-config", title: configuration }, [configuration]),
-      lanes,
-      el("div", { class: "engine-actions", "aria-label": "Full Auto controls" }, actions)
-    ]);
-  }
-
-  /** Paints the engine's project control through SH-401's press gate. The
-   * idle node is retained and updated in place; the live node is rebuilt
-   * only when its visible run/lane fingerprint changes. */
+  /** Paints the engine's one persistent project control through SH-401's
+   * press gate. The node is retained across every engine state. */
   function renderEngineControl() {
     if (pressDefer("engine", renderEngineControl)) return;
     var mount = $("engine-control");
@@ -5406,29 +5305,13 @@ svg.ctxmenu-disabled-warning {
     mount.hidden = !visible;
     if (!visible) {
       if (mount.firstChild) clear(mount);
-      delete mount.dataset.mode;
-      delete mount.dataset.fingerprint;
       return;
     }
-
-    if (isLiveEngineRun(state.engineRun)) {
-      var fingerprint = engineRunFingerprint(state.engineRun);
-      if (mount.dataset.mode === "live" && mount.dataset.fingerprint === fingerprint) return;
+    if (!mount.firstChild) {
       clear(mount);
-      mount.appendChild(buildEngineLiveControl(state.engineRun));
-      mount.dataset.mode = "live";
-      mount.dataset.fingerprint = fingerprint;
-      return;
+      mount.appendChild(buildEngineControl());
     }
-
-    if (mount.dataset.mode !== "launch") {
-      clear(mount);
-      mount.appendChild(buildEngineLaunchControl());
-      mount.dataset.mode = "launch";
-      delete mount.dataset.fingerprint;
-    } else {
-      syncEngineLaunchControl(mount.firstChild);
-    }
+    syncEngineControl(mount.firstChild);
   }
 
   function updateEngineElapsedLabels() {
@@ -5556,6 +5439,7 @@ svg.ctxmenu-disabled-warning {
         applyEngineRuns(runs);
         state.engineReadiness = "loaded";
         renderEngineControl();
+        syncOpenEngineModal(false);
         renderEngineAlert();
         // Lane membership is rendered on cards and rows. Route the repaint
         // through renderView so SH-401's press gate protects those nodes.
@@ -5646,6 +5530,7 @@ svg.ctxmenu-disabled-warning {
 
     state.engineActions[runId] = action;
     renderEngineControl();
+    syncOpenEngineModal(false);
     api("POST", apiBase() + "/engine/" + action, { run: runId }).then(function(response) {
       delete state.engineActions[runId];
       if (state.screen !== "repo" || state.repoId !== project) return;
@@ -5657,6 +5542,7 @@ svg.ctxmenu-disabled-warning {
         ? "Full Auto paused — current lane work continues"
         : "Full Auto resumed", "success");
       renderEngineControl();
+      syncOpenEngineModal(false);
       renderEngineAlert();
       fetchEngineRuns();
     }).catch(function(err) {
@@ -5666,6 +5552,7 @@ svg.ctxmenu-disabled-warning {
       // definite server response keeps its own message. Both reconcile.
       toastError(err);
       renderEngineControl();
+      syncOpenEngineModal(false);
       fetchEngineRuns();
     });
   }
@@ -5974,27 +5861,117 @@ svg.ctxmenu-disabled-warning {
 
   var engineModalProject = null;
   var engineModalEpicId = null;
+  var engineModalRunId = null;
 
-  /** Opens one shared Full Auto configuration surface for project and epic
-   * launches. Catalog and provider preferences are the attended Dispatch
-   * ones; lanes remain this page session's last submitted value. */
+  function engineModalRun() {
+    if (!engineModalRunId) return null;
+    return state.engineRuns.filter(function(run) { return run.id === engineModalRunId; })[0]
+      || (state.engineRun && state.engineRun.id === engineModalRunId ? state.engineRun : null);
+  }
+
+  function populateCurrentEngineSelector(selectId, entries, preferred) {
+    populateDispatchSelector(selectId, entries, preferred);
+    if (preferred && $(selectId).value !== preferred) {
+      $(selectId).appendChild(el("option", { value: preferred }, [preferred + " (current)"]));
+      $(selectId).value = preferred;
+    }
+  }
+
+  function applyCurrentEngineProviderOptions(run, caps) {
+    var providerCaps = (caps && caps[run.agent]) || {};
+    populateCurrentEngineSelector("engine-model", providerCaps.models, run.model || "");
+    populateCurrentEngineSelector("engine-effort", providerCaps.efforts, run.effort || "");
+    populateCurrentEngineSelector("engine-speed", providerCaps.speeds, run.speed || "");
+  }
+
+  function renderEngineModalLanes(run) {
+    var container = $("engine-modal-lanes");
+    var strip = $("engine-modal-lane-strip");
+    clear(strip);
+    if (!run) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    var occupied = (run.lanes || []).filter(function(lane) {
+      return lane.state === "dispatching" || lane.state === "working";
+    }).length;
+    $("engine-modal-lanes-summary").textContent = occupied + " active · target "
+      + run.lane_count + (run.lane_count === 1 ? " lane" : " lanes");
+    (run.lanes || []).forEach(function(lane) {
+      var subject = lane.story || lane.state;
+      var elapsed = formatEngineElapsed(lane.dispatched_at);
+      strip.appendChild(el("div", {
+        class: "engine-lane",
+        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
+      }, [
+        el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
+        el("span", { class: "engine-lane-story" }, [subject]),
+        elapsed ? el("span", {
+          class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
+        }, [elapsed]) : null
+      ]));
+    });
+  }
+
+  function syncOpenEngineModal(syncFields) {
+    if (!engineModalProject || !$("engine-modal").classList.contains("open")) return;
+    var run = engineModalRun();
+    var pending = run ? engineActionPending(run.id) : null;
+    var draining = !!run && run.state === "draining";
+    if (syncFields && run) {
+      $("engine-lanes").value = String(run.lane_count);
+      $("engine-agent").value = run.agent;
+      applyCurrentEngineProviderOptions(run, dispatchOptionsCache);
+    }
+    $("engine-modal-status").textContent = run
+      ? "Current run · " + run.state
+      : "Configure the next Full Auto run.";
+    renderEngineModalLanes(run);
+    ["engine-lanes", "engine-agent", "engine-model", "engine-effort", "engine-speed"]
+      .forEach(function(id) { $(id).disabled = draining || !!pending; });
+    $("engine-modal-cancel").disabled = !!pending;
+    var pause = $("engine-modal-pause");
+    pause.hidden = !run || draining;
+    pause.disabled = !!pending;
+    pause.textContent = pending === "pause" ? "Pausing…"
+      : pending === "resume" ? "Resuming…"
+        : run && run.state === "paused" ? "Resume" : "Pause";
+    var stop = $("engine-modal-stop");
+    stop.hidden = !run;
+    stop.disabled = !!pending;
+    stop.textContent = draining ? "Stop now…" : "Stop…";
+    var submit = $("engine-modal-submit");
+    submit.hidden = draining;
+    submit.disabled = !!pending;
+    submit.textContent = run
+      ? pending === "configure" ? "Saving…" : "Save changes"
+      : "Run Full Auto";
+  }
+
+  /** Opens one shared Full Auto configuration and lifecycle surface. */
   function openEngineModal(epicId, returnFocus) {
-    if (engineStartBlocked()) return;
     var project = state.repoId;
+    if (!project || state.engineProject !== project || state.engineReadiness !== "loaded"
+        || currentEngineStartPending() || (epicId && state.engineRun)) return;
+    var run = epicId ? null : state.engineRun;
     engineModalProject = project;
     engineModalEpicId = epicId;
+    engineModalRunId = run ? run.id : null;
     $("engine-modal-header").textContent = epicId
       ? "Run Full Auto on " + epicId
-      : "Run Full Auto";
+      : run ? "Full Auto" : "Run Full Auto";
     $("engine-modal-error").textContent = "";
-    $("engine-lanes").value = String(state.engineLanes);
-    $("engine-agent").value = dispatchDefaults.agent;
+    $("engine-lanes").value = String(run ? run.lane_count : state.engineLanes);
+    $("engine-agent").value = run ? run.agent : dispatchDefaults.agent;
     populateDispatchSelector("engine-model", null, "");
     populateDispatchSelector("engine-effort", null, "");
     populateDispatchSelector("engine-speed", null, "");
     fetchDispatchOptions().then(function(caps) {
-      if (engineModalProject === project && engineModalEpicId === epicId) {
-        applyEngineProviderOptions($("engine-agent").value, caps);
+      if (engineModalProject === project && engineModalEpicId === epicId
+          && engineModalRunId === (run ? run.id : null)) {
+        if (run) applyCurrentEngineProviderOptions(run, caps);
+        else applyEngineProviderOptions($("engine-agent").value, caps);
       }
     }).catch(function() { /* default selections keep Full Auto usable */ });
     showBackdrop("engine-modal-backdrop");
@@ -6002,15 +5979,24 @@ svg.ctxmenu-disabled-warning {
     if (returnFocus) overlayReturnFocus["engine-modal"] = returnFocus;
     $("engine-modal").classList.add("open");
     $("engine-modal").setAttribute("aria-hidden", "false");
+    syncOpenEngineModal(false);
   }
 
   function onEngineAgentChange() {
+    var run = engineModalRun();
+    if (run && $("engine-agent").value === run.agent) {
+      applyCurrentEngineProviderOptions(run, dispatchOptionsCache);
+      return;
+    }
     applyEngineProviderOptions($("engine-agent").value, dispatchOptionsCache);
   }
 
   function closeEngineModal() {
+    var run = engineModalRun();
+    if (run && engineActionPending(run.id)) return;
     engineModalProject = null;
     engineModalEpicId = null;
+    engineModalRunId = null;
     hideBackdrop("engine-modal-backdrop");
     $("engine-modal").classList.remove("open");
     $("engine-modal").setAttribute("aria-hidden", "true");
@@ -6020,7 +6006,9 @@ svg.ctxmenu-disabled-warning {
   function submitEngineModal() {
     var project = engineModalProject;
     var epicId = engineModalEpicId;
-    if (!project || project !== state.repoId || engineStartBlocked()) return;
+    var run = engineModalRun();
+    if (!project || project !== state.repoId || (run && engineActionPending(run.id))
+        || (!run && engineStartBlocked())) return;
     var lanes = Number($("engine-lanes").value);
     if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) {
       $("engine-modal-error").textContent = "Lanes must be an integer from 1 through 255.";
@@ -6032,8 +6020,53 @@ svg.ctxmenu-disabled-warning {
     var speed = $("engine-speed").value;
     state.engineLanes = lanes;
     saveDispatchProviderDefaults(agent, model, effort, speed);
+    if (run) {
+      state.engineActions[run.id] = "configure";
+      syncOpenEngineModal(false);
+      renderEngineControl();
+      api("PATCH", apiBase() + "/engine", {
+        run: run.id, lanes: lanes, agent: agent,
+        model: model || null, effort: effort || null, speed: speed || null
+      }).then(function(response) {
+        delete state.engineActions[run.id];
+        if (state.screen !== "repo" || state.repoId !== project) return;
+        state.engineFetchTicket++;
+        if (response.run) applyEngineRun(response.run);
+        toast("Full Auto configuration updated", "success");
+        closeEngineModal();
+        renderEngineControl();
+        fetchEngineRuns();
+      }).catch(function(err) {
+        delete state.engineActions[run.id];
+        if (state.screen !== "repo" || state.repoId !== project) return;
+        if (err && err.status === 0) {
+          closeEngineModal();
+          toastError(err);
+        } else {
+          $("engine-modal-error").textContent = describeFailure(err);
+          syncOpenEngineModal(false);
+        }
+        renderEngineControl();
+        fetchEngineRuns();
+      });
+      return;
+    }
     closeEngineModal();
     startEngineRun(epicId, lanes, agent, model, effort, speed);
+  }
+
+  function toggleEngineModalPause() {
+    var run = engineModalRun();
+    if (!run) return;
+    runEngineAction(run.id, run.state === "paused" ? "resume" : "pause");
+  }
+
+  function stopEngineFromModal() {
+    var run = engineModalRun();
+    if (!run || engineActionPending(run.id)) return;
+    var runId = run.id;
+    closeEngineModal();
+    openEngineStopModal(runId, document.querySelector(".engine-run-btn"));
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
@@ -15021,6 +15054,8 @@ svg.ctxmenu-disabled-warning {
     $("engine-modal-cancel").addEventListener("click", closeEngineModal);
     $("engine-modal-backdrop").addEventListener("click", closeEngineModal);
     $("engine-modal-submit").addEventListener("click", submitEngineModal);
+    $("engine-modal-pause").addEventListener("click", toggleEngineModalPause);
+    $("engine-modal-stop").addEventListener("click", stopEngineFromModal);
     $("engine-agent").addEventListener("change", onEngineAgentChange);
     $("engine-stop-cancel").addEventListener("click", closeEngineStopModal);
     $("engine-stop-modal-backdrop").addEventListener("click", closeEngineStopModal);

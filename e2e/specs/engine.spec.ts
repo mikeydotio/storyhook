@@ -466,13 +466,9 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await lanes.fill("2");
   await submitEngineModal(page);
 
-  await expect(page.locator(".engine-state")).toHaveText("running", {
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running", {
     timeout: REAL_ENGINE_TIMEOUT,
   });
-  const claimedLane = engineStoryLane(page, ENGINE_STORY_ID);
-  await expect(claimedLane).toHaveCount(1, { timeout: REAL_ENGINE_TIMEOUT });
-  await expect(page.locator(".engine-lane-count")).toHaveText("2 lanes");
-
   const slug = await projectSlug(request, ENGINE_PROJECT);
   const statusResponse = await request.get(`/api/repos/${slug}/engine`, {
     headers: { "X-Storyhook-Token": DASHBOARD_TOKEN },
@@ -812,7 +808,7 @@ test("a failed refresh leaves the last-confirmed engine alert visibly stale", as
   );
 });
 
-test("compact live controls use one bounded status row in every live state", async ({
+test("the header keeps one compact state button in every live state", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -825,12 +821,12 @@ test("compact live controls use one bounded status row in every live state", asy
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
-  async function expectBoundedHeader(state: EngineRun["state"]): Promise<void> {
-    await expect(page.locator("#engine-control")).toHaveAttribute(
-      "data-mode",
-      "live",
-    );
-    await expect(page.locator(".engine-state")).toHaveText(state);
+  async function expectBoundedHeader(label: string): Promise<void> {
+    const button = page.locator(".engine-run-btn");
+    await expect(button).toHaveText(label);
+    await expect(page.locator("#engine-control .engine-run-btn")).toHaveCount(1);
+    await expect(page.locator("#engine-control .engine-wordmark, #engine-control .engine-lane-strip"))
+      .toHaveCount(0);
     const geometry = await page.evaluate(() => {
       const control = document
         .querySelector<HTMLElement>("#engine-control")!
@@ -838,46 +834,34 @@ test("compact live controls use one bounded status row in every live state", asy
       const workspace = document
         .querySelector<HTMLElement>("#repo-workspace")!
         .getBoundingClientRect();
-      const lanes = document
-        .querySelector<HTMLElement>(".engine-lane-strip")!;
       return {
         controlHeight: control.height,
         workspaceTop: workspace.top,
-        laneClientWidth: lanes.clientWidth,
-        laneScrollWidth: lanes.scrollWidth,
         documentClientWidth: document.documentElement.clientWidth,
         documentScrollWidth: document.documentElement.scrollWidth,
       };
     });
     expect(geometry.controlHeight).toBeLessThanOrEqual(56);
     expect(geometry.workspaceTop).toBeLessThanOrEqual(248);
-    expect(geometry.laneClientWidth).toBeGreaterThan(0);
-    expect(geometry.laneScrollWidth).toBeGreaterThanOrEqual(
-      geometry.laneClientWidth,
-    );
     expect(geometry.documentScrollWidth).toBeLessThanOrEqual(
       geometry.documentClientWidth,
     );
-    await expectCoarseEngineTargets(page, ".engine-live button");
+    await expectCoarseEngineTargets(page, ".engine-run-btn");
   }
 
-  await expectBoundedHeader("running");
-  await expect(page.locator(".engine-pause-btn")).toBeVisible();
-  await expect(page.locator(".engine-stop-btn")).toBeVisible();
+  await expectBoundedHeader("Auto: Running");
 
   current.state = "paused";
   await page.reload();
-  await expectBoundedHeader("paused");
-  await expect(page.locator(".engine-resume-btn")).toBeVisible();
-  await expect(page.locator(".engine-stop-btn")).toBeVisible();
+  await expectBoundedHeader("Auto: Paused");
 
   current.state = "draining";
   await page.reload();
-  await expectBoundedHeader("draining");
-  await expect(
-    page.locator(".engine-pause-btn, .engine-resume-btn"),
-  ).toHaveCount(0);
-  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop (draining)");
+  await expectBoundedHeader("Auto: Stopped");
+  await openProjectEngineModal(page);
+  await expect(page.locator("#engine-modal-status")).toContainText("draining");
+  await expect(page.locator("#engine-modal-submit")).toBeHidden();
+  await expect(page.locator("#engine-modal-stop")).toHaveText("Stop now…");
 });
 
 test("project launch is guarded once and becomes a live lane instrument", async ({
@@ -955,7 +939,7 @@ test("project launch is guarded once and becomes a live lane instrument", async 
 
   await expect.poll(() => posts).toBe(1);
   await expect(start).toBeDisabled();
-  await expect(start).toHaveAccessibleName("Starting Full Auto…");
+  await expect(start).toHaveAccessibleName("Auto: Starting…");
   expect(submitted).toEqual({
     lanes: 3,
     agent: "codex",
@@ -970,11 +954,13 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   ).toBe(true);
 
   releasePost();
-  await expect(page.locator(".engine-state")).toHaveText("running");
-  await expect(page.locator(".engine-config")).toContainText(
-    "Codex · gpt-5.6-sol · xhigh effort · fast",
-  );
-  await expect(page.locator(".engine-lane-count")).toHaveText("2 lanes");
+  await expect(start).toHaveText("Auto: Running");
+  await openProjectEngineModal(page);
+  await expect(page.locator("#engine-agent")).toHaveValue("codex");
+  await expect(page.locator("#engine-model")).toHaveValue("gpt-5.6-sol");
+  await expect(page.locator("#engine-effort")).toHaveValue("xhigh");
+  await expect(page.locator("#engine-speed")).toHaveValue("fast");
+  await expect(page.locator("#engine-modal-lanes-summary")).toContainText("target 2 lanes");
   await expect(page.locator(".engine-lane").nth(0)).toContainText("AA-12");
   const elapsed = page.locator(".engine-lane-elapsed");
   await expect(elapsed).toContainText(/1m \d+s/);
@@ -984,7 +970,7 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
 });
 
-test("running and paused controls guard and reconcile pause and resume", async ({ page }) => {
+test("the live modal guards and reconciles pause and resume", async ({ page }) => {
   let current = run("alpha", "AA-CONTROL");
   let pausePosts = 0;
   let resumePosts = 0;
@@ -1025,13 +1011,13 @@ test("running and paused controls guard and reconcile pause and resume", async (
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  const pause = page.locator(".engine-pause-btn");
-  await expect(pause).toHaveText("Pause new claims");
-  await expect(page.locator(".engine-resume-btn")).toHaveCount(0);
-  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+  await openProjectEngineModal(page);
+  const pause = page.locator("#engine-modal-pause");
+  await expect(pause).toHaveText("Pause");
+  await expect(page.locator("#engine-modal-stop")).toHaveText("Stop…");
 
   await page.evaluate(() => {
-    const button = document.querySelector(".engine-pause-btn") as HTMLButtonElement;
+    const button = document.querySelector("#engine-modal-pause") as HTMLButtonElement;
     button.click();
     button.click();
   });
@@ -1041,13 +1027,12 @@ test("running and paused controls guard and reconcile pause and resume", async (
   await expect(pause).toHaveText("Pausing…");
 
   releasePause();
-  const resume = page.locator(".engine-resume-btn");
+  const resume = page.locator("#engine-modal-pause");
   await expect(resume).toHaveText("Resume");
-  await expect(page.locator(".engine-pause-btn")).toHaveCount(0);
-  await expect(page.locator(".engine-stop-btn")).toHaveText("Stop");
+  await expect(page.locator("#engine-modal-stop")).toHaveText("Stop…");
 
   await page.evaluate(() => {
-    const button = document.querySelector(".engine-resume-btn") as HTMLButtonElement;
+    const button = document.querySelector("#engine-modal-pause") as HTMLButtonElement;
     button.click();
     button.click();
   });
@@ -1057,7 +1042,68 @@ test("running and paused controls guard and reconcile pause and resume", async (
   await expect(resume).toHaveText("Resuming…");
 
   releaseResume();
-  await expect(page.locator(".engine-pause-btn")).toHaveText("Pause new claims");
+  await expect(page.locator("#engine-modal-pause")).toHaveText("Pause");
+});
+
+test("the live modal updates capacity and provider settings for future stories", async ({
+  page,
+}) => {
+  const current = run("alpha", "AA-CONFIG");
+  occupySecondLane(current, "AA-CONFIG-2");
+  current.lane_count = 3;
+  current.lanes.push({
+    index: 2,
+    state: "working",
+    story: "AA-CONFIG-3",
+    dispatched_at: current.lanes[0].dispatched_at,
+    last_observed_at: current.lanes[0].last_observed_at,
+    outcome: null,
+    outcome_detail: null,
+  });
+  let patched: unknown = null;
+  await page.route("**/api/repos/*/engine", async (route) => {
+    if (route.request().method() === "GET") {
+      await fulfillRuns(route, [current]);
+      return;
+    }
+    expect(route.request().method()).toBe("PATCH");
+    patched = route.request().postDataJSON();
+    current.lane_count = 2;
+    current.agent = "codex";
+    current.model = "gpt-5.6-sol";
+    current.effort = "xhigh";
+    current.speed = "fast";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ result: "ok", run: current }),
+    });
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
+  await expect(page.locator("#engine-modal-lanes-summary")).toHaveText("3 active · target 3 lanes");
+  await page.locator("#engine-lanes").fill("2");
+  await page.locator("#engine-agent").selectOption("codex");
+  await page.locator("#engine-model").selectOption("gpt-5.6-sol");
+  await page.locator("#engine-effort").selectOption("xhigh");
+  await page.locator("#engine-speed").selectOption("fast");
+  await page.locator("#engine-modal-submit").click();
+
+  await expect.poll(() => patched).toEqual({
+    run: current.id,
+    lanes: 2,
+    agent: "codex",
+    model: "gpt-5.6-sol",
+    effort: "xhigh",
+    speed: "fast",
+  });
+  await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
+  await expect(page.locator("#toast-stack .toast.success")).toContainText(
+    "Full Auto configuration updated",
+  );
 });
 
 test("Stop offers guarded Drain and Stop now with exact consequences", async ({ page }) => {
@@ -1109,7 +1155,8 @@ test("Stop offers guarded Drain and Stop now with exact consequences", async ({ 
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  const stop = page.locator(".engine-stop-btn");
+  await openProjectEngineModal(page);
+  const stop = page.locator("#engine-modal-stop");
   await stop.click();
   const modal = page.locator("#engine-stop-modal");
   await expect(modal).toHaveClass(/open/);
@@ -1122,18 +1169,21 @@ test("Stop offers guarded Drain and Stop now with exact consequences", async ({ 
   await expect(page.locator("#engine-stop-cancel")).toBeFocused();
   await page.locator("#engine-stop-cancel").click();
   await expect(modal).not.toHaveClass(/open/);
-  await expect(stop).toBeFocused();
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
 
-  await stop.click();
+  await openProjectEngineModal(page);
+  await page.locator("#engine-modal-stop").click();
   await page.keyboard.press("Escape");
   await expect(modal).not.toHaveClass(/open/);
-  await expect(stop).toBeFocused();
-  await stop.click();
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
+  await openProjectEngineModal(page);
+  await page.locator("#engine-modal-stop").click();
   await page.locator("#engine-stop-modal-backdrop").click({ position: { x: 1, y: 1 } });
   await expect(modal).not.toHaveClass(/open/);
-  await expect(stop).toBeFocused();
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
 
-  await stop.click();
+  await openProjectEngineModal(page);
+  await page.locator("#engine-modal-stop").click();
   await expectCoarseEngineTargets(page, "#engine-stop-modal button");
   await page.evaluate(() => {
     const button = document.querySelector("#engine-stop-drain") as HTMLButtonElement;
@@ -1155,13 +1205,14 @@ test("Stop offers guarded Drain and Stop now with exact consequences", async ({ 
   await expect(alert).toHaveClass(/open/);
   await expect(alert).toContainText("operator-stopped");
   await expect(page.locator("#engine-alert-title")).toBeFocused();
-  const drainingStop = page.locator(".engine-stop-btn");
-  await expect(page.locator(".engine-pause-btn, .engine-resume-btn")).toHaveCount(0);
-  await expect(drainingStop).toHaveText("Stop (draining)");
   await page.locator(".engine-alert-ack").click();
   await expect(alert).not.toHaveClass(/open/);
-  await expect(drainingStop).toBeFocused();
-  await expectCoarseEngineTargets(page, ".engine-live button");
+  await expect(page.locator(".engine-run-btn")).toBeFocused();
+  await openProjectEngineModal(page);
+  const drainingStop = page.locator("#engine-modal-stop");
+  await expect(page.locator("#engine-modal-pause")).toBeHidden();
+  await expect(drainingStop).toHaveText("Stop now…");
+  await expectCoarseEngineTargets(page, "#engine-modal button");
 
   await drainingStop.click();
   await expect(page.locator("#engine-stop-drain")).toBeDisabled();
@@ -1224,14 +1275,15 @@ test("a timed-out lifecycle mutation is reported as ambiguous and reconciled", a
 
   await page.goto(`/?mutationTimeoutMs=${timeoutMs}`);
   await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
   const before = gets;
-  await page.locator(".engine-pause-btn").click();
+  await page.locator("#engine-modal-pause").click();
 
   const notice = page.locator("#toast-stack .toast.error");
   await expect(notice).toContainText("may or may not have gone through");
   await expect(notice).not.toContainText("request timed out");
   await expect.poll(() => gets).toBeGreaterThan(before);
-  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
+  await expect(page.locator("#engine-modal-pause")).toHaveText("Resume");
   await done;
 });
 
@@ -1265,7 +1317,7 @@ test("the modal submits a changed lane count through a physical click", async ({
   await page.locator("#engine-modal-submit").click();
 
   await expect.poll(() => submitted).toEqual({ lanes: 2, agent: "claude" });
-  await expect(page.locator(".engine-state")).toHaveText("running");
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
 });
 
 test("a definite refusal releases the start claim for another attempt", async ({
@@ -1398,7 +1450,7 @@ test("an unconfirmed start stays honest and reconciles the run with GET", async 
   await expect(notice).toContainText(
     "storyhook could not confirm whether this reached the daemon",
   );
-  await expect(engineStoryLane(page, "AA-ambiguous")).toHaveText("AA-ambiguous");
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
 });
 
 test("a late project reply cannot overwrite the selected project's run", async ({
@@ -1435,6 +1487,7 @@ test("a late project reply cannot overwrite the selected project's run", async (
   await seen;
   await page.locator("#projsel-btn").click();
   await page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }).click();
+  await openProjectEngineModal(page);
   await expect(engineStoryLane(page, "BETA-CURRENT")).toHaveText("BETA-CURRENT");
 
   releaseFirst();
@@ -1442,6 +1495,7 @@ test("a late project reply cannot overwrite the selected project's run", async (
   await expect(engineStoryLane(page, "BETA-CURRENT")).toHaveText("BETA-CURRENT");
   await expect(engineStoryLane(page, "ALPHA-LATE")).toHaveCount(0);
 
+  await page.locator("#engine-modal-cancel").click();
   await page.locator("#projsel-btn").click();
   await page.locator("#projsel-menu .projsel-item", { hasText: "Gamma Archive" }).click();
   await expect(page.locator("#engine-control")).toBeHidden();
@@ -1468,7 +1522,7 @@ test("the safety poll reconciles engine state without an SSE event", async ({
   // event is emitted in this test; advancing that interval is the witness.
   await page.clock.runFor(25_000);
   await expect.poll(() => gets).toBeGreaterThan(initialGets);
-  await expect(engineStoryLane(page, "AA-SAFETY")).toHaveText("AA-SAFETY");
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
 });
 
 test("lane chips identify live Full Auto work and clear through the view press gate", async ({
@@ -1728,25 +1782,14 @@ test("an engine repaint waits until a held press can dispatch its click", async 
     )
     .toBe(1);
   await expect(page.locator("#engine-modal")).toHaveClass(/open/);
-  await expect(engineStoryLane(page, "AA-PUSH")).toHaveText("AA-PUSH");
+  await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
 });
 
-test("a live-control repaint waits until a held Pause press dispatches", async ({ page }) => {
+test("the persistent Auto button survives a live-state repaint under a held press", async ({ page }) => {
   await installTestEventSource(page);
   const current = run("alpha", "AA-HELD-PAUSE");
   let project = "";
   let gets = 0;
-  let pausePosts = 0;
-
-  await page.route("**/api/repos/*/engine/pause", async (route) => {
-    pausePosts++;
-    current.state = "paused";
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ result: "ok", run: current }),
-    });
-  });
   await page.route("**/api/repos/*/engine", async (route) => {
     gets++;
     const segments = new URL(route.request().url()).pathname.split("/");
@@ -1757,9 +1800,9 @@ test("a live-control repaint waits until a held Pause press dispatches", async (
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  const pause = page.locator(".engine-pause-btn");
-  await expect(pause).toBeEnabled();
-  const box = await pause.boundingBox();
+  const button = page.locator(".engine-run-btn");
+  await expect(button).toHaveText("Auto: Running");
+  const box = await button.boundingBox();
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.mouse.down();
@@ -1778,9 +1821,9 @@ test("a live-control repaint waits until a held Pause press dispatches", async (
       ),
     )
     .toBe(true);
-  await expect(pause).toBeAttached();
+  await expect(button).toBeAttached();
 
   await page.mouse.up();
-  await expect.poll(() => pausePosts).toBe(1);
-  await expect(page.locator(".engine-resume-btn")).toHaveText("Resume");
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
+  await expect(engineStoryLane(page, "AA-HELD-PAUSE")).toHaveText("AA-HELD-PAUSE");
 });
