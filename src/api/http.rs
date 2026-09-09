@@ -32,7 +32,7 @@ fn security_header_frame() -> Header {
 /// response (via [`finish`]) and the hand-rolled `GET /api/events` response
 /// head, which bypasses `finish` entirely (see [`write_sse_head`]) — so the
 /// two paths can never drift apart.
-pub const CSP: &str = "default-src 'self'; img-src 'self' blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
+pub const CSP: &str = "default-src 'self'; img-src 'self' blob: https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
 
 /// A legitimate same-origin dashboard request keeps sending `Referer`
 /// (SH-319's cookie-borne-read fallback,

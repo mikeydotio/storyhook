@@ -149,3 +149,24 @@ test("filters survive a page reload on the same project", async ({
     page.locator(".card-title", { hasText: "Fix the flaky upload test" }),
   ).not.toBeVisible();
 });
+
+test("mobile filter values survive reload but the sheet open state does not", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await openProject(page, "Alpha Project");
+  await page.locator("#search-input").fill("flow");
+  await openFilters(page);
+  await expect(page.locator("#filter-sheet")).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.locator("#search-input")).toHaveValue("flow");
+  await expect(page.locator("#filter-sheet")).toBeHidden();
+  await expect(page.locator("#filter-panel")).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(page.locator("#filter-active-indicator")).toBeVisible();
+});

@@ -156,3 +156,30 @@ test("opening a card's drawer does not desync the filter toggle's aria-expanded 
     "true",
   );
 });
+
+test("768px uses a transient sheet while 769px restores the desktop disclosure preference", async ({
+  page,
+}) => {
+  await openFilters(page);
+  await expect(page.locator("#filter-panel")).toBeVisible();
+
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await expect(page.locator("#filter-sheet")).toBeHidden();
+  await expect(page.locator("#filter-panel")).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+
+  await page.locator("#filter-toggle-btn").click();
+  await expect(page.locator("#filter-sheet")).toBeVisible();
+  await expect(page.locator("#filter-sheet-title")).toBeFocused();
+
+  await page.setViewportSize({ width: 769, height: 1024 });
+  await expect(page.locator("#filter-sheet")).toBeHidden();
+  await expect(page.locator("#filter-panel")).toBeVisible();
+  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+});

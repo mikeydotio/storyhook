@@ -207,7 +207,8 @@ test("mobile sorting shares desktop order and focus transfers across the breakpo
   await keyboardTitle.press(" ");
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(keyboardTitle).toHaveAttribute("data-keyboard-clicks", "1");
-  await page.locator("#drawer-close").click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await keyboardTitle.press("Enter");
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(keyboardTitle).toHaveAttribute("data-keyboard-clicks", "2");

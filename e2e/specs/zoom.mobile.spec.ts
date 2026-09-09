@@ -1,6 +1,7 @@
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
+  clickHeaderAction,
   cleanUpCreatedStories,
   deleteStory,
   openProject,
@@ -201,25 +202,39 @@ test("every text-entry control the document ships with is at least 16px", async 
   );
 });
 
-test("the project header's text-entry controls are at least 16px", async ({ page }) => {
+test("the project header and Full Auto controls are at least 16px", async ({
+  page,
+}) => {
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
-  await expectNoZoomingControls(page.locator(".topbar"), "the topbar", 1);
-
-  // Full Auto's number stepper shares the project header/filter-summary row.
-  // Number inputs raise the keyboard and zoom on WebKit exactly like text,
-  // so this is a positive measurement rather than the old empty-bar check.
-  const filterBarControls = await measureControls(
-    page.locator("#filter-bar"),
+  const headerControls = await measureControls(
+    page.locator("#dashboard-header"),
     true,
   );
   expect(
-    filterBarControls.length,
-    "the project header should expose exactly the Full Auto lanes stepper",
+    headerControls.length,
+    "the compact project header should expose exactly its Search field",
   ).toBe(1);
-  expect(filterBarControls[0].describe).toContain("#engine-lanes");
-  expect(filterBarControls[0].fontSizePx).toBeGreaterThanOrEqual(16);
+  expect(headerControls[0].describe).toContain("#search-input");
+  expect(headerControls[0].fontSizePx).toBeGreaterThanOrEqual(16);
+
+  // Full Auto's configuration moved from the filter row into the dedicated
+  // Run modal. Open the real surface: measuring its hidden static markup
+  // would miss a rule that only breaks once the modal is rendered.
+  const run = page.locator(".engine-run-btn");
+  await expect(run).toBeEnabled();
+  await run.click();
+  await expect(page.locator("#engine-modal")).toHaveClass(/open/);
+  // Lanes plus Provider/Model/Effort/Speed. The number input raises the
+  // mobile keyboard just like text, and every select shares that surface.
+  await expectNoZoomingControls(
+    page.locator("#engine-modal"),
+    "the Full Auto confirmation modal",
+    5,
+  );
+  await page.locator("#engine-modal-cancel").click();
+  await expect(page.locator("#engine-modal")).not.toHaveClass(/open/);
 });
 
 test("the create-story modal's controls are at least 16px", async ({
@@ -343,7 +358,7 @@ test("the settings project form's controls are at least 16px", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.locator("#settings-btn").click();
+  await clickHeaderAction(page, "settings-btn");
   await expect(page.locator("#settings-view")).toBeVisible();
 
   // Path, display name, and story-id prefix.
