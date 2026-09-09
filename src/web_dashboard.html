@@ -1243,6 +1243,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .attachment-thumbnail { flex: 0 0 7rem; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; white-space: normal; text-align: left; }
 .attachment-thumbnail > * { pointer-events: none; }
 .attachment-thumbnail img { width: 100%; height: 5rem; object-fit: contain; background: var(--bg-sunken); border-radius: var(--radius-sm); }
+.remote-image-placeholder { width: 100%; height: 5rem; display: flex; align-items: center; justify-content: center; background: var(--bg-sunken); border-radius: var(--radius-sm); color: var(--fg-muted); font-size: 1.5rem; }
+.remote-image-host { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); font-size: 0.6875rem; }
 .attachment-name { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-preview-error { font-size: 0.75rem; color: var(--fg-muted); }
 .create-attachments { margin-top: var(--space-label); }
@@ -3486,9 +3488,11 @@ svg.ctxmenu-disabled-warning {
           // be malformed has applied nothing, so it must not stop a later
           // (higher-ticket) reply from applying either.
           boardFetchFloor = ticket;
-          var oldAttachments = drawerAttachments();
+          var mediaStoryId = state.drawerId;
+          var oldMedia = mediaStoryId ? drawerMedia(mediaStoryId) : [];
           state.data = parsed;
-          var attachmentsChanged = JSON.stringify(oldAttachments) !== JSON.stringify(drawerAttachments());
+          var mediaChanged = !!mediaStoryId &&
+            JSON.stringify(oldMedia) !== JSON.stringify(drawerMedia(mediaStoryId));
           if (attachmentViewer && !storyReferenceExists(attachmentViewer.storyId)) closeAttachmentModal();
           state.verificationObservedAt = Date.now();
           state.lastFetchAt = Date.now();
@@ -3500,7 +3504,7 @@ svg.ctxmenu-disabled-warning {
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
-          if ((hasChanges || attachmentsChanged) && state.drawerId) renderDrawer();
+          if ((hasChanges || mediaChanged) && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
           // Nothing else re-renders once the dwell window closes (no
           // further fetch is guaranteed to land exactly then) -- one
@@ -9638,10 +9642,10 @@ svg.ctxmenu-disabled-warning {
    * CommonMark (the biggest: a single newline inside a paragraph is a soft
    * wrap that collapses to a space, per SH-217's council ruling -- not a
    * <br> the way GitHub's comment boxes render it). */
-  function renderMarkdown(text, selfId) {
+  function renderMarkdown(text, selfId, urlSink) {
     var frag = document.createDocumentFragment();
     var lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-    appendBlocks(frag, lines, selfId, 0);
+    appendBlocks(frag, lines, selfId, 0, urlSink);
     return frag;
   }
 
@@ -9712,7 +9716,7 @@ svg.ctxmenu-disabled-warning {
   /** Appends the block-level parse of `lines` to `parent`. First match wins
    * per line group: blank, fenced code, thematic break, ATX heading,
    * blockquote, GFM table, list, indented code, paragraph (fallback). */
-  function appendBlocks(parent, lines, selfId, depth) {
+  function appendBlocks(parent, lines, selfId, depth, urlSink) {
     var i = 0;
     while (i < lines.length) {
       var line = lines[i];
@@ -9754,7 +9758,7 @@ svg.ctxmenu-disabled-warning {
         var level = heading[1].length;
         var content = (heading[2] || "").replace(/[ \t]#+[ \t]*$/, "");
         var h = el("h" + level, {}, []);
-        appendInline(h, content, selfId, false);
+        appendInline(h, content, selfId, false, urlSink);
         parent.appendChild(h);
         i++;
         continue;
@@ -9770,10 +9774,10 @@ svg.ctxmenu-disabled-warning {
         }
         var bq = el("blockquote", {}, []);
         if (depth < MARKDOWN_MAX_DEPTH) {
-          appendBlocks(bq, quoteLines, selfId, depth + 1);
+          appendBlocks(bq, quoteLines, selfId, depth + 1, urlSink);
         } else {
           var fallback = el("p", {}, []);
-          appendInline(fallback, quoteLines.join(" "), selfId, false);
+          appendInline(fallback, quoteLines.join(" "), selfId, false, urlSink);
           bq.appendChild(fallback);
         }
         parent.appendChild(bq);
@@ -9798,7 +9802,7 @@ svg.ctxmenu-disabled-warning {
             {},
             headerCells.map(function(cellText, idx) {
               var th = el("th", { align: aligns[idx] || null }, []);
-              appendInline(th, cellText, selfId, false);
+              appendInline(th, cellText, selfId, false, urlSink);
               return th;
             })
           ),
@@ -9812,7 +9816,7 @@ svg.ctxmenu-disabled-warning {
               {},
               headerCells.map(function(_, idx) {
                 var td = el("td", { align: aligns[idx] || null }, []);
-                appendInline(td, row[idx] || "", selfId, false);
+                appendInline(td, row[idx] || "", selfId, false, urlSink);
                 return td;
               })
             );
@@ -9826,7 +9830,7 @@ svg.ctxmenu-disabled-warning {
       // List: nested by indentation, tight vs loose by inter-item blank lines.
       var listMatch = LIST_ITEM_RE.exec(line);
       if (listMatch) {
-        i = appendList(parent, lines, i, selfId, depth);
+        i = appendList(parent, lines, i, selfId, depth, urlSink);
         continue;
       }
 
@@ -9861,7 +9865,7 @@ svg.ctxmenu-disabled-warning {
         p++;
       }
       var pEl = el("p", {}, []);
-      appendInline(pEl, paraLines.join("\n"), selfId, false);
+      appendInline(pEl, paraLines.join("\n"), selfId, false, urlSink);
       parent.appendChild(pEl);
       i = p;
     }
@@ -9875,7 +9879,7 @@ svg.ctxmenu-disabled-warning {
    * continuation content, shallower ends the list. Deliberately no lazy
    * continuation: every content line of an item must be indented to at
    * least the item's own content column. */
-  function appendList(parent, lines, start, selfId, depth) {
+  function appendList(parent, lines, start, selfId, depth, urlSink) {
     var first = LIST_ITEM_RE.exec(lines[start]);
     var markerIndent = leadingSpaces(lines[start]);
     var isOrdered = /\d/.test(first[2]);
@@ -9949,10 +9953,10 @@ svg.ctxmenu-disabled-warning {
     var renderedItems = items.map(function(item) {
       var scratch = document.createDocumentFragment();
       if (depth < MARKDOWN_MAX_DEPTH) {
-        appendBlocks(scratch, item.lines, selfId, depth + 1);
+        appendBlocks(scratch, item.lines, selfId, depth + 1, urlSink);
       } else {
         var p = el("p", {}, []);
-        appendInline(p, item.lines.join(" "), selfId, false);
+        appendInline(p, item.lines.join(" "), selfId, false, urlSink);
         scratch.appendChild(p);
       }
       return scratch;
@@ -10005,7 +10009,7 @@ svg.ctxmenu-disabled-warning {
    * preceded by a hard-break marker (trailing 2+ spaces, or a backslash) --
    * SH-217's council-decided divergence point from GitHub's comment
    * rendering, which uses hard breaks by default. */
-  function appendInline(parent, text, selfId, inLink) {
+  function appendInline(parent, text, selfId, inLink, urlSink) {
     var buf = "";
     var i = 0;
     var n = text.length;
@@ -10076,7 +10080,7 @@ svg.ctxmenu-disabled-warning {
         var autoMatch = /^<((?:https?|mailto):[^<>\s]+)>/i.exec(text.slice(i));
         if (autoMatch) {
           flush();
-          appendChildren(parent, markdownLink([autoMatch[1]], autoMatch[1]));
+          appendChildren(parent, markdownLink([autoMatch[1]], autoMatch[1], urlSink));
           i += autoMatch[0].length;
           continue;
         }
@@ -10089,7 +10093,7 @@ svg.ctxmenu-disabled-warning {
         if (bareMatch && (i === 0 || !/[A-Za-z0-9]/.test(text.charAt(i - 1)))) {
           var url = trimBareUrlTrailingPunctuation(bareMatch[0]);
           flush();
-          appendChildren(parent, markdownLink([url], url));
+          appendChildren(parent, markdownLink([url], url, urlSink));
           i += url.length;
           continue;
         }
@@ -10102,6 +10106,7 @@ svg.ctxmenu-disabled-warning {
       if (c === "!" && text.charAt(i + 1) === "[") {
         var imgMatch = matchLink(text, i + 1);
         if (imgMatch) {
+          if (urlSink) urlSink(imgMatch.dest);
           buf += text.slice(i, imgMatch.end);
           i = imgMatch.end;
           continue;
@@ -10117,8 +10122,8 @@ svg.ctxmenu-disabled-warning {
         if (linkMatch) {
           flush();
           var tmp = document.createDocumentFragment();
-          appendInline(tmp, linkMatch.text, selfId, true);
-          appendChildren(parent, markdownLink(Array.prototype.slice.call(tmp.childNodes), linkMatch.dest));
+          appendInline(tmp, linkMatch.text, selfId, true, urlSink);
+          appendChildren(parent, markdownLink(Array.prototype.slice.call(tmp.childNodes), linkMatch.dest, urlSink));
           i = linkMatch.end;
           continue;
         }
@@ -10133,7 +10138,7 @@ svg.ctxmenu-disabled-warning {
         if (emMatch) {
           flush();
           var inner = document.createDocumentFragment();
-          appendInline(inner, emMatch.text, selfId, inLink);
+          appendInline(inner, emMatch.text, selfId, inLink, urlSink);
           parent.appendChild(el(emMatch.tag, {}, Array.prototype.slice.call(inner.childNodes)));
           i = emMatch.end;
           continue;
@@ -10173,9 +10178,10 @@ svg.ctxmenu-disabled-warning {
 
   /** Builds a live link if `dest` passes safeHref(); otherwise the link's
    * own children render as plain content with no anchor at all. */
-  function markdownLink(children, dest) {
+  function markdownLink(children, dest, urlSink) {
     var href = safeHref(dest);
     if (!href) return children;
+    if (urlSink) urlSink(href);
     return [el("a", { href: href, target: "_blank", rel: "noopener noreferrer" }, children)];
   }
 
@@ -11039,6 +11045,70 @@ svg.ctxmenu-disabled-warning {
     return repoApiBase(repoId) + "/story/" + encodeURIComponent(storyId) + "/attachments/" + encodeURIComponent(attachmentId);
   }
 
+  /** Projects supported HTTPS image destinations out of the markdown parser.
+   * The parser owns what is a link rather than a code sample; this function
+   * owns the stricter remote-image contract. Nothing here performs I/O. */
+  function remoteImagesFromDescription(text) {
+    var seen = Object.create(null);
+    var images = [];
+    renderMarkdown(text || "", null, function(raw) {
+      var parsed;
+      try {
+        parsed = new URL(String(raw));
+      } catch (e) {
+        return;
+      }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) return;
+      var decodedPath;
+      try {
+        decodedPath = decodeURIComponent(parsed.pathname);
+      } catch (e) {
+        return;
+      }
+      if (!/\.(?:png|jpe?g|gif|webp)$/i.test(decodedPath)) return;
+      parsed.hash = "";
+      var normalized = parsed.href;
+      if (seen[normalized]) return;
+      seen[normalized] = true;
+      var slash = decodedPath.lastIndexOf("/");
+      images.push({
+        kind: "remote",
+        key: "remote:" + normalized,
+        name: decodedPath.slice(slash + 1) || parsed.hostname,
+        host: parsed.hostname,
+        url: normalized
+      });
+    });
+    return images;
+  }
+
+  /** The viewer's complete live source list. Remote entries are projections
+   * of description text, never attachment metadata or daemon-owned bytes. */
+  function drawerMedia(storyId) {
+    if (!state.drawerId || state.drawerId !== storyId) return [];
+    var view = findStory(storyId);
+    if (!view) return [];
+    var repoId = state.repoId;
+    var stored = (view.story.attachments || []).map(function(attachment) {
+      return {
+        kind: "stored",
+        key: "stored:" + attachment.id,
+        id: attachment.id,
+        name: attachment.name,
+        url: attachmentUrl(repoId, storyId, attachment.id)
+      };
+    });
+    return stored.concat(remoteImagesFromDescription(view.story.description || ""));
+  }
+
+  /** Finds a current thumbnail by exact dataset identity. A remote URL never
+   * enters selector syntax, where quotes or escapes could change its meaning. */
+  function mediaButton(mediaKey) {
+    return Array.prototype.slice.call(
+      $("drawer-body").querySelectorAll(".attachment-thumbnail")
+    ).find(function(button) { return button.dataset.mediaKey === mediaKey; }) || null;
+  }
+
   /** Whether a drag advertises at least one file without trying to read its
    * protected payload. Browsers expose the bytes only at drop time; items is
    * the precise hover-time signal and the literal Files type is its older
@@ -11173,57 +11243,93 @@ svg.ctxmenu-disabled-warning {
     });
   }
 
-  /** Builds native keyboard controls with text-only filenames. The section's
-   * normal drawer fingerprint preserves its nodes on unrelated refreshes. */
+  /** Builds native keyboard controls with text-only filenames. Stored images
+   * keep their eager-existing lazy previews. A remote control carries no src
+   * until activation, so merely reading a story contacts no third party. */
   function buildAttachmentsSection(storyId) {
-    var attachments = drawerAttachments();
-    if (!attachments.length) return null;
+    var mediaItems = drawerMedia(storyId);
+    if (!mediaItems.length) return null;
     var repoId = state.repoId;
-    var strip = el("div", { class: "attachment-strip" }, attachments.map(function(attachment) {
+    var strip = el("div", { class: "attachment-strip" }, mediaItems.map(function(media) {
       var error = el("span", { class: "attachment-preview-error", hidden: true }, ["Preview unavailable"]);
-      var image = el("img", {
-        src: attachmentUrl(repoId, storyId, attachment.id), alt: "", loading: "lazy",
-        onError: function() { image.hidden = true; error.hidden = false; }
-      });
+      var image;
+      var children;
+      var dataset = { mediaKey: media.key, mediaKind: media.kind };
+      if (media.kind === "remote") {
+        var placeholder = el("span", { class: "remote-image-placeholder", "aria-hidden": "true" }, ["↗"]);
+        image = el("img", {
+          alt: "", hidden: true, referrerPolicy: "no-referrer",
+          onLoad: function() { image.hidden = false; placeholder.hidden = true; error.hidden = true; },
+          onError: function() { image.hidden = true; placeholder.hidden = false; error.hidden = false; }
+        });
+        children = [
+          image, placeholder, error,
+          el("span", { class: "attachment-name" }, [media.name]),
+          el("span", { class: "remote-image-host" }, [media.host])
+        ];
+      } else {
+        dataset.attachmentId = String(media.id);
+        dataset.field = "attachment-" + media.id;
+        image = el("img", {
+          src: media.url, alt: "", loading: "lazy",
+          onError: function() { image.hidden = true; error.hidden = false; }
+        });
+        children = [image, error, el("span", { class: "attachment-name" }, [media.name])];
+      }
       return el("button", {
-        type: "button", class: "btn attachment-thumbnail", title: attachment.name,
-        "aria-label": "View " + attachment.name,
-        dataset: { attachmentId: String(attachment.id), field: "attachment-" + attachment.id },
-        onClick: function() { openAttachmentModal(repoId, storyId, attachment.id); }
-      }, [image, error, el("span", { class: "attachment-name" }, [attachment.name])]);
+        type: "button", class: "btn attachment-thumbnail" + (media.kind === "remote" ? " remote-image-thumbnail" : ""),
+        title: media.kind === "remote" ? media.url : media.name,
+        "aria-label": media.kind === "remote"
+          ? "Load remote image " + media.name + " from " + media.host
+          : "View " + media.name,
+        dataset: dataset,
+        onClick: function() { openAttachmentModal(repoId, storyId, media.key); }
+      }, children);
     }));
     return el("section", { "aria-label": "Attachments" }, [
       el("div", { class: "section-label" }, ["Attachments"]), strip
     ]);
   }
 
-  /** Opens only an attachment still owned by the current drawer. Each opening
-   * retries via a new image node; stale load/error events cannot affect it. */
-  function openAttachmentModal(repoId, storyId, attachmentId) {
+  /** Reveals a remote thumbnail only after its modal request succeeded. The
+   * browser may satisfy this second image element from its decoded cache; if
+   * the server forbids caching, it is still part of the same explicit act. */
+  function hydrateRemoteThumbnail(mediaKey, url) {
+    var button = mediaButton(mediaKey);
+    if (!button || button.dataset.mediaKind !== "remote") return;
+    var image = button.querySelector("img");
+    if (image) image.src = url;
+  }
+
+  /** Opens only media still owned by the current drawer. Each opening retries
+   * via a new image node; stale load/error events cannot affect it. */
+  function openAttachmentModal(repoId, storyId, mediaKey) {
     if (state.repoId !== repoId || state.drawerId !== storyId) return;
-    var attachment = drawerAttachments().find(function(a) { return a.id === attachmentId; });
-    if (!attachment) return;
+    var media = drawerMedia(storyId).find(function(item) { return item.key === mediaKey; });
+    if (!media) return;
     closeAttachmentModal();
-    var viewer = { repoId: repoId, storyId: storyId, attachmentId: attachmentId };
+    var viewer = { repoId: repoId, storyId: storyId, mediaKey: mediaKey };
     attachmentViewer = viewer;
-    $("attachment-title").textContent = attachment.name;
-    $("attachment-title").title = attachment.name;
+    $("attachment-title").textContent = media.name;
+    $("attachment-title").title = media.kind === "remote" ? media.url : media.name;
     $("attachment-status").textContent = readinessNote("image", false);
     var image = el("img", {
-      alt: attachment.name, hidden: true,
+      alt: media.name, hidden: true,
+      referrerPolicy: media.kind === "remote" ? "no-referrer" : null,
       onLoad: function() {
         if (attachmentViewer !== viewer) return;
         image.hidden = false;
         $("attachment-status").textContent = "";
+        if (media.kind === "remote") hydrateRemoteThumbnail(media.key, media.url);
       },
       onError: function() {
         if (attachmentViewer !== viewer) return;
         image.hidden = true;
-        $("attachment-status").textContent = "Could not load " + attachment.name + ". Close and reopen to retry.";
+        $("attachment-status").textContent = "Could not load " + media.name + ". Close and reopen to retry.";
       }
     });
     $("attachment-image").appendChild(image);
-    image.src = attachmentUrl(repoId, storyId, attachmentId);
+    image.src = media.url;
     showBackdrop("attachment-backdrop");
     $("attachment-modal").classList.add("open");
     $("attachment-modal").setAttribute("aria-hidden", "false");
@@ -11246,9 +11352,7 @@ svg.ctxmenu-disabled-warning {
     $("attachment-modal").classList.remove("open");
     $("attachment-modal").setAttribute("aria-hidden", "true");
     if (state.repoId === viewer.repoId && state.drawerId === viewer.storyId) {
-      overlayReturnFocus["attachment-modal"] = $("drawer-body").querySelector(
-        '[data-attachment-id="' + viewer.attachmentId + '"]'
-      ) || $("drawer");
+      overlayReturnFocus["attachment-modal"] = mediaButton(viewer.mediaKey) || $("drawer");
     }
     releaseOverlay("attachment-modal");
   }
@@ -11343,7 +11447,7 @@ svg.ctxmenu-disabled-warning {
     }
     body.dataset.storyId = st.id;
     body.dataset.repoId = state.repoId;
-    if (attachmentViewer && !drawerAttachments().some(function(a) { return a.id === attachmentViewer.attachmentId; })) {
+    if (attachmentViewer && !drawerMedia(st.id).some(function(media) { return media.key === attachmentViewer.mediaKey; })) {
       closeAttachmentModal();
     }
 
