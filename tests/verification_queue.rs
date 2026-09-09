@@ -802,7 +802,34 @@ fn a_link_is_revalidated_after_the_registered_repository_changes() {
         selected.pull_request,
         Err(VerificationProblem::UnregisteredPullRequest {
             url: PR_ONE.to_string(),
-            registered: vec!["acme/replacement".to_string()],
+            registered: vec!["github.com/acme/replacement".to_string()],
+        })
+    );
+}
+
+#[test]
+fn a_link_is_revalidated_after_the_registered_host_changes() {
+    let fixture = ServiceFixture::new();
+    let original = "https://github.com/acme/widgets";
+    fixture.link_origin(original);
+    let id = submitted(&fixture, "stale host", Priority::High, PR_ONE);
+    let original = RemoteUrl::normalize(original).unwrap();
+    fixture
+        .store()
+        .write(|tx| tx.unlink_remote(fixture.project(), &original).map(|_| ()))
+        .unwrap();
+    fixture.link_origin("https://github.example.com/acme/widgets");
+
+    let selected = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.story_id, id);
+    assert_eq!(
+        selected.pull_request,
+        Err(VerificationProblem::UnregisteredPullRequest {
+            url: PR_ONE.to_string(),
+            registered: vec!["github.example.com/acme/widgets".to_string()],
         })
     );
 }
@@ -1493,36 +1520,6 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
 #[test]
 fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github() {
     let fixture = ServiceFixture::new();
-    let checkout = scratch_dir();
-    let init = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(checkout.path())
-        .output()
-        .unwrap();
-    assert!(init.status.success());
-    let origin = Command::new("git")
-        .args([
-            "config",
-            "remote.origin.url",
-            "https://github.com/acme/replacement.git",
-        ])
-        .current_dir(checkout.path())
-        .output()
-        .unwrap();
-    assert!(origin.status.success());
-    let candidate = VerificationCandidate {
-        project: fixture.project(),
-        project_slug: "fixture".into(),
-        story_id: "SH-1".into(),
-        title: "wrong repository".into(),
-        priority: Priority::High,
-        created_at: "2026-01-01T00:00:00Z".into(),
-        verifying_since: Some("2026-01-01T00:00:00Z".into()),
-        verifying_generation: None,
-        checkout: checkout.path().to_path_buf(),
-        cleanup_lease: None,
-        pull_request: Err(VerificationProblem::MissingPullRequest),
-    };
     let pull_request = PrLink {
         owner: "acme".into(),
         repo: "widgets".into(),
@@ -1536,12 +1533,51 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
     let env_root = scratch_dir();
     let actuator = ShellVerificationActuator::new(Environment::at(env_root.path()));
 
-    let outcome = actuator.verify(&candidate, &pull_request);
-    assert!(matches!(
-        outcome,
-        VerificationOutcome::InvalidSubmission { ref detail }
-            if detail.contains("acme/replacement") && detail.contains("acme/widgets")
-    ));
+    for (origin_url, expected_origin) in [
+        (
+            "https://github.com/acme/replacement.git",
+            "github.com/acme/replacement",
+        ),
+        (
+            "https://github.example.com/acme/widgets.git",
+            "github.example.com/acme/widgets",
+        ),
+    ] {
+        let checkout = scratch_dir();
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(checkout.path())
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let origin = Command::new("git")
+            .args(["config", "remote.origin.url", origin_url])
+            .current_dir(checkout.path())
+            .output()
+            .unwrap();
+        assert!(origin.status.success());
+        let candidate = VerificationCandidate {
+            project: fixture.project(),
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            title: "wrong repository".into(),
+            priority: Priority::High,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            verifying_since: Some("2026-01-01T00:00:00Z".into()),
+            verifying_generation: None,
+            checkout: checkout.path().to_path_buf(),
+            cleanup_lease: None,
+            pull_request: Err(VerificationProblem::MissingPullRequest),
+        };
+
+        let outcome = actuator.verify(&candidate, &pull_request);
+        assert!(matches!(
+            outcome,
+            VerificationOutcome::InvalidSubmission { ref detail }
+                if detail.contains(expected_origin)
+                    && detail.contains("github.com/acme/widgets")
+        ));
+    }
 }
 
 #[test]

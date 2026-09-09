@@ -12,7 +12,7 @@
 //! link whose repository matches none of the project's registered remotes
 //! *at link time*. [`run_check`] re-reads those registrations **fresh, on
 //! every call** — never from what was true when the link was made — and
-//! silently skips (never acts on) any link whose `(owner, repo)` no longer
+//! silently skips (never acts on) any link whose `(host, owner, repo)` no longer
 //! matches any of them. A project can register or unregister a GitHub remote
 //! after a link exists; this is what keeps a stale link from being acted on
 //! against the wrong repository once that happens.
@@ -24,7 +24,7 @@
 //! edge case, and why this file does not resolve down to a single
 //! repository the way it once read a single `(owner, repo)` off the deleted
 //! sync engine's config. [`run_check`] instead groups matching links by
-//! their own `(owner, repo)` and builds one [`GithubApi`] per group, so a
+//! their own API base and repository and builds one [`GithubApi`] per group, so a
 //! multi-repository project is checked correctly and so that one
 //! repository's API failure — an expired token, a rate limit, a repository
 //! made private — cannot silently abort checking every other repository's
@@ -33,8 +33,10 @@
 //! message hiding a partial failure — the same doctrine SH-159 already
 //! established for the sync engine this file survived).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::github_remote::{GithubApiBase, GithubRepo};
+use crate::domain::pr_url::{PullRequestRef, parse_pr_url};
 use crate::domain::{StoryEvent, SuperState, has_children};
 use crate::error::AppError;
 use crate::github::api::{GithubApi, GithubApiFactory};
@@ -42,7 +44,7 @@ use crate::output::Response;
 use crate::store::{ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo};
 
 use super::github::RealGithubApiFactory;
-use super::pr_link::{PrLinkService, configured_github_repos};
+use super::pr_link::{PrLinkService, configured_github_api_override, configured_github_repos};
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, resolve_story};
 
@@ -92,6 +94,7 @@ pub fn run_check<S: Store>(
                 .to_string(),
         ));
     }
+    let api_override = configured_github_api_override(ctx)?;
 
     let prefix = ctx.store().read(|tx| project_prefix(tx, project))?;
     let candidates: Vec<(StoryNo, PrLink)> = match id {
@@ -109,29 +112,51 @@ pub fn run_check<S: Store>(
     };
     let total_candidates = candidates.len();
 
-    // Mandatory security control #2: a link whose (owner, repo) matches none
+    // Mandatory security control #2: a link whose (host, owner, repo) matches none
     // of the project's registered GitHub remotes **right now** is skipped,
     // not acted on — a remote may have been registered or unregistered
     // since the link was made, and a client is only ever built for a
     // repository this project currently claims (below).
     let mut skipped: Vec<String> = Vec::new();
-    let matching: Vec<(StoryNo, PrLink)> = candidates
+    let matching: Vec<(StoryNo, PrLink, GithubRepo, PullRequestRef)> = candidates
         .into_iter()
-        .filter(|(_, link)| {
-            let matches = configured.iter().any(|repo| {
-                repo.owner.eq_ignore_ascii_case(&link.owner)
-                    && repo.repo.eq_ignore_ascii_case(&link.repo)
+        .filter_map(|(story_no, link)| {
+            let reference = match parse_pr_url(&link.url) {
+                Ok(reference) => reference,
+                Err(_) => {
+                    skipped.push(link.url.clone());
+                    return None;
+                }
+            };
+            let matched = configured.iter().find(|repo| {
+                repo.host.eq_ignore_ascii_case(&reference.host)
+                    && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                    && repo.repo.eq_ignore_ascii_case(&reference.repo)
             });
-            if !matches {
+            if let Some(repo) = matched {
+                Some((story_no, link, repo.clone(), reference))
+            } else {
                 skipped.push(link.url.clone());
+                None
             }
-            matches
         })
         .collect();
 
+    let matching_hosts: BTreeSet<&str> = matching
+        .iter()
+        .map(|(_, _, repo, _)| repo.host.as_str())
+        .collect();
+    if api_override.is_some() && matching_hosts.len() > 1 {
+        return Err(AppError::Validation(format!(
+            "[github].api_url cannot route matching pull requests across multiple GitHub hosts \
+             ({}); remove the override to use each host's derived API endpoint",
+            matching_hosts.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+
     // One client per distinct repository among the matching links, built
     // lazily — see the module doc's "One client per repository" section.
-    let mut clients: BTreeMap<(String, String), Box<dyn GithubApi>> = BTreeMap::new();
+    let mut clients: BTreeMap<(String, String, String), Box<dyn GithubApi>> = BTreeMap::new();
 
     let mut merged: Vec<String> = Vec::new();
     let mut closed_without_merging: Vec<String> = Vec::new();
@@ -143,17 +168,25 @@ pub fn run_check<S: Store>(
     // cross-reference.
     let mut errored: Vec<(String, String)> = Vec::new();
 
-    for (story_no, link) in matching {
+    for (story_no, link, configured_repo, reference) in matching {
+        let api_base = api_override
+            .clone()
+            .unwrap_or_else(|| GithubApiBase::for_host(&configured_repo.host));
         let client = clients
-            .entry((link.owner.clone(), link.repo.clone()))
+            .entry((
+                api_base.as_str().to_string(),
+                reference.owner.clone(),
+                reference.repo.clone(),
+            ))
             .or_insert_with(|| {
                 factory.build(
                     token.expose().to_string(),
-                    link.owner.clone(),
-                    link.repo.clone(),
+                    api_base,
+                    reference.owner.clone(),
+                    reference.repo.clone(),
                 )
             });
-        let status = match client.get_pull_request(link.number) {
+        let status = match client.get_pull_request(reference.number) {
             Ok(status) => status,
             Err(err) => {
                 errored.push((link.url.clone(), err.to_string()));

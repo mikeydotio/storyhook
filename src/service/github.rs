@@ -9,6 +9,7 @@
 //! of the deleted machinery — it is a bare adapter from
 //! [`GithubApiFactory::build`] onto [`GithubClient::new`].
 
+use crate::domain::github_remote::GithubApiBase;
 use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::github::client::GithubClient;
 
@@ -16,7 +17,13 @@ use crate::github::client::GithubClient;
 pub struct RealGithubApiFactory;
 
 impl GithubApiFactory for RealGithubApiFactory {
-    fn build(&self, token: String, owner: String, repo: String) -> Box<dyn GithubApi> {
-        Box::new(GithubClient::new(token, owner, repo))
+    fn build(
+        &self,
+        token: String,
+        api_base: GithubApiBase,
+        owner: String,
+        repo: String,
+    ) -> Box<dyn GithubApi> {
+        Box::new(GithubClient::new(token, api_base, owner, repo))
     }
 }
