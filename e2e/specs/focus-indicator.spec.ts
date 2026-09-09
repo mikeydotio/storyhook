@@ -3,6 +3,7 @@ import {
   cleanUpCreatedStories,
   COPY_TARGETS,
   createStory,
+  fullKeyboardAccess,
   keepNotices,
   measureFocusIndicator,
   openProject,
@@ -87,7 +88,14 @@ test("the board's own focus indicators, in every theme", async ({ page }) => {
   );
 });
 
-test("the mobile filter sheet title's focus indicator, in every theme", async ({ page }) => {
+test("the mobile filter sheet title's focus indicator, in every theme", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await openProject(page, "Alpha Project");
