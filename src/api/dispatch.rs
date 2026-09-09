@@ -50,6 +50,7 @@
 //! in `docs/spec/dashboard-dispatch.md`.
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -122,12 +123,40 @@ pub enum DispatchAgent {
 }
 
 impl DispatchAgent {
+    const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+
     const fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
     }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+        }
+    }
+}
+
+/// One supported provider and whether the daemon found its executable when
+/// it started. This is deliberately separate from the helper-provided
+/// capabilities catalog: the helper describes accepted options, while this
+/// snapshot describes what this host can actually launch.
+#[derive(Clone, Copy, Serialize)]
+struct DispatchAgentAvailability {
+    id: DispatchAgent,
+    label: &'static str,
+    installed: bool,
+}
+
+fn dispatch_agent_availability(path: Option<&OsStr>) -> [DispatchAgentAvailability; 2] {
+    DispatchAgent::ALL.map(|agent| DispatchAgentAvailability {
+        id: agent,
+        label: agent.label(),
+        installed: crate::path_identity::resolve_on_path(path, agent.as_str()).is_some(),
+    })
 }
 
 /// A validated `model` or `effort` dispatch option (SH-517).
@@ -481,6 +510,11 @@ pub struct DispatchRegistry {
     /// lock since a capabilities poll and a dispatch's own bookkeeping are
     /// unrelated concerns and need not contend for the same mutex.
     capabilities: Mutex<HashMap<DispatchAgent, CachedCapabilities>>,
+    /// The supported providers in display order, with availability captured
+    /// once when the real daemon builds this registry. Immutable thereafter:
+    /// installing a provider takes effect on the next daemon restart rather
+    /// than changing an already-open modal underneath its user.
+    agents: [DispatchAgentAvailability; 2],
 }
 
 /// A catalog belongs to the exact helper that supplied it, not just a provider.
@@ -493,10 +527,19 @@ struct CachedCapabilities {
 
 impl DispatchRegistry {
     pub fn new() -> Self {
+        Self::with_agents(DispatchAgent::ALL.map(|agent| DispatchAgentAvailability {
+            id: agent,
+            label: agent.label(),
+            installed: true,
+        }))
+    }
+
+    fn with_agents(agents: [DispatchAgentAvailability; 2]) -> Self {
         DispatchRegistry {
             inner: Mutex::new(Inner::default()),
             persist_env: None,
             capabilities: Mutex::new(HashMap::new()),
+            agents,
         }
     }
 
@@ -514,7 +557,8 @@ impl DispatchRegistry {
     /// child process behind it, would strand a client polling a handle that
     /// can never move again.
     pub fn load(env: &Environment) -> Self {
-        let mut registry = Self::new();
+        let path = std::env::var_os("PATH");
+        let mut registry = Self::with_agents(dispatch_agent_availability(path.as_deref()));
         {
             let mut inner = registry.inner.lock().expect("dispatch registry lock");
             for record in load_dispatch_history(env) {
@@ -1204,6 +1248,7 @@ fn handle_options(
         return text_reply(401, "storyhook daemon: missing or invalid token");
     }
     let body = serde_json::json!({
+        "agents": registry.agents,
         "claude": registry.capabilities_for(DispatchAgent::Claude, env),
         "codex": registry.capabilities_for(DispatchAgent::Codex, env),
     })

@@ -8,6 +8,7 @@
 //! harness.
 
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
@@ -92,14 +93,28 @@ impl Drop for DaemonGuard<'_> {
 }
 
 fn start_with_stub(env: &TestEnv, stub: &Path) -> DaemonInfo {
+    start_with_stub_on_path(env, stub, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+fn start_with_stub_on_path(env: &TestEnv, stub: &Path, path: &std::ffi::OsStr) -> DaemonInfo {
     let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "start"])
+        .env("PATH", path)
         .env("STORYHOOK_DISPATCH_SCRIPT", stub)
         .assert()
         .success();
     env.daemon()
         .expect("a started daemon must publish a portfile")
+}
+
+fn write_provider(path: &Path) {
+    std::fs::write(path, "#!/bin/sh\nexit 0\n").expect("writing provider executable");
+    let mut permissions = std::fs::metadata(path)
+        .expect("reading provider permissions")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("making provider executable");
 }
 
 fn options_url(info: &DaemonInfo) -> String {
@@ -186,6 +201,62 @@ fn reports_both_providers_own_catalogs() {
     assert_eq!(body["codex"]["ok"], true);
     assert_eq!(body["codex"]["agent"], "codex");
     assert_eq!(body["codex"]["models"][0]["id"], "gpt-5.6-sol");
+}
+
+#[test]
+fn reports_supported_agents_and_their_daemon_start_availability() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let hits = scratch_dir();
+    let stub = write_script(&capabilities_stub(&hits.path().join("hits")));
+    let providers = scratch_dir();
+    write_provider(&providers.path().join("claude"));
+    std::fs::write(providers.path().join("codex"), "not executable")
+        .expect("writing non-executable provider decoy");
+
+    let info = start_with_stub_on_path(&env, stub.path(), providers.path().as_os_str());
+    let body = body_json(get_options(&info, &info.token).expect("dispatch-options accepted"));
+
+    assert_eq!(
+        body["agents"],
+        serde_json::json!([
+            {"id": "claude", "label": "Claude", "installed": true},
+            {"id": "codex", "label": "Codex", "installed": false}
+        ])
+    );
+}
+
+#[test]
+fn agent_availability_changes_only_after_daemon_restart() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let hits = scratch_dir();
+    let stub = write_script(&capabilities_stub(&hits.path().join("hits")));
+    let providers = scratch_dir();
+    write_provider(&providers.path().join("claude"));
+
+    let first_info = start_with_stub_on_path(&env, stub.path(), providers.path().as_os_str());
+    let first = body_json(
+        get_options(&first_info, &first_info.token).expect("first dispatch-options accepted"),
+    );
+    assert_eq!(first["agents"][1]["installed"], false);
+
+    write_provider(&providers.path().join("codex"));
+    let unchanged = body_json(
+        get_options(&first_info, &first_info.token).expect("cached dispatch-options accepted"),
+    );
+    assert_eq!(
+        unchanged["agents"][1]["installed"], false,
+        "a provider installed after launch must not change the running daemon's snapshot"
+    );
+
+    lifecycle::stop(&env.environment(), lifecycle::StopMode::Force)
+        .expect("stopping the first daemon");
+    let second_info = start_with_stub_on_path(&env, stub.path(), providers.path().as_os_str());
+    let refreshed = body_json(
+        get_options(&second_info, &second_info.token).expect("restarted dispatch-options accepted"),
+    );
+    assert_eq!(refreshed["agents"][1]["installed"], true);
 }
 
 /// A second request within the cache window must not re-invoke the helper

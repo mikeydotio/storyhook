@@ -43,6 +43,10 @@
 //! 9. An ambient reverse-proxy allowlist cannot leak into the browser harness
 //!    and silently withdraw localhost-only handoff authority --
 //!    `the_runner_neutralizes_an_ambient_proxy_allowlist_before_startup`.
+//! 10. The real-daemon browser harness supplies executable fixtures for both
+//!     dispatch providers before daemon startup, so availability is independent
+//!     of tools installed on the host --
+//!     `the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -891,5 +895,43 @@ fn the_runner_scopes_the_fake_origin_to_the_special_daemon() {
         neutralized < specialized && specialized < started,
         "the fake host must be admitted only after ambient state is cleared and before this \
          project's isolated daemon starts"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10. Dispatch-provider availability belongs to the browser fixture
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+
+    let claude = body
+        .find("cat >\"$provider_bin/claude\" <<'PROVIDER'")
+        .expect("the browser harness must create its own Claude fixture");
+    let codex = body
+        .find("cat >\"$provider_bin/codex\" <<'PROVIDER'")
+        .expect("the browser harness must retain its Codex fixture");
+    let executable = body
+        .find("chmod 700 \"$provider_bin/claude\" \"$provider_bin/codex\" \"$provider_bin/tmux\"")
+        .expect("both provider fixtures and fake tmux must be executable");
+    let path = body
+        .find("export PATH=\"$provider_bin:$PATH\"")
+        .expect("the fixture directory must be placed on PATH");
+    let started = body
+        .find("start_output=\"$(\"$story_bin\" daemon start 2>&1)\"")
+        .expect("run_one_project must start its daemon");
+
+    assert!(
+        claude < executable && codex < executable && executable < path && path < started,
+        "both executable provider fixtures must be on PATH before daemon startup snapshots \n\
+         provider availability"
     );
 }

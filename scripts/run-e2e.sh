@@ -230,8 +230,16 @@ run_one_project() {
   # SH-584: execute the exact Codex launch string at the terminal boundary
   # against an argv recorder. The existing terminal double still supplies
   # readiness/prompt responses; no real provider process can be launched.
+  # SH-616: the daemon snapshots provider availability at startup, so supply
+  # both supported executable names here instead of inheriting whichever
+  # agent CLIs happen to be installed on the host. Claude remains inert: the
+  # terminal double never executes its launch string.
   provider_bin="$data_root/provider-bin"
   mkdir -p "$provider_bin"
+  cat >"$provider_bin/claude" <<'PROVIDER'
+#!/usr/bin/env bash
+exit 0
+PROVIDER
   cat >"$provider_bin/codex" <<'PROVIDER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -258,7 +266,7 @@ if [ "${1:-}" = new-window ]; then
 fi
 exec "$FAKE_TMUX_IMPLEMENTATION" "$@"
 TERMINAL
-  chmod 700 "$provider_bin/codex" "$provider_bin/tmux"
+  chmod 700 "$provider_bin/claude" "$provider_bin/codex" "$provider_bin/tmux"
   export FAKE_TMUX_IMPLEMENTATION="$repo_root/plugins/story/tests/fakes/tmux"
   export PATH="$provider_bin:$PATH"
 

@@ -5746,6 +5746,10 @@ svg.ctxmenu-disabled-warning {
    * permanent failure for the rest of the page's life. */
   var dispatchOptionsCache = null;
   var dispatchOptionsPromise = null;
+  var DISPATCH_FALLBACK_AGENTS = [
+    { id: "claude", label: "Claude", installed: true },
+    { id: "codex", label: "Codex", installed: true }
+  ];
   function fetchDispatchOptions() {
     if (dispatchOptionsCache) return Promise.resolve(dispatchOptionsCache);
     if (dispatchOptionsPromise) return dispatchOptionsPromise;
@@ -5779,6 +5783,65 @@ svg.ctxmenu-disabled-warning {
     select.value = stillValid ? preferred : "";
   }
 
+  /** Reads the daemon-start provider snapshot added by SH-616. A daemon
+   * predating that additive field, or a failed request represented by a
+   * null payload, means availability is unknown — preserve the historical
+   * all-enabled behavior rather than misreporting either provider absent. */
+  function dispatchAgentsFrom(caps) {
+    if (!caps || !Array.isArray(caps.agents)) return DISPATCH_FALLBACK_AGENTS;
+    var byId = {};
+    caps.agents.forEach(function(agent) {
+      if (!agent || (agent.id !== "claude" && agent.id !== "codex")) return;
+      if (typeof agent.installed !== "boolean" || byId[agent.id]) return;
+      byId[agent.id] = {
+        id: agent.id,
+        label: typeof agent.label === "string" && agent.label ? agent.label : agent.id,
+        installed: agent.installed
+      };
+    });
+    if (!byId.claude || !byId.codex) return DISPATCH_FALLBACK_AGENTS;
+    return caps.agents.map(function(agent) { return byId[agent && agent.id]; }).filter(Boolean);
+  }
+
+  /** Availability owns the provider row and whether submission is safe;
+   * the helper catalog below owns only that provider's three optional
+   * arguments. An unavailable preferred draft falls back without touching
+   * `dispatchDefaults`, so Cancel remains non-mutating. */
+  function applyDispatchAvailability(prefix, caps, preferred) {
+    var agents = dispatchAgentsFrom(caps);
+    var select = $(prefix + "-agent");
+    clear(select);
+    agents.forEach(function(agent) {
+      select.appendChild(el("option", {
+        value: agent.id,
+        disabled: !agent.installed
+      }, [agent.label + (agent.installed ? "" : " (not installed)")]));
+    });
+    var installed = agents.filter(function(agent) { return agent.installed; });
+    var preferredInstalled = installed.some(function(agent) {
+      return agent.id === preferred;
+    });
+    var selected = preferredInstalled ? preferred : (installed[0] && installed[0].id);
+    select.value = selected || "";
+    select.disabled = !selected;
+    ["model", "effort", "speed"].forEach(function(field) {
+      $(prefix + "-" + field).disabled = !selected;
+    });
+    $(prefix + "-modal-submit").disabled = !selected;
+    applyProviderOptions(prefix, selected || "", caps);
+    return selected || "";
+  }
+
+  /** A request still in flight has not established that the selected
+   * provider is launchable. Gate both the action and provider-dependent
+   * arguments until success or the compatible unknown-availability fallback. */
+  function gateDispatchAvailability(prefix) {
+    $(prefix + "-modal-submit").disabled = true;
+    ["model", "effort", "speed"].forEach(function(field) {
+      $(prefix + "-" + field).disabled = true;
+    });
+  }
+
   /** Rebuilds Model/Effort/Speed for `agent` from the cached catalog,
    * restoring that provider's own last-submitted selection. Called on
    * modal open and whenever Provider changes -- a Claude selection has no
@@ -5804,9 +5867,9 @@ svg.ctxmenu-disabled-warning {
    * preferences, committed only by Submit so dismissing a draft cannot
    * silently replace them. Model/Effort/Speed start as bare "Default"
    * placeholders and are filled in once the catalog fetch resolves --
-   * usually well before a person finishes reading the dialog, and a slow
-   * or failed fetch still leaves a fully usable "Default" selection rather
-   * than blocking the dialog open. */
+   * usually well before a person finishes reading the dialog. Availability
+   * gates submission while that request is in flight; failure restores the
+   * compatible, fully usable all-enabled fallback. */
   function openDispatchModal(storyId, returnFocus) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
@@ -5816,12 +5879,19 @@ svg.ctxmenu-disabled-warning {
     populateDispatchSelector("dispatch-model", null, "");
     populateDispatchSelector("dispatch-effort", null, "");
     populateDispatchSelector("dispatch-speed", null, "");
+    gateDispatchAvailability("dispatch");
     fetchDispatchOptions().then(function(caps) {
       // The modal may have closed, reopened for a different story, or
       // switched provider while this was in flight -- reapply against
       // whichever provider is showing NOW, not the one at fetch time.
-      if (dispatchModalStoryId === storyId) applyDispatchProviderOptions($("dispatch-agent").value, caps);
-    }).catch(function() { /* selects stay at "Default" -- dispatch still works */ });
+      if (dispatchModalStoryId === storyId) {
+        applyDispatchAvailability("dispatch", caps, $("dispatch-agent").value);
+      }
+    }).catch(function() {
+      if (dispatchModalStoryId === storyId) {
+        applyDispatchAvailability("dispatch", null, $("dispatch-agent").value);
+      }
+    });
     showBackdrop("dispatch-modal-backdrop");
     activateOverlay("dispatch-modal", "dispatch-agent");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
@@ -5866,6 +5936,8 @@ svg.ctxmenu-disabled-warning {
   var engineModalProject = null;
   var engineModalEpicId = null;
   var engineModalRunId = null;
+  var engineAvailabilityPending = false;
+  var engineProviderAvailable = true;
 
   function engineModalRun() {
     if (!engineModalRunId) return null;
@@ -5923,6 +5995,7 @@ svg.ctxmenu-disabled-warning {
     var run = engineModalRun();
     var pending = run ? engineActionPending(run.id) : null;
     var draining = !!run && run.state === "draining";
+    var availabilityBlocked = engineAvailabilityPending || !engineProviderAvailable;
     if (syncFields && run) {
       $("engine-lanes").value = String(run.lane_count);
       $("engine-agent").value = run.agent;
@@ -5932,8 +6005,12 @@ svg.ctxmenu-disabled-warning {
       ? "Current run · " + run.state
       : "Configure the next Full Auto run.";
     renderEngineModalLanes(run);
-    ["engine-lanes", "engine-agent", "engine-model", "engine-effort", "engine-speed"]
-      .forEach(function(id) { $(id).disabled = draining || !!pending; });
+    $("engine-lanes").disabled = draining || !!pending;
+    $("engine-agent").disabled = draining || !!pending
+      || (!engineAvailabilityPending && !engineProviderAvailable);
+    ["engine-model", "engine-effort", "engine-speed"].forEach(function(id) {
+      $(id).disabled = draining || !!pending || availabilityBlocked;
+    });
     $("engine-modal-cancel").disabled = !!pending;
     var pause = $("engine-modal-pause");
     pause.hidden = !run || draining;
@@ -5947,7 +6024,7 @@ svg.ctxmenu-disabled-warning {
     stop.textContent = draining ? "Stop now…" : "Stop…";
     var submit = $("engine-modal-submit");
     submit.hidden = draining;
-    submit.disabled = !!pending;
+    submit.disabled = !!pending || availabilityBlocked;
     submit.textContent = run
       ? pending === "configure" ? "Saving…" : "Save changes"
       : "Run Full Auto";
@@ -5962,6 +6039,8 @@ svg.ctxmenu-disabled-warning {
     engineModalProject = project;
     engineModalEpicId = epicId;
     engineModalRunId = run ? run.id : null;
+    engineAvailabilityPending = true;
+    engineProviderAvailable = false;
     $("engine-modal-header").textContent = epicId
       ? "Run Full Auto on " + epicId
       : run ? "Full Auto" : "Run Full Auto";
@@ -5971,13 +6050,26 @@ svg.ctxmenu-disabled-warning {
     populateDispatchSelector("engine-model", null, "");
     populateDispatchSelector("engine-effort", null, "");
     populateDispatchSelector("engine-speed", null, "");
+    gateDispatchAvailability("engine");
     fetchDispatchOptions().then(function(caps) {
       if (engineModalProject === project && engineModalEpicId === epicId
           && engineModalRunId === (run ? run.id : null)) {
-        if (run) applyCurrentEngineProviderOptions(run, caps);
-        else applyEngineProviderOptions($("engine-agent").value, caps);
+        var selected = applyDispatchAvailability("engine", caps, $("engine-agent").value);
+        engineAvailabilityPending = false;
+        engineProviderAvailable = !!selected;
+        if (run && selected === run.agent) applyCurrentEngineProviderOptions(run, caps);
+        syncOpenEngineModal(false);
       }
-    }).catch(function() { /* default selections keep Full Auto usable */ });
+    }).catch(function() {
+      if (engineModalProject === project && engineModalEpicId === epicId
+          && engineModalRunId === (run ? run.id : null)) {
+        var selected = applyDispatchAvailability("engine", null, $("engine-agent").value);
+        engineAvailabilityPending = false;
+        engineProviderAvailable = !!selected;
+        if (run && selected === run.agent) applyCurrentEngineProviderOptions(run, null);
+        syncOpenEngineModal(false);
+      }
+    });
     showBackdrop("engine-modal-backdrop");
     activateOverlay("engine-modal", "engine-lanes");
     if (returnFocus) overlayReturnFocus["engine-modal"] = returnFocus;
@@ -6001,6 +6093,8 @@ svg.ctxmenu-disabled-warning {
     engineModalProject = null;
     engineModalEpicId = null;
     engineModalRunId = null;
+    engineAvailabilityPending = false;
+    engineProviderAvailable = true;
     hideBackdrop("engine-modal-backdrop");
     $("engine-modal").classList.remove("open");
     $("engine-modal").setAttribute("aria-hidden", "true");
