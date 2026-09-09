@@ -3,6 +3,7 @@ import {
   cleanUpCreatedStories,
   COPY_TARGETS,
   createStory,
+  fullKeyboardAccess,
   keepNotices,
   measureFocusIndicator,
   openProject,
@@ -85,6 +86,28 @@ test("the board's own focus indicators, in every theme", async ({ page }) => {
   await measureFocusIndicator(page, ".card:focus", "a board card", () =>
     tabOnto(page, "#search-input", ".card"),
   );
+});
+
+test("the mobile filter sheet title's focus indicator, in every theme", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  await measureFocusIndicator(page, ".filter-sheet-title:focus", "the filter sheet title", async () => {
+    await tabOnto(page, "#search-input", "#filter-toggle-btn");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#filter-sheet-title")).toBeFocused();
+  });
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#filter-sheet")).toBeHidden();
 });
 
 test("the Full Auto lanes stepper's focus indicator, in every theme", async ({ page }) => {

@@ -317,7 +317,7 @@ export async function openProject(page: Page, name: string): Promise<void> {
  * helper needs is built from that same catalog. */
 export async function openStatusesEditor(page: Page, name: string): Promise<void> {
   await expect(page.locator(".repo-card-name", { hasText: name })).toBeVisible();
-  await page.locator("#settings-btn").click();
+  await clickHeaderAction(page, "settings-btn");
   await expect(page.locator("#settings-view")).toBeVisible();
   await page
     .locator(".settings-table tbody tr", { hasText: name })
@@ -435,9 +435,9 @@ export async function resolvedTokenColor(
  * closed"/"Show archived"/"Hide empty columns") needs this first. Board
  * sort moved out of this panel entirely in SH-305 -- it's per-column now,
  * opened from each column header's own sort button, so a spec driving it
- * doesn't need this at all. `#filter-count` and `#filter-clear` are in the
- * always-visible `.filter-summary` row, not the panel -- specs that touch
- * only those don't need this at all.
+ * doesn't need this at all. `#filter-count` stays in the always-visible
+ * summary row. Clear stays there on desktop and moves into the open mobile
+ * sheet with the panel.
  */
 export async function openFilters(page: Page): Promise<void> {
   const panel = page.locator("#filter-panel");
@@ -445,6 +445,19 @@ export async function openFilters(page: Page): Promise<void> {
     await page.locator("#filter-toggle-btn").click();
   }
   await expect(panel).toBeVisible();
+}
+
+/** Activates a header action directly on desktop or through More on mobile. */
+export async function clickHeaderAction(
+  page: Page,
+  id: string,
+): Promise<void> {
+  const action = page.locator(`#${id}`);
+  if (await action.isHidden()) {
+    await page.locator("#more-btn").click();
+    await expect(action).toBeVisible();
+  }
+  await action.click();
 }
 
 /**
@@ -459,8 +472,9 @@ export async function openFilters(page: Page): Promise<void> {
  * "element not found" rather than as a filter doing its job. Call this
  * AFTER the child is added.
  *
- * Idempotent: an already-checked box is left alone rather than toggled off,
- * so a spec may call it without first knowing the state.
+ * Idempotent: an already-checked box is left alone rather than toggled off.
+ * The mobile sheet is then completed through Done because every caller's next
+ * step acts on the newly revealed story; desktop keeps its inline disclosure.
  */
 export async function showEpics(page: Page): Promise<void> {
   await openFilters(page);
@@ -469,6 +483,10 @@ export async function showEpics(page: Page): Promise<void> {
     await toggle.check();
   }
   await expect(toggle).toBeChecked();
+  if (await page.locator("#filter-sheet").isVisible()) {
+    await page.locator("#filter-sheet-done").click();
+    await expect(page.locator("#filter-sheet")).toBeHidden();
+  }
 }
 
 /**

@@ -314,6 +314,10 @@ where
     // unbounded channel, because back-pressure here would reintroduce the
     // deadlock this lane exists to remove.
     let (nested_tx, nested_rx) = mpsc::channel::<Job>();
+    // The engine may claim work on its first steady pass. Hold that pass until
+    // every server thread exists and `ready()` has fired; restart
+    // reconciliation already ran before portfile publication.
+    let (engine_start_tx, engine_start_rx) = mpsc::channel::<()>();
 
     // Every background thread lives inside this scope, which is what lets the
     // change-token poller and every dispatcher borrow the store rather than
@@ -369,15 +373,18 @@ where
                 )
             });
         }
-        // The Full Auto engine trigger (SH-466): a restart sweep once, then
-        // the ordinary reconcile pass on every bus wake or coarse tick. One
-        // thread, sequential, so nothing else can race the restart sweep
-        // over the same lane rows.
+        // Steady Full Auto reconciliation starts only after `ready()` below,
+        // and stops scheduling as soon as shutdown enters draining state.
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
             let bus = bus.clone();
-            scope.spawn(move || crate::daemon::engine::poll_engine(store, &env, &bus, &stop));
+            let draining = &serving.draining;
+            scope.spawn(move || {
+                if engine_start_rx.recv().is_ok() {
+                    crate::daemon::engine::poll_engine(store, &env, &bus, &stop, draining);
+                }
+            });
         }
         {
             let stop = Arc::clone(&stop);
@@ -418,6 +425,7 @@ where
         }
 
         ready();
+        let _ = engine_start_tx.send(());
 
         // One-shot, not a loop like the threads above — files whatever
         // crashes the startup harvest found, then ends. After `ready()` so a
