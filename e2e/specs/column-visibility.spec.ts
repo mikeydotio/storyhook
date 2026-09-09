@@ -60,7 +60,14 @@ test("hiding a column via the Columns dropdown removes its cards without changin
   ).not.toBeVisible();
   // The column is hidden, not filtered — the cards behind it still count.
   await expect(page.locator("#filter-count")).toHaveText("2 / 2");
-  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveText("Columns (1)");
+  // The accessible NAME, never textContent. Since SH-620 this button holds a
+  // decorative `aria-hidden` emoji caret beside its label, and textContent
+  // still carries it -- `toHaveText` here read "Columns (1)\u{1F53D}". Name
+  // computation excludes aria-hidden subtrees by specification, so this asserts
+  // the label a user is actually told and nothing decorative. Any assertion
+  // about a control's own words wants the name; only a spec whose SUBJECT is
+  // the glyph asserts text (SH-622).
+  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveAccessibleName("Columns (1)");
 
   await page
     .locator("#fdd-columns .fdd-option", { hasText: "todo" })
@@ -71,7 +78,7 @@ test("hiding a column via the Columns dropdown removes its cards without changin
   await expect(
     page.locator(".card-title", { hasText: "Wire up the auth flow" }),
   ).toBeVisible();
-  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveText("Columns");
+  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveAccessibleName("Columns");
 });
 
 test("Hide empty columns collapses columns with no visible cards", async ({
@@ -120,7 +127,7 @@ test("a hidden column persists across a reload on the same project", async ({
 
   await expect(page.locator("#board-view")).toBeVisible();
   await expect(page.locator('.column[data-state="todo"]')).toHaveCount(0);
-  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveText("Columns (1)");
+  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveAccessibleName("Columns (1)");
 });
 
 test("a hidden column absent from the next project is pruned, with a toast", async ({
@@ -133,7 +140,7 @@ test("a hidden column absent from the next project is pruned, with a toast", asy
     .locator("#fdd-columns .fdd-option", { hasText: "review" })
     .locator("input[type=checkbox]")
     .uncheck();
-  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveText("Columns (1)");
+  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveAccessibleName("Columns (1)");
 
   await switchToProject(page, "Beta Project");
 
@@ -144,7 +151,7 @@ test("a hidden column absent from the next project is pruned, with a toast", asy
   // never gets pruned would just be harmless dead weight here — but the
   // badge count proving it's actually gone is what shows the prune ran
   // rather than merely being masked by Beta's own vocabulary.
-  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveText("Columns");
+  await expect(page.locator("#fdd-columns .fdd-btn")).toHaveAccessibleName("Columns");
 });
 
 test("Hide empty columns is a durable preference that carries across a project switch", async ({
