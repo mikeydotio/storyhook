@@ -235,11 +235,23 @@ other two:
   story set <id> ...     — per STORY. Sets a story's fields (title,
                            state, priority, assignee). Nothing to do
                            with a project.
-  .storyhook.toml        — per REPOSITORY. Its [plugin] and [hooks]
-                           tables are decisions about this checkout,
-                           versioned with the branch and carried by a
-                           clone. Edit the file; storyhook does not
-                           write those for you.
+  .storyhook.toml        — per REPOSITORY. Its [plugin], [hooks], and
+                           [github] tables are decisions about this
+                           checkout, versioned with the branch and
+                           carried by a clone. Edit the file; storyhook
+                           does not write those for you.
+
+Repository configuration:
+  [github]
+  api_url = "https://github.example.com/api/v3"
+
+    Optional REST API base used by 'story pr-check' and the daemon's
+    unattended poll. Without it, storyhook derives the endpoint from
+    each registered GitHub remote: api.github.com for github.com,
+    api.<tenant>.ghe.com for <tenant>.ghe.com, and /api/v3 on any
+    other host. The value must be an absolute HTTP(S) URL without
+    credentials, a query, or a fragment. A single override cannot be
+    used when matching pull-request links span multiple GitHub hosts.
 
 Settings:
   sync.auto_transition    true|false, default true

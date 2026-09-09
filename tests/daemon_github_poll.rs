@@ -17,7 +17,9 @@ use storyhook::domain::secret::GithubToken;
 use storyhook::github::credential_store;
 use storyhook::service::{NewStoryInput, PrLinkService, StoryService};
 use storyhook::store::{NewProject, ReadOps, Store, StoryNo, WriteOps};
-use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture, default_states, default_types};
+use storyhook_test_support::{
+    FakeGithubApiFactory, RecordedCall, ServiceFixture, default_states, default_types, scratch_dir,
+};
 
 /// A fresh mock keychain — isolated per test, unlike
 /// `keyring_core::set_default_store`'s process-wide static, which would make
@@ -105,6 +107,52 @@ fn a_tick_closes_a_story_whose_linked_pr_merged() {
         row.archived,
         "the poll must close the story its merged, close-on-merge PR asked to"
     );
+}
+
+/// The daemon has no repository cwd, so its project context must recover a
+/// repository-specific API override through the checkout registered in the
+/// store rather than silently falling back to the public GitHub endpoint.
+#[test]
+fn a_tick_uses_the_registered_checkouts_api_override() {
+    let credential_store = mock_store();
+    let fixture = ServiceFixture::new();
+    let account = fixture.env().store().key();
+    credential_store::login(&credential_store, &account, &token()).unwrap();
+
+    fixture.link_origin("https://github.example.com/acme/widgets");
+    let id = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "Enterprise merge via the poll".to_string(),
+            ..NewStoryInput::default()
+        })
+        .expect("creating a story")
+        .id;
+    PrLinkService::new(&fixture.ctx())
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .expect("linking never spends a credential");
+
+    let checkout = scratch_dir();
+    std::fs::write(
+        checkout.path().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"fixture-uuid\"\nprefix = \"SH\"\n\
+         \n[github]\napi_url = \"https://proxy.example.test/github/\"\n",
+    )
+    .expect("writing the project pointer");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout.path())))
+        .expect("registering the checkout");
+
+    let factory = FakeGithubApiFactory::new();
+    factory.seed_pull_request(7, "closed", true);
+
+    tick(fixture.store(), fixture.env(), &credential_store, &factory);
+
+    assert!(factory.recorded_calls().contains(&RecordedCall::Build {
+        api_base: "https://proxy.example.test/github".into(),
+        owner: "acme".into(),
+        repo: "widgets".into(),
+    }));
 }
 
 /// The credential a poll tick spends is scoped to the *store*

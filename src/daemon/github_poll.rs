@@ -5,7 +5,7 @@
 //!
 //! [`pr_check::run_check`] is `story pr-check`'s whole engine: it reads a
 //! project's registered GitHub remotes fresh, re-validates every linked PR's
-//! `(owner, repo)` against that set (the cross-repo spoofing guard SH-49
+//! `(host, owner, repo)` against that set (the cross-repo spoofing guard SH-49
 //! built in), and applies `StoryPrMerged`/`StoryPrClosed`. This module calls
 //! it unmodified, once per project per tick — the alternative, a second
 //! merge-detection path, is exactly how that guard would end up silently

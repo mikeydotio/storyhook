@@ -2,25 +2,25 @@ use std::time::Duration;
 
 use ureq::Agent;
 
+use crate::domain::github_remote::GithubApiBase;
 use crate::error::AppError;
 
 use super::types::PullRequestStatus;
-
-const API_BASE: &str = "https://api.github.com";
 
 /// GitHub REST API client wrapping ureq.
 pub struct GithubClient {
     agent: Agent,
     token: String,
+    api_base: GithubApiBase,
     owner: String,
     repo: String,
 }
 
 impl GithubClient {
-    /// Create a new client for the given repository.
-    pub fn new(token: String, owner: String, repo: String) -> Self {
+    /// Create a client for the given API endpoint and repository.
+    pub fn new(token: String, api_base: GithubApiBase, owner: String, repo: String) -> Self {
         let config = Agent::config_builder()
-            .https_only(true)
+            .https_only(api_base.as_str().starts_with("https://"))
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build();
@@ -30,6 +30,7 @@ impl GithubClient {
         Self {
             agent,
             token,
+            api_base,
             owner,
             repo,
         }
@@ -41,13 +42,18 @@ impl GithubClient {
 
     /// Build a GET request with common headers.
     fn get(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let url = format!("{API_BASE}{path}");
+        let url = self.request_url(path);
         self.agent
             .get(&url)
             .header("Authorization", &format!("Bearer {}", self.token))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "storyhook")
             .header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    /// Joins one absolute API path to this client's validated base URL.
+    fn request_url(&self, path: &str) -> String {
+        format!("{}{path}", self.api_base.as_str())
     }
 
     /// Check rate limit headers and warn when remaining calls are low.
@@ -124,5 +130,26 @@ impl GithubClient {
             .map_err(|e| AppError::GithubApi(format!("failed to parse pull request: {e}")))?;
 
         Ok(pr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::github_remote::GithubApiBase;
+
+    #[test]
+    fn request_url_uses_the_supplied_api_base() {
+        let client = GithubClient::new(
+            "token".into(),
+            GithubApiBase::override_from("https://github.example.com/api/v3/").unwrap(),
+            "acme".into(),
+            "widgets".into(),
+        );
+
+        assert_eq!(
+            client.request_url("/repos/acme/widgets/pulls/7"),
+            "https://github.example.com/api/v3/repos/acme/widgets/pulls/7"
+        );
     }
 }

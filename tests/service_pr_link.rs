@@ -32,6 +32,10 @@ fn configure_remote(fixture: &ServiceFixture, owner: &str, repo: &str) {
     fixture.link_origin(&format!("https://github.com/{owner}/{repo}"));
 }
 
+fn configure_remote_on(fixture: &ServiceFixture, host: &str, owner: &str, repo: &str) {
+    fixture.link_origin(&format!("https://{host}/{owner}/{repo}"));
+}
+
 const URL: &str = "https://github.com/acme/widgets/pull/7";
 
 #[test]
@@ -57,6 +61,35 @@ fn link_happy_path_records_the_link() {
     assert_eq!(links[0].repo, "widgets");
     assert_eq!(links[0].number, 7);
     assert!(links[0].close_on_merge);
+}
+
+#[test]
+fn link_accepts_a_pr_on_the_registered_enterprise_host() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    let id = create(&fixture, "Enterprise PR");
+    let ctx = fixture.ctx();
+
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.example.com/acme/widgets/pull/7", true)
+        .expect("the registered Enterprise host must be accepted");
+}
+
+#[test]
+fn link_rejects_the_same_repo_name_on_a_different_host() {
+    let fixture = ServiceFixture::new();
+    configure_remote_on(&fixture, "github.example.com", "acme", "widgets");
+    let id = create(&fixture, "Wrong GitHub host");
+    let ctx = fixture.ctx();
+
+    let error = PrLinkService::new(&ctx)
+        .link(&id, "https://github.com/acme/widgets/pull/7", true)
+        .expect_err("host identity must participate in the cross-repository guard");
+    assert!(
+        error
+            .to_string()
+            .contains("github.example.com/acme/widgets")
+    );
 }
 
 #[test]

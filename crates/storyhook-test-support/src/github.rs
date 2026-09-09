@@ -9,7 +9,7 @@
 //! rate-limit simulation.
 //!
 //! [`FakeGithubApiFactory::build`] always hands back a handle into the same
-//! shared state (`Rc<RefCell<...>>`), regardless of the token/owner/repo
+//! shared state (`Rc<RefCell<...>>`), regardless of the endpoint/token/owner/repo
 //! arguments passed in, so a test asserting on state after checking several
 //! repositories' links sees every client's calls in one place.
 
@@ -17,13 +17,24 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use storyhook::domain::github_remote::GithubApiBase;
 use storyhook::error::AppError;
 use storyhook::github::api::{GithubApi, GithubApiFactory};
 use storyhook::github::types::PullRequestStatus;
 
 /// One call the engine made against the fake, in the order it made them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedCall {
+    /// A repository-scoped API client was built with this routing identity.
+    Build {
+        /// The REST API base URL.
+        api_base: String,
+        /// The repository owner.
+        owner: String,
+        /// The repository name.
+        repo: String,
+    },
+    /// A pull request was fetched by number.
     GetPullRequest(u64),
 }
 
@@ -84,7 +95,18 @@ impl FakeGithubApiFactory {
 }
 
 impl GithubApiFactory for FakeGithubApiFactory {
-    fn build(&self, _token: String, _owner: String, _repo: String) -> Box<dyn GithubApi> {
+    fn build(
+        &self,
+        _token: String,
+        api_base: GithubApiBase,
+        owner: String,
+        repo: String,
+    ) -> Box<dyn GithubApi> {
+        self.state.borrow_mut().recorded.push(RecordedCall::Build {
+            api_base: api_base.as_str().to_string(),
+            owner,
+            repo,
+        });
         Box::new(FakeGithubApi {
             state: Rc::clone(&self.state),
         })

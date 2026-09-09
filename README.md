@@ -712,6 +712,9 @@ prefix = "SH"
 
 [plugin]          # optional, user-authored; storyhook reads it and never writes it
 enabled = true
+
+[github]          # optional REST API base override for this repository
+api_url = "https://github.example.com/api/v3"
 ```
 
 Behavior:
@@ -733,6 +736,14 @@ Behavior:
   story number it would have used.
 - Migrating from the old per-repository layout: `story migrate`. It never writes
   to the `.storyhook/` directory it reads — that directory is your rollback.
+
+GitHub pull-request links use the host of a registered origin. Storyhook routes
+`github.com` to `https://api.github.com`, `<tenant>.ghe.com` to
+`https://api.<tenant>.ghe.com`, and other GitHub Enterprise hosts to their
+`/api/v3` endpoint. Set `[github].api_url` when an installation uses a custom
+REST base or proxy. The override must be an absolute HTTP(S) URL without
+credentials, a query, or a fragment, and one override cannot serve links on
+multiple GitHub hosts.
 
 ## Web dashboard
 
