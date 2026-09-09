@@ -599,6 +599,21 @@ pub struct StartRequest {
     pub speed: Option<EngineSpeed>,
 }
 
+/// Replacement configuration for future claims in a live Full Auto run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigureRequest {
+    /// Desired maximum number of concurrently occupied lanes.
+    pub lanes: u32,
+    /// Agent host used by stories claimed after this update commits.
+    pub agent: EngineAgent,
+    /// Explicit provider model, or the provider default when absent.
+    pub model: Option<String>,
+    /// Explicit reasoning effort, or the provider default when absent.
+    pub effort: Option<String>,
+    /// Explicit speed selection, or the provider default when absent.
+    pub speed: Option<EngineSpeed>,
+}
+
 /// One transactionally consistent run and its ordered lanes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkippedNoAutoStory {
@@ -629,18 +644,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Starts one run and all of its idle lanes in a single transaction.
     pub fn start(&self, request: StartRequest) -> Result<EngineRunRecord, AppError> {
-        if !(1..=MAX_ENGINE_LANES).contains(&request.lanes) {
-            return Err(AppError::Validation(format!(
-                "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
-            )));
-        }
-        for (name, value) in [("model", &request.model), ("effort", &request.effort)] {
-            if let Some(value) = value {
-                validate_dispatch_option_token(value).map_err(|reason| {
-                    AppError::Validation(format!("invalid engine {name} `{value}`: {reason}"))
-                })?;
-            }
-        }
+        validate_configuration(request.lanes, &request.model, &request.effort)?;
 
         let project = self.ctx.project();
         let now = self.ctx.now();
@@ -718,6 +722,48 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Replaces the configuration used by future claims in a running or
+    /// paused run without touching work that is already occupied.
+    pub fn configure(
+        &self,
+        run_id: &RunId,
+        request: ConfigureRequest,
+    ) -> Result<RunView, AppError> {
+        validate_configuration(request.lanes, &request.model, &request.effort)?;
+        let project = self.ctx.project();
+        let updated_at = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            require_state(
+                &run,
+                "configure",
+                &[EngineRunState::Running, EngineRunState::Paused],
+            )?;
+
+            let lanes = tx.engine_lanes(run_id)?;
+            for lane in lanes.iter().filter(|lane| {
+                lane.lane_index >= request.lanes && lane.state == EngineLaneState::Idle
+            }) {
+                tx.delete_engine_lane(run_id, lane.lane_index)?;
+            }
+            for lane_index in 0..request.lanes {
+                if !lanes.iter().any(|lane| lane.lane_index == lane_index) {
+                    tx.put_engine_lane(&idle_lane(run_id, lane_index, &updated_at))?;
+                }
+            }
+
+            run.lanes = request.lanes;
+            run.agent = request.agent;
+            run.model = request.model;
+            run.effort = request.effort;
+            run.speed = request.speed;
+            run.updated_at = updated_at.clone();
+            tx.update_engine_run(&run)
+        })?;
+        self.one_view(run_id)
     }
 
     /// Reads all project runs, or exactly one named run, with ordered lanes.
@@ -1108,7 +1154,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
                 return Ok(false);
             }
-            tx.put_engine_lane(&idle)?;
+            put_or_retire_idle_lane(tx, &idle)?;
             Ok(true)
         })?)
     }
@@ -1352,6 +1398,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
+            let dispatch_configuration = std::cell::RefCell::new(None);
             let filters = ReadyQueueFilters {
                 phase: None,
                 epic: scope_epic.as_deref(),
@@ -1362,15 +1409,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     filters,
                     None,
                     |tx| {
-                        Ok(
-                            run_for_project(tx, slug, run_id)?.state == EngineRunState::Running
-                                && scope_is_available(tx, self.ctx.project(), &view.run.scope)?
-                                && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
-                                && tx
-                                    .engine_lanes(run_id)?
-                                    .iter()
-                                    .any(|current| current == &lane),
-                        )
+                        let current = run_for_project(tx, slug, run_id)?;
+                        let lanes = tx.engine_lanes(run_id)?;
+                        let eligible = current.state == EngineRunState::Running
+                            && scope_is_available(tx, self.ctx.project(), &current.scope)?
+                            && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
+                            && occupied_run_lane_count(&lanes) < current.lanes as usize
+                            && lanes.iter().any(|candidate| candidate == &lane);
+                        if eligible {
+                            dispatch_configuration.replace(Some((
+                                current.agent,
+                                current.model,
+                                current.effort,
+                                current.speed,
+                            )));
+                        }
+                        Ok(eligible)
                     },
                     |tx, before, claimed| {
                         working.state = EngineLaneState::Dispatching;
@@ -1385,16 +1439,19 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 break;
             };
             let story = claimed.id.clone();
+            let (agent, model, effort, speed) = dispatch_configuration
+                .into_inner()
+                .expect("an engine claim captures configuration in its transaction");
             debug_assert_eq!(working.story_id.as_deref(), Some(story.as_str()));
             debug_assert_eq!(working.outcome.as_deref(), Some(before.state.as_str()));
 
             let outcome = self.dispatcher.dispatch(DispatchRequest {
                 project: slug.to_string(),
                 story: story.clone(),
-                agent: view.run.agent,
-                model: view.run.model.clone(),
-                effort: view.run.effort.clone(),
-                speed: view.run.speed,
+                agent,
+                model,
+                effort,
+                speed,
             })?;
             match outcome.state {
                 DispatchOutcomeState::Ok => {
@@ -1715,7 +1772,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = Some(OPERATOR_STOPPED_NOW.to_string());
         idle.outcome_detail = Some(payload.to_string());
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        self.ctx
+            .store()
+            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
         Ok(())
     }
 
@@ -1724,7 +1783,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = lane.outcome.clone();
         idle.outcome_detail = lane.outcome_detail.clone();
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        self.ctx
+            .store()
+            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
         Ok(())
     }
 
@@ -1982,6 +2043,53 @@ fn occupied_lane_count(tx: &impl ReadOps) -> Result<usize, StoreError> {
         }
     }
     Ok(occupied)
+}
+
+fn occupied_run_lane_count(lanes: &[EngineLaneRecord]) -> usize {
+    lanes
+        .iter()
+        .filter(|lane| {
+            matches!(
+                lane.state,
+                EngineLaneState::Dispatching | EngineLaneState::Working
+            )
+        })
+        .count()
+}
+
+fn put_or_retire_idle_lane(
+    tx: &mut impl WriteOps,
+    lane: &EngineLaneRecord,
+) -> Result<(), StoreError> {
+    debug_assert_eq!(lane.state, EngineLaneState::Idle);
+    let run = tx
+        .engine_run(&lane.run_id)?
+        .ok_or_else(|| StoreError::NotFound(format!("engine run `{}` not found", lane.run_id)))?;
+    if lane.lane_index >= run.lanes {
+        tx.delete_engine_lane(&lane.run_id, lane.lane_index)
+    } else {
+        tx.put_engine_lane(lane)
+    }
+}
+
+fn validate_configuration(
+    lanes: u32,
+    model: &Option<String>,
+    effort: &Option<String>,
+) -> Result<(), AppError> {
+    if !(1..=MAX_ENGINE_LANES).contains(&lanes) {
+        return Err(AppError::Validation(format!(
+            "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
+        )));
+    }
+    for (name, value) in [("model", model), ("effort", effort)] {
+        if let Some(value) = value {
+            validate_dispatch_option_token(value).map_err(|reason| {
+                AppError::Validation(format!("invalid engine {name} `{value}`: {reason}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn project_slug(tx: &impl ReadOps, project: crate::store::ProjectId) -> Result<String, StoreError> {

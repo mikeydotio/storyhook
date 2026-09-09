@@ -4803,6 +4803,29 @@ fn engine_http_serves_every_control_and_stable_run_views() {
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
     let run = started["run"]["id"].as_str().unwrap().to_string();
 
+    let configured = patch_json(
+        &fixture,
+        &base,
+        &serde_json::json!({
+            "run": run,
+            "lanes": 3,
+            "agent": "claude",
+            "model": "claude-opus-4-6",
+            "effort": "high",
+            "speed": "standard"
+        })
+        .to_string(),
+    )
+    .expect("configuring a live engine run");
+    assert_eq!(configured.status(), 200);
+    let configured = response_json(configured);
+    assert_eq!(configured["run"]["lane_count"], 3);
+    assert_eq!(configured["run"]["agent"], "claude");
+    assert_eq!(configured["run"]["model"], "claude-opus-4-6");
+    assert_eq!(configured["run"]["effort"], "high");
+    assert_eq!(configured["run"]["speed"], "standard");
+    assert_eq!(configured["run"]["lanes"].as_array().unwrap().len(), 3);
+
     let duplicate = post_json(&fixture, &base, "{}").unwrap_err();
     assert_eq!(status_of(duplicate), 409);
 
@@ -4886,6 +4909,17 @@ fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
     );
     assert_eq!(
         status_of(
+            patch_json(
+                &fixture,
+                &base,
+                r#"{"run":"missing","lanes":1,"agent":"codex","unknown":true}"#,
+            )
+            .unwrap_err()
+        ),
+        400
+    );
+    assert_eq!(
+        status_of(
             post_json(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#).unwrap_err()
         ),
         404
@@ -4951,6 +4985,16 @@ fn engine_http_collection_and_actions_keep_the_existing_authorization_chain() {
                 .header("X-Storyhook", "1")
                 .content_type("application/json")
                 .send("{}")
+                .unwrap_err()
+        ),
+        401
+    );
+    assert_eq!(
+        status_of(
+            ureq::patch(base.as_str())
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send(r#"{"run":"missing","lanes":1,"agent":"codex"}"#)
                 .unwrap_err()
         ),
         401

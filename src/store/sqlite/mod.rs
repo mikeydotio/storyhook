@@ -1027,6 +1027,10 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::put_engine_lane(&self.conn, lane)
     }
 
+    fn delete_engine_lane(&mut self, run_id: &str, lane_index: u32) -> Result<(), StoreError> {
+        write::delete_engine_lane(&self.conn, run_id, lane_index)
+    }
+
     fn put_verification_incident(
         &mut self,
         incident: &VerificationIncident,

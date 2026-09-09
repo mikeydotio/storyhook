@@ -515,6 +515,12 @@ pub trait WriteOps: ReadOps {
     /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;
 
+    /// Deletes one lane under its `(run_id, lane_index)` identity.
+    ///
+    /// Used when a live run's desired concurrency shrinks. Occupied lanes are
+    /// retained until they settle; only an idle lane may reach this operation.
+    fn delete_engine_lane(&mut self, run_id: &str, lane_index: u32) -> Result<(), StoreError>;
+
     /// Creates or replaces the one machine-wide verifier incident.
     fn put_verification_incident(
         &mut self,
