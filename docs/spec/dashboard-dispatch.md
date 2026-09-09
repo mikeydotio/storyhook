@@ -1004,6 +1004,35 @@ Speed's own catalog lists only `fast`: it is a plain toggle with no wire-level
 "explicit standard" distinct from omitting `--speed`, so a `standard` entry would
 have been a second, redundant way to say "Default" in the dropdown.
 
+**SH-616 separates launch availability from option capabilities.** When the daemon
+builds its `DispatchRegistry`, it resolves `claude` and `codex` against that startup
+process's `PATH` using the same executable-regular-file rule as Storyhook's existing
+PATH identity guard. It does not launch either provider, and the result is immutable
+for that daemon lifetime: installing or removing a provider takes effect after a
+daemon restart. The existing helper capability calls and their 60-second cache remain
+independent because a helper catalog describes valid arguments, not whether this host
+can execute the provider they configure.
+
+`GET /api/dispatch-options` preserves its `claude` and `codex` objects and adds one
+ordered array:
+
+```json
+"agents": [
+  {"id":"claude","label":"Claude","installed":true},
+  {"id":"codex","label":"Codex","installed":false}
+]
+```
+
+Dispatch and Full Auto rebuild their shared Provider selector from that array.
+Unavailable providers stay visible, gain the suffix `(not installed)`, and use the
+native disabled-option semantic. A remembered unavailable provider falls back to the
+first installed provider for the current draft without changing the saved preference;
+only Submit persists a replacement. Submission and the provider-dependent selectors
+remain disabled while availability is loading and when no provider is installed. A
+failed request, or an older daemon response with no `agents` field, retains the
+historical all-enabled provider list: in those cases availability is unknown, not a
+negative result, and dispatch must remain backward compatible.
+
 **The launch-command assembly is now composed, not four static strings.**
 `compose_claude_launch_tpl`/`compose_codex_launch_tpl` build the command line from
 parts (`--model`, `--effort`, and — for Claude only — a merged `--settings` JSON
