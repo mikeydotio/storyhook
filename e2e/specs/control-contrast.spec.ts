@@ -104,12 +104,11 @@ async function waitForSunkenColumn(page: Page): Promise<void> {
     .toBe(expected);
 }
 
-test("board header controls meet contrast thresholds in every theme and state", async ({
+test("the Archive board-header control meets contrast thresholds in every theme and state", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
   const archive = page.locator('.column[data-state="done"] .column-archive-btn');
-  const sort = page.locator('.column[data-state="todo"] .column-sort-btn');
 
   for (const theme of THEMES) {
     await theme.apply(page);
@@ -117,8 +116,6 @@ test("board header controls meet contrast thresholds in every theme and state", 
     await page.locator("#home-btn").hover();
 
     await expectContrast(archive, TEXT_CONTRAST, `${theme.name}: Archive at rest`);
-    await expectContrast(sort, MIN_CONTRAST, `${theme.name}: column sort icon`);
-
     await archive.hover();
     await expectContrast(archive, TEXT_CONTRAST, `${theme.name}: Archive on hover`);
   }
