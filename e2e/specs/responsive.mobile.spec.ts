@@ -1211,7 +1211,7 @@ for (const phone of [
     await expect(page.locator("#more-btn")).toBeVisible();
     await expect(page.locator("#filter-panel")).toBeHidden();
     await expect(page.locator(".engine-run-btn")).toHaveAccessibleName(
-      "Run Full Auto",
+      "Auto: Stopped",
     );
     const geometry = await page.evaluate(() => {
       const center = (selector: string) => {
