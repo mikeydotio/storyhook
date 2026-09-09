@@ -70,8 +70,8 @@ test("the board's own focus indicators, in every theme", async ({ page }) => {
   await openProject(page, "Alpha Project");
 
   // Topbar DOM order: brand -> #projsel-btn -> #subtitle (a bare <span>,
-  // not a tab stop) -> .search-wrap (its <svg> is pointer-events: none and
-  // not tabbable either) -> #search-input. One real Tab away.
+  // not a tab stop) -> .search-wrap (its decorative emoji is not tabbable
+  // either) -> #search-input. One real Tab away.
   await measureFocusIndicator(page, ".search-input:focus", "the search box", () =>
     tabOnto(page, "#projsel-btn", ".search-input"),
   );

@@ -29,21 +29,18 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
-async function expectDisclosureIcon(
+async function expectFilterEmoji(
   locator: Locator,
   direction: "right" | "down",
 ): Promise<void> {
   await expect(locator).toBeVisible();
   await expect(locator).toHaveAttribute("aria-hidden", "true");
+  await expect(locator).toHaveAttribute("data-emoji", "filters");
   await expect(locator).toHaveAttribute("data-direction", direction);
-  await expect(locator).toHaveAttribute("stroke", "currentColor");
-  const box = await locator.boundingBox();
-  expect(box).not.toBeNull();
-  expect(box!.width).toBeCloseTo(14, 1);
-  expect(box!.height).toBeCloseTo(14, 1);
+  await expect(locator).toHaveText("🎛️");
 }
 
-test("the panel defaults collapsed, with the toggle's ARIA and chevron matching", async ({
+test("the panel defaults collapsed, with the toggle's ARIA and emoji matching", async ({
   page,
 }) => {
   await expect(page.locator("#filter-panel")).toBeHidden();
@@ -51,7 +48,7 @@ test("the panel defaults collapsed, with the toggle's ARIA and chevron matching"
     "aria-expanded",
     "false",
   );
-  await expectDisclosureIcon(page.locator("#filter-toggle-chevron"), "right");
+  await expectFilterEmoji(page.locator("#filter-toggle-chevron"), "right");
   await expect(page.locator("#filter-toggle-btn")).toHaveAccessibleName("Filters");
   // Always visible regardless -- the point of the redesign.
   await expect(page.locator("#filter-count")).toBeVisible();
@@ -68,7 +65,7 @@ test("clicking the toggle opens the panel and its dropdowns become usable", asyn
     "aria-expanded",
     "true",
   );
-  await expectDisclosureIcon(page.locator("#filter-toggle-chevron"), "down");
+  await expectFilterEmoji(page.locator("#filter-toggle-chevron"), "down");
 
   await page.locator("#fdd-priorities .fdd-btn").click();
   await expect(page.locator("#fdd-priorities .fdd-panel")).toBeVisible();
