@@ -2378,3 +2378,111 @@ responsibility for real provider launch behavior. No provider UI changed here.
 Validation uses new and directly impacted targets. The selector returned `ALL`
 because the certified baseline had no coverage map; this work makes no full-suite
 certification claim. The centralized verifier owns that gate on the proposed merge.
+
+### SH-626 — a probe that could not run is not a window that closed
+
+**What was filed.** `engine.spec.ts`'s one real-daemon case failed about one
+run in five in the full desktop-chromium project: lane 0 quarantined
+`window-gone` for EE-1 and the run drained, all within one second of `start`.
+The story ruled out the tick, stalls and refusals, and asked the next person
+to establish rather than guess whether the repair was a grace keyed on
+`dispatched_at`, a dispatcher that confirms observability before reporting
+success, or something in the fake.
+
+**What it was.** None of those. Every tmux the daemon runs, it runs through
+`apply_dispatch_allowlist`, which clears the environment and restores only
+`PATH`/`HOME`/XDG/locale and `STORY_*`/`STORYHOOK_*` names. `scripts/run-e2e.sh`
+had bridged the fake tmux's `FAKE_TMUX_*` knobs across that boundary since
+SH-263 — for the dispatch child only, through the generated dispatch wrapper.
+The reconciler's liveness probe never passes through story.sh; it reached a
+`tmux` double whose `set -u` died on an unset `FAKE_TMUX_IMPLEMENTATION`, and an
+exit status of 1 was read as "the window is gone" on every steady pass, one
+change-poll interval after dispatch returned. The spec was green only when its
+status read (which matched a lane by story id in *any* state, `dispatching`
+included) and its stop-now beat that pass; under load the dashboard rendered
+"Auto: Running" late and the pass won. Reproduced 3/3 in under two seconds
+with the exact filed state once the spec waited for the daemon's own pass to
+observe the lane — the positive fact is `working` with `last_progress_at` set,
+which `record_progress` seeds on the first pass that finds a lane alive and
+which the HTTP lane view now exposes, because a one-second `last_observed_at`
+cannot be ordered against `dispatched_at` (SH-336).
+
+A second mechanism existed on the day it was filed and is already gone: before
+SH-633 every dispatch child started a second daemon on the fixture store, whose
+overlapping `poll_engine` could observe lane 0 while still `dispatching` with
+no pane id — `observe_lanes` reads that as not alive. One daemon per store
+holds now (SH-113, SH-633), and the only thread that observes is the one
+dispatching.
+
+**The grace was refuted, not skipped.** Dispatch already gates on
+`wait_ready_sentinel` before answering `ok:true`, so the window *is*
+observable the instant dispatch returns; a grace keyed on `dispatched_at` would
+only have delayed the same wrong verdict by the grace period while hiding
+exactly this fixture class. **The dispatcher already confirms observability.**
+**The fake was fine**; the harness bridged its knobs across one boundary and
+not the other one the same daemon crosses. The harness now generates its
+provider doubles from `scripts/e2e-provider-doubles.sh`, and the `tmux` double
+is handed the runner's knob snapshot directory as data and exports what it
+finds there before exec'ing the fake — both bridges read one snapshot. The
+allowlist is a security boundary and was not widened (SH-263's verdict).
+`tests/e2e_provider_doubles.rs` is the merge-gate half of the regression: it
+builds the daemon's tmux command through the **real** allowlist and asks the
+exact probe question with the exact `WINDOW_PROBE_FORMAT`, with a negative
+control proving the environment is really stripped. A consequence closed in
+the same change: the fake's placeholder pane self-expires after 30 s, which
+never mattered while the probe could not reach it and would have quarantined
+any lane alive longer once it could; the runner now states a lifetime derived
+from the longest measured browser leg and reaps the placeholder at cleanup.
+
+**Why nobody could see it, and the production change that followed.**
+`window_alive` was a bool, so "tmux says the pane is dead" and "tmux could not
+be asked" collapsed into one verdict named `window-gone`, and the probe's real
+failure reached only the activity journal as `process finished: exit status:
+1`. `Dispatcher::probe_window` now answers [`WindowProbe`] — `Alive`, `Gone`
+with tmux's own words, or `Unanswered` with the reason tmux could not be asked
+— and `quarantine_lane` writes the words into the story's block reason and the
+quarantine record. Two facts about real tmux decide the `Gone` side and were
+measured rather than assumed: `display-message -t` is `CMD_FIND_CANFAIL`, so a
+target tmux cannot find answers three **empty fields at exit 0** (tmux 3.7c),
+which the old bool read as false by accident and the probe now reads as `Gone`
+by design; and the "error connecting to" line is printed for `EACCES` and a
+socket tmux cannot stat as well as for a server that is gone, so only
+`(No such file or directory)` and `(Connection refused)` read as `Gone` there.
+
+**What a steady pass does with `Unanswered` was a council decision** — the
+verdict is on the story (`story show SH-626`; SH-363, never the council's own
+directory). Three seats (observability, architecture, skeptic) independently
+proposed the same answer and converged after one deliberation round, ranked
+2-1 on wording: an unanswered probe **contributes no evidence this pass**. It
+is a fact about the machine, not the window, and reading it as `WindowGone`
+would block a story whose agent is alive, strike the breaker, and hand the lane
+back to the pool over a live occupant — the SH-626 shape again, merely better
+labelled — while a 3s `TMUX_TIMEOUT` under load or a launchd daemon with no
+tmux on its PATH would produce exactly that. The lane is judged by the store
+fact D3 already makes primary, the stall clock: `record_progress` never
+reseeds on an unmoved seq, so a genuinely dead lane behind an unanswerable
+probe is still quarantined at `STALL_CEILING_SECS` with the last probe failure
+appended to its `Stalled` reason, and a permanently broken tmux still trips the
+breaker within three lanes, later and with an honest reason. SH-312 and SH-372
+applied as written without breaching SH-306, because nothing is silent:
+loudness is owed on two surfaces. The daemon activity journal hears about it
+on the **edge** — entry to `Unanswered`, a changed reason, and the recovery —
+never per pass, since a live run is reconciled roughly once a second and a
+line per pass is the SH-263 self-noise shape (`probe_journal_edge` is the pure
+decision, tested on its own in SH-365's split). And the status surfaces read
+`engine_lanes.probe_detail` (migration 34, nullable, written every pass, a
+diagnostic never a lifecycle input): the HTTP lane view, `story engine
+status`, and the dashboard's lane strip, which marks such a lane "liveness
+unanswered" with tmux's words in its title. `ReconcileReport.unanswered`
+carries the same per pass. Option C — a new hard-stop kind after N unanswered
+probes — was rejected by every seat as a second, redundant clock with a
+bare-literal N (SH-394).
+
+**A consequence stated rather than glossed.** `tests/daemon_engine.rs`'s four
+wired cases now need a real tmux on PATH, as `dispatch_tmux_context.rs` already
+did: with no tmux at all the probe is `Unanswered`, which the verdict
+deliberately refuses to read as a dead window. **Filed, not fixed** (SH-642): a
+live run reconciles itself at roughly 1 Hz for its whole life, because its own
+lane writes move `data_version`, the change poller publishes `Change::Resync`,
+and `poll_engine` wakes on any non-`Ping` change — the 72 s tick is an idle
+floor, never a rate limit.
