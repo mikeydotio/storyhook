@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Certify and land one autonomous-lane PR under the machine-wide merge lock.
+# Certify and land one autonomous-lane PR under the repository's merge lock.
 #
 #   land-pr.sh <pr>
 #
@@ -51,11 +51,12 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" \
 cd "$root" || die "cannot enter $root"
 script="$root/scripts/land-pr.sh"
 
+# Asked of the lock itself rather than read from `STORYHOOK_MACHINE_LOCKS`:
+# the key carries this repository's project component (SH-648), and only
+# `machine-lock.sh` knows how it is spelled (SH-136).
 require_merge_lock() {
-    case ":${STORYHOOK_MACHINE_LOCKS:-}:" in
-    (*:merge:*) ;;
-    (*) die "the private landing phase must run under machine-lock.sh merge" ;;
-    esac
+    bash "$root/scripts/machine-lock.sh" --held merge \
+        || die "the private landing phase must run under machine-lock.sh merge"
 }
 
 # Confirms the refreshed refs describe one PR head before anything is merged.

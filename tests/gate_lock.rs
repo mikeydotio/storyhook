@@ -337,6 +337,15 @@ impl Fixture {
             )
             .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
+        // A git repository, because `gate` is project-scoped (SH-648): the
+        // lock derives its key from the working directory's common dir and
+        // refuses a directory that has none.
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .output()
+            .expect("fixture: git init");
+        assert!(init.status.success(), "fixture: git init: {init:?}");
         let fixture = Self { root };
         // Refusing to answer is a path the tracked script already tolerates —
         // a tarball or a corrupt index produces it — and it is what keeps
@@ -356,9 +365,32 @@ impl Fixture {
         self.path().join("locks")
     }
 
-    /// The directory `machine-lock.sh` would use for `name`.
+    /// The directory `machine-lock.sh` would use for `name` from this
+    /// fixture, read from the script's own `--plan` rather than spelled here
+    /// (SH-136): the key carries a project component `tests/machine_lock.rs`
+    /// pins the derivation of.
     fn lock(&self, name: &str) -> PathBuf {
-        self.lock_root().join(format!("{name}.lock"))
+        PathBuf::from(self.plan_field(name, "lock"))
+    }
+
+    /// The `STORYHOOK_MACHINE_LOCKS` entry the script records for `name`.
+    fn key(&self, name: &str) -> String {
+        self.plan_field(name, "key")
+    }
+
+    fn plan_field(&self, name: &str, field: &str) -> String {
+        let out = self
+            .base_command("machine-lock.sh")
+            .args(["--plan", name, "--", "true"])
+            .output()
+            .unwrap_or_else(|e| panic!("planning the {name} lock: {e}"));
+        assert!(out.status.success(), "--plan {name}: {out:?}");
+        let printed = String::from_utf8_lossy(&out.stdout);
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{field}=")))
+            .unwrap_or_else(|| panic!("--plan must print `{field}=`\nstdout: {printed}"))
+            .to_string()
     }
 
     fn executable(&self, relative: &str, body: &str) -> PathBuf {
@@ -844,7 +876,7 @@ fn a_run_whose_process_tree_already_holds_the_gate_does_not_re_take_it() {
 
     let out = fixture
         .command(&["--only-no-doc"])
-        .env("STORYHOOK_MACHINE_LOCKS", "gate")
+        .env("STORYHOOK_MACHINE_LOCKS", fixture.key("gate"))
         .output()
         .expect("running under an inherited gate lock");
     let err = stderr(&out);
