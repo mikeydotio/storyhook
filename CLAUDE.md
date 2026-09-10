@@ -1655,6 +1655,27 @@ Standing rules for every wave:
   controls count the second read, so deleting a recheck fails them too. Design of record:
   `docs/spec/full-auto-engine.md`'s SH-637 section; the verdict trail is on the story
   (`story show SH-637`, SH-363).
+- **A remove-then-add against a provider records what it removed and puts it back on
+  any later failure, reporting both errors** (SH-641). `story plugin install` removes the
+  plugin and marketplace before registering the release projection (neither provider
+  promises that re-adding a name changes its source), and until SH-641 a failure after
+  the removes left the provider with nothing — the state SH-640 taught `story doctor
+  install` to name as DEREGISTERED, which named it without fixing it.
+  `plugin::registration` snapshots the registered source from the provider's own config
+  *before* the removes, runs everything after them as one closure (for Codex, through
+  payload verification and the sandbox step, whose own file rollback composes with this
+  one), and on failure removes what the run added, re-registers the previous source and
+  appends which of four outcomes happened; a restore that fails reports **both** errors
+  (SH-578). Two choices worth keeping: an unreadable config never blocks the install (a
+  parser narrower than the provider's format must not be the SH-404/405 dead end; it
+  proceeds and says "nothing restored: why"), and the note says "re-registered", never
+  "restored" — the source goes back, not the bytes, and a same-source put-back is called
+  unverified because the commands that just failed are what put it back. Signals are not
+  deferred across the window, and the module doc says why. Fakes in
+  `tests/plugin_install.rs` write the providers' real config shapes so the snapshot is
+  proven against what production reads (SH-364), with fail-once modes so a successful
+  restore is observable. Design of record: `docs/spec/release-lockstep.md`'s SH-641
+  section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
