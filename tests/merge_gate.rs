@@ -1850,6 +1850,32 @@ fn a_textual_conflict_is_reported_distinctly_and_prints_no_tree() {
          conflict's virtual tree with markers baked in"
     );
     assert!(stderr(&out).contains("CONFLICT"), "got: {}", stderr(&out));
+
+    // SH-636: called with ref NAMES, the report still names the oids each
+    // resolved to — a stale reading has to be visible in the report itself,
+    // not inferred from the conflict's blob ids. Both, and on the same line.
+    let by_name = repo.preflight("branch-a", "branch-b");
+    assert_eq!(by_name.status.code(), Some(2));
+    let conflict_line = stderr(&by_name)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        conflict_line.contains(&format!("branch-b ({b})"))
+            && conflict_line.contains(&format!("branch-a ({a})")),
+        "got: {conflict_line}"
+    );
+    // An oid argument is not decorated with itself.
+    let by_oid_line = stderr(&out)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        !by_oid_line.contains(&format!("{b} ({b})")),
+        "got: {by_oid_line}"
+    );
 }
 
 /// The receipt certifies content, not a branch name — the same doctrine
