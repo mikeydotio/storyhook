@@ -25,7 +25,19 @@ Manage the per-store daemon and inspect its operational journal.
   story daemon install [--this-binary]
   story daemon uninstall
   story daemon token
+  story daemon gc [--force]
   story daemon logs [--follow] [--json]
+
+gc reclaims the runtime directories under <state home>/daemons/ whose store no
+longer exists. It removes a directory only when everything inside it proves the
+store: the recorded store path hashes back to the directory's own name, the
+store was under a temp root (an absent store anywhere else may be an offline
+volume, and is left for you), the file is gone, no login agent still names it,
+nothing has changed there for longer than a spawn is allowed to take, and
+neither the pidfile nor the spawn lock is held. It lists what it would remove
+and asks; --force skips the question. A named store's backup snapshots live in
+that directory and go with it. Everything it keeps is named with a reason code.
+`story daemon status` says when there is something to reclaim.
 
 logs reads today's UTC activity journal directly, even while the daemon is
 stopped. --follow continues across midnight; --json emits one JSON record

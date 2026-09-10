@@ -1681,6 +1681,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             crate::daemon::commands::uninstall(&env).map(login_agent_response)
         }
         DaemonAction::Token => crate::daemon::commands::token(&env).map(Response::Message),
+        DaemonAction::Gc { force } => Ok(crate::daemon::commands::gc(&env, force)),
         DaemonAction::Serve { .. } | DaemonAction::Logs { .. } => Err(AppError::Usage(
             "daemon serve/log streaming is handled before dispatch".to_string(),
         )),

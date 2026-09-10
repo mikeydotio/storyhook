@@ -23,6 +23,7 @@ use std::process::Output;
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
 use crate::error::AppError;
+use crate::output::{ConfirmationPlan, Response};
 
 /// Starts a daemon in the background, or reports the one already running.
 ///
@@ -115,12 +116,15 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
 /// reader who came to look is owed the whole answer.
 pub fn status(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
-        return Ok(format!(
-            "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
-            lifecycle::describe_paths(env),
-            crate::daemon::backup::describe(env),
-            crate::daemon::backup::describe_maintenance(env),
-            agent::report(env)
+        return Ok(with_reclaimable(
+            env,
+            format!(
+                "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
+                lifecycle::describe_paths(env),
+                crate::daemon::backup::describe(env),
+                crate::daemon::backup::describe_maintenance(env),
+                agent::report(env)
+            ),
         ));
     }
     match lifecycle::read_info(env) {
@@ -137,26 +141,65 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                     info.version
                 )
             };
-            Ok(format!(
-                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
-                info.version,
-                info.dashboard_url(),
-                info.pid,
-                staleness,
-                lifecycle::describe_paths(env),
-                crate::daemon::backup::describe(env),
-                crate::daemon::backup::describe_maintenance(env),
-                agent::report(env)
+            Ok(with_reclaimable(
+                env,
+                format!(
+                    "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
+                    info.version,
+                    info.dashboard_url(),
+                    info.pid,
+                    staleness,
+                    lifecycle::describe_paths(env),
+                    crate::daemon::backup::describe(env),
+                    crate::daemon::backup::describe_maintenance(env),
+                    agent::report(env)
+                ),
             ))
         }
         // The lock is held by something that published nothing. Say so plainly
         // rather than reporting "not running", which would be false.
-        None => Ok(format!(
-            "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
-            lifecycle::describe_paths(env),
-            agent::report(env)
+        None => Ok(with_reclaimable(
+            env,
+            format!(
+                "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
+                lifecycle::describe_paths(env),
+                agent::report(env)
+            ),
         )),
     }
+}
+
+/// `status`'s body plus the one line naming reclaimable runtime directories,
+/// when there are any (SH-638). One function for all three branches, for the
+/// reason [`agent::report`] is: a machine-wide fact reported at one branch
+/// and silently dropped at another is SH-418's shape.
+fn with_reclaimable(env: &Environment, body: String) -> String {
+    let reclaimable = crate::daemon::gc::describe(env);
+    if reclaimable.is_empty() {
+        body
+    } else {
+        format!("{body}\n{reclaimable}")
+    }
+}
+
+/// `story daemon gc [--force]`: surveys the runtime directories under this
+/// state home and reclaims those of stores that no longer exist (SH-638).
+///
+/// Unforced, and with something to remove, it answers with the plan and
+/// asks — the same two-step `story project delete` runs, confirmed in the
+/// process that has a terminal. With nothing to remove it reports what it
+/// kept and why, forced or not: there is no question to ask.
+#[must_use]
+pub fn gc(env: &Environment, force: bool) -> Response {
+    let plan = crate::daemon::gc::survey(env);
+    if plan.candidates.is_empty() {
+        return Response::Message(plan.render().trim_end().to_string());
+    }
+    if !force {
+        return Response::ConfirmationRequired(Box::new(ConfirmationPlan::RuntimeGc(plan)));
+    }
+    let report = crate::daemon::gc::reclaim(plan);
+    Response::MessageWithWarnings(report.message(), report.warnings())
 }
 
 /// Prints the running daemon's bearer token.

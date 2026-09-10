@@ -191,6 +191,7 @@ Usage:
   story daemon install [--this-binary]
   story daemon uninstall
   story daemon token
+  story daemon gc [--force]                        (reclaim runtime dirs of stores that are gone)
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
@@ -911,6 +912,7 @@ impl Invocation {
                 | DaemonAction::Install { .. }
                 | DaemonAction::Uninstall
                 | DaemonAction::Token => {}
+                DaemonAction::Gc { force } => *force = true,
             },
             Self::Help
             | Self::New { .. }
@@ -1094,6 +1096,12 @@ pub enum DaemonAction {
     /// puts in `X-Storyhook-Token` to reach `/api/v1/*` or the dashboard's
     /// dispatch endpoint from off-loopback.
     Token,
+    /// Reclaim the runtime directories of stores that no longer exist
+    /// (SH-638). Answers with what it would remove and asks, unless forced.
+    Gc {
+        /// Remove without asking — `--force`, or the confirmation given.
+        force: bool,
+    },
 }
 
 /// `story doctor abandoned …`.
@@ -2002,6 +2010,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "daemon",
         subcommand: Some("install"),
         flags: &[bare("this-binary")],
+    },
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("gc"),
+        flags: &[bare("force")],
     },
     VerbFlags {
         verb: "daemon",
@@ -4447,7 +4460,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token | logs [--follow]";
+                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4473,6 +4486,13 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             port: parse_port_flag(&args[2..], usage)?,
         },
         "stop" => DaemonAction::Stop {
+            force: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--force" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
+        "gc" => DaemonAction::Gc {
             force: match &args[2..] {
                 [] => false,
                 [flag] if flag == "--force" => true,

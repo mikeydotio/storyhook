@@ -17,6 +17,8 @@
 //! `tests/error_contract.rs` pins exit codes and stream placement. This one
 //! pins that a hop through JSON changes neither.
 
+use std::path::PathBuf;
+
 use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
@@ -24,6 +26,7 @@ use storyhook::cli::{
     PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
     UnclaimComment, WebAction,
 };
+use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
     CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
@@ -708,6 +711,30 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 new_prefix: "AGE".to_string(),
                 stories: 47,
                 relationships: 12,
+            }))),
+        ),
+        (
+            "confirmation_required_runtime_gc",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::RuntimeGc(RuntimeGcPlan {
+                daemons_dir: PathBuf::from("/Users/ada/.local/state/storyhook/daemons"),
+                candidates: vec![Candidate {
+                    key: "000427cc0cff49bd".to_string(),
+                    path: PathBuf::from(
+                        "/Users/ada/.local/state/storyhook/daemons/000427cc0cff49bd",
+                    ),
+                    store_path: PathBuf::from("/private/tmp/storyhook-e2e.bze1JG/data/store.db"),
+                    bytes: 421_888,
+                    snapshots: 1,
+                }],
+                kept: vec![Kept {
+                    key: "eab76ca58d086ca4".to_string(),
+                    path: PathBuf::from(
+                        "/Users/ada/.local/state/storyhook/daemons/eab76ca58d086ca4",
+                    ),
+                    store_path: Some(PathBuf::from("/Users/ada/.local/share/storyhook/store.db")),
+                    reason: KeepReason::DefaultStore,
+                    detail: "the default store's own runtime directory".to_string(),
+                }],
             }))),
         ),
     ]

@@ -53,7 +53,24 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::service::Clock;
 
+pub(crate) use store_location::KEY_HEX;
 pub use store_location::{StoreLocation, StoreOrigin, StoreVars, canonical_ish};
+
+/// The file names inside a store's [`Environment::daemon_state_dir`], stated
+/// once so the accessors below and `story daemon gc` — which reads a
+/// directory it has no `Environment` for — cannot spell them apart (SH-638).
+pub(crate) mod runtime_file {
+    /// [`super::Environment::daemon_file`].
+    pub const PORTFILE: &str = "daemon.json";
+    /// [`super::Environment::daemon_pidfile`].
+    pub const PIDFILE: &str = "daemon.pid";
+    /// [`super::Environment::daemon_spawn_lock`].
+    pub const SPAWN_LOCK: &str = "daemon.spawn.lock";
+    /// [`super::Environment::daemon_log`].
+    pub const LOG: &str = "daemon.log";
+    /// [`super::Environment::daemon_log_rotated`].
+    pub const LOG_ROTATED: &str = "daemon.log.1";
+}
 
 /// The port the daemon prefers, and the one the dashboard bookmark names.
 ///
@@ -342,13 +359,13 @@ impl Environment {
     /// The daemon's portfile: `{pid, port, version, protocol, exe, exe_mtime,
     /// started_at, token, store_path}`, mode 0600.
     pub fn daemon_file(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.json")
+        self.daemon_state_dir().join(runtime_file::PORTFILE)
     }
 
     /// The file the daemon holds a lock on for its whole life. Holding the lock
     /// *is* the liveness signal, so this is not merely where a pid is written.
     pub fn daemon_pidfile(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.pid")
+        self.daemon_state_dir().join(runtime_file::PIDFILE)
     }
 
     /// The daemon-owned process-group registry used by forced shutdown.
@@ -363,7 +380,7 @@ impl Environment {
     /// The lock a client takes while it decides to spawn a daemon, held through
     /// the spawn and the child's portfile write.
     pub fn daemon_spawn_lock(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.spawn.lock")
+        self.daemon_state_dir().join(runtime_file::SPAWN_LOCK)
     }
 
     /// Where a client that held the spawn lock leaves the verdict of its
@@ -385,7 +402,7 @@ impl Environment {
 
     /// Where a daemon started in the background writes its diagnostics.
     pub fn daemon_log(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.log")
+        self.daemon_state_dir().join(runtime_file::LOG)
     }
 
     /// The previous daemon's [`Self::daemon_log`], one spawn old (SH-287).
@@ -397,7 +414,7 @@ impl Environment {
     /// and only once: it moves whatever it finds into
     /// [`Self::crash_logs_dir`] before this file can be rotated away again.
     pub fn daemon_log_rotated(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.log.1")
+        self.daemon_state_dir().join(runtime_file::LOG_ROTATED)
     }
 
     /// Where this store's daemon persists its finished
