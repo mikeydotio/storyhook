@@ -317,7 +317,9 @@ mod tests {
         std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
         let owned = crate::daemon::lifecycle::OwnedProcesses::new(env);
         let mut command = Command::new("sh");
-        command.arg("-c").arg("printf '{\"ok\":false,\"reason\":\"pane-dead\"}'");
+        command
+            .arg("-c")
+            .arg("printf '{\"ok\":false,\"reason\":\"pane-dead\"}'");
         let registration_error = std::sync::Mutex::new(None);
 
         let captured = run_captured_with_registration(
