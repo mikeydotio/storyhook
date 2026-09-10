@@ -36,6 +36,8 @@ cd "$(dirname "$0")/.."
 repo_root="$PWD"
 # shellcheck source=gate-progress.sh
 . "$repo_root/scripts/gate-progress.sh"
+# shellcheck source=e2e-selection.sh
+. "$repo_root/scripts/e2e-selection.sh"
 story_bin="$repo_root/target/debug/story"
 results_root="$repo_root/e2e/test-results/current"
 
@@ -553,39 +555,55 @@ WRAPPER
   # --- Ask Playwright whether this project even selects a test under the
   # caller's filters, before spending the real run on it. A per-project loop
   # means a filter that only matches, say, `.mobile.spec.ts$` files gives
-  # `chromium`/`webkit` nothing to run -- Playwright's own `--list` exits 1
-  # and reports "Total: 0 tests" for that case, which used to be harmless
-  # when every project shared one Playwright invocation (a filter matching
-  # nothing under one project just meant that project contributed zero tests
-  # to a run that still had others) but would now abort the whole loop over
-  # a project the caller likely never meant to filter into. Skip it instead,
-  # loudly. This has to run AFTER seeding and the daemon are up, not before:
+  # `chromium`/`webkit` nothing to run, which used to be harmless when every
+  # project shared one Playwright invocation (a filter matching nothing under
+  # one project just meant that project contributed zero tests to a run that
+  # still had others) but would now abort the whole loop over a project the
+  # caller likely never meant to filter into. Skip it instead, loudly.
+  #
+  # ONLY a listing that HAPPENED and selected nothing is a skip (SH-625).
+  # Playwright prints the identical `Total: 0 tests in 0 files` when a
+  # selected spec fails to load, so this used to read a load error, an
+  # unknown flag or an unevaluable config as "nothing selected" and exit 0
+  # for a run in which nothing executed. `scripts/e2e-selection.sh` tells the
+  # two apart by Playwright's own exit status under `--pass-with-no-tests`
+  # (its header carries the measurement) and replays Playwright's stderr on
+  # a refusal, so the spec that would not load is named rather than dropped.
+  #
+  # This has to run AFTER seeding and the daemon are up, not before:
   # `dispatch.spec.ts` and `engine.spec.ts` read their `DASHBOARD_*` fixture
   # ids at MODULE load time (`requiredEnv(...)`), so even `--list` -- which
   # loads every matching file to enumerate its tests -- throws before those
-  # are exported.
-  list_output="$(npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}" --list --reporter=list 2>/dev/null || true)"
-  if printf '%s\n' "$list_output" | grep -q '^Total: 0 tests'; then
-    echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
-    gate_progress_emit_item "release gate/e2e/$project" skipped
-    exit 0
-  fi
+  # are exported. Under the old text-only read that throw was one of the
+  # very load errors that reported as a skip.
+  list_status=0
+  list_output="$(e2e_list_selection "$data_root/playwright-list.stderr" \
+    npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?
+  case "$list_status" in
+    0) ;;
+    "$E2E_SELECTION_EMPTY")
+      echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
+      gate_progress_emit_item "release gate/e2e/$project" skipped
+      exit 0
+      ;;
+    *)
+      echo "run-e2e.sh: project=$project could not be listed (exit $list_status) — refusing, not skipping (SH-625)" >&2
+      gate_progress_emit_item "release gate/e2e/$project" failed
+      exit "$list_status"
+      ;;
+  esac
 
   # SH-524: this project's own checklist row. `known_total` is read straight
   # back out of Playwright's own `--list` count above rather than guessed --
-  # empty (never a guessed number) if that output's shape ever changes.
-  # e2e/gate-progress-reporter.ts owns only the per-test "case" lines below;
-  # the running/passed/failed "item" lifecycle for this project is this
-  # script's alone, so the two writers never race over one event shape.
-  # Portable BRE, not `\+`/`\?`: macOS's BSD sed does not support either
-  # GNU extension, and this script's shebang resolves to it.
-  known_total="$(printf '%s\n' "$list_output" | sed -n 's/^Total: \([0-9][0-9]*\) tests\{0,1\}.*/\1/p')"
+  # and it is always readable here, because e2e-selection.sh refused a
+  # listing whose summary line it could not parse rather than proceeding on
+  # an unknown count. e2e/gate-progress-reporter.ts owns only the per-test
+  # "case" lines below; the running/passed/failed "item" lifecycle for this
+  # project is this script's alone, so the two writers never race over one
+  # event shape.
+  known_total="$(e2e_selection_total "$list_output")"
   export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$project"
-  if [ -n "$known_total" ]; then
-    gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
-  else
-    gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running
-  fi
+  gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
   e2e_start=$(date +%s)
   # The two specs that dispatch for real -- ordinary dispatch and Full Auto --
   # consulted after the real run below. Asking Playwright's own list is
