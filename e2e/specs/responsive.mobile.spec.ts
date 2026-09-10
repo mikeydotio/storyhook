@@ -1,6 +1,7 @@
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
+  awaitSettled,
   clickHeaderAction,
   cleanUpCreatedStories,
   deleteStory,
@@ -1135,30 +1136,12 @@ async function settleAndReadTapMin(
   root: Locator,
   surface: string,
 ): Promise<number> {
-  await expect
-    .poll(
-      async () =>
-        root.evaluate((node) =>
-          node
-            .getAnimations({ subtree: true })
-            .filter((a) => a.playState === "running")
-            .map((a) => {
-              const effect = a.effect as KeyframeEffect | null;
-              const target = effect && effect.target ? effect.target.tagName : "?";
-              return `${(a as unknown as { animationName?: string }).animationName ||
-                (a as unknown as { transitionProperty?: string }).transitionProperty ||
-                "animation"} on ${target}`;
-            }),
-        ),
-      {
-        message:
-          `${surface}: animations under this surface never settled, so the ` +
-          "sweep would measure a moving box (SH-420). A live poll can restart " +
-          "card animations at any moment -- if this is flaking rather than " +
-          "hanging, that is the residual race, not a new defect.",
-      },
-    )
-    .toEqual([]);
+  // The settle wait itself lives in `support.ts` (`awaitSettled`) since
+  // SH-623, when a second, byte-similar copy of it was found there
+  // (`settledBoundingBox`); everything the comment above measured about it
+  // still holds, and `tests/tap_target_comparison.rs` pins that this sweep
+  // goes through that one door.
+  await awaitSettled(root, surface);
 
   const minPx = await root.evaluate(() =>
     parseFloat(
