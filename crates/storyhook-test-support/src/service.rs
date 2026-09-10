@@ -20,11 +20,17 @@
 
 use std::path::Path;
 
+use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
-use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
+use storyhook::domain::{
+    Member, StateDef, StoryCleanupLease, StoryEvent, SuperState, TypeDef, fold_story,
+};
 use storyhook::env::Environment;
 use storyhook::service::{Clock, Ctx};
-use storyhook::store::{NewProject, ProjectId, SqliteStore, Store, WriteOps, diff_read_model};
+use storyhook::store::{
+    ExpectedSeq, NewProject, ProjectId, ReadOps, SqliteStore, Store, StoreError, StoryNo, WriteOps,
+    diff_read_model, partition_known,
+};
 use tempfile::TempDir;
 
 use crate::scratch::scratch_dir;
@@ -131,6 +137,44 @@ impl ServiceFixture {
         self.store
             .write(|tx| tx.link_remote(self.project, &remote, FIXTURE_NOW))
             .expect("registering an origin");
+    }
+
+    /// Appends a cleanup lease to `story_id`'s history and refolds its row,
+    /// exactly as `story move <id> verifying` does from a leased worktree —
+    /// call it immediately after that transition, since the verifier reads
+    /// only a lease adjacent to it (`latest_generation`).
+    pub fn append_cleanup_lease(&self, story_id: &str, lease: StoryCleanupLease) {
+        let story =
+            StoryNo::parse_id(&self.prefix(), story_id).expect("a story id of this project");
+        self.store
+            .write(|tx| {
+                let head = tx.append_events(
+                    self.project,
+                    story,
+                    ExpectedSeq::Any,
+                    &[StoryEvent::StoryCleanupLeaseRecorded {
+                        at: FIXTURE_NOW.into(),
+                        lease: Box::new(lease),
+                    }],
+                    &Provenance::unrecorded(),
+                )?;
+                let stored = tx.events_for(self.project, story)?;
+                let (known, _) = partition_known(story, &stored);
+                let states = tx.state_map(self.project)?;
+                let snapshot = fold_story(story_id, &known, &states).map_err(StoreError::from)?;
+                tx.put_story(self.project, &snapshot, head)
+            })
+            .expect("appending a cleanup lease");
+    }
+
+    /// The project's story-id prefix.
+    #[must_use]
+    pub fn prefix(&self) -> String {
+        self.store
+            .read(|tx| tx.project(self.project))
+            .expect("reading the fixture project")
+            .expect("the fixture project exists")
+            .prefix
     }
 
     /// Pins the clock every context this fixture builds will report.
