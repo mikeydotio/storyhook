@@ -335,9 +335,9 @@ pub struct ReconcileReport {
 ///
 /// `AgentBlocked` is tested next, ahead of `Verifying`: a story can sit in
 /// `verifying` with `awaiting` also set (centralized verification's own
-/// `return_for_repair` falls back to `set_awaiting` when it cannot reach the
-/// dispatched pane, SH-521), and that diagnosis must surface rather than be
-/// masked by the handoff.
+/// `return_for_repair` parks a story with `awaiting` when its resume
+/// re-dispatch is refused, SH-521/SH-650), and that diagnosis must surface
+/// rather than be masked by the handoff.
 ///
 /// `Verifying` is tested ahead of `WindowGone` and `Stalled`. The agent's
 /// last action for a successful story is `story move <n> verifying`, and the
@@ -1391,7 +1391,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// at observation time — for [`HardStopKind::AgentBlocked`], the agent's
     /// own diagnosis (its charter tells it to `story block <n> the-reason`
     /// before stopping), or centralized verification's own message when
-    /// `return_for_repair` could not reach a dead pane (SH-521). SH-120's
+    /// `return_for_repair` could not re-dispatch into a dead pane (SH-521,
+    /// SH-650). SH-120's
     /// relay rule applies here exactly as it does to a dispatch refusal: the
     /// existing text is appended to, never replaced by, a message composed
     /// here. Every other kind observes `existing_reason` as `None` by

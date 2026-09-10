@@ -1750,6 +1750,28 @@ Standing rules for every wave:
   inside, and reentrancy travels only in that variable, so stripping it deadlocks every
   verification against its own outer holder for ever. Nothing fences that invariant;
   the comment above the list and the spec are what say so.
+- **A frozen pane command is not a live process; ask `#{pane_dead}`. And a story the
+  verifier just returned is judged by its stall clock, never by its window** (SH-650).
+  Measured on tmux 3.7c: once a `remain-on-exit` pane's process exits, `#{pane_pid}` and
+  `#{pane_current_command}` stay frozen at their last live values, `paste-buffer` into it
+  fails ("target pane has exited") and `send-keys` silently exits 0 — so `pane_runs` said
+  yes for a corpse and the verifier received the dead pane as `delivery-failed`, the one
+  notify refusal that means the agent IS live. `cmd_notify` asks `#{pane_dead}` first
+  (`pane_is_dead`, the reconciler's own composite probe) and refuses `pane-dead`; the fake
+  tmux refuses the paste the way the real server does. The verifier then re-dispatches the
+  story in place (`dispatch --resume --auto`, same pane id or same window name, same
+  worktree, the resume clause, a Full Auto lane's own identity) and pastes the diagnosis
+  after; `awaiting` only when the re-dispatch itself is refused, and the refusal slugs are
+  classified by name through `NOTIFY_REFUSALS`, derived against `cmd_notify`'s own
+  literals (`tests/notify_reasons.rs`). The engine's half: the return transition wakes the
+  reconciler while the pane is still dead, so a `Gone` probe on a story whose state
+  history ends `verifying → in-progress` contributes no evidence on a steady pass (SH-626's
+  shape), bounded by the stall clock with `DISPATCH_TIMEOUT` pinned inside it; a restart
+  pass never defers. Two siblings adopted: a resume relaunches the provider the dispatch
+  recorded (the window tag, else the provider-derived worktree container), and a child
+  that exits before its process group can be read is captured, not reported as untrackable
+  (macOS `getpgid` on a zombie is ESRCH). Design of record:
+  `docs/spec/verification-workflow.md`'s and `full-auto-engine.md`'s SH-650 sections.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
