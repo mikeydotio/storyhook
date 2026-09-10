@@ -284,6 +284,7 @@ fn a_stale_pr_base_oid_does_not_veto_the_fetched_base_tip() {
             "main",
             &fetched_base,
             &fetched_head,
+            &fetched_head,
             &metadata,
         ],
     )
@@ -311,6 +312,7 @@ fn refresh_validation_still_rejects_a_moved_head() {
             "main",
             &fetched_base,
             "different-fetched-head",
+            "different-fetched-head",
             &metadata,
         ],
     )
@@ -319,6 +321,155 @@ fn refresh_validation_still_rejects_a_moved_head() {
 
     assert!(!out.status.success());
     assert!(stderr(&out).contains("head moved while it was being refreshed"));
+}
+
+/// SH-637: `refs/pull/N/head` and the API's `headRefOid` are two projections
+/// of one asynchronous GitHub job and lag together, so agreeing with each
+/// other proves nothing right after a push. The branch tip is the push. A
+/// branch ahead of both projections is refused by name — nothing is merged
+/// against a head the author has already replaced.
+#[test]
+fn refresh_validation_refuses_a_branch_the_projections_have_not_caught_up_with() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let stale_head = repo.branch("feature", "main", "g", "feature\n");
+    let pushed_tip = repo.branch("feature-pushed", "feature", "h", "the push\n");
+    let metadata = refresh_metadata(&stale_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &stale_head,
+            &pushed_tip,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating a branch ahead of the pull ref");
+
+    assert!(!out.status.success(), "{}", stderr(&out));
+    let diagnostic = stderr(&out);
+    assert!(diagnostic.contains("still propagating"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&stale_head) && diagnostic.contains(&pushed_tip),
+        "both readings are named: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("refs/heads/feature"),
+        "the branch that moved is named: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("nothing was merged"),
+        "the refusal says what did not happen: {diagnostic}"
+    );
+}
+
+/// The existing pull-vs-API check keeps its place and its message ahead of
+/// the branch comparison: a projection disagreement is reported as the head
+/// having moved, not as propagation, so SH-604's reconcile path still
+/// recognises it.
+#[test]
+fn refresh_validation_reports_a_projection_disagreement_before_the_branch() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let reported_head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&reported_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            "different-fetched-head",
+            &reported_head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating a pull ref that disagrees with the API");
+
+    assert!(!out.status.success());
+    let diagnostic = stderr(&out);
+    assert!(
+        diagnostic.contains("head moved while it was being refreshed"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("still propagating"), "{diagnostic}");
+}
+
+/// The positive control: pull ref, branch tip and API agreeing on one head
+/// is what lets the fetched base through, exactly as before the branch was
+/// read at all.
+#[test]
+fn refresh_validation_accepts_three_readings_that_agree() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &head,
+            &head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating agreeing refs");
+
+    assert_ok(&out, "three agreeing readings of one head");
+    assert_eq!(stdout(&out), fetched_base);
+}
+
+/// The seam's arity is part of its contract: a caller still passing the old
+/// six arguments is refused by usage rather than silently comparing the
+/// metadata string as a branch tip.
+#[test]
+fn refresh_validation_refuses_the_pre_branch_argument_shape() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating with the old argument shape");
+
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("<fetched-branch>"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

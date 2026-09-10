@@ -9,6 +9,7 @@
 //! `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` means none of them can bind the port a
 //! developer's own dashboard is on.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -75,15 +76,57 @@ fn start(env: &TestEnv) -> DaemonInfo {
 }
 
 /// Blocks until `ready`, or fails the test.
-fn wait_for(what: &str, ready: impl Fn() -> bool) {
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if ready() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(WAIT_POLL);
     }
     panic!("timed out waiting for {what}");
+}
+
+/// How often [`wait_for`] re-asks its question.
+const WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// Waits for `pidfile` to hold the positive pid its writer is publishing.
+///
+/// Existence alone is weaker: a shell's `>` creates the file before the
+/// command writes a byte into it, so a poll that fires in that window reads
+/// an empty file and parses nothing — which is how
+/// `a_forced_stop_kills_the_registered_verifier_group_and_its_descendant`
+/// went red under load in a verification run with `ParseIntError { kind:
+/// Empty }`. The same rule `tests/gate_lock.rs`'s `wait_for_pid` states.
+fn wait_for_pid(pidfile: &Path) -> u32 {
+    let mut found = None;
+    wait_for(&format!("a pid published to {}", pidfile.display()), || {
+        found = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 0);
+        found.is_some()
+    });
+    found.expect("wait_for returned only once a pid was read")
+}
+
+/// The reader is not fooled by the window between a pidfile being created
+/// and its pid being written.
+#[test]
+fn an_existing_empty_pidfile_is_not_ready_until_its_pid_is_published() {
+    let fixture = scratch_dir();
+    let pidfile = fixture.path().join("delayed.pid");
+    std::fs::write(&pidfile, "").expect("creating the not-yet-published pidfile");
+
+    let writer_path = pidfile.clone();
+    let writer = std::thread::spawn(move || {
+        // Several polls, so the reader provably sees the empty file first.
+        std::thread::sleep(WAIT_POLL * 4);
+        std::fs::write(writer_path, "4242\n").expect("publishing the delayed pid");
+    });
+
+    assert_eq!(wait_for_pid(&pidfile), 4242);
+    writer.join().expect("joining the delayed pid writer");
 }
 
 /// A `GET /api/v1/hello` with the given token, returning the status.
@@ -948,9 +991,11 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     let environment = env.environment();
     let descendant_file = scratch_dir();
     let descendant_path = descendant_file.path().join("descendant.pid");
+    // Published by rename so the file never exists without its content; the
+    // reader below refuses an empty one regardless (two mechanisms).
     let script = format!(
         "trap '' TERM; sh -c 'trap \"\" TERM; while :; do sleep 1; done' & \
-         echo $! > '{}'; while :; do sleep 1; done",
+         echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; while :; do sleep 1; done",
         descendant_path.display()
     );
     let mut command = std::process::Command::new("sh");
@@ -963,12 +1008,7 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     let _registration = registry
         .register("verifier", verifier_pid, Some("verify:fixture:SH-1:1"))
         .expect("publishing the verifier group");
-    wait_for("the verifier descendant pid", || descendant_path.exists());
-    let descendant_pid: u32 = std::fs::read_to_string(&descendant_path)
-        .expect("reading the descendant pid")
-        .trim()
-        .parse()
-        .expect("parsing the descendant pid");
+    let descendant_pid = wait_for_pid(&descendant_path);
     let descendant_start = lifecycle::process_start_time(descendant_pid)
         .expect("the verifier descendant's native identity");
 
