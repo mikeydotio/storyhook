@@ -42,6 +42,15 @@ fn checkout() -> PathBuf {
 /// The tracked wrapper, reached through a symlink in a disposable root, and
 /// a fake rustc that logs `start`/`end` lines with a nanosecond clock and its
 /// own pid, sleeps `FAKE_RUSTC_SLEEP` seconds, and exits `FAKE_RUSTC_EXIT`.
+///
+/// The clock is `CLOCK_MONOTONIC` through `clock_gettime_ns`, never
+/// `time.monotonic_ns()`: the verifier's `PATH` resolves Xcode's Python 3.9,
+/// whose `monotonic_ns()` is a per-process clock on macOS, so timestamps from
+/// six different fake rustcs were incomparable and read as a false overlap
+/// (the first red on SH-655's own PR). `clock_gettime_ns(CLOCK_MONOTONIC)` is
+/// system-wide on every interpreter this machine has, measured; [`Fixture::
+/// clock_now`] and the bracket check in the overlap test are what keep a
+/// future interpreter from lying the same way.
 struct Fixture {
     root: TempDir,
 }
@@ -63,7 +72,7 @@ impl Fixture {
                  if [ \"${{1:-}}\" = -vV ]; then echo 'rustc 0.0.0 (fake)'; exit 0; fi\n\
                  crate=''\n\
                  while [ \"$#\" -gt 0 ]; do [ \"$1\" = --crate-name ] && crate=\"$2\"; shift; done\n\
-                 now() {{ python3 -c 'import time; print(time.monotonic_ns())'; }}\n\
+                 now() {{ python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }}\n\
                  printf 'start %s %s %s\\n' \"$(now)\" \"$crate\" \"$$\" >>\"{log}\"\n\
                  sleep \"${{FAKE_RUSTC_SLEEP:-0}}\"\n\
                  printf 'end %s %s %s\\n' \"$(now)\" \"$crate\" \"$$\" >>\"{log}\"\n\
@@ -137,6 +146,25 @@ impl Fixture {
         peak as usize
     }
 
+    /// The same clock the fake rustc logs with, read from this process, so a
+    /// test can bracket every logged timestamp between two readings of its
+    /// own and prove the clock is one clock across processes.
+    fn clock_now() -> u128 {
+        let out = run_bounded(
+            {
+                let mut c = Command::new("python3");
+                c.args([
+                    "-c",
+                    "import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))",
+                ]);
+                c
+            },
+            "clock reading",
+            secs(SLEEP * 10.0),
+        );
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+    }
+
     fn wait_for_starts(&self, n: usize, within: Duration) {
         let give_up = Instant::now() + within;
         while Instant::now() < give_up {
@@ -163,6 +191,7 @@ fn never_more_than_k_compiles_overlap_and_the_bound_bit() {
     let fx = Fixture::new();
     let k = 2;
     let n = 6;
+    let clock_before = Fixture::clock_now();
     let started = Instant::now();
     let mut children: Vec<ChildGuard> = (0..n)
         .map(|i| {
@@ -182,7 +211,18 @@ fn never_more_than_k_compiles_overlap_and_the_bound_bit() {
         );
     }
     let elapsed = started.elapsed();
+    let clock_after = Fixture::clock_now();
     assert_eq!(fx.log().iter().filter(|(k, ..)| k == "end").count(), n);
+    // The clock is one clock: every timestamp six separate processes logged
+    // sits between two readings this process took. A per-process clock
+    // (Xcode's Python 3.9 `monotonic_ns()`) fails here, by name, instead of
+    // manufacturing an overlap that never happened.
+    for (kind, at, crate_name, pid) in fx.log() {
+        assert!(
+            (clock_before..=clock_after).contains(&at),
+            "{kind} of {crate_name} (pid {pid}) at {at} is outside this process's own readings              {clock_before}..={clock_after}: the fake rustc's clock is not system-wide"
+        );
+    }
     assert!(
         fx.peak_concurrency() <= k,
         "peak {} > {k}: {:?}",
