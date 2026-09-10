@@ -190,6 +190,15 @@ impl Harness {
     /// `scripts/check-no-orphan-servers.sh` as well, so they accumulated —
     /// 672 alive across three days when SH-493 was measured.
     fn run(&self, args: &[&str]) -> Output {
+        let mut command = Command::new(&self.story);
+        command.args(args);
+        self.run_with(command)
+    }
+
+    /// [`Harness::run`] for a caller that has already built the command — to
+    /// add an environment variable on top of the isolated set, never instead
+    /// of it.
+    fn run_with(&self, mut command: Command) -> Output {
         let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
         let data = self.home.join("data");
         let config = self.home.join("config");
@@ -197,9 +206,13 @@ impl Harness {
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&config).unwrap();
         fs::create_dir_all(&state).unwrap();
-        let mut command = Command::new(&self.story);
+        let preset: Vec<(String, String)> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((key.to_str()?.to_owned(), value?.to_str()?.to_owned()))
+            })
+            .collect();
         command
-            .args(args)
             .current_dir(&self.root)
             .env_clear()
             .env("HOME", &self.home)
@@ -209,7 +222,8 @@ impl Harness {
             .env("XDG_CONFIG_HOME", &config)
             .env("XDG_STATE_HOME", &state)
             .env("STORYHOOK_DATA_DIR", data.join("storyhook"))
-            .envs(daemon_containment());
+            .envs(daemon_containment())
+            .envs(preset);
         command.output().expect("running story plugin command")
     }
 
@@ -559,14 +573,18 @@ fn stable_codex_bridge_runs_the_current_enabled_plugin_helper_verbatim() {
     harness.install_fake("codex", FAKE_CODEX);
     harness.install_fake_plugin_helper(
         "0.6.0",
-        "#!/bin/sh\nprintf '{\"ok\":true,\"args\":\"%s\"}\\n' \"$*\"\nexit 7\n",
+        "#!/bin/sh\nprintf '{\"ok\":true,\"args\":\"%s\",\"agent\":\"%s\"}\\n' \"$*\" \"${STORY_AGENT:-unset}\"\nexit 7\n",
     );
 
     let output = harness.run(&["plugin", "run", "codex", "--", "dispatch", "SH-9", "--auto"]);
     assert_eq!(output.status.code(), Some(7));
+    // The launcher is Codex's own, so the helper runs as Codex without the
+    // adapter having to say so: an environment prefix is neither a form the
+    // installed-artifact guard admits nor one Codex's argv-prefix rule
+    // matches (SH-632).
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "{\"ok\":true,\"args\":\"dispatch SH-9 --auto\"}\n"
+        "{\"ok\":true,\"args\":\"dispatch SH-9 --auto\",\"agent\":\"codex\"}\n"
     );
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
     assert!(
@@ -574,6 +592,23 @@ fn stable_codex_bridge_runs_the_current_enabled_plugin_helper_verbatim() {
         "{}",
         harness.codex_log()
     );
+}
+
+#[test]
+fn stable_codex_bridge_keeps_a_callers_explicit_agent() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.install_fake_plugin_helper(
+        "0.6.0",
+        "#!/bin/sh\nprintf '%s\\n' \"${STORY_AGENT:-unset}\"\n",
+    );
+    let mut command = Command::new(&harness.story);
+    command
+        .args(["plugin", "run", "codex", "--", "context"])
+        .env("STORY_AGENT", "claude");
+    let output = harness.run_with(command);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "claude\n");
 }
 
 #[test]
