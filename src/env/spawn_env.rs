@@ -27,7 +27,7 @@
 //! has heard of yet (an exported `AWS_SECRET_ACCESS_KEY`, an `OPENAI_API_KEY`)
 //! is excluded by construction rather than by enumeration.
 //!
-//! # Two lists, not one
+//! # Two lists, not one — and a third that is one of them plus GitHub
 //!
 //! `story.sh` reads roughly fifty environment variables — the great majority
 //! under its own `STORY_`/`STORYHOOK_` prefix, the tuning knobs
@@ -45,6 +45,22 @@
 //! over-permissiveness for a spawn that never asked for it — the same
 //! objection [`super::git_env`]'s council raised against a single shared list
 //! for every git invocation.
+//!
+//! The centralized verifier spawns two more children, and they sit on
+//! opposite sides of that line. `scripts/verify-pr.sh` is orchestration with
+//! GitHub credentials and nothing of `story.sh`'s surface
+//! ([`apply_verification_allowlist`]). The submission helper
+//! (`story.sh submit`, SH-647) IS `story.sh` — it runs `story` against the
+//! daemon's own store, so it needs everything the dispatch list carries, the
+//! `TEST_ENVIRONMENT` isolation parameters included — and it also pushes the
+//! leased branch and opens the pull request, so it needs the GitHub
+//! credentials too. [`apply_submission_allowlist`] is therefore the dispatch
+//! list plus [`GITHUB_CREDENTIAL_MAY_SEE`], never the verification list plus
+//! a hand-picked subset of `STORYHOOK_*` names: the fence that every
+//! isolation parameter survives is derived over the table, and a helper child
+//! that could not isolate itself is SH-633's second daemon all over again.
+//! The helper runs no repository tests, so the `merge-watch.sh` scrub that
+//! strips the tokens before a gate runs has no analogue here.
 //!
 //! # Two names deliberately left off, and why
 //!
@@ -162,6 +178,13 @@ fn plugin_cli_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
 }
 
+/// True if `name` is one the verifier's submission helper may see: the whole
+/// dispatch surface (it is `story.sh`, and it runs `story`) plus the GitHub
+/// credentials it pushes and opens the pull request with.
+fn submission_permits(name: &str) -> bool {
+    dispatch_permits(name) || GITHUB_CREDENTIAL_MAY_SEE.contains(&name)
+}
+
 /// True if `name` is needed by the centralized GitHub/gate subprocess.
 fn verification_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
@@ -205,6 +228,15 @@ pub fn apply_plugin_cli_allowlist(command: &mut Command) {
 /// and machine-lock configuration needed by centralized verification.
 pub fn apply_verification_allowlist(command: &mut Command) {
     apply_allowlist(command, verification_permits);
+}
+
+/// Clears `command`'s environment and restores what the verifier's leased
+/// submission helper may see: everything [`apply_dispatch_allowlist`] admits,
+/// plus the GitHub credentials. Call before the explicit `.env(...)` calls
+/// (`STORY_BIN`, the lease, `GH_PROMPT_DISABLED`), which `env_clear` would
+/// otherwise remove.
+pub fn apply_submission_allowlist(command: &mut Command) {
+    apply_allowlist(command, submission_permits);
 }
 
 #[cfg(test)]
@@ -285,6 +317,30 @@ mod tests {
         assert!(!verification_permits("OPENAI_API_KEY"));
     }
 
+    /// The submission helper is `story.sh` with GitHub credentials: it must
+    /// see exactly what dispatch sees plus the three credential names, and the
+    /// credential list must be the one the verification list shares rather
+    /// than a second spelling of it.
+    #[test]
+    fn the_submission_allowlist_is_the_childs_whole_environment() {
+        assert_allowlist_is_the_childs_whole_environment(
+            apply_submission_allowlist,
+            submission_permits,
+        );
+        for name in GITHUB_CREDENTIAL_MAY_SEE {
+            assert!(submission_permits(name), "submission dropped {name}");
+            assert!(verification_permits(name), "verification dropped {name}");
+        }
+        assert!(submission_permits("STORYHOOK_STORE_PATH"));
+        assert!(submission_permits("STORY_READY_ATTEMPTS"));
+        assert!(!submission_permits("OPENAI_API_KEY"));
+        assert!(!submission_permits("SSH_AUTH_SOCK"));
+        assert!(
+            !dispatch_permits("GH_TOKEN"),
+            "dispatch must not carry GitHub credentials; only the submission helper does"
+        );
+    }
+
     /// `story.sh`'s own tuning surface must survive by prefix, not just by
     /// the fixed names above — this is the property the whole prefix design
     /// exists for, so it is pinned directly rather than left to be implied by
@@ -300,6 +356,7 @@ mod tests {
     fn daemon_owned_helpers_do_not_inherit_terminal_identity() {
         for name in ["TMUX", "TMUX_PANE"] {
             assert!(!dispatch_permits(name), "dispatch inherited {name}");
+            assert!(!submission_permits(name), "submission inherited {name}");
             assert!(!verification_permits(name), "verification inherited {name}");
             assert!(
                 !plugin_cli_permits(name),
@@ -332,6 +389,23 @@ mod tests {
         assert!(
             dropped.is_empty(),
             "the dispatch allowlist drops {dropped:?}; a `story` run inside the child \
+             resolves those from the developer's real environment rather than its parent's"
+        );
+    }
+
+    /// The submission helper runs `story` too (SH-647), so the same derived
+    /// fence applies to its list: a parameter the table gains and this list
+    /// drops would be resolved from the developer's real environment.
+    #[test]
+    fn every_test_environment_parameter_survives_the_submission_allowlist() {
+        let dropped: Vec<&str> = crate::env::test_environment::TEST_ENVIRONMENT
+            .iter()
+            .map(|parameter| parameter.name)
+            .filter(|name| !submission_permits(name))
+            .collect();
+        assert!(
+            dropped.is_empty(),
+            "the submission allowlist drops {dropped:?}; a `story` run inside the helper \
              resolves those from the developer's real environment rather than its parent's"
         );
     }
