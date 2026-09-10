@@ -574,7 +574,11 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
     let root = fixture.root().canonicalize().expect("canonicalizing");
     let mut text = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
     text.push_str("\n[hooks]\ntimeout_seconds = \"not a number\"\nnonsense = [1, 2]\n");
-    std::fs::write(pointer_path(&root), text).expect("breaking the hooks table");
+    // SH-649: the verifier reads `[verify]` strictly at the point of use, and
+    // that strictness must stay the verifier's alone — a gate nobody could
+    // run must not stop `story list` knowing which project it is in.
+    text.push_str("\n[verify]\ngate = \"make test && rm -rf /\"\ngaet = 3\n");
+    std::fs::write(pointer_path(&root), text).expect("breaking the hooks and verify tables");
 
     let pointer = read_pointer(&root)
         .expect("a pointer with an odd hooks table must still parse")
@@ -586,6 +590,7 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
         .expect("the project exists");
     assert_eq!(pointer.uuid, record.uuid);
     assert!(pointer.hooks.is_some());
+    assert!(pointer.verify.is_some());
 }
 
 #[test]
