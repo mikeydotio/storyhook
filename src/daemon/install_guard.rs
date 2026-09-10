@@ -19,6 +19,10 @@
 //!
 //! # Why this is not [`crate::migration_guard`] with different arguments
 //!
+//! (A third, [`crate::daemon::seat_guard`], refuses the same uninstalled
+//! binary the default store's daemon seat — SH-634 — and, like this one,
+//! shares the facts and not the judgement.)
+//!
 //! The two guards ask the same question of the machine and reach **opposite**
 //! conclusions from a missing answer, which is why they share
 //! [`crate::path_identity`] and nothing else.

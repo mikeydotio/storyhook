@@ -1,5 +1,7 @@
 //! The one question two guards ask about this machine: *which `story` does
-//! `$PATH` run, and is it the one running now?*
+//! `$PATH` run, and is it the one running now?* — and the second fact a third
+//! guard asks alone: *has this binary left the directory cargo wrote it into?*
+//! ([`crate::daemon::seat_guard`], SH-634, which needs no `$PATH` at all).
 //!
 //! Extracted from [`crate::migration_guard`] (SH-404) when SH-411 gave it a
 //! second caller. The two guards ask the same question and reach opposite

@@ -1424,7 +1424,48 @@ Standing rules for every wave:
   `src/daemon/install_guard.rs` and `src/path_identity.rs`, and `build.rs`'s "Where the
   artifact was written". The daemon ping-pong the journal also shows — an uninstalled client
   of a different build stands down the default store's custodian and seats itself, every
-  alternate call — is filed separately as SH-634, not fixed here.
+  alternate call — was filed separately as SH-634, and is the bullet below.
+- **An uninstalled build never becomes the default store's daemon** (SH-634). The
+  SH-630 incident had a first act SH-630 did not touch: `lifecycle::spawn_locked` treats
+  any live daemon that is not this exact build as "not ours", asks it to stand down, and
+  spawns the **client's own binary** as the replacement — so the worktree's
+  `PATH=target/debug:$PATH story list` seated itself as the production store's custodian
+  before its migration was ever refused, the next installed `story` seated the installed
+  build back, and the journal shows four custodians in one hour. With the migration refused
+  no data is at risk, but the daemon runs the dispatch engine and the centralized verifier
+  and hands `STORY_BIN=current_exe` to every child, so a worktree build in that seat runs
+  production automation on whatever the worktree holds next, and the next `cargo build`
+  rewrites the binary underneath it — SH-531's hazard observed rather than described.
+  `src/daemon/seat_guard.rs` is the third guard on `path_identity::build_dir`, sharing the
+  facts and not the judgement (SH-411's rule): an uninstalled binary is refused, **before
+  the shutdown request**, from replacing a live daemon of another build on the default
+  store (`is_default()`, as the migration guard, narrowed by the *incumbent* so a
+  one-build-per-store harness never meets it), and refused a daemon at all when nothing
+  named the store (`StoreOrigin::XdgDefault`, as `TEST_BUILD_REFUSAL`, because a bare
+  invocation that worked only while the installed daemon happened to be down is a worse
+  contract than a consistent refusal). `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1` says you
+  meant it; the parameter table clears it and `--uninstalled-build` re-arms it, which is
+  **load-bearing for `make scratch`**: a `cargo build` in a scratch shell changes the mtime
+  and the daemon still serving the root reads as another build. Rejected, on the
+  mechanism: letting the uninstalled client *talk* to the incumbent when the protocol
+  matches — since SH-114 the service runs inside the daemon and the client only parses and
+  renders, so `./target/debug/story list` would exercise none of the worktree's changes
+  while looking exactly as though it had, the SH-411 shape. Three things about the
+  placement are contracts, fenced by source order in `tests/daemon_lifecycle.rs`: after
+  the spawn lock (`tests/daemon_timeouts.rs` holds that lock from an uninstalled binary on
+  an `XdgDefault` origin and must fail *at the lock*), after the adopt-a-verdict return,
+  and outside the closure `publish_attempt` records — a refusal about *this* client's build
+  must never be handed to the installed client waiting behind it. The proof is the SH-630
+  fixture promoted: `storyhook_test_support::installed_copy` is the test binary copied out
+  of its build directory, and the control for "an installed binary replaces a stale daemon"
+  is that copy, never the incident — which is what the two skew-restart tests in
+  `tests/daemon_lifecycle.rs` used to be. The bare-invocation clause is reachable from no
+  subprocess (`TEST_BUILD_REFUSAL` fires first) and is proven by driving the real
+  `spawn_locked` in-process through `Environment::at`, the fixture constructor that builds
+  exactly that origin. `stop()` stays unguarded on purpose: every `DaemonGuard` and
+  `TestEnv::stop_daemon` rely on an uninstalled test process stopping an installed copy's
+  daemon. Design of record: the module doc on `src/daemon/seat_guard.rs` and
+  `docs/spec/test-environments.md`'s SH-634 "As built" section.
 - **A shell test owns its daemon, and stands it down before deleting its home** (SH-631).
   Filed as "the plugin suite fails deterministically on dev, masked by leg-reuse" — 33 of
   74 tests, every one `a storyhook daemon is already running`. Measured before anything

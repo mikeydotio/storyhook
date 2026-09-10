@@ -192,10 +192,13 @@ binary_dir="$(cd "$(dirname "$binary")" && pwd)"
 #
 # `--uninstalled-build`: a scratch store belongs to THIS build, on purpose. The
 # binary never leaves its build directory, which is the fact the SH-630
-# migration guard refuses on, and this root persists across sessions -- so the
-# first schema bump after a scratch store was created would otherwise refuse
-# every command in here. The shared isolation owns the re-arming (after its own
-# table clears the variable); this script only states the intent.
+# migration guard and the SH-634 seat guard both refuse on, and this root
+# persists across sessions -- so the first schema bump after a scratch store was
+# created would otherwise refuse every command in here, and so would the first
+# command after a `cargo build` in this shell, which changes the binary's mtime
+# and makes the daemon still serving the root "another build". The shared
+# isolation owns the re-arming (after its own table clears both variables);
+# this script only states the intent.
 if [ "$print_only" -eq 1 ]; then
     if [ -n "$isolate_home" ]; then
         storyhook_isolate_print --uninstalled-build "$isolate_home" "$root"
