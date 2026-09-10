@@ -17,6 +17,18 @@
 //! 1. The council's decision — `retries: 0` and `workers: 1` in
 //!    `e2e/playwright.config.ts` — cannot be quietly revised into "the fix" —
 //!    `the_release_tier_never_retries_and_runs_one_worker`.
+//! 2. The launch probe is wired: the config names `./launch-probe.ts` as its
+//!    `globalSetup`, the runner exports `E2E_PROJECT` ahead of the real
+//!    `npx playwright test --project=` line and after `--list` (which runs no
+//!    global setup), the probe resolves the engine from the project's own
+//!    `use` rather than a hand-kept map, passes `launch` no deadline of its
+//!    own, and refuses by name — `the_launch_probe_is_wired_into_every_project_run`,
+//!    `the_launch_probe_derives_the_engine_and_invents_no_deadline`.
+//!
+//! Measured when this landed, on the toggle the story records
+//! (`PLAYWRIGHT_BROWSERS_PATH=/nonexistent` versus the real cache): the
+//! poisoned webkit project refused in 11 ms with zero tests attempted, exit 1;
+//! the healthy one launched in 409 ms and ran.
 
 use std::path::PathBuf;
 
@@ -92,4 +104,102 @@ fn top_level_setting_reads_this_configs_own_shape() {
         None,
         "a six-space-indented project field must not read as a top-level setting"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 2. The launch probe is wired into every project run
+// ---------------------------------------------------------------------------
+
+/// Byte offset of `needle` in `haystack`, failing with `what` rather than
+/// returning `None` — an absent line is a finding.
+fn offset_of(haystack: &str, needle: &str, what: &str) -> usize {
+    haystack
+        .find(needle)
+        .unwrap_or_else(|| panic!("{what}: expected to find {needle:?}"))
+}
+
+#[test]
+fn the_launch_probe_is_wired_into_every_project_run() {
+    let config = read("e2e/playwright.config.ts");
+    let runner = read("scripts/run-e2e.sh");
+
+    assert_eq!(
+        top_level_setting(&config, "globalSetup"),
+        Some("\"./launch-probe.ts\""),
+        "e2e/playwright.config.ts must name ./launch-probe.ts as its globalSetup; without it a \
+         browser that cannot start fails every test in a project at Playwright's launch \
+         timeout, one worker at a time, and reads as that many tree failures (SH-627)"
+    );
+    assert!(
+        repo_root().join("e2e/launch-probe.ts").is_file(),
+        "e2e/launch-probe.ts must exist: the config names it"
+    );
+
+    // The runner exports the selected project's name for the probe — after
+    // `--list` (no global setup runs there, so a filter selecting nothing is
+    // answered without a launch) and before the real run.
+    let list = offset_of(&runner, "--list --reporter=list", "scripts/run-e2e.sh");
+    let export = offset_of(
+        &runner,
+        "export E2E_PROJECT=\"$project\"",
+        "scripts/run-e2e.sh",
+    );
+    let real_run = offset_of(
+        &runner,
+        "npx playwright test --project=\"$project\" --output=",
+        "scripts/run-e2e.sh",
+    );
+    assert!(
+        list < export && export < real_run,
+        "scripts/run-e2e.sh must export E2E_PROJECT after its `--list` probe and before the real \
+         `npx playwright test --project=` invocation (list at {list}, export at {export}, run at \
+         {real_run})"
+    );
+}
+
+#[test]
+fn the_launch_probe_derives_the_engine_and_invents_no_deadline() {
+    let probe = read("e2e/launch-probe.ts");
+    let code: String = probe
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The engine comes from the resolved project, the way Playwright's own
+    // `browserName` fixture resolves it — never from a project-name map that
+    // a sixth project would silently miss (SH-136).
+    assert!(
+        code.contains("use.browserName ?? use.defaultBrowserType"),
+        "e2e/launch-probe.ts must resolve the engine as `use.browserName ?? use.defaultBrowserType`"
+    );
+    assert!(
+        !code.contains("\"mobile-webkit\"") && !code.contains("\"untrusted-origin-chromium\""),
+        "e2e/launch-probe.ts must not carry a project-name-to-engine map"
+    );
+
+    // No deadline of its own: the ceiling is Playwright's launch default.
+    // `timeout:` is the option key; the refusal message may name the concept.
+    assert!(
+        !code.contains("timeout:"),
+        "e2e/launch-probe.ts must pass `launch` no `timeout:` — its ceiling derives from \
+         Playwright's own launch default, never from a number chosen here (SH-394)"
+    );
+
+    // Refusals name the mechanism and the seam.
+    for needle in [
+        "E2E_PROJECT",
+        "SH-627",
+        "NO TEST RAN",
+        "console.error(`launch-probe:",
+    ] {
+        assert!(
+            code.contains(needle),
+            "e2e/launch-probe.ts must contain {needle:?}: a refusal names its seam and its \
+             story, and a probe nobody can see is the SH-306 shape"
+        );
+    }
 }
