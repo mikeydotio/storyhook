@@ -232,9 +232,13 @@ run_one_project() {
   #
   # "Inherits every one of these" is true of the STORY_* names below and
   # FALSE of the FAKE_TMUX_* ones (SH-263). A dispatch child's environment is
-  # CLEARED and rebuilt from an allowlist -- PATH, HOME, TMPDIR, TMUX,
-  # TMUX_PANE and any STORY_*/STORYHOOK_* name (`src/env/spawn_env.rs`,
-  # SH-193) -- so a FAKE_TMUX_STATE exported here has never reached one.
+  # CLEARED and rebuilt from an allowlist -- PATH, HOME and the XDG base
+  # directories, TMPDIR, the locale/terminal names, and any
+  # STORY_*/STORYHOOK_* name (`src/env/spawn_env.rs`, SH-193; TMUX and
+  # TMUX_PANE are deliberately NOT on it) -- so a FAKE_TMUX_STATE exported
+  # here has never reached one. XDG_STATE_HOME did not reach one either
+  # until SH-633, which is how every dispatch below used to start a second
+  # daemon for this run's store under the developer's REAL state home.
   # Until SH-263 those children silently fell back to the fake's fixed
   # shared /tmp default; now the fake refuses instead, which is what made
   # the omission visible at all.

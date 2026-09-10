@@ -2224,7 +2224,7 @@ pub(crate) fn run_shell_dispatch(
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
-        .env("STORYHOOK_STORE_PATH", env.store_path())
+        .envs(env.child_vars())
         .env("STORY_TARGET_SESSION", project)
         .env("STORY_CREATE_SESSION", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
@@ -2275,7 +2275,7 @@ fn run_shell_unclaim(
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
-        .env("STORYHOOK_STORE_PATH", env.store_path())
+        .envs(env.child_vars())
         .env(CLEANUP_LEASE_ENV, encoded_lease)
         .env("STORY_TARGET_SESSION", project)
         .env("GIT_TERMINAL_PROMPT", "0");
