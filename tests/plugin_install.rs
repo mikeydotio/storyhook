@@ -289,12 +289,26 @@ impl Harness {
         root
     }
 
-    fn install_story_on_path(&self) {
+    /// Puts `story` on the fixture's `PATH`, and from then on runs it from
+    /// there.
+    ///
+    /// The launcher this fixture installs execs the `story` on its `PATH`,
+    /// so after this call the fixture models an installed machine — and on
+    /// an installed machine the `story` a person types and the one the
+    /// launcher resolves are one file. This used to leave [`Harness::run`]
+    /// on the original binary, so a test that alternated the two ran two
+    /// copies of one build against one store, each call standing the
+    /// other's daemon down and seating its own: the SH-634 ping-pong, paid
+    /// silently per call. The seat guard now refuses that from the
+    /// uninstalled side (`Harness::new(false)`'s `target/debug/story`), which
+    /// is how the fixture was found to be doing it.
+    fn install_story_on_path(&mut self) {
         let path = self.fake_bin.join("story");
         fs::copy(&self.story, &path).expect("copying story onto fixture PATH");
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
+        fs::set_permissions(&path, permissions).unwrap();
+        self.story = path;
     }
 
     /// The installed launcher, run the way Codex runs it.
@@ -613,7 +627,7 @@ fn stable_codex_bridge_keeps_a_callers_explicit_agent() {
 
 #[test]
 fn stable_launcher_follows_codex_plugin_version_changes_without_rule_edits() {
-    let harness = Harness::new(true);
+    let mut harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
     harness.install_story_on_path();
     let installed = harness.run(&["plugin", "install", "codex"]);
