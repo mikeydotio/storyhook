@@ -247,3 +247,61 @@ same helper even with identical bytes. The argv vocabularies are shared items
 so both doors are tested against one grammar. Mutation-checked in both
 directions: removing the own-root comparison fails two tests, removing the
 redirect check fails one, removing `-delete` from `find`'s refusals fails one.
+
+## As built: a lost registration is not "never installed" (SH-640)
+
+`story doctor install` — the check `protect-install.sh`'s own header calls
+authoritative — printed `claude plugin  not registered` and then `every
+component agrees.` Both exits of `provider_row` that found no `storyhook`
+marketplace (the provider's configuration file absent, or present without the
+key) returned an unflagged row, so a provider whose registration had been
+destroyed read identically to a machine that never had that provider. On
+2026-09-09 that hid a lost Claude Code registration for about two hours across
+eight autonomous sessions: a new session of that provider gets no `/story` at
+all, and the one check built to say so said the opposite — SH-306's shape, a
+gate's silence read as an all-clear.
+
+**The evidence is what the install left on disk, not the manifest.** The story
+proposed reading the managed-path manifest, whose Claude entries would prove a
+Claude install had happened. They would not: `managed_paths()` names *both*
+providers' prefixes and `record_managed_paths()` runs before the target is
+dispatched, so a Codex-only machine's manifest names the Claude prefixes too,
+and that rule would have flagged every such machine. What actually survived
+the incident was the provider's own plugin cache —
+`~/.claude/plugins/cache/storyhook/story/<six versions>` — while
+`known_marketplaces.json`, `installed_plugins.json` and
+`marketplaces/storyhook` all lost their storyhook entries.
+`plugin::install_residue(target)` lists the storyhook-owned artifacts present
+under that provider's home: for Claude the cache, the marketplace install
+directory and the legacy layout, by existence; for Codex the cache by
+existence, and the launcher and rule only while they carry the marker
+storyhook wrote them with — an unmarked file at the same path is the user's,
+exactly as `remove_managed_file` already reads it. Residue present is a
+flagged `DEREGISTERED` row naming the copies and `story plugin install
+<target>`; residue absent stays the quiet `not registered` the row exists for.
+This is SH-372's rule for absence, one subsystem over: an absent key states
+nothing on its own and is resolved against what the reader already holds.
+
+**One definition, both ways.** `managed_paths()` now derives its provider
+directories from the same per-provider list the doctor probes, so the hook
+cannot protect a prefix the doctor is blind to; a unit test pins the file half
+and any prefix added by hand.
+
+**A deliberate uninstall must leave the doctor quiet**, or every machine that
+ever uninstalled reads `DEREGISTERED` for ever and the flag stops meaning
+anything. Claude Code's own `plugin uninstall` leaves its cache behind (six
+versions had accumulated on the filing machine), and the fake Codex `plugin
+remove` mirrors the real one. `story plugin uninstall` for either provider
+now sweeps the residue *directories* the doctor reads; the Codex launcher and
+rule keep their own marker-checked removal that preserves a user's file.
+
+**What caused the loss is recorded as evidence, not settled.** The candidate
+the story named — `install_claude`'s remove-then-add with no rollback — did
+not run: `~/.claude/plugins/marketplaces/` and its `claude-plugins-official`
+entry share the exact mtime `18:04:04`, twenty seconds before the first
+`/story do` in that session's history; `installed_plugins.json` and the
+`2.4.2` cache entry share `18:22:12`; the release root the registration
+pointed at never went away; and the plugin helper makes no marketplace call.
+That is a Claude Code marketplace refresh pruning the entry — a fact about the
+host, which makes the detector the whole of the fix. The no-rollback shape
+remains a real gap and is filed separately.

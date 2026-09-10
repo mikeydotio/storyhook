@@ -1365,6 +1365,23 @@ Standing rules for every wave:
   helper by realpath, never a byte compare of 4,000 lines and never a host record —
   `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
   Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
+- **An absent registration is resolved against the disk, never read as "never installed"**
+  (SH-640). `story doctor install` — the check `protect-install.sh` calls authoritative —
+  answered `not registered` as an unflagged row at both exits of `provider_row` and
+  concluded `every component agrees.` over a Claude Code registration that a host
+  marketplace refresh had destroyed (mtime evidence in `docs/spec/release-lockstep.md`);
+  a new session of that provider gets no `/story` at all, and it went unnoticed for two
+  hours across eight sessions. The evidence is the provider's own plugin cache, which
+  survives the loss — `plugin::install_residue`, storyhook-owned artifacts present under
+  the provider's home, files counted only by their marker. **Not** the managed-path
+  manifest the story proposed: `managed_paths()` names both providers on every install,
+  so that rule would have flagged every Codex-only machine — the same manifest now derives
+  its provider directories from the doctor's own list, so neither can drift alone.
+  Residue with no registration is a flagged `DEREGISTERED` row; residue absent stays the
+  quiet `not registered` a Claude-only or Codex-only machine depends on. The corollary that
+  keeps the flag meaningful: `story plugin uninstall` sweeps that residue, because the
+  provider's own uninstall leaves its cache behind and a deliberate uninstall must leave
+  the doctor quiet. Design of record: `docs/spec/release-lockstep.md`'s SH-640 section.
 - **`$PATH` is the caller's claim about itself, never evidence of installation** (SH-630).
   The SH-404 migration guard refused a binary that was not the `story` `$PATH` resolves,
   and on 2026-09-09 a `PATH="$PWD/target/debug:$PATH" story project list` from the main
