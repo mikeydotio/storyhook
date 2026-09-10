@@ -272,6 +272,14 @@ def launcher_preserves_artifacts(command):
 # managed path can be PROVEN to be a reader. This is deliberately not a shell
 # security boundary: it recognizes the agent inspection vocabulary, and
 # denies malformed, indirect or unknown shapes rather than guessing.
+#
+# The vocabulary is content readers plus tree inspection (SH-632): the adapter
+# table says "load the matching file from <plugin-root>/adapters/", which an
+# agent cannot do without listing the directory. `ls`, `wc`, `stat`, `diff` and
+# `cmp` have no write-capable option; `find` has several, refused by name
+# below. `bash -c "..."` stays refused however innocent its string reads: it is
+# a second shell program, and classifying one means parsing it recursively.
+# The plain form is what the adapter needs.
 def shell_only_reads_managed_paths(command):
     if "$(" in command or "`" in command:
         return False
@@ -297,7 +305,9 @@ def shell_only_reads_managed_paths(command):
     if segment:
         segments.append(segment)
 
-    readers = {"cat", "grep", "head", "rg", "sed", "tail"}
+    readers = {"cat", "cmp", "diff", "find", "grep", "head", "ls", "rg", "sed", "stat", "tail", "wc"}
+    # Every find primary that writes or executes; -fprint covers -fprint0/-fprintf.
+    find_writers = ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls")
     found_managed_path = False
     for words in segments:
         if not any(prefix in word for prefix in prefixes for word in words):
@@ -327,6 +337,10 @@ def shell_only_reads_managed_paths(command):
         if executable == "rg" and any(
             argument == "--pre" or argument.startswith("--pre=")
             for argument in arguments
+        ):
+            return False
+        if executable == "find" and any(
+            argument.startswith(find_writers) for argument in arguments
         ):
             return False
 
