@@ -1098,12 +1098,13 @@ Standing rules for every wave:
   SH-396 already made `merge-preflight.sh` (run by `merge-watch.sh`) the primitive that
   decides whether content actually lands, unconditionally, regardless of what any push
   carried. Refusing an ordinary feature-branch push was gating content that was never, on
-  its own, the thing merging, while costing the full suite's wall-clock **before work ever
-  left the machine**. The autonomous dispatch charter (`plugins/story/bin/story.sh`) now
-  pushes and opens the PR *before* running `make test`, so work is durable on the remote
-  before that cost is paid, not after — the merge gate still requires the suite to pass
-  before `gh pr merge --merge` may land anything. Design of record: `docs/spec/test-tiers.md`'s
-  "The push gate narrowed to long-lived branches" section.
+  its own, the thing merging. Since SH-647 the autonomous dispatch charter
+  (`plugins/story/bin/story.sh`) no longer pushes at all: the agent commits and moves the
+  story to `verifying`, and the verifier pushes the branch and opens the PR as its first
+  step. The push gate's narrowing still stands for any branch a human pushes, and the merge
+  gate still requires the suite to pass before `gh pr merge --merge` may land anything.
+  Design of record: `docs/spec/test-tiers.md`'s "The push gate narrowed to long-lived
+  branches" section, and `docs/spec/verification-workflow.md` for verifier-owned submission.
 - **`make test-changed` speeds up the developer loop; it never weakens a protected merge**
   (SH-429). `scripts/select-tests.sh` diffs the current tree against the NEAREST
   fully-certified (`gate`/`full`) ancestor — never a previous `changed`-tier run, so there is
@@ -1760,6 +1761,13 @@ Standing rules for every wave:
   `docs/spec/development-branch.md`.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
   to `dev` or `main`, no force-pushes, and no version bumps or deploys from a linked worktree.
+- **The verifier pushes; a dispatched agent does not** (SH-647). A story dispatched through
+  `story.sh` ends its lane at a commit and `story move <n> verifying` from inside its
+  worktree; the daemon's verifier then pushes that leased branch over HTTPS and opens or
+  adopts the PR against the default branch before it runs the gate. This bullet and the two
+  above still govern a branch YOU push by hand in the main working tree; they do not describe
+  the dispatched path, where `git push`, `gh pr create` and `story link-pr` have left the
+  agent's toolchain entirely. Design of record: `docs/spec/verification-workflow.md`.
 - Deviations from the spec get recorded in the spec's own "As built" section — one
   document to open rather than two. (During the rearchitecture they went to
   `docs/rearch/STATE.md`, which stays the record for those nine waves.)

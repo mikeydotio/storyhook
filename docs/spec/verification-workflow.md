@@ -44,7 +44,7 @@ What each step does today, and which child closes the gap:
 
 | Step | Target | Today | Closed by |
 |---|---|---|---|
-| 1 | storyhook pushes and opens the PR | the **agent** pushes, runs `gh pr create`, `story link-pr`, then `story move <n> verifying` (both charters in `story.sh`, the scaffolded `AGENTS.md`); `VerificationProblem::{MissingPullRequest, MultiplePullRequests, UnregisteredPullRequest}` catch a partial submission **after** the fact and return the story | SH-647 (D-A) |
+| 1 | storyhook pushes and opens the PR | **done (SH-647):** the agent commits and moves the story to `verifying` from inside its worktree; the verifier runs `story.sh submit` from the lease — push over HTTPS, open or adopt the PR against the default branch, link it, comment — before it verifies | SH-647 (D-A) |
 | 2 | one verifier per project; suites serialize per project | **one global worker** (`VerificationActivity`, a single slot) over a queue spanning every project (`ordered_candidates`); the `gate` and `merge` locks are keyed by **name only**, so two clones and two unrelated repositories serialize together | SH-648 (D-B) |
 | 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
 | 2 | not mergeable → instruct the agent and hold the queue | as stated, **but only while the dispatched pane is alive**; a dead pane releases the hold and parks the story with `awaiting` — see "The conflict queue-hold" | SH-650 (D-E) |
@@ -84,8 +84,8 @@ not, and each row names one.
 
 | Gap | Where (symbol) | Line at `ade35404d` | Child |
 |---|---|---|---|
-| Both charters tell the agent to push, open the PR and link it; nothing deterministic does | `PROMPT_TPL`, `AUTO_PROMPT_TAIL` (`plugins/story/bin/story.sh`) | 441, 504 | SH-647 |
-| `link-pr` only records a URL; it never pushes or opens anything | `PrLinkService::link` (`src/service/pr_link.rs`) | module doc | SH-647 |
+| Both charters tell the agent to push, open the PR and link it; nothing deterministic does | `PROMPT_TPL`, `AUTO_PROMPT_TAIL` (`plugins/story/bin/story.sh`) | 441, 504 | SH-647 — **closed** |
+| `link-pr` only records a URL; it never pushes or opens anything (the verifier now does, through `story.sh submit` and `record_generation_submitted`) | `PrLinkService::link` (`src/service/pr_link.rs`) | module doc | SH-647 — **closed** |
 | The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | `~/.claude/hooks/pre-push-tests.sh` (untracked) | — | done (D-C) |
 | One global worker; a queue spanning every project | `VerificationActivity::acquire` (`src/daemon/verification.rs`); `ordered_candidates` (`src/service/verification.rs`) | 88-110; 650 | SH-648 |
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | SH-648 |
@@ -106,19 +106,53 @@ replaces the paragraph it changes and says so under "As built".
 
 ### Submission
 
-The agent commits, pushes its branch, opens exactly one close-on-merge PR
-against the integration branch (`dev` here — `development-branch.md`), records
-it with `story link-pr`, comments the URL, and runs `story move <n> verifying`
-as its last action. `verifying` is a required OPEN state (SH-521); the
-transition captures a cleanup lease naming the worktree and branch
-(`src/service/story.rs`), which is what the verifier later reaps from.
-A submission that is not exactly that shape is diagnosed by
-`VerificationProblem` when the candidate is picked, not when it is made, and
-returned to the agent with the diagnosis as a comment and a pane paste. The
-`.githooks/pre-push` gate reports and never refuses on a feature branch
-(SH-429), so the push itself is not gated by the suite. After SH-647 the
-agent's last action is unchanged and everything before `story move` except the
-commit moves into the verifier.
+The agent commits its work and runs `story move <n> verifying` from inside its
+worktree as its last action — nothing more (SH-647). `verifying` is a required
+OPEN state (SH-521); the transition captures a cleanup lease naming the
+worktree and branch (`src/service/story.rs`), which is what the verifier both
+submits from and later reaps from.
+
+The verifier's **first** step on a leased candidate is submission, through the
+leased, verifier-only helper verb `story.sh submit` (`ShellVerificationActuator::
+submit_leased`, spawned like `reap_leased` but under the submission allowlist,
+the one helper child that carries the operator's GitHub credential). It
+re-proves the lease, requires the story to be in `verifying`, refuses a dirty
+worktree naming the files, pushes the leased branch over HTTPS
+(`url.https://github.com/.insteadOf=git@github.com:`; no `--force` — a rewritten
+branch is returned to the agent as `push-rejected`), then opens one PR against
+the repository's default branch (`origin/HEAD`, `dev` here — the same fact
+dispatch based the worktree on) or **adopts** the one already open for that
+head. The helper records nothing on the story; it answers a typed
+`SubmissionReceipt`, and the daemon records the `StoryPrLinked`
+(`close_on_merge`) and a marked `CENTRAL VERIFICATION SUBMITTED` comment in one
+generation-guarded write (`record_generation_submitted`), then proceeds into
+verification in the same tick.
+
+Submission runs on **every** leased generation, linked PR or not: after a RED
+or conflict return the agent only commits, so the verifier's push is the one
+thing that carries the fix to the remote; push and adopt are idempotent, and an
+in-tick guard stops one generation being pushed twice. A daemon restart at any
+point re-runs the whole verb and converges — the PR a crashed attempt created
+is adopted by the next. After a real push the head may take a moment to
+converge on GitHub, which `verify-pr.sh` reports as its retryable outcome
+(SH-636); the next tick re-pushes (a no-op) and verifies.
+
+A refusal the helper classes `repair` (dirty worktree, rejected push, more than
+one open PR) returns the story to its agent with the helper's own words; a
+`infrastructure` refusal (an unreachable GitHub, a failed push) is a retryable
+incident and the story stays in `verifying`. A PR on a repository the project
+has not registered is a configuration fault no retry fixes, so it halts the
+queue. A story that entered `verifying` with no lease — moved from outside its
+worktree — is returned naming that cause: there is no branch to push, and the
+fix is to commit and re-run `story move <n> verifying` from the worktree.
+
+The other three `VerificationProblem` shapes are unchanged: more than one open
+close-on-merge link (`MultiplePullRequests`) and a link whose repository is not
+registered (`UnregisteredPullRequest`) still return the story; `MissingCheckout`
+is still configuration work. The `.githooks/pre-push` gate reports and never
+refuses on a feature branch (SH-429), and the verifier's push is not gated by
+the suite either — the gate runs on the speculative merge tree, after
+submission.
 
 ### The queue
 
@@ -302,6 +336,27 @@ not parse it — the SH-136 rule); the invariant here is only that it
 ## As built
 
 Deviations from this document are recorded here, one entry per child, rather
-than in a second file. None yet: SH-647..SH-653 are open, and each lands with
-its own `### SH-N — <what changed>` entry and a status update in the decisions
-table above.
+than in a second file. Each child lands with its own `### SH-N — <what changed>`
+entry and a status update in the decisions table above.
+
+### SH-647 — the verifier submits
+
+Built as decision D-A describes, with one correction the story as filed did not
+carry: submission runs on **every** leased generation, not only when no PR is
+linked, because after a RED return the agent only commits and the push is what
+reaches the remote (push and adopt are idempotent; an in-tick guard prevents a
+double push, and a linked PR whose number differs from the adopted one returns
+the story naming both).
+
+The helper verb is `story.sh submit` (leased, verifier-only; refuses
+`submit-requires-lease` without the lease). The actuator gained
+`VerificationActuator::submit` and `ShellVerificationActuator::submit_leased`,
+spawned under a third environment allowlist, `apply_submission_allowlist` — the
+dispatch surface (it runs `story`) plus `GITHUB_CREDENTIAL_MAY_SEE`, the three
+names now shared with the verification list. The tick records through
+`record_generation_submitted` and re-derives the candidate (`refresh_authority`'s
+`Current` arm now returns the re-read candidate) so verification runs against
+the linked PR as the store folds it, never a `PrLink` built in Rust. The PR
+title is `<id>: <title>`, so `land-pr.sh`'s merge commit body carries the id for
+`commit-sync`; the Codex charter's old PR-title clause retired with it. The
+dead-pane handling of a returned submission is SH-650's, unchanged here.

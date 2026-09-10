@@ -43,7 +43,7 @@ being picked.
 | D2 | **A lane is a window + worktree per story**, created and reaped per story exactly as `--auto` does today. | Context reset is free: each story gets a new process. The alternative — one long-lived lane session freshen-cleared between stories — buys faster startup at the cost of switching a live session's worktree and cwd, and a wedged pane then strands the lane rather than one story. |
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
-| D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
+| D5 | **The verification worker owns submission, exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents commit and move the story to `verifying` from inside their worktree as their final action, and stop; the verifier pushes the leased branch and opens or adopts the PR before it verifies (SH-647). | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
 | D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. A watcher retries bounded transport/TUI races and completes only after its exact dialog leaves the original live pane. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard every keystroke. A changed UI fails closed instead of receiving input; tmux command success alone is not provider acknowledgement (SH-570). |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
@@ -123,7 +123,7 @@ flowchart TB
     STORIES --> BUS
     SVC -->|spawn, off store thread| SH
     SH --> TMUX --> AGENT
-    AGENT -->|targeted tests, link PR, move verifying| STORIES
+    AGENT -->|targeted tests, commit, move verifying| STORIES
     STORIES --> VER
     VER --> LOCKS
     VER -->|done / remediation| STORIES
@@ -317,10 +317,10 @@ sequenceDiagram
     Sh-->>Rec: ok, window name
     Rec->>Store: lane -> Working
     Lane->>Store: plan comment on SH-N
-    Lane->>GH: push + open PR
-    Lane->>Store: link PR + comment URL
-    Lane->>Store: story move SH-N verifying (final action)
+    Lane->>Store: commit, then story move SH-N verifying (final action)
     Store-->>Ver: Change::Project(slug)
+    Ver->>GH: push leased branch, open or adopt PR (SH-647)
+    Ver->>Store: link PR + SUBMITTED comment
     Ver->>GH: fetch current base + submitted head
     Ver->>Ver: exact merge tree + make test
     Ver->>GH: land-pr.sh
@@ -1402,7 +1402,9 @@ and daemon-start reconciliation is SH-466's.
 SH-521 landed on `main` while this story's implementation sat unmerged in its
 own worktree, and made `verifying` a required OPEN state and the agent's own
 final action: the charter now ends a successful lane with `story move <n>
-verifying`, then stops. Left unhandled, that is a silent inversion of this
+verifying`, then stops. Since SH-647 that is the *whole* of the handoff —
+pushing the branch and opening the PR moved into the verifier's own first step,
+so the agent no longer runs `git push`, `gh pr create`, or `story link-pr`. Left unhandled, that is a silent inversion of this
 story's own load-bearing rule: `story_closed` reads `false` for an OPEN
 handoff state, so every successful lane would fall through to `WindowGone`
 (the pane is normally already dead — see below) or eventually `Stalled` (D4's
