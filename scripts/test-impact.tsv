@@ -4,6 +4,7 @@
 activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 backup_restore	:(glob)**/*
+binary_lease	scripts/binary-lease.sh
 block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
