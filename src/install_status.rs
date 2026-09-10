@@ -80,6 +80,28 @@ impl Row {
 
 /// The `story` this machine's `$PATH` resolves, and what it reports.
 fn installed_binary() -> Row {
+    // Before `$PATH` is consulted at all (SH-630): `$PATH` agreeing with the
+    // running binary is the caller's own doing, and this row answered `ok`
+    // for exactly the invocation that migrated the production store. A
+    // binary still where cargo wrote it is not installed by any mechanism
+    // this tree has, and the row says so ahead of anything `$PATH` claims.
+    if let Some(build_dir) = crate::path_identity::build_dir()
+        && let Some(running) = crate::path_identity::running_exe()
+        && crate::path_identity::is_inside_build_dir(&running.canonical, &build_dir)
+    {
+        return Row::flagged(
+            "binary",
+            format!(
+                "{}  [{}]",
+                crate::version::full(),
+                running.spelling.display()
+            ),
+            format!(
+                "not installed — still where cargo built it ({}); `make install` copies it out",
+                build_dir.display()
+            ),
+        );
+    }
     let Some(path) = crate::path_identity::installed_story() else {
         return Row::flagged(
             "binary",

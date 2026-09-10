@@ -1365,6 +1365,49 @@ Standing rules for every wave:
   helper by realpath, never a byte compare of 4,000 lines and never a host record —
   `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
   Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
+- **`$PATH` is the caller's claim about itself, never evidence of installation** (SH-630).
+  The SH-404 migration guard refused a binary that was not the `story` `$PATH` resolves,
+  and on 2026-09-09 a `PATH="$PWD/target/debug:$PATH" story project list` from the main
+  checkout — typed by an agent session to try the build gate 5 had just produced, while
+  that gate was still running — made `$PATH` resolve `story` to the very binary asking.
+  The client stood down the installed v2.4.3 daemon on version skew, spawned itself as the
+  replacement with that `$PATH` inherited, and the replacement's `open_store` found
+  `running == installed`, permitted, and migrated the production store 32 → 33 at
+  13:06:01Z; the next installed-`story` call restarted the daemon back onto v2.4.3 and
+  every write was refused until `make install`. **The story as filed blamed the verifier's
+  worktree binary and pid 2782**; the daemon's own activity journal exonerates both — the
+  verifier's binary is a different build that never touched the store, and 2782 was the
+  same session's later `link-pr`, which *restored* writes. Read the journal before trusting
+  a description. **The control test was the incident**: `tests/migration_guard.rs` ran the
+  test binary with its own directory first on `$PATH` (`TestEnv::path_with_binary()`) and
+  asserted the migration proceeded. The predicate consulted an input the caller controls,
+  and prefixing a build directory onto `$PATH` is the most natural way anyone tries a build
+  (SH-631's repro, `Makefile`'s plugin leg and `plugins/story/tests/lib.sh` all do it). The
+  fact the caller cannot rewrite is where the binary *is*: `build.rs` stamps
+  `STORYHOOK_BUILD_DIR` (`OUT_DIR`'s third ancestor, the directory cargo writes the binary
+  into), and a binary still inside it is refused before `$PATH` is consulted, by the
+  migration guard and by the SH-411 install guard, which had the identical hole one
+  command over (`… story daemon install` enthroned a worktree build by agreement). This is
+  what "installed" means in this tree and in every mechanism it ships — `make install`,
+  `story update` and `cargo install` all *copy out* — so the sanctioned recovery
+  (`make install` from `main`) satisfies it by construction. SH-404 rejected "a
+  build-provenance sentinel" and the objection stands for what it was about: a *flag set at
+  install time*, which every `cargo test` binary would lack too. A *location fact recorded
+  at the build* has the opposite property: a test binary is uninstalled by construction and
+  correctly refused, and the permit side is proven for real by copying the binary out, with
+  positive controls that the source **is** inside the stamp and the copy **is not**
+  (mutation-checked: dropping the stamp makes the suite panic, never pass). The `$PATH`
+  clause stays as a second refusal (a copy at `/tmp/story`), never again the only one. Two
+  harnesses run an uninstalled build against a planted non-fresh default-shaped store and
+  now say so with the override: `storyhook_test_support::crash`, and `make scratch` through
+  the shared isolation's `--uninstalled-build` — in `scripts/test-env.sh`, not the calling
+  script, because SH-531's fence forbids a harness re-exporting a table parameter on its own.
+  Every other harness is safe for the one reason it always was: a fresh store has no schema
+  to protect. Design of record: the module docs on `src/migration_guard.rs`,
+  `src/daemon/install_guard.rs` and `src/path_identity.rs`, and `build.rs`'s "Where the
+  artifact was written". The daemon ping-pong the journal also shows — an uninstalled client
+  of a different build stands down the default store's custodian and seats itself, every
+  alternate call — is filed separately as SH-634, not fixed here.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
