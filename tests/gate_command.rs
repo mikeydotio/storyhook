@@ -16,6 +16,7 @@
 
 use std::path::Path;
 use storyhook::error::AppError;
+use storyhook::help_topics::get_help_topic;
 use storyhook::service::gate_command::{GateCommand, gate_command_for};
 use storyhook::service::project::pointer_path;
 use storyhook_test_support::scratch_dir;
@@ -234,4 +235,12 @@ fn a_hand_authored_verify_table_survives_a_pointer_rewrite() {
     write_typed(root.path(), &pointer).expect("rewriting the pointer");
     let command = gate_command_for(root.path()).expect("the table survived");
     assert_eq!(command.display(), "make test-full");
+}
+/// The in-binary documentation names the table beside its siblings, since no
+/// existing fence reads a TOML example out of a help topic.
+#[test]
+fn the_project_settings_help_topic_documents_the_verify_table() {
+    let topic = get_help_topic("project-settings").expect("the topic exists");
+    assert!(topic.contains("[verify]"), "{topic}");
+    assert!(topic.contains(GateCommand::DEFAULT), "{topic}");
 }
