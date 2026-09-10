@@ -357,7 +357,22 @@ fn main() {
     // reaches `open_store`, whose failure took down `story daemon stop`, which
     // is the first step of the remedy a damaged store prints (SH-149).
     if storyhook::invoke::needs_no_store(&invocation) {
-        match storyhook::invoke::dispatch_without_store(invocation) {
+        // The same confirmation door the store path has below (SH-638):
+        // `story daemon gc` destroys something too, and until it arrived
+        // nothing on this path could answer `ConfirmationRequired` — a plan
+        // rendered here used to print with no prompt and exit 0.
+        let result = match storyhook::invoke::dispatch_without_store(invocation.clone()) {
+            Ok(Response::ConfirmationRequired(plan)) => match confirm(&plan, json, flags.quiet) {
+                Confirmed::Yes => storyhook::invoke::dispatch_without_store(invocation.forced()),
+                Confirmed::No => {
+                    println!("cancelled; nothing was changed");
+                    return;
+                }
+                Confirmed::CannotAsk(error) => Err(error),
+            },
+            other => other,
+        };
+        match result {
             Ok(response) => {
                 let rendered = output::render_response(&response, json, flags.quiet);
                 if !rendered.is_empty() {
