@@ -258,7 +258,7 @@ impl ServiceFixture {
             let diff = diff_read_model(&self.store, project).expect("diffing the read model");
             assert!(
                 diff.is_clean(),
-                "the read model of project {project} has drifted from its events:\n{}",
+                "the read model has drifted from its events (project {project}):\n{}",
                 diff.describe()
             );
             assert!(
