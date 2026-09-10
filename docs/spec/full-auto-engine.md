@@ -2187,6 +2187,71 @@ budget for "external infrastructure not ready".
 to, so a stale reading is visible in the story comment itself rather than
 inferred from blob ids.
 
+### SH-637 — a verdict is confirmed against the head it names
+
+SH-636 made the head current at the START of an attempt. Nothing made it
+current at the END, and a verdict is a statement about a head: preflight is
+quick, but the release gate runs for minutes, and a push that lands inside
+either window turns a true CONFLICT or RED into a verdict about a commit
+nobody can act on — the same stale-report shape, arriving through the other
+door. Measured on SH-622 / PR #741 and SH-625 / PR #740 from the daemon's
+activity journal: three such verdicts in one session (03:13:37Z, 03:21:16Z,
+03:30:30Z), each from an attempt that STARTED after the resubmission — the
+"queued attempt posting late" hypothesis the story filed is refuted by the
+journal — and each costing a full implementer turn to prove nothing was
+wrong.
+
+`confirm_judged_head` runs immediately before the conflict verdict and
+immediately before the red verdict. It re-reads GitHub, requires the same PR
+number and base branch (anything else is an identity change and returns for
+repair, as `reconcile_land_refusal` already rules), requires the PR to still
+be OPEN (a PR merged or closed meanwhile is the next attempt's entry path to
+classify, so that is a retry), asks `refresh_submission_refs` for the
+converged head under SH-636's three-way rule, and requires it to be the head
+that was judged. A moved head is a **retryable** infrastructure result
+naming both heads and the verdict withheld, never a verdict: the daemon's
+existing cadence re-verifies the new head, which is the only head a verdict
+could be about. The red variant carries the superseded attempt's log path so
+its evidence is not lost. The green path needs no recheck of its own —
+`land-pr.sh` re-reads under the merge lock and `reconcile_land_refusal`
+keeps SH-604's ruling for a head moved after a green gate. So that the
+`--run-gate` seam's output stays byte-identical, `run_verification_gate`
+now reports a completed red through its return status and
+`emit_tests_failed` posts it; only the moment moved.
+
+The public path — `verify-pr.sh <pr-url>`, above every private seam — was
+untested, and the defect lived there. `tests/merge_gate.rs` now drives it
+end to end against its local origin with a call-counting fake `gh` (a
+`before-call-N` hook is the "head moves between fetch and verdict"
+instrument; call 1 is the entry read, call 2 the recheck) and a fake `make`
+for the gate, both reached only through `PATH` on the child. That is not a
+GitHub model: the fake returns the same wire shape the seams take as an
+argument, one door over, because the property under test is the *wiring*.
+Making it reachable required `verify-pr.sh` to resolve `merge-preflight.sh`
+and `land-pr.sh` through its own `$script_dir`, as its `reconcile_land_refusal`
+path already did, rather than relative to the registered checkout's root.
+The steady-head controls assert two reads of GitHub, so removing either
+recheck fails them as well as the moved-head cases (mutation-checked in both
+directions).
+
+Three moved-head retries on one generation exhaust D15's budget and halt the
+verifier queue until that story's generation changes — three pushes during
+three successive gates without a resubmission, which is loud on purpose.
+
+`land-pr.sh` is the GREEN direction's guard and had the same two-projection
+compare. Under the merge lock it now also reads the tip of
+`refs/heads/<headRefName>` on origin (`ls-remote`, no remote-tracking ref)
+and `validate_refresh` requires it to equal the fetched pull head and the
+API head, after its existing pull-vs-API check and keeping that check's
+message so SH-604's reconcile path still recognises a moved head. Two stale
+projections plus `--match-head-commit <stale>` would otherwise either merge
+the recorded head — the new commit lost when the branch is deleted — or
+merge the branch tip and hard-fail the landed-tree check on an already-merged
+PR; the refusal is cheaper than either, and `verify-pr.sh`'s
+`reconcile_land_refusal` already converges it to a retry while the verified
+tree stays current. A head branch renamed between the two `gh pr view` reads
+is refused too, since the branch that was read is then not the PR's.
+
 ### SH-473 — close-out coverage and operator contract
 
 The browser harness gives every Playwright project invocation its own seed,

@@ -1560,6 +1560,26 @@ Standing rules for every wave:
   "not ready yet". `merge-preflight.sh`'s CONFLICT line names the oid each ref resolved to,
   so a stale reading is visible in the report rather than inferred from blob ids. Design of
   record: `docs/spec/full-auto-engine.md`'s SH-636 "As built" section.
+- **A verdict is a statement about a head, so it is confirmed against that head immediately
+  before it is posted, never only at the start of the attempt** (SH-637). SH-636 made the PR
+  head current when verification began; preflight is quick but the release gate runs for
+  minutes, and a push inside either window turned a true CONFLICT or RED into a verdict about a
+  commit nobody could act on — three times in one session (SH-622 twice, SH-625 once), each
+  from an attempt the daemon journal shows STARTED after the resubmission, so the story's own
+  "queued attempt posting late" hypothesis was refuted by the journal before anything was
+  changed. `confirm_judged_head` (`scripts/verify-pr.sh`) re-reads GitHub, requires the same
+  PR and base, requires OPEN, takes SH-636's converged head and requires it to be the one that
+  was judged; a moved head is **retryable** and names both heads and the verdict withheld,
+  never posted as the verdict it would have been a second earlier. `land-pr.sh` reads the
+  branch tip under the merge lock for the same reason — the GREEN direction, where two stale
+  projections plus `--match-head-commit` would either lose the new commit at branch deletion
+  or hard-fail an already-merged PR. The public path was untested above every seam and the
+  defect lived there, so `tests/merge_gate.rs` drives `verify-pr.sh <url>` end to end with a
+  call-counting fake `gh` and a fake `make` on `PATH` — not a GitHub model, the seams' own
+  wire shape one door over, because the property is the wiring (SH-360); the steady-head
+  controls count the second read, so deleting a recheck fails them too. Design of record:
+  `docs/spec/full-auto-engine.md`'s SH-637 section; the verdict trail is on the story
+  (`story show SH-637`, SH-363).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
