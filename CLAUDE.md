@@ -286,8 +286,8 @@ Standing rules for every wave:
   isolates_the_data_dir_also_contains_its_daemon` pins it to whichever scripts export
   `STORYHOOK_DATA_DIR`, the same set `…_neutralizes_the_store_path` derives beside it;
   today that's `scripts/run-tests.sh`, `scripts/capture-baseline.sh`, `scripts/run-e2e.sh`,
-  and *both* `plugins/story/tests/{lib.sh,run-tests.sh}` — the last two because
-  `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. `TestEnv`
+  and *both* `plugins/story/tests/{lib.sh,run-tests.sh}` — the runner isolates only
+  itself, and every test mints its own root through `lib.sh` (SH-631, below). `TestEnv`
   can't drift the same way: it pins both variables once, in
   `storyhook_test_support::daemon_containment()`. Four Rust test files `env_clear()` on
   purpose and call `daemon_containment()` afterward to reinstate containment, rather than
@@ -1354,6 +1354,94 @@ Standing rules for every wave:
   `retries: 0`/`workers: 1` as the council's decision. Quiesce the machine before the release
   tier, and read `story list --label flake` for the population before calling a red "the
   usual one". Design of record: `docs/spec/test-tiers.md`'s third "As built" reading.
+- **The two halves of one plugin must agree, and a plugin hook knows its plugin by where it
+  was loaded from** (SH-632). `protect-install.sh` admitted helper verbs only through the
+  Codex launcher while `references/helper-command.md` told every other host to run
+  `<plugin-root>/bin/story.sh` — always a managed path — so on Claude Code the router's own
+  `/story do|view|list|capture|doctor` were refused before execution. A host runs one copy of
+  a plugin's hooks per session (a `--plugin-dir` plugin overrides the installed one), so the
+  hook's own `${BASH_SOURCE[0]}/..` IS the skill's `<plugin-root>`, the identity
+  `session-start.sh` already derives for the dispatch sentinel; the hook admits that one
+  helper by realpath, never a byte compare of 4,000 lines and never a host record —
+  `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
+  Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
+- **`$PATH` is the caller's claim about itself, never evidence of installation** (SH-630).
+  The SH-404 migration guard refused a binary that was not the `story` `$PATH` resolves,
+  and on 2026-09-09 a `PATH="$PWD/target/debug:$PATH" story project list` from the main
+  checkout — typed by an agent session to try the build gate 5 had just produced, while
+  that gate was still running — made `$PATH` resolve `story` to the very binary asking.
+  The client stood down the installed v2.4.3 daemon on version skew, spawned itself as the
+  replacement with that `$PATH` inherited, and the replacement's `open_store` found
+  `running == installed`, permitted, and migrated the production store 32 → 33 at
+  13:06:01Z; the next installed-`story` call restarted the daemon back onto v2.4.3 and
+  every write was refused until `make install`. **The story as filed blamed the verifier's
+  worktree binary and pid 2782**; the daemon's own activity journal exonerates both — the
+  verifier's binary is a different build that never touched the store, and 2782 was the
+  same session's later `link-pr`, which *restored* writes. Read the journal before trusting
+  a description. **The control test was the incident**: `tests/migration_guard.rs` ran the
+  test binary with its own directory first on `$PATH` (`TestEnv::path_with_binary()`) and
+  asserted the migration proceeded. The predicate consulted an input the caller controls,
+  and prefixing a build directory onto `$PATH` is the most natural way anyone tries a build
+  (SH-631's repro, `Makefile`'s plugin leg and `plugins/story/tests/lib.sh` all do it). The
+  fact the caller cannot rewrite is where the binary *is*: `build.rs` stamps
+  `STORYHOOK_BUILD_DIR` (`OUT_DIR`'s third ancestor, the directory cargo writes the binary
+  into), and a binary still inside it is refused before `$PATH` is consulted, by the
+  migration guard and by the SH-411 install guard, which had the identical hole one
+  command over (`… story daemon install` enthroned a worktree build by agreement). This is
+  what "installed" means in this tree and in every mechanism it ships — `make install`,
+  `story update` and `cargo install` all *copy out* — so the sanctioned recovery
+  (`make install` from `main`) satisfies it by construction. SH-404 rejected "a
+  build-provenance sentinel" and the objection stands for what it was about: a *flag set at
+  install time*, which every `cargo test` binary would lack too. A *location fact recorded
+  at the build* has the opposite property: a test binary is uninstalled by construction and
+  correctly refused, and the permit side is proven for real by copying the binary out, with
+  positive controls that the source **is** inside the stamp and the copy **is not**
+  (mutation-checked: dropping the stamp makes the suite panic, never pass). The `$PATH`
+  clause stays as a second refusal (a copy at `/tmp/story`), never again the only one. Two
+  harnesses run an uninstalled build against a planted non-fresh default-shaped store and
+  now say so with the override: `storyhook_test_support::crash`, and `make scratch` through
+  the shared isolation's `--uninstalled-build` — in `scripts/test-env.sh`, not the calling
+  script, because SH-531's fence forbids a harness re-exporting a table parameter on its own.
+  Every other harness is safe for the one reason it always was: a fresh store has no schema
+  to protect. Design of record: the module docs on `src/migration_guard.rs`,
+  `src/daemon/install_guard.rs` and `src/path_identity.rs`, and `build.rs`'s "Where the
+  artifact was written". The daemon ping-pong the journal also shows — an uninstalled client
+  of a different build stands down the default store's custodian and seats itself, every
+  alternate call — is filed separately as SH-634, not fixed here.
+- **A shell test owns its daemon, and stands it down before deleting its home** (SH-631).
+  Filed as "the plugin suite fails deterministically on dev, masked by leg-reuse" — 33 of
+  74 tests, every one `a storyhook daemon is already running`. Measured before anything
+  was changed: the suite passed 74/74 on the named tree, and the plugin leg held a
+  **real** green receipt for that exact fingerprint from the night before (150 receipts,
+  real runs every 1–2 h), so neither half of the premise survived. What the evidence did
+  prove was 77 fixture roots in `/tmp`, each holding one daemon journal — "parent process
+  N is gone; exiting" — written *after* the harness `rm -rf`'d it: teardown deleted the
+  store under a live daemon, which noticed its parent had died up to one `SHUTDOWN_CHECK`
+  later and whose exit journal (`Journal::append` → `create_dir_all`) resurrected the
+  directory. That window is also what `check-no-orphan-servers.sh` reads as "a daemon
+  serving a store that no longer exists". The 33-failure signature — shutdown *answered*,
+  pidfile lock never released, no "did not stand down" context — is a daemon that wedged
+  under two concurrent plugin suites and a night of churn; it did not reproduce and is
+  not claimed fixed. What made one wedge cost 33 tests was `run-tests.sh` isolating
+  **once** and exporting `STORYHOOK_TEST_HOME` for the whole run, so 74 tests shared one
+  daemon parented to the runner, while `bash test-foo.sh` minted its own — two renderings
+  of one harness (SH-531). By user determination: the runner now isolates only itself
+  and every test mints its own root and daemon (`STORYHOOK_PARENT_PID` = the test), and
+  `lib.sh`'s `_cleanup` runs `story daemon stop --force` **before** the `rm -rf` — the
+  `TestEnv::stop_daemon` rule, arriving for the shell harness — failing the test if the
+  stop fails, because a daemon that cannot be stopped is a leak (SH-306). Pinned
+  behaviourally by `test-daemon-containment.sh`, mutation-checked. Design of record:
+  `docs/spec/test-environments.md`. Sibling found and filed separately: the e2e harness's
+  daemons write pidfiles, backups and journals into the developer's **real**
+  `~/.local/state/storyhook/daemons/` (40 of them on the filing day).
+- **A hygiene gate asks git whether an artifact is tracked or ignored, never the
+  filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
+  was absent from disk; the file is gitignored precisely so an agent can write it locally
+  between sessions, and the operator's standing rule says to — so following that rule
+  turned every battery red after a full compile. The gate now asks `git ls-files
+  --error-unmatch` (must fail) and `git check-ignore -q` (must succeed) and never reads
+  the file. An ignored file's purpose is to exist locally; the repository's is to never
+  commit it, and only the second is the tree's business.
 - **A text assertion never rides an aria-hidden glyph, and the fence that keeps it runs
   where the subject is known** (SH-622). `toHaveText`/`toContainText` compare
   `textContent`, which includes an `aria-hidden` subtree; the accessible name excludes

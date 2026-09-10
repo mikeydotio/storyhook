@@ -60,6 +60,27 @@ _cleanup() {
   local status=$? cleanup_failed=0 d session session_status
   trap - EXIT
 
+  # The daemon this test owns is stood down BEFORE its home is deleted, the
+  # rule `TestEnv::stop_daemon` already states for the Rust suite ("a test
+  # that asks about bytes on disk must stand the daemon down first"). Deleting
+  # the home first left a live daemon holding an unlinked store; it noticed its
+  # parent had gone up to one SHUTDOWN_CHECK (250ms) later, and its exit
+  # journal recreated the directory it was writing into -- 77 resurrected
+  # fixture roots in /tmp on the machine that filed SH-631, and the exact
+  # window the gate postlude reports as "a daemon serving a store that no
+  # longer exists". Only the process that MINTED the home owns the daemon; a
+  # nested `bash -c 'source lib.sh'` shares its caller's and must not stop it.
+  # `--force`: a stop that waits for ever on a wedged daemon is a wedged suite
+  # (SH-528), and a daemon that cannot be stopped is a leak -- reported as a
+  # failed test rather than left for the next run to find (SH-306).
+  if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
+    if ! story daemon stop --force >/dev/null 2>&1; then
+      printf 'failed to stop the test daemon under %s before deleting it\n' \
+        "$STORYHOOK_TEST_HOME" >&2
+      cleanup_failed=1
+    fi
+  fi
+
   if [ "${#_TMP_TMUX_SESSIONS[@]}" -gt 0 ]; then
     # The engine can still be between claiming a lane and creating its terminal.
     # Stop it before reaping the registered sessions so cleanup cannot race a
@@ -132,27 +153,27 @@ trap _cleanup EXIT
 # written before the store landed, while the variables were still unread,
 # because adding it afterwards would have been adding it too late.
 #
-# run-tests.sh exports these for the whole run and refuses to start if they
-# are wrong; this block is what makes a single `bash test-foo.sh` just as
-# safe. STORYHOOK_REAL_HOME survives so a test can assert the real data home
-# was left alone.
+# This block is the ONE isolation every test gets, under run-tests.sh and on
+# its own alike (SH-631): a root of its own, a daemon of its own, and
+# STORYHOOK_PARENT_PID = this process, so the daemon dies with the test by
+# construction rather than with the run. run-tests.sh isolates only itself and
+# deliberately leaves $STORYHOOK_TEST_HOME unset so this branch runs for every
+# test; the variable being set means an OUTER lib.sh instance owns the home --
+# a nested `bash -c 'source lib.sh'` (test-temp-cleanup.sh) shares its caller's
+# store and daemon and must not mint, stop or delete anything of its own.
+# STORYHOOK_REAL_HOME survives so a test can assert the real data home was
+# left alone; an inherited value wins, because run-tests.sh has already
+# rewritten $HOME by the time this runs.
 if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
-  export STORYHOOK_REAL_HOME="$HOME"
+  export STORYHOOK_REAL_HOME="${STORYHOOK_REAL_HOME:-$HOME}"
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
+  _STORYHOOK_OWNS_TEST_HOME=1
   _TMP_REPOS+=("$STORYHOOK_TEST_HOME")
 
   # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
   # header carries the parameters and the reason for each. `--home` IS passed:
   # this suite runs nothing but `story` and `git`.
-  #
-  # Sourcing one implementation is what finally ends the duplication
-  # `run-tests.sh` used to document as deliberate. It was deliberate for a real
-  # reason -- this branch is SKIPPED when run-tests.sh has already set
-  # $STORYHOOK_TEST_HOME, so a block written only here left the whole-suite run
-  # with no isolation at all, which is how the leaked daemons were found -- and
-  # that reason is answered by both call sites calling the same function rather
-  # than by both carrying the same twenty lines.
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
