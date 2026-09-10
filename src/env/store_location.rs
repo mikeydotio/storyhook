@@ -34,7 +34,7 @@ const STORE_FILE: &str = "store.db";
 /// one machine is not a thing that happens, short enough to stay readable in a
 /// diagnostic — and a collision would be *detectable* rather than silent,
 /// because the portfile inside carries the store path in full.
-const KEY_HEX: usize = 16;
+pub(crate) const KEY_HEX: usize = 16;
 
 /// How the store was chosen.
 ///

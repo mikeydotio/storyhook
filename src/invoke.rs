@@ -175,42 +175,13 @@ impl InvokeRequest {
         self
     }
 
-    /// The same request, with its confirmation already given.
-    ///
-    /// The second half of the two-step a destructive command runs: the first
-    /// invocation answers [`Response::ConfirmationRequired`] and writes
-    /// nothing, the client asks the user, and this is what it sends back. The
-    /// invocation is otherwise untouched — the *same* target, resolved the
-    /// same way — so the thing that gets destroyed is the thing that was
-    /// described.
-    ///
-    /// A request with nothing to confirm is returned unchanged, which is what
-    /// makes this safe to call unconditionally.
-    ///
-    /// # Why the `Project` arm is exhaustive
-    ///
-    /// It used to be `ProjectAction::Deinit { force, .. }` beside a `_ => {}`,
-    /// and a destructive project verb added later would have fallen through it
-    /// silently — the client would ask the user, get a yes, re-send a request
-    /// that is still unforced, and be answered with the same question forever.
-    /// A confirmation loop with no error and no compile failure. Listing every
-    /// variant means the next one is a compile error here instead.
+    /// The same request, with its confirmation already given —
+    /// [`Invocation::forced`] applied to this request's invocation, with the
+    /// rest of the request untouched so the re-run resolves the same target
+    /// the same way.
     #[must_use]
     pub fn forced(mut self) -> Self {
-        match &mut self.invocation {
-            Invocation::Project { action } => match action {
-                ProjectAction::Delete { force } => *force = true,
-                ProjectAction::SetPrefix { force, .. } => *force = true,
-                ProjectAction::New(_)
-                | ProjectAction::List
-                | ProjectAction::Show
-                | ProjectAction::Link(_)
-                | ProjectAction::Unlink(_)
-                | ProjectAction::Settings(_) => {}
-            },
-            Invocation::Delete { force, .. } => *force = true,
-            _ => {}
-        }
+        self.invocation = self.invocation.forced();
         self
     }
 }
@@ -1710,6 +1681,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             crate::daemon::commands::uninstall(&env).map(login_agent_response)
         }
         DaemonAction::Token => crate::daemon::commands::token(&env).map(Response::Message),
+        DaemonAction::Gc { force } => Ok(crate::daemon::commands::gc(&env, force)),
         DaemonAction::Serve { .. } | DaemonAction::Logs { .. } => Err(AppError::Usage(
             "daemon serve/log streaming is handled before dispatch".to_string(),
         )),

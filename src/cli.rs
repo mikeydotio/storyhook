@@ -191,6 +191,7 @@ Usage:
   story daemon install [--this-binary]
   story daemon uninstall
   story daemon token
+  story daemon gc [--force]                        (reclaim runtime dirs of stores that are gone)
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
@@ -856,6 +857,132 @@ pub enum Invocation {
     },
 }
 
+impl Invocation {
+    /// The same invocation, with its confirmation already given.
+    ///
+    /// The second half of the two-step a destructive command runs: the first
+    /// invocation answers `Response::ConfirmationRequired` and writes nothing,
+    /// the client asks the user, and this is what it sends back. The
+    /// invocation is otherwise untouched — the *same* target, resolved the
+    /// same way — so the thing that gets destroyed is the thing that was
+    /// described.
+    ///
+    /// An invocation with nothing to confirm is returned unchanged, which is
+    /// what makes this safe to call unconditionally.
+    ///
+    /// # Why every arm is exhaustive
+    ///
+    /// The `Project` arm used to be `ProjectAction::Deinit { force, .. }`
+    /// beside a `_ => {}`, and a destructive project verb added later would
+    /// have fallen through it silently — the client would ask the user, get a
+    /// yes, re-send an invocation that is still unforced, and be answered with
+    /// the same question forever. A confirmation loop with no error and no
+    /// compile failure. The top level then kept exactly that wildcard, and
+    /// `HideState` fell through it for as long as it existed (SH-638). Listing every variant of every
+    /// level means the next one is a compile error here instead.
+    ///
+    /// `DaemonAction::Stop { force }` is deliberately **not** set: that flag
+    /// means "signal the process", not "skip a confirmation", and `stop`
+    /// never asks one.
+    #[must_use]
+    pub fn forced(mut self) -> Self {
+        match &mut self {
+            Self::Project { action } => match action {
+                ProjectAction::Delete { force } => *force = true,
+                ProjectAction::SetPrefix { force, .. } => *force = true,
+                ProjectAction::New(_)
+                | ProjectAction::List
+                | ProjectAction::Show
+                | ProjectAction::Link(_)
+                | ProjectAction::Unlink(_)
+                | ProjectAction::Settings(_) => {}
+            },
+            Self::Delete { force, .. } => *force = true,
+            // Answers `ConfirmationRequired` too, and until SH-638 was never
+            // forced on the re-run: `story archive-state` at a terminal
+            // printed its plan twice and archived nothing.
+            Self::HideState { force, .. } => *force = true,
+            Self::Daemon { action } => match action {
+                DaemonAction::Logs { .. }
+                | DaemonAction::Serve { .. }
+                | DaemonAction::Start { .. }
+                | DaemonAction::Restart
+                | DaemonAction::Stop { .. }
+                | DaemonAction::Status
+                | DaemonAction::Install { .. }
+                | DaemonAction::Uninstall
+                | DaemonAction::Token => {}
+                DaemonAction::Gc { force } => *force = true,
+            },
+            Self::Help
+            | Self::New { .. }
+            | Self::Publish { .. }
+            | Self::MemberAdd { .. }
+            | Self::State { .. }
+            | Self::List { .. }
+            | Self::Search { .. }
+            | Self::Next { .. }
+            | Self::Claim { .. }
+            | Self::Unclaim { .. }
+            | Self::Engine { .. }
+            | Self::Cleanup { .. }
+            | Self::Summary
+            | Self::Report { .. }
+            | Self::Doctor { .. }
+            | Self::DoctorInstall
+            | Self::DoctorAbandoned { .. }
+            | Self::DoctorCrashes { .. }
+            | Self::Show { .. }
+            | Self::Log { .. }
+            | Self::Comment { .. }
+            | Self::Assign { .. }
+            | Self::SetState { .. }
+            | Self::SetAwaiting { .. }
+            | Self::ClearAwaiting { .. }
+            | Self::SetPriority { .. }
+            | Self::SetLabels { .. }
+            | Self::Reopen { .. }
+            | Self::Hide { .. }
+            | Self::Unhide { .. }
+            | Self::BulkUpdate { .. }
+            | Self::Import { .. }
+            | Self::Decompose { .. }
+            | Self::Export
+            | Self::ImportProject { .. }
+            | Self::Migrate { .. }
+            | Self::Context { .. }
+            | Self::Handoff { .. }
+            | Self::Phase { .. }
+            | Self::Type { .. }
+            | Self::Epic { .. }
+            | Self::Graph { .. }
+            | Self::SetFields { .. }
+            | Self::Relate { .. }
+            | Self::Hooks { .. }
+            | Self::Scaffold { .. }
+            | Self::CommitSync { .. }
+            | Self::LinkPr { .. }
+            | Self::UnlinkPr { .. }
+            | Self::PrCheck { .. }
+            | Self::GithubAuth { .. }
+            | Self::HelpTopic { .. }
+            | Self::HelpCompact
+            | Self::HelpAll
+            | Self::Plugin { .. }
+            | Self::Web { .. }
+            | Self::Token { .. }
+            | Self::Store { .. }
+            | Self::SessionStart { .. }
+            | Self::Update { .. }
+            | Self::Version
+            | Self::ProjectSnapshot { .. }
+            | Self::History { .. }
+            | Self::Attachment { .. } => {}
+        }
+        self
+    }
+}
+
 /// The four forms of `story attachment` (SH-315).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentAction {
@@ -969,6 +1096,12 @@ pub enum DaemonAction {
     /// puts in `X-Storyhook-Token` to reach `/api/v1/*` or the dashboard's
     /// dispatch endpoint from off-loopback.
     Token,
+    /// Reclaim the runtime directories of stores that no longer exist
+    /// (SH-638). Answers with what it would remove and asks, unless forced.
+    Gc {
+        /// Remove without asking — `--force`, or the confirmation given.
+        force: bool,
+    },
 }
 
 /// `story doctor abandoned …`.
@@ -1877,6 +2010,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "daemon",
         subcommand: Some("install"),
         flags: &[bare("this-binary")],
+    },
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("gc"),
+        flags: &[bare("force")],
     },
     VerbFlags {
         verb: "daemon",
@@ -4322,7 +4460,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token | logs [--follow]";
+                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4348,6 +4486,13 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             port: parse_port_flag(&args[2..], usage)?,
         },
         "stop" => DaemonAction::Stop {
+            force: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--force" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
+        "gc" => DaemonAction::Gc {
             force: match &args[2..] {
                 [] => false,
                 [flag] if flag == "--force" => true,
@@ -5068,6 +5213,52 @@ mod tests {
         UnclaimComment, parse_invocation,
     };
     use crate::error::AppError;
+
+    /// Every verb that answers `ConfirmationRequired` must come back forced,
+    /// or the client asks, hears yes, and re-sends the same question
+    /// (SH-638: `story archive-state` printed its plan twice and archived
+    /// nothing). `daemon stop --force` is the negative control: that flag
+    /// signals a process rather than skipping a prompt, and `forced()` must
+    /// never invent it.
+    #[test]
+    fn forced_authorizes_every_confirming_verb_and_nothing_else() {
+        fn parse(args: &[&str]) -> Invocation {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+                .expect("a well-formed invocation")
+        }
+        let forced = parse(&["archive-state", "done"]).forced();
+        assert_eq!(
+            forced,
+            Invocation::HideState {
+                state: "done".into(),
+                force: true
+            }
+        );
+        assert!(matches!(
+            parse(&["delete", "SH-1"]).forced(),
+            Invocation::Delete { force: true, .. }
+        ));
+        assert!(matches!(
+            parse(&["project", "delete"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::Delete { force: true }
+            }
+        ));
+        assert!(matches!(
+            parse(&["project", "set-prefix", "NEW"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::SetPrefix { force: true, .. }
+            }
+        ));
+        assert_eq!(
+            parse(&["daemon", "stop"]).forced(),
+            Invocation::Daemon {
+                action: super::DaemonAction::Stop { force: false }
+            }
+        );
+        let untouched = parse(&["list"]);
+        assert_eq!(untouched.clone().forced(), untouched);
+    }
 
     #[test]
     fn routes_move_command() {

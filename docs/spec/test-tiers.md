@@ -1569,6 +1569,13 @@ test that asks about bytes on disk stands the daemon down first), and
 `tests/corruption_recovery.rs` — the one place that removes a store file — runs
 `story daemon stop` before it does.
 
+**The filesystem twin of this process class is `story daemon gc`** (SH-638):
+the same "the store file is gone" predicate over the runtime *directories*
+under `daemons/`, the same derived age floor, and stricter — it also requires
+the store to have been under a temp root, proves the recorded path by hashing
+it back to the directory's name, and asks before it removes. Design of record:
+`docs/spec/store-isolation.md`, the SH-638 amendment.
+
 **A defect in the tests themselves, found by mutation rather than by review.**
 Every shim in `tests/orphan_check.rs` is a direct child of the test process, so
 a shim that is killed becomes a **zombie** until the test process waits on it —
