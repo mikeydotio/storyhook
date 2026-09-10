@@ -36,6 +36,7 @@ dispatch_ready_budget	:(glob)**/*
 dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
 e2e_browser_coverage	:(glob)**/*
+e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
