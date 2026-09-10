@@ -628,7 +628,7 @@ mod tests {
     use crate::domain::TmuxCleanupTarget;
 
     struct Repo {
-        _root: tempfile::TempDir,
+        workspace: storyhook_test_support::StoryWorkspace,
         checkout: PathBuf,
         worktree: PathBuf,
         lease: StoryCleanupLease,
@@ -636,80 +636,28 @@ mod tests {
 
     impl Repo {
         fn new(merged: bool) -> Self {
-            let root = tempfile::Builder::new()
-                .prefix("storyhook-cleanup-")
-                .tempdir_in("/private/tmp")
-                .unwrap();
-            let origin = root.path().join("origin.git");
-            let checkout = root.path().join("repo");
-            let worktree = root.path().join("SH-7");
-            run_git(
-                root.path(),
-                &["init", "--bare", origin.to_string_lossy().as_ref()],
-            )
-            .unwrap();
-            run_git(
-                root.path(),
-                &[
-                    "clone",
-                    origin.to_string_lossy().as_ref(),
-                    checkout.to_string_lossy().as_ref(),
-                ],
-            )
-            .unwrap();
-            run_git(&checkout, &["config", "user.name", "Cleanup Test"]).unwrap();
-            run_git(&checkout, &["config", "user.email", "cleanup@example.test"]).unwrap();
-            fs::write(checkout.join("README"), "base").unwrap();
-            fs::write(checkout.join(".gitignore"), "target/\n").unwrap();
-            run_git(&checkout, &["add", "README", ".gitignore"]).unwrap();
-            run_git(&checkout, &["commit", "-m", "base"]).unwrap();
-            run_git(&checkout, &["branch", "-M", "dev"]).unwrap();
-            run_git(&checkout, &["push", "-u", "origin", "dev"]).unwrap();
-            run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/dev"]).unwrap();
-            run_git(&checkout, &["remote", "set-head", "origin", "dev"]).unwrap();
-            run_git(
-                &checkout,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    "worktree-SH-7",
-                    worktree.to_string_lossy().as_ref(),
-                    "dev",
-                ],
-            )
-            .unwrap();
-            fs::write(worktree.join("work"), "merged work").unwrap();
-            fs::create_dir(worktree.join("target")).unwrap();
-            fs::write(worktree.join("target/artifact"), vec![0_u8; 4096]).unwrap();
-            run_git(&worktree, &["add", "work"]).unwrap();
-            run_git(&worktree, &["commit", "-m", "story work"]).unwrap();
-            run_git(&worktree, &["push", "-u", "origin", "worktree-SH-7"]).unwrap();
-            if merged {
-                run_git(
-                    &checkout,
-                    &["merge", "--no-ff", "-m", "merge story", "worktree-SH-7"],
-                )
-                .unwrap();
-                run_git(&checkout, &["push", "origin", "dev"]).unwrap();
-            }
+            let workspace = storyhook_test_support::StoryWorkspace::new("SH-7", merged);
             let lease = StoryCleanupLease {
                 version: CLEANUP_LEASE_VERSION,
                 project_slug: "fixture".into(),
-                story_id: "SH-7".into(),
-                repository_path: checkout.canonicalize().unwrap(),
-                worktree_path: worktree.canonicalize().unwrap(),
-                branch: "worktree-SH-7".into(),
+                story_id: workspace.story_id.clone(),
+                repository_path: workspace.checkout.clone(),
+                worktree_path: workspace.worktree.clone(),
+                branch: workspace.branch.clone(),
                 tmux: TmuxCleanupTarget {
-                    socket_path: root.path().join("no-tmux.sock"),
+                    socket_path: workspace.root.path().join("no-tmux.sock"),
                 },
             };
             Self {
-                _root: root,
-                checkout,
-                worktree,
+                checkout: workspace.checkout.clone(),
+                worktree: workspace.worktree.clone(),
                 lease,
+                workspace,
             }
+        }
+
+        fn root(&self) -> &Path {
+            self.workspace.root.path()
         }
     }
 
@@ -722,13 +670,8 @@ mod tests {
         assert!(removal.removed_remote_branch);
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(!repo.worktree.exists());
-        assert!(!ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
-        let remote = git_text(
-            &repo.checkout,
-            &["ls-remote", "--heads", "origin", "worktree-SH-7"],
-        )
-        .unwrap();
-        assert!(remote.is_empty());
+        assert!(!repo.workspace.local_branch_exists());
+        assert!(!repo.workspace.origin_has_branch());
 
         let retry = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
         assert!(!retry.removed_worktree);
@@ -756,7 +699,7 @@ mod tests {
         let removal = clean_candidate(&repo.checkout, &repo.lease, true).unwrap();
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(repo.worktree.exists());
-        assert!(ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
+        assert!(repo.workspace.local_branch_exists());
     }
 
     #[test]
@@ -776,9 +719,9 @@ mod tests {
 
         let divergent = Repo::new(true);
         let remote = git_text(&divergent.checkout, &["remote", "get-url", "origin"]).unwrap();
-        let clone = divergent._root.path().join("remote-writer");
+        let clone = divergent.root().join("remote-writer");
         run_git(
-            divergent._root.path(),
+            divergent.root(),
             &["clone", remote.as_str(), clone.to_string_lossy().as_ref()],
         )
         .unwrap();
@@ -862,7 +805,7 @@ mod tests {
         assert_eq!(refusal.reason, "worktree-mismatch");
 
         let mut protected = repo.lease.clone();
-        protected.worktree_path = repo._root.path().join("already-absent");
+        protected.worktree_path = repo.root().join("already-absent");
         protected.branch = "dev".into();
         let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
@@ -871,10 +814,9 @@ mod tests {
     #[test]
     fn malformed_or_misdirected_private_markers_never_authorize_cleanup() {
         let repo = Repo::new(true);
-        let git_dir = git_text(&repo.worktree, &["rev-parse", "--absolute-git-dir"]).unwrap();
-        let marker = Path::new(&git_dir).join(CLEANUP_LEASE_MARKER);
+        let marker = repo.workspace.worktree_git_dir().join(CLEANUP_LEASE_MARKER);
         let mut misdirected = repo.lease.clone();
-        misdirected.worktree_path = repo._root.path().join("different-worktree");
+        misdirected.worktree_path = repo.root().join("different-worktree");
         fs::write(&marker, serde_json::to_vec(&misdirected).unwrap()).unwrap();
 
         let mut leases = BTreeMap::new();
@@ -906,7 +848,7 @@ mod tests {
     #[test]
     fn tmux_gate_matches_the_exact_story_window_and_fails_closed() {
         let repo = Repo::new(true);
-        let socket = repo._root.path().join("tmux.sock");
+        let socket = repo.root().join("tmux.sock");
         let socket_text = socket.to_string_lossy();
         let started = Command::new("tmux")
             .args([
