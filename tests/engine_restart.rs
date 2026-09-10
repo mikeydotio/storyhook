@@ -40,10 +40,13 @@ fn progressing() -> LaneObservation {
         story_closed: false,
         story_verifying: false,
         agent_blocked: false,
-        window: WindowProbe::Alive,
+        window: WindowProbe::Alive {
+            last_output_at: None,
+        },
         head_global_seq: Some(200),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
+        seconds_since_output: None,
         awaiting_reason: None,
     }
 }

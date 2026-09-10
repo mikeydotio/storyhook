@@ -234,8 +234,8 @@ fn the_daemons_own_liveness_probe_reaches_the_fake_through_the_double() {
     let fields: Vec<&str> = stdout.trim_end().split('\t').collect();
     assert_eq!(
         fields.len(),
-        3,
-        "the composite probe answers three tab-separated fields, got {stdout:?}"
+        4,
+        "the composite probe answers four tab-separated fields, got {stdout:?}"
     );
     let pid: i32 = fields[0]
         .parse()
@@ -246,6 +246,13 @@ fn the_daemons_own_liveness_probe_reaches_the_fake_through_the_double() {
         "the occupant is the launch's own binary"
     );
     assert_eq!(fields[2], "0", "a freshly opened pane is not dead");
+    let activity: i64 = fields[3].parse().unwrap_or_else(|_| {
+        panic!("the fourth field is the window's last-output unix time (SH-657), got {stdout:?}")
+    });
+    assert!(
+        activity > 0,
+        "a freshly opened window has written its prompt, so its activity stamp is set"
+    );
     assert!(
         doubles.knob_dir.join("FAKE_TMUX_STATE").exists(),
         "the double read its knobs from the snapshot directory it was handed"
