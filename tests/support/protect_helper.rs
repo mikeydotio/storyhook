@@ -17,8 +17,8 @@
 //! the door's whole claim is about the hook's own location.
 
 use super::protect_launcher::{
-    ADMITTED_DISPATCH_ARGS, ADMITTED_READER_ARGS, INTERPRETER_PREFIXES, PROJECT_SELECTORS,
-    REJECTED_ARGS, REJECTED_DISPATCH_ARGS, ask_hook, assert_denied_by, fixture,
+    ADMITTED_DISPATCH_ARGS, ADMITTED_READER_ARGS, ADMITTED_TERMINAL_ARGS, INTERPRETER_PREFIXES,
+    PROJECT_SELECTORS, REJECTED_ARGS, REJECTED_DISPATCH_ARGS, ask_hook, assert_denied_by, fixture,
     install_checkout_helpers_at, quoted, rejected_compositions, rejected_dispatch_compositions,
     shell, tracked_hook,
 };
@@ -83,6 +83,7 @@ fn installed_helper_is_admitted_by_the_hook_of_its_own_plugin() {
                 &PROJECT_SELECTORS,
                 ADMITTED_READER_ARGS
                     .iter()
+                    .chain(&ADMITTED_TERMINAL_ARGS)
                     .chain(&ADMITTED_DISPATCH_ARGS)
                     .copied()
                     .collect(),
@@ -91,7 +92,13 @@ fn installed_helper_is_admitted_by_the_hook_of_its_own_plugin() {
             (
                 &INTERPRETER_PREFIXES[1..2],
                 &PROJECT_SELECTORS[..1],
-                vec!["context", "view TST-1", "dispatch TST-1 --agent=claude"],
+                vec![
+                    "context",
+                    "view TST-1",
+                    "capture TST-1",
+                    "doctor",
+                    "dispatch TST-1 --agent=claude",
+                ],
             )
         };
         for prefix in prefixes {
