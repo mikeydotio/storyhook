@@ -622,6 +622,65 @@ config names, rather than the selected project's, would have refused Chromium's
 `tests/e2e_launch_probe.rs` pins the council's two settings and the probe's wiring,
 in SH-360's sense: a call site exists, never that it reaches the right pixel.
 
+### As built, fourth reading: an empty selection is an answer, a failed listing is not (SH-625)
+
+Found while verifying SH-622/SH-623 on the release branch: `scripts/run-e2e.sh`
+printed "selects no tests under this filter — skipping" for a four-spec triage
+run, executed nothing, and exited 0. The wrapper asked Playwright `--list` whether
+the project selected anything, then discarded stderr and the exit status and read
+the answer as text — and Playwright's text is the same for an empty selection and
+for a listing that never happened. Measured on the pinned 1.63.0, this repository's
+config, no browser, no daemon:
+
+| `--list --reporter=list` | stdout | exit | stderr |
+|---|---|---|---|
+| filter matches nothing | `Total: 0 tests in 0 files` | 1 | `Error: No tests found.` |
+| one selected spec fails to load | `Total: 0 tests in 0 files` | 1 | the load error |
+| unknown flag / unknown project | nothing | 1 | Playwright's own message |
+
+A load failure in **any** selected file zeroes the whole listing. The story's
+suspicion — that four positional filters select nothing where one selects — was
+refuted before anything was changed: Playwright ORs plain regexes
+(`createFiltersFromArguments`), and the story's exact command lists 34 tests in 4
+files on this tree and on both commits of the branch it was found on. The only
+mechanism producing that output is a selected spec that would not load, which is
+consistent with an uncommitted mid-repair edit at the moment of the sighting.
+
+**The discriminator is structural.** Under `--pass-with-no-tests` Playwright's own
+exit status tells the two apart — no error-message text is matched:
+
+| `… --pass-with-no-tests` | stdout | exit |
+|---|---|---|
+| no match / nonexistent file / `-g` matching nothing | `Total: 0 tests in 0 files` | **0** |
+| a selected spec fails to load | `Total: 0 tests in 0 files` | 1, error on stderr |
+| unknown flag / unknown project | no `Total:` line | 1 |
+
+`scripts/e2e-selection.sh` is the decision, sourced by the runner: a nonzero
+listing is **refused** with Playwright's stderr replayed verbatim, so the spec that
+would not load is named; a successful listing with no readable `Total:` line is
+refused rather than read as zero; only a listing that happened and selected nothing
+skips. The library exists because `run-e2e.sh` cannot be sourced by a test (a
+`cargo build`, seeding, a daemon at top level), and `tests/e2e_selection.rs` drives
+the tracked file through a symlink with a fake `playwright` whose stdout, stderr and
+exit are chosen per case — the flag that makes the exit status mean what the
+library says it means is asserted in the fake's recorded argv, because deleting it
+is the one-token edit that reopens the defect. The measured Playwright version is
+recorded in the library and compared to `e2e/package.json`'s pin, since the drift
+the harness cannot see at run time is a future Playwright exiting 0 on a load error.
+
+**The rule that outlives the fix:** a run in which no project selected a test exits
+1, whatever each project's own verdict was. Each project records its `Total:` count
+under `e2e/test-results/current/selected/` before its real run and the runner sums
+them after the loop. The per-project skip stays — the SH-335 loop legitimately gives
+`chromium`/`webkit` nothing under a `.mobile.spec.ts` filter while the mobile pair
+runs — and only the sum can tell that from a filter typo, or from an explicit
+`--project=` given a filter it cannot match. Every gate-tier caller passes no
+filter, so this fires only on interactive and triage runs: precisely the moment
+someone is deciding whether a fix works. Weighed and rejected: `--reporter=json`,
+whose `errors[]` is structured but still identifies "No tests found" by message
+text, and whose suite tree would have replaced the list-reporter line shape that
+`known_total`, `real_dispatch_selected` and `tests/e2e_browser_coverage.rs` parse.
+
 ## The timing-ceiling rule
 
 A wall-clock ceiling states that some deadline *D* was not spent. It is only
@@ -1211,6 +1270,87 @@ lock remains rejected because it enlarges the critical section and still
 cannot cover a hand-run producer. A per-leg `CARGO_TARGET_DIR` remains rejected
 because it covers only listed legs while paying the graph's disk and cold-build
 cost in each worktree.
+
+### The browser runner gets the same lease (SH-635)
+
+SH-532 closed the producer conflict "at the consumer" and named E2E among the
+producers it protected against — but `scripts/run-e2e.sh` was itself a
+*consumer* of the bare artifact, and it never got the lease. It built and then
+ran `$repo_root/target/debug/story` directly: for the daemon it starts, for
+every seeding and cleanup call, and, through five specs that
+`resolve("../target/debug/story")` on their own, for every CLI call the suite
+makes mid-run. Measured 2026-09-09, verifying SH-622 in a worktree: a full
+chromium run stood at 162 of 469 (161 green) when a `cargo test --test
+council_citations` in the same worktree rewrote the artifact. The daemon's
+portfile identity is `(version, exe, exe_mtime)` (`DaemonInfo::is_this_binary`),
+so the next CLI call read the running daemon as somebody else's, stood it down
+and re-spawned it on `--port 0` — a fresh port — and every remaining test failed
+in ~150 ms with `ECONNREFUSED` against the old one: **167 failures over 25
+minutes for one rebuild**, the SH-627 shape, with nothing in the output naming
+the cause. Reproduced before it was fixed, and again after: with the lease in
+place the same `touch src/main.rs && cargo build` fired after the first green
+test changed the artifact's inode (`73243842` → `73247095`) under a live
+chromium filter and all 47 tests stayed green.
+
+**What ships.** `scripts/binary-lease.sh` is the shell rendering of
+`story_binary()`: `storyhook_lease_binary <artifact> [owner pid]` hard-links the
+artifact into `<artifact dir>/.storyhook-test-binaries/<pid>-<nonce>/story` and
+prints that path; `storyhook_sweep_binary_leases` reclaims only a lease whose
+owner `kill -0` reports as `ESRCH` — EPERM, a malformed name and pid 0 are
+retained, the Rust rule verbatim. The runner takes the lease immediately after
+`cargo build`, uses it for everything it runs, releases it on exit, and exports
+it as `DASHBOARD_STORY_BIN`; `e2e/specs/support.ts`'s `storyBinary()` is the
+specs' one door to it, and `tests/e2e_browser_coverage.rs` fails the build on
+any tracked file under `e2e/` that names `target/debug` outside a comment or
+any `execFileSync` whose first argument is not that door. A spec on the bare
+artifact would otherwise be the client that replaces the leased daemon —
+`untrusted-origin-cookie.spec.ts` restarts it *on purpose*.
+
+**Why the lease lives beside the artifact, and shares the Rust root.** A hard
+link cannot cross filesystems, and on this machine the runner's `data_root`
+(`/private/tmp`) and the checkout are different volumes — SH-532 recorded the
+same constraint. Sharing `.storyhook-test-binaries/` and the `<pid>-<nonce>`
+shape with the Rust lease means either sweeper reclaims the other's dead
+leases under one policy; `tests/binary_lease.rs` pins the shell spelling equal
+to `storyhook_test_support::BINARY_SNAPSHOT_DIR` and drives the script for real
+(inode equality, survival of an atomic replacement, the sweep's retain cases).
+
+**Naming the shape when it still happens.** After every project's Playwright
+run — pass or fail — the runner prints a note when `[ lease -ef artifact ]`
+stops holding (informational: the lease is what made it harmless), and asks
+`scripts/e2e-daemon-check.sh`'s `storyhook_daemon_is_still_ours` whether the
+daemon it started is still the one answering: the portfile exists, its port is
+the one the run was pointed at, its `exe` is the lease's *inode* (`-ef`, never a
+string compare — macOS's `current_exe()` reports the invocation spelling), and
+its pid is alive. A failure is reported as **one** dead or replaced daemon, not
+as N tree failures, and fails the project even on a green verdict (SH-226,
+SH-306). **The pid recorded at start is deliberately not compared**:
+`untrusted-origin-cookie.spec.ts` restarts the daemon and keeps its port
+(SH-321), and a check that red-flagged it would be a fixture lying to a correct
+gate (SH-263). The incident's own signature is the port moving. Measured: a
+`kill -9` of the leased daemon mid-run yields Playwright's 19 red plus the
+diagnosis naming the dead pid and port, exit 1, no leaked lease.
+
+**Adopted on the way: the orphan checker could not see a leased daemon.**
+`scripts/check-no-orphan-servers.sh`'s own-tree pattern was anchored on the
+literal `target/debug/story `, so every Rust-suite daemon since SH-532 — and
+every browser-runner daemon from now on — was outside the preflight's refusal
+and the postlude's reaping, falling through to the abandoned class only once
+its fixture directory was gone. `make test-full` brackets the browser leg with
+that script, so moving the e2e daemons onto the lease would have moved them out
+of its sight. The pattern now admits an optional lease directory whose name is
+sourced from `binary-lease.sh` rather than spelled a second time;
+`tests/orphan_check.rs` spawns a shim from the lease path and proves refusal
+and reaping, red under the old pattern.
+
+**Limits, stated.** A lease protects against *replacement* of the artifact,
+never deletion of `target/` — a `cargo clean` under a live run is out of scope.
+The daemon check runs after Playwright, so it names the cause rather than
+preventing the cascade; prevention is the lease's job. The plugin shell leg
+(`Makefile`'s `PATH="$(CURDIR)/target/debug:$PATH"`, `plugins/story/tests/lib.sh`)
+shares the exposure with a smaller blast radius — one short-lived daemon per
+test (SH-631), so a mid-test rebuild is a silent same-store restart rather than
+a cascade — and is filed separately rather than adopted.
 
 ### Filed, not fixed
 

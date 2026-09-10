@@ -935,3 +935,226 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
          provider availability"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 11. The runner and the specs run ONE leased inode, never Cargo's artifact
+// ---------------------------------------------------------------------------
+//
+// SH-635: `target/debug/story` is the path any `cargo build|test|check` in
+// this checkout replaces. A browser run that executes it directly -- for its
+// daemon, its seeding, or a spec's own CLI call -- is voided by the next
+// rebuild: the daemon's `(exe, exe_mtime)` identity no longer matches, the
+// next client replaces it on a new port, and every later test refuses the
+// connection. `scripts/binary-lease.sh` (the shell twin of SH-532's
+// `story_binary()`) is the lease; these fences pin that the runner takes it,
+// hands it to the specs, and that no tracked file under `e2e/` reaches for
+// the artifact itself.
+
+/// `text` with every line that is wholly a comment removed. Deliberately not a
+/// real comment stripper: a trailing `// ...` stays, so a mention hidden after
+/// code on the same line still counts -- the scan fails closed.
+fn without_comment_only_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !(t.starts_with("//")
+                || t.starts_with('*')
+                || t.starts_with("/*")
+                || t.starts_with('#'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every tracked file under `e2e/` (specs, support, config, the probe) --
+/// derived from `git ls-files`, never a hand-kept list.
+fn all_tracked_e2e_files(root: &Path) -> Vec<(String, String)> {
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "e2e"])
+        .output()
+        .expect("listing this repository's tracked e2e files");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|path| {
+            let relative = std::str::from_utf8(path).expect("a UTF-8 path").to_string();
+            let text = std::fs::read_to_string(root.join(&relative))
+                .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+            (relative, text)
+        })
+        .collect()
+}
+
+#[test]
+fn the_runner_leases_the_artifact_after_building_and_never_runs_it_bare() {
+    let runner = read("scripts/run-e2e.sh");
+    let code = without_comment_only_lines(&runner);
+
+    assert!(
+        code.contains(". \"$repo_root/scripts/binary-lease.sh\""),
+        "scripts/run-e2e.sh must source scripts/binary-lease.sh (SH-635)"
+    );
+    let build = code
+        .find("cargo build --quiet")
+        .expect("the runner builds the binary");
+    let lease = code
+        .find("story_bin=\"$(storyhook_lease_binary \"$story_artifact\")\" || exit 1")
+        .expect(
+            "story_bin must be the lease of the artifact, taken through storyhook_lease_binary",
+        );
+    assert!(
+        build < lease,
+        "the lease must be taken AFTER the build, or it pins the previous build"
+    );
+    assert!(
+        code.contains("trap 'rm -rf \"$story_lease_dir\"' EXIT"),
+        "the outer script must release its own lease on exit"
+    );
+    // The artifact path is assigned once and thereafter only compared (`-ef`)
+    // or tested (`-x`) -- never executed.
+    for line in code.lines() {
+        let t = line.trim_start();
+        assert!(
+            !(t.starts_with("\"$story_artifact\"") || t.contains("$(\"$story_artifact\"")),
+            "scripts/run-e2e.sh executes Cargo's mutable artifact directly: {line}"
+        );
+    }
+    assert!(
+        !code.contains("story_bin=\"$repo_root/target/debug/story\""),
+        "story_bin must never be Cargo's own path again"
+    );
+}
+
+#[test]
+fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+    let exported = body
+        .find("export DASHBOARD_STORY_BIN=\"$story_bin\"")
+        .expect(
+            "run_one_project must export DASHBOARD_STORY_BIN, the specs' one door to the lease",
+        );
+    let started = body
+        .find("start_output=\"$(\"$story_bin\" daemon start 2>&1)\"")
+        .expect("run_one_project must start its daemon from the lease");
+    assert!(
+        exported < started,
+        "the export precedes the daemon start it describes"
+    );
+}
+
+#[test]
+fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_story_binary() {
+    let root = repo_root();
+    let files = all_tracked_e2e_files(&root);
+    assert!(
+        files.iter().any(|(p, _)| p == "e2e/specs/support.ts"),
+        "the scan must see support.ts, or it proved nothing"
+    );
+
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|(_, text)| without_comment_only_lines(text).contains("target/debug"))
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{offenders:?} name Cargo's mutable artifact directory; use support.ts's storyBinary() \
+         (the lease scripts/run-e2e.sh exports as DASHBOARD_STORY_BIN) instead (SH-635)"
+    );
+
+    let support = read("e2e/specs/support.ts");
+    assert!(
+        support.contains("export function storyBinary(): string {")
+            && support.contains("return requiredEnv(\"DASHBOARD_STORY_BIN\");"),
+        "support.ts must define storyBinary() as the required-env read of DASHBOARD_STORY_BIN"
+    );
+
+    // Every process a spec starts is the leased binary: the first argument of
+    // each `execFileSync(` is `storyBinary()` itself or a const bound to it in
+    // the same file.
+    let mut checked = 0;
+    for (relative, text) in files.iter().filter(|(p, _)| p.starts_with("e2e/specs/")) {
+        let code = without_comment_only_lines(text);
+        for (offset, _) in code.match_indices("execFileSync(") {
+            let rest = &code[offset + "execFileSync(".len()..];
+            let first_arg = rest
+                .split(',')
+                .next()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let via_door = first_arg == "storyBinary()"
+                || code.contains(&format!("const {first_arg} = storyBinary();"));
+            assert!(
+                via_door,
+                "{relative}: execFileSync's first argument `{first_arg}` is not storyBinary() or a \
+                 const bound to it -- a spec may only ever run the leased binary (SH-635)"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 5,
+        "expected at least the five spec call sites SH-635 migrated, found {checked}: the scan's \
+         `execFileSync(` anchor has drifted"
+    );
+}
+
+#[test]
+fn the_runner_asks_whether_its_daemon_survived_after_every_playwright_run() {
+    let runner = read("scripts/run-e2e.sh");
+    let code = without_comment_only_lines(&runner);
+    assert!(
+        code.contains(". \"$repo_root/scripts/e2e-daemon-check.sh\""),
+        "scripts/run-e2e.sh must source scripts/e2e-daemon-check.sh (SH-635)"
+    );
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+    let body = &without_comment_only_lines(body);
+    let playwright = body
+        .find("npx playwright test --project=\"$project\" --output=")
+        .expect("run_one_project runs Playwright");
+    let divergence = body
+        .find("if ! [ \"$story_bin\" -ef \"$story_artifact\" ]; then")
+        .expect("the runner reports an artifact rebuilt under the run, by inode comparison");
+    let check = body
+        .find("if ! storyhook_daemon_is_still_ours \"$portfile\" \"$port\" \"$story_bin\"; then")
+        .expect("the runner asks whether the daemon it started is still the one answering");
+    let verdict = body
+        .find("\"$([ \"$status\" = 0 ] && echo passed || echo failed)\"")
+        .expect("the per-project verdict line");
+    assert!(
+        playwright < divergence && playwright < check && check < verdict,
+        "both post-run checks sit between the Playwright run and the verdict it reports"
+    );
+    let failure_branch = &body[check..verdict];
+    assert!(
+        failure_branch.contains("status=1"),
+        "a green Playwright verdict from a daemon this harness did not configure must still \
+         fail the project (SH-226, SH-306)"
+    );
+    assert!(
+        !failure_branch.contains("$daemon_pid") && !body.contains("expected_pid"),
+        "the check must not compare the pid recorded at start -- untrusted-origin-cookie.spec.ts \
+         restarts the daemon on purpose and keeps its port (SH-321)"
+    );
+}
