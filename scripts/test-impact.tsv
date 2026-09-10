@@ -36,6 +36,7 @@ dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
 e2e_browser_coverage	:(glob)**/*
 e2e_fixture_hygiene	:(glob)**/*
+e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
 engine_reconcile	:(glob)**/*
 epic_is_a_type	:(glob)**/*
