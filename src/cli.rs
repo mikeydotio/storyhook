@@ -225,7 +225,7 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
-  story cleanup [--dry-run]                         (remove merged inactive story workspaces)
+  story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
   story summary
   story report [--html]
   story search <query>
