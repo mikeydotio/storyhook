@@ -448,38 +448,46 @@ fn the_printed_environment_is_the_one_the_function_applies() {
     }
 }
 
-/// `--uninstalled-build` re-arms exactly one parameter, after the table has
-/// cleared it, in both the function and the printer (SH-630).
+/// `--uninstalled-build` re-arms exactly the uninstalled-build overrides — the
+/// migration guard's (SH-630) and the seat guard's (SH-634) — after the table
+/// has cleared them, in both the function and the printer.
 ///
 /// Behavioural, like everything above: the child's environment with the
-/// option is the child's environment without it plus one variable, and the
-/// variable is the migration guard's own override rather than a spelling this
-/// test invents. The poisoned parent proves the ordering — the table clears the
-/// parent's decoy value first, and what survives is the re-armed `1`, not the
-/// decoy.
+/// option is the child's environment without it plus those variables, and the
+/// variables are the guards' own `OVERRIDE_VAR` constants rather than
+/// spellings this test invents. The poisoned parent proves the ordering — the
+/// table clears the parent's decoy values first, and what survives is the
+/// re-armed `1`, not the decoy.
 #[test]
-fn the_uninstalled_build_option_re_arms_only_the_migration_override() {
-    let override_var = storyhook::migration_guard::OVERRIDE_VAR;
-    assert!(
-        TEST_ENVIRONMENT.iter().any(|p| p.name == override_var),
-        "the option re-arms a parameter the table clears; if the table no longer \
-         carries it, the option has nothing to undo"
-    );
+fn the_uninstalled_build_option_re_arms_only_the_uninstalled_build_overrides() {
+    let override_vars = [
+        storyhook::migration_guard::OVERRIDE_VAR,
+        storyhook::daemon::seat_guard::OVERRIDE_VAR,
+    ];
+    for override_var in override_vars {
+        assert!(
+            TEST_ENVIRONMENT.iter().any(|p| p.name == override_var),
+            "the option re-arms a parameter the table clears; if the table no longer \
+             carries {override_var}, the option has nothing to undo"
+        );
+    }
 
     let fixture = scratch_dir();
     let root = fixture.path();
     let (plain, _) = isolate_in_bash(root, &[]);
     let (armed, _) = isolate_in_bash(root, &["--uninstalled-build"]);
 
-    assert_eq!(
-        armed.get(override_var).map(String::as_str),
-        Some("1"),
-        "the option must export the override as `1`, not the parent's decoy"
-    );
+    let mut expected = plain.clone();
+    for override_var in override_vars {
+        assert_eq!(
+            armed.get(override_var).map(String::as_str),
+            Some("1"),
+            "the option must export {override_var} as `1`, not the parent's decoy"
+        );
+        expected.insert(override_var.to_string(), "1".to_string());
+    }
     // Two shells, two pids: the parent-pid parameter is the shell's own and
     // differs between the runs by construction, so it is the one key left out.
-    let mut expected = plain.clone();
-    expected.insert(override_var.to_string(), "1".to_string());
     let without_pid = |env: &BTreeMap<String, String>| -> Vec<(String, String)> {
         env.iter()
             .filter(|(name, _)| name.as_str() != "STORYHOOK_PARENT_PID")
@@ -499,8 +507,8 @@ fn the_uninstalled_build_option_re_arms_only_the_migration_override() {
         .collect();
     assert!(
         changed.is_empty(),
-        "the option must change exactly one variable and nothing else; it also changed \
-         {changed:?}"
+        "the option must change exactly the override variables and nothing else; it also \
+         changed {changed:?}"
     );
 
     // The printer says the same thing, in the same order: evaluated, not read.
@@ -525,11 +533,13 @@ fn the_uninstalled_build_option_re_arms_only_the_migration_override() {
         .filter_map(|line| line.split_once('='))
         .map(|(name, value)| (name.to_string(), value.to_string()))
         .collect();
-    assert_eq!(
-        printed.get(override_var).map(String::as_str),
-        Some("1"),
-        "the printed form must re-arm the override after clearing it"
-    );
+    for override_var in override_vars {
+        assert_eq!(
+            printed.get(override_var).map(String::as_str),
+            Some("1"),
+            "the printed form must re-arm {override_var} after clearing it"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
