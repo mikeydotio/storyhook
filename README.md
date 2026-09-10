@@ -478,12 +478,17 @@ Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--pr
 ### Workspace cleanup
 
 Preview safe disk reclamation with `story cleanup --dry-run`, then run
-`story cleanup`. StoryHook considers only resources named by its versioned
-cleanup leases. It preserves a candidate unless the exact story tmux window
-is absent, the worktree is clean and unlocked, and every worktree, local, and
-origin branch tip is contained by the freshly fetched origin default branch.
-Eligible cleanup removes the worktree and its build artifacts plus the exact
-local and remote branches; it never removes the primary checkout.
+`story cleanup`. The centralized verifier reaps a finished story's window,
+worktree and local branch itself once its PR lands; `story cleanup` is that
+reap's retry path, never an independent reaper. StoryHook considers only
+resources named by its versioned cleanup leases, and preserves a candidate
+unless its story is CLOSED and carries the verifier's CLEANUP COMPLETE or
+CLEANUP REQUIRED comment, the exact story tmux window is absent, the worktree
+is clean and unlocked, and every worktree, local, and origin branch tip is
+contained by the freshly fetched origin default branch. Eligible cleanup
+removes the worktree and its build artifacts plus the exact local and remote
+branches; it never removes the primary checkout, and `--dry-run` names every
+candidate it declined and why.
 
 Automatic cleanup is enabled daily. Change it per project with
 `story project settings set cleanup.auto false` or
