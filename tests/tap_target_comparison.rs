@@ -119,7 +119,8 @@ fn the_body_extractor_finds_a_real_function_and_ends_at_its_brace() {
     );
 
     // A return type carrying its own braces must not be mistaken for the body.
-    let typed = "async function typed(): Promise<{ x: number; y: number }> {\n  return real();\n}\n";
+    let typed =
+        "async function typed(): Promise<{ x: number; y: number }> {\n  return real();\n}\n";
     let body = function_body(typed, "async function typed(").expect("the fixture declares it");
     assert!(
         body.contains("return real();") && !body.contains("x: number"),
