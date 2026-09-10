@@ -161,8 +161,10 @@ impl VerificationGuard {
     }
 }
 
-/// Largest observed `make test` runtime under this machine's ordinary
-/// concurrent workload, recorded by the Full Auto design investigation.
+/// Largest observed runtime of the default gate (`make test`) under this
+/// machine's ordinary concurrent workload, recorded by the Full Auto design
+/// investigation. A project's own `[verify] gate` (SH-649) runs under the
+/// same silence cap; one that emits no progress journal has only this.
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
 /// Multiplicative slack above the measured contended gate.
@@ -183,7 +185,13 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
     /// The exact merge tree passed and the guarded merge landed.
-    Merged { tree: String, detail: String },
+    Merged {
+        tree: String,
+        detail: String,
+        /// The gate command that certified the tree, as one line (SH-649) —
+        /// what the GREEN comment names, never a literal.
+        gate: String,
+    },
     /// The PR does not merge into current main.
     Conflict { detail: String },
     /// The submission cannot safely be acted on from its registered checkout.
@@ -193,6 +201,8 @@ pub enum VerificationOutcome {
         tree: String,
         log: String,
         detail: String,
+        /// The gate command that failed, as one line (SH-649).
+        gate: String,
     },
     /// GitHub, git, credentials, or the verifier process failed independently
     /// of the submitted code.
@@ -606,6 +616,24 @@ impl VerificationActuator for ShellVerificationActuator {
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
+        // The project's own merge gate (SH-649), read from the registered
+        // checkout's committed pointer — the same checkout this actuator
+        // already trusts for `scripts/verify-pr.sh` itself. A value that
+        // cannot be run is local configuration needing a person, so it is
+        // refused here, before any journal or process exists, and never
+        // handed back to the implementor as a red.
+        let gate = match crate::service::gate_command::gate_command_for(&candidate.checkout) {
+            Ok(gate) => gate,
+            Err(error) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!(
+                        "the merge gate for registered checkout `{}` cannot be run: {error}",
+                        candidate.checkout.display()
+                    ),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
+        };
         let journal = journal_path(&self.env, candidate);
         // Supervision now depends on the journal (SH-592). Refuse before
         // starting work if it cannot be prepared, rather than silently
@@ -647,6 +675,8 @@ impl VerificationActuator for ShellVerificationActuator {
         command
             .arg("scripts/verify-pr.sh")
             .arg(&pull_request.url)
+            .arg("--")
+            .args(gate.argv())
             .current_dir(&candidate.checkout)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
@@ -727,7 +757,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 };
             }
         };
-        parsed.into()
+        parsed.into_outcome(&gate)
     }
 
     fn notify(
@@ -875,22 +905,34 @@ enum WireOutcome {
     },
 }
 
-impl From<WireOutcome> for VerificationOutcome {
-    fn from(value: WireOutcome) -> Self {
-        match value {
-            WireOutcome::Merged { tree, detail } => Self::Merged { tree, detail },
-            WireOutcome::Conflict { detail } => Self::Conflict { detail },
-            WireOutcome::TestsFailed { tree, log, detail } => {
-                Self::TestsFailed { tree, log, detail }
-            }
+impl WireOutcome {
+    /// The daemon-side outcome, carrying the gate this run was given. The
+    /// wire shape does not repeat the command: the parsed pointer is its one
+    /// source, and the script only ever ran what it was handed.
+    fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
+        match self {
+            WireOutcome::Merged { tree, detail } => VerificationOutcome::Merged {
+                tree,
+                detail,
+                gate: gate.display(),
+            },
+            WireOutcome::Conflict { detail } => VerificationOutcome::Conflict { detail },
+            WireOutcome::TestsFailed { tree, log, detail } => VerificationOutcome::TestsFailed {
+                tree,
+                log,
+                detail,
+                gate: gate.display(),
+            },
             WireOutcome::InfrastructureFailure {
                 detail,
                 disposition,
-            } => Self::InfrastructureFailure {
+            } => VerificationOutcome::InfrastructureFailure {
                 detail,
                 disposition,
             },
-            WireOutcome::InvalidSubmission { detail } => Self::InvalidSubmission { detail },
+            WireOutcome::InvalidSubmission { detail } => {
+                VerificationOutcome::InvalidSubmission { detail }
+            }
         }
     }
 }
@@ -1071,9 +1113,9 @@ where
         }
 
         match outcome {
-            VerificationOutcome::Merged { tree, detail } => {
+            VerificationOutcome::Merged { tree, detail, gate } => {
                 let green_comment = format!(
-                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `make test` and pull request {} landed. {detail}",
+                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
                     pull_request.url
                 );
                 if matches!(
@@ -1166,14 +1208,19 @@ where
                     return Ok(TickResult::Returned);
                 }
             }
-            VerificationOutcome::TestsFailed { tree, log, detail } => {
+            VerificationOutcome::TestsFailed {
+                tree,
+                log,
+                detail,
+                gate,
+            } => {
                 let result = return_for_repair(
                     &queue,
                     &ctx,
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `make test`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;

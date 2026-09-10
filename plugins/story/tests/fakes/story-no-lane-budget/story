@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Fake `story` CLI for test-dispatch-lane-budget.sh: a binary from BEFORE
+# SH-655, which does not know the `lane-budget` verb. It proxies every other
+# invocation to the REAL binary (STORY_REAL_BIN, set by the test) and answers
+# `lane-budget` the way the real parser answers an unknown verb — an error
+# envelope on stdout and exit 2 — so the test can prove that version skew
+# between an installed plugin and its binary reads as "no evidence" (the
+# dispatch proceeds and says so on stderr), never as a refusal and never as
+# room. Global flags (`--project <slug>`, `--json`) are skipped before the
+# positional match, the `story-conflict` fake's own rule.
+set -euo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+
+is_lane_budget_call() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --project) shift 2 ;;
+      --*) shift ;;
+      *) [ "$1" = lane-budget ]; return ;;
+    esac
+  done
+  return 1
+}
+
+if is_lane_budget_call "$@"; then
+  printf '{"result":"error","message":"unknown command: lane-budget"}\n'
+  exit 2
+fi
+exec "$real" "$@"

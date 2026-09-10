@@ -1055,9 +1055,22 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   const elapsed = page.locator(".engine-lane-elapsed");
   await expect(elapsed).toContainText(/1m \d+s/);
   const beforeTick = await elapsed.textContent();
+  // SH-657: the lane's quiet time — since its last observed activity on
+  // either stall channel — is shown beside elapsed and ticks with it, so the
+  // number a stall verdict is made on is visible before it is a verdict.
+  const quiet = page.locator(".engine-lane-quiet");
+  await expect(quiet).toHaveCount(1);
+  await expect(quiet).toContainText(/^quiet \d+s$/);
+  const quietBeforeTick = await quiet.textContent();
   await page.clock.runFor(1_000);
   await expect(elapsed).not.toHaveText(beforeTick || "");
+  await expect(quiet).not.toHaveText(quietBeforeTick || "");
+  await expect(page.locator(".engine-lane").nth(0)).toHaveAttribute(
+    "title",
+    /^Lane 1: AA-12 · 1m \d+s · quiet \d+s$/,
+  );
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
+  await expect(page.locator(".engine-lane").nth(1).locator(".engine-lane-quiet")).toHaveCount(0);
 });
 
 /**

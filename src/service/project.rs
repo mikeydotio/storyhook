@@ -331,6 +331,11 @@ pub struct ProjectPointer {
     /// storyhook never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<toml::Value>,
+    /// The `[verify]` table, if the repository has one — the merge gate the
+    /// verifier runs (SH-649, read by [`super::gate_command::gate_command_for`]).
+    /// User-authored; storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<toml::Value>,
 }
 
 impl ProjectPointer {
@@ -345,6 +350,7 @@ impl ProjectPointer {
             plugin: None,
             hooks: None,
             github: None,
+            verify: None,
         }
     }
 }
@@ -923,7 +929,7 @@ pub fn pointer_path(root: &Path) -> PathBuf {
 ///
 /// Every failure names the file. That is not politeness: `.storyhook.toml` is
 /// **committed to the repository and hand-authored** — it carries the user's
-/// `[plugin]`, `[hooks]`, and `[github]` tables beside the project's identity — so a syntax
+/// `[plugin]`, `[hooks]`, `[github]` and `[verify]` tables beside the project's identity — so a syntax
 /// error in it is an ordinary mistake made in an ordinary editor. Left to
 /// `toml`'s own words, `story list` reports `TOML parse error at line 1, column
 /// 6` and the user has no file to open. Resolution runs this on almost every

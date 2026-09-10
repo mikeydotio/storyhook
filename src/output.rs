@@ -133,6 +133,13 @@ pub struct EngineLaneView {
     pub state: EngineLaneState,
     pub story: Option<String>,
     pub elapsed_seconds: Option<u64>,
+    /// Seconds since the lane last showed observed activity on either stall
+    /// channel — its story moving or its pane writing to the terminal
+    /// (SH-657); absent until the first observation and on an idle lane. The
+    /// stall verdict is made on this number, so it is shown before it is a
+    /// verdict rather than only after (SH-418).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_seconds: Option<u64>,
     /// What the liveness probe last said when it did not say "alive"
     /// (SH-626); absent while tmux answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,20 +198,18 @@ impl EngineRunView {
             .lanes
             .into_iter()
             .map(|lane| {
-                let elapsed_seconds = lane.dispatched_at.as_deref().and_then(|started| {
-                    let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
-                    Some(
-                        now.as_ref()?
-                            .signed_duration_since(started)
-                            .num_seconds()
-                            .max(0) as u64,
-                    )
-                });
+                let seconds_since = |at: &str| {
+                    let at = chrono::DateTime::parse_from_rfc3339(at).ok()?;
+                    Some(now.as_ref()?.signed_duration_since(at).num_seconds().max(0) as u64)
+                };
+                let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
+                let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
                     elapsed_seconds,
+                    quiet_seconds,
                     probe_detail: lane.probe_detail,
                     outcome: lane.outcome,
                     outcome_detail: lane.outcome_detail,
@@ -903,6 +908,10 @@ pub enum Response {
     /// project snapshot that a human would want — `story list` is that
     /// command — and inventing one would be a second, worse `list`.
     ProjectSnapshot(Box<ProjectSnapshotView>),
+    /// The machine lane budget and the live agent windows counted against
+    /// it (SH-655). JSON is what `cmd_dispatch` reads; the human form is one
+    /// line and the window list.
+    LaneBudget(Box<crate::lane_budget::LaneBudgetView>),
     /// One story's raw event history, oldest first.
     ///
     /// Rendered as JSON, for the same reason as [`Response::ProjectSnapshot`]:
@@ -1313,6 +1322,7 @@ fn render_json(response: &Response) -> String {
             return format!("{raw}\n");
         }
         Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
+        Response::LaneBudget(view) => serde_json::to_string_pretty(view.as_ref()),
         Response::StoryHistory(events) => serde_json::to_string_pretty(events),
         // `command` and `actor` stay separate fields rather than the rendered
         // "move (story.sh:dispatch)" a human sees: a script must be able to tell
@@ -1571,6 +1581,7 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::LaneBudget(view) => view.render_human(),
         Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
@@ -1603,14 +1614,17 @@ fn render_engine_run(run: &EngineRunView) -> String {
             run.acknowledged_at.as_deref().unwrap_or("no")
         ));
     }
-    body.push_str("\nlane  state        story       elapsed\n");
+    body.push_str("\nlane  state        story       elapsed     quiet\n");
     for lane in &run.lanes {
         body.push_str(&format!(
-            "{:<5} {:<12} {:<11} {}\n",
+            "{:<5} {:<12} {:<11} {:<11} {}\n",
             lane.index + 1,
             lane.state.as_str(),
             lane.story.as_deref().unwrap_or("-"),
             lane.elapsed_seconds
+                .map(format_elapsed)
+                .unwrap_or_else(|| "-".to_string()),
+            lane.quiet_seconds
                 .map(format_elapsed)
                 .unwrap_or_else(|| "-".to_string())
         ));

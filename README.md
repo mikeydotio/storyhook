@@ -423,6 +423,7 @@ story decompose --stdin [--dry-run]
 story migrate [<path>] [--dry-run]
 
 story doctor [--fix]
+story lane-budget [--json]
 story doctor abandoned
 story doctor abandoned clear (--all | <request-id>)
 story doctor crashes
@@ -724,6 +725,9 @@ enabled = true
 
 [github]          # optional REST API base override for this repository
 api_url = "https://github.example.com/api/v3"
+
+[verify]          # optional; the merge gate the verifier runs before landing a PR
+gate = "make test"
 ```
 
 Behavior:
@@ -753,6 +757,15 @@ GitHub pull-request links use the host of a registered origin. Storyhook routes
 REST base or proxy. The override must be an absolute HTTP(S) URL without
 credentials, a query, or a fragment, and one override cannot serve links on
 multiple GitHub hosts.
+
+`[verify].gate` names the command the verifier runs on a story's speculative
+merge tree before landing its pull request; `make test` when absent. It is a
+plain command line, run directly and never through a shell: words separated by
+spaces, made of letters, digits and `_ . : / = @ + , -` only — quotes, `$`,
+`&&`, `|`, `>` and the like are refused by name, as is a key the table does not
+have. The gate must certify the tree it ran on by ending in
+`scripts/gate-receipt.sh postlude` at tier `gate` or `full`, as `make test` and
+`make test-full` do; a gate that exits 0 without one is refused before landing.
 
 ## Web dashboard
 
