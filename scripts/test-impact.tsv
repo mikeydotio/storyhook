@@ -96,6 +96,7 @@ service_git	:(glob)**/*
 session_start_hook	:(glob)**/*
 shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
+spawned_child_environment	:(glob)src/**/*.rs
 state_set_funnel	:(glob)**/*
 store_isolation	:(glob)**/*
 store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
