@@ -1801,6 +1801,25 @@ Standing rules for every wave:
   a background task is silent on both channels; a process-tree signal is filed separately,
   gated on measuring that such a wait exceeds the ceiling in a lane. RCA:
   `docs/rca/full-auto-stalls-working-lanes.md`.
+- **A second reaper reads the first reaper's verdict, through the first reaper's own
+  reader, for the generation it was written about** (SH-653). `story cleanup` — by hand
+  and daily from the daemon — read every story, gated on git facts alone, and deleted
+  the worktree, the local branch and the **remote** branch, an authority the verifier's
+  own reap never had; nothing about a story's state or the verifier's verdict was
+  consulted. It is the reap's retry path now and nothing more: before any git work it
+  asks the store whether the story is CLOSED and whether its **latest verification
+  generation** carries the verifier's CLEANUP COMPLETE/REQUIRED marker, through
+  `latest_generation` (`src/service/verification.rs`), the same reader `next_cleanup`
+  uses — one door, so the two cannot disagree about which workspace the verifier owns.
+  Generation-scoped on the mechanism: a story landed, reaped and marked COMPLETE, then
+  reopened and landed again, still carries the old COMPLETE, which a flat comment scan
+  read as "reaped" (the daemon never retried the second reap) and a flat gate would have
+  read as "released" (cleanup would have reaped concurrently with the verifier). Events
+  order the generation, never timestamps (SH-336). The remote branch left cleanup's scope
+  entirely rather than being refused-on-survival, because `reap-leased` never consults
+  the remote and a retry path that answers differently from the retry it stands in for
+  is the defect restated. Design of record: `docs/spec/verification-workflow.md`'s SH-653
+  As built section; `docs/spec/workspace-cleanup.md` is the command's own contract.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
