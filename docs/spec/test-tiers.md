@@ -1347,10 +1347,54 @@ and reaping, red under the old pattern.
 never deletion of `target/` — a `cargo clean` under a live run is out of scope.
 The daemon check runs after Playwright, so it names the cause rather than
 preventing the cascade; prevention is the lease's job. The plugin shell leg
-(`Makefile`'s `PATH="$(CURDIR)/target/debug:$PATH"`, `plugins/story/tests/lib.sh`)
-shares the exposure with a smaller blast radius — one short-lived daemon per
-test (SH-631), so a mid-test rebuild is a silent same-store restart rather than
-a cascade — and is filed separately rather than adopted.
+shared the exposure with a smaller blast radius and was filed separately —
+SH-639, the next section.
+
+### The plugin leg gets the same lease (SH-639)
+
+`plugins/story/tests/lib.sh` put `target/debug` on `PATH`, and `Makefile`'s two
+plugin recipes prepended the same directory again; every plugin test then ran
+`story` by name off the bare artifact. Since SH-631 each test owns one
+short-lived daemon, so a `cargo build|test|check` landing mid-test did not
+cascade: it changed the identity of that one test's daemon, and the next
+`story` call stood it down and restarted it against the same store on a fresh
+port, silently. Measured with the fix in place and the owning branch mutated
+back to the bare prepend: `test-temp-cleanup.sh` stays green through exactly
+that restart, which is why nothing had ever reported it.
+
+**What ships.** The same `scripts/binary-lease.sh`, one owner down: the
+instance of `lib.sh` that mints the test home leases the artifact with `$$` —
+the test — as owner, the same pid its daemon is parented to, and prepends the
+lease directory rather than `target/debug`. The lease directory is registered
+with the rest of the test's temporaries, so `_cleanup` removes it **after**
+`story daemon stop --force`: the stop needs `story` on `PATH`, so the lease
+outlives the daemon, never the reverse. `Makefile`'s prepend is gone — `lib.sh`
+resolves the artifact from the checkout and never read `PATH` for it, so the
+prepend was only a second door to the bare artifact — and the gate's plugin leg
+and a hand-typed `bash test-foo.sh` are now one code path.
+
+**A nested instance reuses, never mints.** `DaemonInfo::is_this_binary`
+compares the executable's *path*, so a nested `bash -c 'source lib.sh'` that
+inherits its caller's home (`test-temp-cleanup.sh`) must resolve the caller's
+lease — it does, through the exported `PATH` — and must not take a second lease
+of the same inode at a second path: that instance's first `story` call would
+stand the shared daemon down, the very restart the lease removes. The nested
+branch therefore leases nothing and refuses by name unless `story` already
+resolves under the artifact's lease root. Mutation-checked: an unconditional
+lease fails `test-binary-lease.sh`'s nested-reuse assertion and leaves
+`test-temp-cleanup.sh` green.
+
+**The test.** `plugins/story/tests/test-binary-lease.sh` drives a child `lib.sh`
+instance against a private `CARGO_TARGET_DIR` holding a *copy* of the real
+artifact — never the real one, which three or four concurrent worktree suites
+share — starts its daemon, replaces the fixture artifact the way Cargo does (new
+inode, renamed over, provably different mtime), and proves `command -v story`
+still resolves the leased inode and the daemon keeps its pid. Its positive
+control then calls the replaced bare artifact directly and requires the pid to
+*change*, so the assertion is proven able to see the restart it forbids; the
+parent proves the lease and the home are gone after the child's teardown.
+`test-binary-under-test.sh`'s "this checkout's own build" is now an inode claim
+(`-ef`) plus a leased location, not a path string.
 
 ### Filed, not fixed
 
