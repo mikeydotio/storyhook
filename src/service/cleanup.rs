@@ -730,6 +730,7 @@ mod tests {
             superstate,
             generation: Some(VerificationGeneration {
                 lease: None,
+                landed: true,
                 reap_marker: marker,
             }),
         }
