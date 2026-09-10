@@ -302,7 +302,7 @@ classify_land() {
         jq -n --arg detail "$land_output" '{result:"conflict", detail:$detail}'
         ;;
     (*)
-        refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)"
+        refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)"
         refresh_status=$?
         reconcile_land_refusal "$refresh_status" "$refreshed_metadata" \
             "$landed_pr" "$landed_base" "$landed_head" "$landed_tree" "$land_output"
@@ -362,9 +362,67 @@ validate_metadata() {
         || die_json "PR #$pr returned no base branch"
     reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" \
         || die_json "PR #$pr returned no head oid"
+    head_branch="$(printf '%s' "$metadata" | jq -er '.headRefName')" \
+        || die_json "PR #$pr returned no head branch"
     [ "$draft" = false ] || invalid_json "PR #$pr is a draft"
     [ "$cross" = false ] \
         || invalid_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+}
+
+# Refreshes the base and PR head refs and refuses to preflight until GitHub's
+# own picture of the PR head has caught up with the branch it mirrors (SH-636).
+#
+# `refs/pull/N/head` and the API's `headRefOid` are both projections of the
+# PR's head branch, written by GitHub's asynchronous post-push pipeline, and
+# they lag TOGETHER: comparing one against the other passes vacuously in the
+# exact window this function exists for. `refs/heads/<branch>` is the source
+# those projections mirror and is updated synchronously by the push, so it is
+# the one answer the caller's push provably moved. Measured on SH-630 / PR
+# #737: the verifier read both projections ~1s after the push and got the
+# pre-push head from each; the pull ref caught up 16s later.
+#
+# Sets the globals the public path reads afterwards: `base_ref`, `head_ref`
+# (the local remote-tracking names preflight merges) and `head` (the agreed
+# oid). Any disagreement is reported as RETRYABLE, never as a conflict and
+# never as permanent — the daemon's own bounded cadence
+# (`INFRASTRUCTURE_RETRY_ATTEMPTS`) re-asks; a lag that outlasts that budget
+# halts loudly with the three oids in the detail. The branch tip is read with
+# `ls-remote` rather than fetched so no remote-tracking ref for the feature
+# branch is written into the registered checkout.
+refresh_submission_refs() {
+    refresh_pr="$1"
+    refresh_base="$2"
+    refresh_branch="$3"
+    refresh_reported_head="$4"
+    base_ref="refs/remotes/origin/$refresh_base"
+    head_ref="refs/remotes/origin/pr/$refresh_pr"
+
+    git fetch -q origin \
+        "+refs/heads/$refresh_base:$base_ref" \
+        "+refs/pull/$refresh_pr/head:$head_ref" \
+        || retry_json "could not refresh origin/$refresh_base and PR #$refresh_pr"
+    head="$(git rev-parse "$head_ref" 2>/dev/null)" \
+        || die_json "could not resolve fetched PR #$refresh_pr"
+
+    # Always the fully qualified name: `--exit-code` matches by suffix, so a
+    # bare branch name could be answered by a tag spelled the same way.
+    branch_listing="$(git ls-remote --exit-code origin "refs/heads/$refresh_branch" 2>/dev/null)"
+    case "$?" in
+    (0) ;;
+    (2)
+        invalid_json "PR #$refresh_pr's head branch refs/heads/$refresh_branch does not exist on origin; push it"
+        ;;
+    (*)
+        retry_json "could not read refs/heads/$refresh_branch on origin for PR #$refresh_pr"
+        ;;
+    esac
+    branch_tip="$(printf '%s\n' "$branch_listing" | awk 'NR == 1 { print $1 }')"
+    [ -n "$branch_tip" ] \
+        || die_json "origin listed refs/heads/$refresh_branch for PR #$refresh_pr without an oid"
+
+    if [ "$head" != "$refresh_reported_head" ] || [ "$head" != "$branch_tip" ]; then
+        retry_json "PR #$refresh_pr's head has not converged on its branch yet: refs/pull/$refresh_pr/head fetched as $head, GitHub reports headRefOid $refresh_reported_head, and refs/heads/$refresh_branch is at $branch_tip. GitHub updates a pull request's head asynchronously after a branch push, so this reading is not the PR's conflict state and no preflight ran. The verifier retries on its own; if this halts, acknowledge the incident from the dashboard's verification banner once the three agree, or move the story to verifying again."
+    fi
 }
 
 reconcile_land_refusal() {
@@ -458,6 +516,18 @@ if [ "${1:-}" = --validate-metadata ]; then
     exit 0
 fi
 
+# Head-convergence seam (SH-636). Tests supply GitHub's wire shape for the
+# submitted PR; the function fetches from a real local remote and reads the
+# branch tip the pull ref mirrors, without a GitHub imitation.
+if [ "${1:-}" = --refresh-submission ]; then
+    [ "$#" -eq 2 ] \
+        || die_json "private usage: verify-pr.sh --refresh-submission <json>"
+    validate_metadata "$2"
+    refresh_submission_refs "$pr" "$base" "$head_branch" "$reported_head"
+    jq -n --arg head "$head" '{result:"refs-current", head:$head}'
+    exit 0
+fi
+
 # Protocol-classification seam. The live path supplies land-pr.sh's real
 # status and diagnostics; tests can pin the existing status contract without
 # imitating GitHub.
@@ -502,7 +572,7 @@ command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
-metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
+metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)" \
     || retry_json "could not read submitted pull request $submitted_pr from GitHub"
 validate_metadata "$metadata"
 gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) - _pr_meta_start ))"
@@ -521,12 +591,13 @@ if [ "$state" = MERGED ]; then
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
-git fetch -q origin \
-    "+refs/heads/$base:$base_ref" \
-    "+refs/pull/$pr/head:$head_ref" \
-    || retry_json "could not refresh origin/$base and PR #$pr"
-head="$(git rev-parse "$head_ref" 2>/dev/null)" || die_json "could not resolve fetched PR #$pr"
-[ "$head" = "$reported_head" ] || die_json "PR #$pr moved while its refs were being refreshed"
+gate_progress_emit_item "pull request refs" running
+_refs_start=$(date +%s)
+# Every exit inside the refresh is a JSON verdict at exit 0, so a row left
+# `running` here means exactly that the refs did not agree or could not be
+# read — the retry comment carries the detail.
+refresh_submission_refs "$pr" "$base" "$head_branch" "$reported_head"
+gate_progress_emit_item "pull request refs" passed "seconds=$(( $(date +%s) - _refs_start ))"
 
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
