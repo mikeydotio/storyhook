@@ -1917,22 +1917,15 @@ fn the_project_component_is_the_hash_of_the_canonical_common_dir() {
     let common_dir = git(fixture.path(), &["rev-parse", "--git-common-dir"]);
     let common_dir = std::fs::canonicalize(fixture.path().join(common_dir))
         .expect("canonicalizing the common dir");
-    let hash = {
-        let mut cmd = Command::new("git");
-        cmd.args(["hash-object", "--stdin"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        let mut child = cmd.spawn().expect("spawning git hash-object");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(common_dir.display().to_string().as_bytes())
-            .expect("feeding the path");
-        let out = child.wait_with_output().expect("git hash-object");
-        assert!(out.status.success());
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
+    // The script hashes the path from stdin; hashing a file holding exactly
+    // the same bytes is the same object hash, and needs no piped child
+    // (SH-535: every spawned test process is a `ChildGuard`'s).
+    let path_file = fixture.path().join("common-dir-bytes");
+    std::fs::write(&path_file, common_dir.display().to_string()).expect("writing the path bytes");
+    let hash = git(
+        fixture.path(),
+        &["hash-object", &path_file.display().to_string()],
+    );
     let expected_key = format!("gate.{hash}");
 
     for cwd in [fixture.path(), worktree.as_path(), alias.as_path()] {
