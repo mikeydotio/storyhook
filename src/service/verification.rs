@@ -446,17 +446,16 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 let links = tx.pr_links(project.id)?;
                 let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
                 for row in rows {
-                    let passed = row
-                        .snapshot
-                        .comments
-                        .iter()
-                        .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-                    let reaped = row.snapshot.comments.iter().any(|comment| {
-                        comment
-                            .text
-                            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-                    });
-                    if !passed || reaped {
+                    // Landed and reaped are facts about the story's LATEST
+                    // verification, never about a comment anywhere on it: a
+                    // reopened story carries its earlier generation's GREEN
+                    // and CLEANUP COMPLETE, and neither says anything about
+                    // the resources the new generation leased.
+                    let events = tx.events_for(project.id, row.story_no)?;
+                    let Some(generation) = latest_generation(&events) else {
+                        continue;
+                    };
+                    if !generation.landed || generation.reap_marker == Some(ReapMarker::Complete) {
                         continue;
                     }
                     let pull_request = links
@@ -480,7 +479,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                         verifying_since: None,
                         verifying_generation: None,
                         checkout: checkout.clone(),
-                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                        cleanup_lease: generation.lease,
                         pull_request,
                     });
                 }
@@ -743,6 +742,10 @@ pub struct VerificationGeneration {
     /// legacy/manual unleased submission shadows every older lease by
     /// construction rather than accidentally reusing stale resource ownership.
     pub lease: Option<StoryCleanupLease>,
+    /// Whether the verifier landed **this** generation's PR (a GREEN comment
+    /// after the transition), as opposed to an earlier verification of a
+    /// story since reopened.
+    pub landed: bool,
     /// The reap marker the verifier wrote for **this** generation — a marker
     /// from an earlier verification of the same story does not count, since a
     /// reopened story's resources are a new lease's, not the old marker's.
@@ -781,11 +784,19 @@ pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneratio
             )
         })
     };
+    let mut landed = false;
     let mut reap_marker = None;
     for event in after {
         let Some(StoryEvent::StoryCommentAdded { at, text }) = event.known() else {
             continue;
         };
+        if retracted(at, text) {
+            continue;
+        }
+        if text.starts_with(VERIFICATION_GREEN_PREFIX) {
+            landed = true;
+            continue;
+        }
         let marker = if text.starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX) {
             ReapMarker::Complete
         } else if text.starts_with(VERIFICATION_CLEANUP_REQUIRED_PREFIX) {
@@ -793,14 +804,15 @@ pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneratio
         } else {
             continue;
         };
-        if retracted(at, text) {
-            continue;
-        }
         if marker == ReapMarker::Complete || reap_marker.is_none() {
             reap_marker = Some(marker);
         }
     }
-    Some(VerificationGeneration { lease, reap_marker })
+    Some(VerificationGeneration {
+        lease,
+        landed,
+        reap_marker,
+    })
 }
 
 /// The lease paired with the story's latest entry into verification — see
@@ -951,6 +963,26 @@ mod tests {
             latest_generation(&current).unwrap().reap_marker,
             Some(ReapMarker::Required)
         );
+    }
+
+    #[test]
+    fn landed_is_a_fact_about_the_latest_generation_only() {
+        let green = format!("{VERIFICATION_GREEN_PREFIX} merge tree `abc` passed `make test`.");
+        let earlier = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+            state(4, "in-progress"),
+            state(5, VERIFYING_STATE),
+        ];
+        assert!(!latest_generation(&earlier).unwrap().landed);
+
+        let current = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+        ];
+        assert!(latest_generation(&current).unwrap().landed);
     }
 
     #[test]

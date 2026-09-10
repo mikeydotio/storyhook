@@ -1802,6 +1802,53 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     assert_eq!(recovered.cleanup_lease, Some(second));
 }
 
+#[test]
+fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_reap() {
+    // Generation one: landed, reaped, marked COMPLETE.
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "reopened after reap", Priority::High, PR_ONE);
+    let ctx = fixture.ctx();
+    let green = format!(
+        "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+    );
+    StoryService::new(&ctx).comment(&id, &green).unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_ONE)
+        .unwrap();
+    StoryService::new(&ctx)
+        .comment(
+            &id,
+            &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+        )
+        .unwrap();
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next_cleanup()
+            .unwrap()
+            .is_none(),
+        "generation one was reaped"
+    );
+
+    // Generation two: reopened, re-verified, landed again — and its reap has
+    // not happened. The COMPLETE above belongs to generation one.
+    StoryService::new(&ctx).reopen(&id).unwrap();
+    PrLinkService::new(&ctx).link(&id, PR_TWO, true).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    StoryService::new(&ctx).comment(&id, &green).unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_TWO)
+        .unwrap();
+
+    let owed = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .expect("the second generation's reap is still owed");
+    assert_eq!(owed.story_id, id);
+}
+
 fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
