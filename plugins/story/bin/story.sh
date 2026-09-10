@@ -1965,6 +1965,25 @@ cmd_dispatch() {
   # assert the exact contiguous substring "-e STORYHOOK_AUTO=… -e
   # STORYHOOK_FULL_AUTO=…", and appending here keeps that substring intact.
   marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker -e STORYHOOK_DISPATCH=1 "
+  # An engine lane runs under the tool-call ceiling its own stall clock is
+  # derived from (SH-657): the daemon hands its HOST_TOOL_CALL_CEILING_SECS
+  # down as STORY_LANE_TOOL_CEILING_MS, and the lane's Claude Code reads it
+  # back as BASH_MAX_TIMEOUT_MS, so one constant bounds both the longest
+  # foreground tool call the agent can make and the silence the engine will
+  # tolerate before calling the lane stalled. Only an engine lane carries
+  # it — an ordinary --auto dispatch has no stall clock over it — and only
+  # when the daemon actually said a number: a value the launcher computed
+  # and got nothing must not pin anything (SH-460's inert-marker rule),
+  # while a value that is not a number is refused by name rather than
+  # passed to the agent as a setting it will silently ignore (SH-357).
+  local lane_ceiling_tmux_args=""
+  if [ -n "$full_auto" ] && [ -n "${STORY_LANE_TOOL_CEILING_MS:-}" ]; then
+    case "$STORY_LANE_TOOL_CEILING_MS" in
+      ''|*[!0-9]*) fail "STORY_LANE_TOOL_CEILING_MS must be a positive integer of milliseconds, got \`$STORY_LANE_TOOL_CEILING_MS\`" ;;
+    esac
+    lane_ceiling_tmux_args="-e BASH_MAX_TIMEOUT_MS=$STORY_LANE_TOOL_CEILING_MS "
+    marker_tmux_args="$marker_tmux_args$lane_ceiling_tmux_args"
+  fi
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
@@ -2241,9 +2260,10 @@ cmd_dispatch() {
     # This file is a generated SessionStart witness, not project work. A
     # replacement process must publish its own witness before handoff.
     rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
     if ! tmux respawn-pane -k -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
-         -e "STORYHOOK_DISPATCH=1" \
+         -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
@@ -2255,7 +2275,8 @@ cmd_dispatch() {
     window_reused=true
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" "${new_window_args[@]}")
+    # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \

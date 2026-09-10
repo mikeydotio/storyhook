@@ -35,6 +35,7 @@ pub mod cleanup;
 mod cleanup_lease;
 pub mod config;
 pub mod engine;
+pub mod gate_command;
 pub mod gate_progress;
 pub mod git;
 pub mod git_links;

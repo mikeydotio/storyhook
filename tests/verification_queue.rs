@@ -18,6 +18,7 @@ use storyhook::domain::{
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
+use storyhook::service::gate_command::GateCommand;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
@@ -32,7 +33,7 @@ use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
@@ -537,6 +538,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
             VerificationOutcome::Merged {
                 tree: "abc123".into(),
                 detail: "landed".into(),
+                gate: GateCommand::DEFAULT.into(),
             },
             TickResult::Completed,
         ),
@@ -557,6 +559,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
                 tree: "abc123".into(),
                 log: "/tmp/red.log".into(),
                 detail: "red".into(),
+                gate: GateCommand::DEFAULT.into(),
             },
             TickResult::Returned,
         ),
@@ -771,6 +774,7 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         outcome: VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -997,6 +1001,7 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
             tree: "legacy-tree".into(),
             log: "/tmp/legacy.log".into(),
             detail: "legacy generation failed".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -1093,6 +1098,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
         VerificationOutcome::Merged {
             tree: "stale-tree".into(),
             detail: "stale-merged".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         VerificationOutcome::Conflict {
             detail: "stale-conflict".into(),
@@ -1104,6 +1110,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
             tree: "stale-tree".into(),
             log: "/tmp/stale.log".into(),
             detail: "stale-tests-failed".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         VerificationOutcome::InfrastructureFailure {
             detail: "stale-infrastructure".into(),
@@ -1131,6 +1138,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
                     tree: "current-tree".into(),
                     log: "/tmp/current.log".into(),
                     detail: "current-generation-failed".into(),
+                    gate: GateCommand::DEFAULT.into(),
                 },
             ])),
             verified_generations: Mutex::new(Vec::new()),
@@ -1269,6 +1277,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
             VerificationOutcome::Merged {
                 tree: "stale-tree".into(),
                 detail: "stale-after-ui-done".into(),
+                gate: GateCommand::DEFAULT.into(),
             },
             "done",
         ),
@@ -1278,6 +1287,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
                 tree: "stale-tree".into(),
                 log: "/tmp/stale.log".into(),
                 detail: "stale-after-ui-reopen".into(),
+                gate: GateCommand::DEFAULT.into(),
             },
             "todo",
         ),
@@ -1439,6 +1449,7 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
             VerificationOutcome::Merged {
                 tree: "abc123".into(),
                 detail: "landed after reconciliation".into(),
+                gate: GateCommand::DEFAULT.into(),
             },
         ])),
         verified: Mutex::new(Vec::new()),
@@ -2525,6 +2536,7 @@ fn an_unreachable_agent_is_marked_awaiting_instead_of_silently_retried() {
             tree: "deadbeef".into(),
             log: "/tmp/red.log".into(),
             detail: "one regression".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         notification_error: Some("pane unavailable".into()),
         notified: Mutex::new(Vec::new()),
@@ -2950,6 +2962,7 @@ fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick(
         VerificationOutcome::Merged {
             tree: "abc123".into(),
             detail: "landed".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(PR_ONE, 1, false))),
     );
@@ -3011,6 +3024,7 @@ fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verif
         VerificationOutcome::Merged {
             tree: "abc123".into(),
             detail: "landed".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(PR_ONE, 1, true))),
     );
@@ -3062,6 +3076,7 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
         VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(PR_ONE, 1, false))),
     );
@@ -3096,6 +3111,7 @@ fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
         VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: "make test".into(),
         },
         Some(Err(SubmissionFailure::Refused {
             reason: "dirty-worktree".into(),
@@ -3142,6 +3158,7 @@ fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retrie
         VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: "make test".into(),
         },
         Some(Err(SubmissionFailure::Infrastructure {
             detail: "gh could not list pull requests: error connecting to api.github.com".into(),
@@ -3177,6 +3194,7 @@ fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retrie
         VerificationOutcome::Merged {
             tree: "abc123".into(),
             detail: "landed".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(PR_ONE, 1, true))),
     );
@@ -3206,6 +3224,7 @@ fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
         VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(PR_TWO, 2, true))),
     );
@@ -3237,6 +3256,7 @@ fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
         VerificationOutcome::Merged {
             tree: "must-not-run".into(),
             detail: "must-not-run".into(),
+            gate: "make test".into(),
         },
         Some(Ok(submitted_pr(
             "https://github.com/other/repo/pull/9",
@@ -3353,6 +3373,7 @@ fn a_green_attempt_closes_then_reaps_the_story() {
         outcome: VerificationOutcome::Merged {
             tree: "abc123".into(),
             detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -3737,6 +3758,7 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
         outcome: VerificationOutcome::Merged {
             tree: "abc123".into(),
             detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
         },
         notification_error: None,
         notified: Mutex::new(Vec::new()),
@@ -3770,4 +3792,231 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
         1,
         "the checklist stays frozen at its last state once the story leaves verifying"
     );
+}
+
+/// A git-initialized scratch checkout with the origin the fixture PR belongs
+/// to, whose `scripts/verify-pr.sh` records its argv to `<checkout>/argv` and
+/// answers a merged verdict — the SH-649 seam: what reaches the script is the
+/// whole question.
+fn recording_checkout() -> tempfile::TempDir {
+    let checkout = scratch_dir();
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "config",
+            "remote.origin.url",
+            "https://github.com/acme/widgets.git",
+        ][..],
+    ] {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(checkout.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    std::fs::create_dir(checkout.path().join("scripts")).unwrap();
+    std::fs::write(
+        checkout.path().join("scripts/verify-pr.sh"),
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" > argv\n\
+         printf '{\"result\":\"merged\",\"tree\":\"t\",\"detail\":\"landed\"}\\n'\n",
+    )
+    .unwrap();
+    checkout
+}
+
+fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhook::store::PrLink) {
+    let fixture = ServiceFixture::new();
+    let candidate = VerificationCandidate {
+        project: fixture.project(),
+        project_slug: "fixture".into(),
+        story_id: "SH-1".into(),
+        title: "configured gate".into(),
+        priority: Priority::High,
+        created_at: FIXTURE_NOW.into(),
+        verifying_since: Some(FIXTURE_NOW.into()),
+        verifying_generation: None,
+        checkout: checkout.to_path_buf(),
+        cleanup_lease: None,
+        pull_request: Err(VerificationProblem::MissingPullRequest),
+    };
+    let pull_request = storyhook::store::PrLink {
+        owner: "acme".into(),
+        repo: "widgets".into(),
+        number: 1,
+        url: PR_ONE.into(),
+        close_on_merge: true,
+        status: "open".into(),
+        linked_at: FIXTURE_NOW.into(),
+        last_checked_at: None,
+    };
+    (candidate, pull_request)
+}
+
+fn shell_actuator(daemon_env: &Environment, checkout: &Path) -> ShellVerificationActuator {
+    ShellVerificationActuator::with_paths(
+        daemon_env.clone(),
+        checkout.join("unused-helper"),
+        PathBuf::from("/usr/bin/true"),
+    )
+}
+
+/// The configured gate reaches `verify-pr.sh` as `<url> -- <argv…>`, one word
+/// per element, and the verdict carries the same command so the GREEN and RED
+/// comments name what actually ran rather than a literal.
+#[test]
+fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() {
+    let checkout = recording_checkout();
+    std::fs::write(
+        checkout.path().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"291ea25f-3363-4b5d-9051-66636c1066f9\"\nprefix = \"SH\"\n\n\
+         [verify]\ngate = \"cargo test --workspace\"\n",
+    )
+    .unwrap();
+    let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
+    let env_root = scratch_dir();
+    let actuator = shell_actuator(&Environment::at(env_root.path()), checkout.path());
+
+    let outcome = actuator.verify(&candidate, &pull_request);
+    assert_eq!(
+        outcome,
+        VerificationOutcome::Merged {
+            tree: "t".into(),
+            detail: "landed".into(),
+            gate: "cargo test --workspace".into(),
+        }
+    );
+    let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
+    assert_eq!(
+        argv,
+        format!("{PR_ONE}\n--\ncargo\ntest\n--workspace\n"),
+        "each word is its own argv element"
+    );
+}
+
+/// No pointer at all is the default gate, spelled out to the script rather
+/// than left for it to assume — the script carries no default of its own.
+#[test]
+fn a_checkout_without_a_pointer_runs_the_default_gate() {
+    let checkout = recording_checkout();
+    let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
+    let env_root = scratch_dir();
+    let actuator = shell_actuator(&Environment::at(env_root.path()), checkout.path());
+
+    let outcome = actuator.verify(&candidate, &pull_request);
+    assert!(
+        matches!(outcome, VerificationOutcome::Merged { ref gate, .. } if gate == GateCommand::DEFAULT),
+        "{outcome:?}"
+    );
+    let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
+    assert_eq!(argv, format!("{PR_ONE}\n--\nmake\ntest\n"));
+}
+
+/// A gate that is not a plain argv is local configuration needing a person:
+/// a permanent infrastructure failure naming the key and the character,
+/// taken before the verifier is spawned and before a journal is written, and
+/// never a red returned to the implementor as if the code were wrong.
+#[test]
+fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
+    let checkout = recording_checkout();
+    std::fs::write(
+        checkout.path().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"291ea25f-3363-4b5d-9051-66636c1066f9\"\nprefix = \"SH\"\n\n\
+         [verify]\ngate = \"make test && rm -rf /\"\n",
+    )
+    .unwrap();
+    let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
+    let env_root = scratch_dir();
+    let daemon_env = Environment::at(env_root.path());
+    let actuator = shell_actuator(&daemon_env, checkout.path());
+
+    let outcome = actuator.verify(&candidate, &pull_request);
+    match outcome {
+        VerificationOutcome::InfrastructureFailure {
+            detail,
+            disposition,
+        } => {
+            assert_eq!(
+                disposition,
+                storyhook::store::VerificationFailureDisposition::Permanent
+            );
+            assert!(detail.contains("[verify].gate"), "{detail}");
+            assert!(detail.contains("`&`"), "{detail}");
+            assert!(detail.contains(".storyhook.toml"), "{detail}");
+        }
+        other => panic!("a misconfigured gate is an infrastructure failure, got {other:?}"),
+    }
+    assert!(
+        !checkout.path().join("argv").exists(),
+        "the verifier must not have been spawned"
+    );
+    assert!(
+        !journal_path(&daemon_env, &candidate).exists(),
+        "no progress journal is written for a run that never started"
+    );
+}
+
+/// The worker's comments are derived from the verdict's own gate, never from
+/// a literal: a project whose gate is not `make test` reads its own command
+/// in GREEN and RED.
+#[test]
+fn green_and_red_comments_name_the_gate_the_verdict_carries() {
+    for (outcome, prefix, expected) in [
+        (
+            VerificationOutcome::Merged {
+                tree: "abc123".into(),
+                detail: "landed".into(),
+                gate: "cargo test --workspace".into(),
+            },
+            VERIFICATION_GREEN_PREFIX,
+            "merge tree `abc123` passed `cargo test --workspace`",
+        ),
+        (
+            VerificationOutcome::TestsFailed {
+                tree: "abc123".into(),
+                log: "/tmp/red.log".into(),
+                detail: "red".into(),
+                gate: "make test-full".into(),
+            },
+            "CENTRAL VERIFICATION RED",
+            "merge tree `abc123` failed `make test-full`",
+        ),
+    ] {
+        let fixture = ServiceFixture::new();
+        fixture.link_origin("https://github.com/acme/widgets");
+        let id = submitted(&fixture, "named gate", Priority::High, PR_ONE);
+        let root = scratch_dir();
+        let env = Environment::at(root.path());
+        let actuator = FakeActuator {
+            outcome,
+            notification_error: None,
+            notified: Mutex::new(Vec::new()),
+            reaped: Mutex::new(Vec::new()),
+            submission: None,
+            submitted: Mutex::new(Vec::new()),
+        };
+        tick_with(fixture.store(), &env, &actuator).unwrap();
+        let story_no = StoryNo::parse_id("SH", &id).unwrap();
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), story_no))
+            .unwrap()
+            .unwrap();
+        let comment = row
+            .snapshot
+            .comments
+            .iter()
+            .find(|comment| comment.text.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} comment: {:?}", row.snapshot.comments));
+        assert!(comment.text.contains(expected), "{}", comment.text);
+        assert!(
+            !comment.text.contains("`make test`"),
+            "the literal must be gone: {}",
+            comment.text
+        );
+    }
 }
