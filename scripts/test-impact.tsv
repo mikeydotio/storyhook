@@ -122,6 +122,8 @@ type_slug_call_sites	:(glob)**/*
 unassessed_priority_paths	:(glob)**/*
 verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
+verifier_bundle	:(glob)scripts/*
+verifier_bundle	build.rs
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*
