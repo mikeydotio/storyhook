@@ -22,9 +22,13 @@
 #                        sentinel model as new-window without creating or
 #                        logging a second window.
 #   display-message   -> print a window id (@1), exit 0
-#   set-window-option -> no-op, exit 0 as its own top-level call (nothing calls
-#                        it standalone any more); chained onto new-window it is
-#                        recorded instead — see below.
+#   set-window-option -> as its own top-level call (the respawn path in
+#                        story.sh re-pins the window options one call at a
+#                        time), record the segment and lift `@storyhook-agent`
+#                        into `$STATE/storyhook_agent` exactly as the chained
+#                        form does — a respawned window keeps its provider tag
+#                        on a real server (SH-650); chained onto new-window it
+#                        is recorded the same way — see below.
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
 #   list-windows      -> print the caller-seeded `$STATE/windows` inventory.
 #   kill-window       -> log its argv, terminate the recorded pane process, and
@@ -655,7 +659,13 @@ case "${1:-}" in
     [ -f "$STATE/storyhook_agent" ] || exit 1
     cat "$STATE/storyhook_agent"
     ;;
-  set-window-option) : ;;
+  set-window-option)
+    swo_args="$*"
+    printf '%s\n' "$swo_args" >> "$STATE/window_options.log" 2>/dev/null || true
+    case " $swo_args " in
+      *" @storyhook-agent "*) printf '%s' "${swo_args##* @storyhook-agent }" > "$STATE/storyhook_agent" ;;
+    esac
+    ;;
   send-keys)
     # Parse the two shapes issue.sh emits: `-t <pane> -l <text>` (literal paste)
     # and `-t <pane> Enter` (submit). Anything else is ignored.

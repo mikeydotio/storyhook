@@ -70,6 +70,8 @@ mcp_removal	:(glob)**/*
 mcp_tool_drift	:(glob)**/*
 merge_gate	:(glob)**/*
 migration_guard	:(glob)**/*
+notify_reasons	plugins/story/bin/story.sh
+notify_reasons	plugins/story/lib/session.sh
 orphan_check	:(glob)**/*
 plugin_contract	:(glob)**/*
 plugin_install	:(glob)**/*
