@@ -1043,11 +1043,18 @@ fn codex_uninstall_sweeps_the_plugin_cache_the_doctor_reads_as_residue() {
     let installed = harness.run(&["plugin", "install", "codex"]);
     assert!(installed.status.success(), "{}", combined(&installed));
     let cache = harness.home.join(".codex/plugins/cache/storyhook");
-    assert!(cache.is_dir(), "positive control: the install populated the cache");
+    assert!(
+        cache.is_dir(),
+        "positive control: the install populated the cache"
+    );
 
     let output = harness.run(&["plugin", "uninstall", "codex"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(!cache.exists(), "the cache must be swept:\n{}", combined(&output));
+    assert!(
+        !cache.exists(),
+        "the cache must be swept:\n{}",
+        combined(&output)
+    );
     assert!(
         combined(&output).contains(&cache.display().to_string()),
         "the sweep must be named:\n{}",
