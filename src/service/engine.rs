@@ -346,7 +346,16 @@ pub fn classify(
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
-const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+pub const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+
+/// The one `display-message` format the liveness probe asks a lane's pane
+/// for: its pid, its foreground command, and whether tmux itself considers
+/// the pane dead, tab-separated. Exported so the fixture that has to answer
+/// it (`plugins/story/tests/fakes/tmux`'s composite arm, SH-575) and the
+/// harness fence that proves the daemon's own environment can reach that
+/// fixture (`tests/e2e_provider_doubles.rs`, SH-626) ask with this exact
+/// spelling rather than a copy of it (SH-136).
+pub const WINDOW_PROBE_FORMAT: &str = "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}";
 
 const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
     "STORY_PROMPT",
@@ -531,13 +540,7 @@ impl Dispatcher for ShellDispatcher {
 
     fn window_alive(&self, window: &str) -> bool {
         let mut command = self.tmux();
-        command.args([
-            "display-message",
-            "-p",
-            "-t",
-            window,
-            "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}",
-        ]);
+        command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let captured = match run_captured(command, TMUX_TIMEOUT) {
             Ok(captured) if captured.status.success() => captured,
             _ => return false,

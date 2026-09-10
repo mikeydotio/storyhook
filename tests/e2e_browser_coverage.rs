@@ -913,15 +913,30 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
         .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
         .0;
 
-    let claude = body
+    // SH-626 moved the doubles themselves into `scripts/e2e-provider-doubles.sh`
+    // so a test can generate them and drive them from the daemon's own
+    // allowlisted environment (`tests/e2e_provider_doubles.rs`); the runner's
+    // obligation here is unchanged -- both provider names executable on PATH
+    // before the daemon snapshots availability -- and is checked at the call
+    // site plus the library that writes them.
+    let library = read("scripts/e2e-provider-doubles.sh");
+    let claude = library
         .find("cat >\"$provider_bin/claude\" <<'PROVIDER'")
         .expect("the browser harness must create its own Claude fixture");
-    let codex = body
+    let codex = library
         .find("cat >\"$provider_bin/codex\" <<'PROVIDER'")
         .expect("the browser harness must retain its Codex fixture");
-    let executable = body
+    let executable = library
         .find("chmod 700 \"$provider_bin/claude\" \"$provider_bin/codex\" \"$provider_bin/tmux\"")
         .expect("both provider fixtures and fake tmux must be executable");
+    assert!(
+        claude < executable && codex < executable,
+        "the library writes both provider fixtures before making them executable"
+    );
+
+    let written = body
+        .find("write_e2e_provider_doubles \"$provider_bin\" \"$faketmux_env\" \"$FAKE_TMUX_IMPLEMENTATION\" || exit 1")
+        .expect("run_one_project must generate the doubles through the library, refusing on failure");
     let path = body
         .find("export PATH=\"$provider_bin:$PATH\"")
         .expect("the fixture directory must be placed on PATH");
@@ -930,7 +945,7 @@ fn the_runner_provisions_both_dispatch_provider_commands_before_daemon_startup()
         .expect("run_one_project must start its daemon");
 
     assert!(
-        claude < executable && codex < executable && executable < path && path < started,
+        written < path && path < started,
         "both executable provider fixtures must be on PATH before daemon startup snapshots \n\
          provider availability"
     );
