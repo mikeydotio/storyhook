@@ -599,6 +599,14 @@ WRAPPER
   # bash inverts the command's exit status, so `$?` inside that then-branch
   # is the *inverted* value -- always 0 -- and `exit "$status"` would always
   # exit 0 regardless of whether Playwright passed (SH-224).
+  # SH-627: the launch probe (`e2e/launch-probe.ts`, the config's
+  # `globalSetup`) launches THIS project's engine once before any worker
+  # starts, and reads the project's name from here rather than re-parsing
+  # Playwright's own argv. Exported after `--list` above on purpose: listing
+  # runs no global setup, so a filter that selects nothing is answered without
+  # a browser launch. A dead browser then costs one launch timeout and a
+  # refusal that names the machine, not one launch timeout per test.
+  export E2E_PROJECT="$project"
   status=0
   npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))

@@ -63,8 +63,19 @@ export default defineConfig({
   testDir: "./specs",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
+  // Both are a council's decision, not a default (SH-627, pinned by
+  // `tests/e2e_launch_probe.rs`): the release tier enumerates failures rather
+  // than surviving them, so a red is never re-run into a green, and one
+  // worker is what keeps "one project, one daemon, one seed" (SH-335) true.
   retries: 0,
   workers: 1,
+  // Launch the project's own engine once before any worker is started
+  // (./launch-probe.ts). The `browser` fixture is worker-scoped and bounded
+  // only by Playwright's 3-minute launch default, so under `workers: 1` a
+  // browser that cannot start costs that bound PER TEST and reads as that
+  // many tree failures -- 45 x 180 s after this machine's WindowServer crash
+  // (SH-627). The probe pays it once, and says what it found by name.
+  globalSetup: "./launch-probe.ts",
   // The second reporter is the SH-524 gate progress journal's Playwright
   // side (./gate-progress-reporter.ts) — inert by construction whenever
   // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.

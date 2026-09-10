@@ -63,8 +63,10 @@ therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit 
 
 ## Capture and doctor
 
-- `capture <id>`: run `STORY_AGENT=codex bash "<story-helper>" capture <id>` and show `display`.
-- `doctor`: run `STORY_AGENT=codex bash "<story-helper>" doctor` and show `display`. It reports
+- `capture <id>`: run `bash "<story-helper>" capture <id>` and show `display`. The stable
+  launcher runs the helper as Codex, so no `STORY_AGENT` prefix is needed — and neither the
+  installed-artifact guard nor Codex's own command rule admits one.
+- `doctor`: run `bash "<story-helper>" doctor` and show `display`. It reports
   the selected provider and independently confirms readiness, Plan mode, bracketed paste,
   and Storyhook project integrity.
 
