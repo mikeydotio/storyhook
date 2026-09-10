@@ -1354,6 +1354,25 @@ Standing rules for every wave:
   `retries: 0`/`workers: 1` as the council's decision. Quiesce the machine before the release
   tier, and read `story list --label flake` for the population before calling a red "the
   usual one". Design of record: `docs/spec/test-tiers.md`'s third "As built" reading.
+- **A listing that did not happen is not an empty selection** (SH-625). `scripts/run-e2e.sh`
+  asked Playwright `--list` whether a project selects anything under the caller's filter,
+  then discarded stderr and the exit status and read the answer as text — and Playwright
+  prints the identical `Total: 0 tests in 0 files` for a filter that matches nothing and
+  for a selected spec that fails to load, so a load error, an unknown flag or a config that
+  would not evaluate reported as "selects no tests — skipping" and the run exited 0 having
+  executed nothing (SH-306 in the browser harness; SH-224 was this same script's first
+  green-for-nothing). The story's own suspicion — four positional filters — was refuted
+  by listing its exact command on the branch it was found on (34 tests) before anything
+  changed. Under `--pass-with-no-tests` Playwright's **own exit status** separates the two
+  (empty selection 0; load error, bad flag, bad project nonzero), so no error text is
+  matched; `scripts/e2e-selection.sh` holds that decision as a sourced library because the
+  runner cannot be sourced by a test, `tests/e2e_selection.rs` drives the tracked file with
+  a fake `playwright` and asserts the discriminating flag in its recorded argv, and the
+  measured Playwright version is pinned against `e2e/package.json` so an upgrade re-asks
+  the question by name. The rule that outlives the fix: **a run in which no project
+  selected a test exits 1** — the per-project skip stays for the SH-335 loop, and only the
+  sum across projects can tell that case from a filter typo. Design of record:
+  `docs/spec/test-tiers.md`'s fourth "As built" reading.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
