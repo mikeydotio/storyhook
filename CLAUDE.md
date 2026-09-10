@@ -1750,6 +1750,34 @@ Standing rules for every wave:
   inside, and reentrancy travels only in that variable, so stripping it deadlocks every
   verification against its own outer holder for ever. Nothing fences that invariant;
   the comment above the list and the spec are what say so.
+- **A stall clock reads every channel a live agent writes on, and its ceiling derives from
+  the deadline the clock actually measures — never from a test leg** (SH-657). Full Auto's
+  stall detector read one signal, the story's change-feed position, under a 288 s ceiling
+  derived as `lane budget × make-test median × margin`: a bound on a test leg, which the
+  clock never measured. It measured time between story events, and an autonomous agent
+  writes nothing to the store between its dispatch comment and its plan comment (267–616 s
+  on this tracker's own history), let alone during implementation. **Eight of the first
+  eight stall verdicts the engine ever wrote were false**, each on an agent alive and
+  working, each blocking a story nobody had blocked and re-filling the lane with a fifth
+  agent; two runs halted by breaker. Latent for nine days because engine fills only
+  started working with SH-609 — nine days of green runs were nine days of no lane
+  observed, and a detector that has never fired has never been proved. The pane is the
+  second channel: tmux's `#{window_activity}` (its own last-pty-write stamp, sub-second on
+  every working lane, hours old on every idle prompt) rides the probe as a fourth field,
+  and `classify()` declares `Stalled` only when **both** channels are silent past the
+  ceiling — an unknown pty channel is no evidence (SH-372), so SH-626's backstop stands.
+  Not SH-226's screen-scrape: the process is confirmed by pid and identity first, and the
+  stamp is a fact about bytes it wrote. The ceiling now disproves the one deadline in
+  evidence — one foreground tool call, `HOST_TOOL_CALL_CEILING_SECS = 600` × margin 2 —
+  and the engine makes that bound its own by pinning `BASH_MAX_TIMEOUT_MS` on every lane's
+  window from the same constant (`STORY_LANE_TOOL_CEILING_MS`, story.sh). Quiet time is
+  shown on `story engine status` and the lane strip **before** it is a verdict (SH-418),
+  and a stall reason names both measurements. Council on the story (three seats,
+  unanimous): keep the hard stop and widen its evidence; advisory-only trades a bounded
+  false positive for an unbounded livelock. **Stated limit**: a turn that ended waiting on
+  a background task is silent on both channels; a process-tree signal is filed separately,
+  gated on measuring that such a wait exceeds the ceiling in a lane. RCA:
+  `docs/rca/full-auto-stalls-working-lanes.md`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
