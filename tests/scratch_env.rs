@@ -261,6 +261,29 @@ fn print_reports_the_shared_isolation_and_the_binary() {
          whatever their own PATH reaches:\n{printed}"
     );
 
+    // A scratch root persists across sessions on purpose, and the binary it
+    // runs never leaves its build directory — so the first schema bump after
+    // a store was created here would be refused by the SH-630 guard. The
+    // override is the guard's own sanctioned answer for "this build, this
+    // store, on purpose", which is the whole definition of a scratch
+    // environment. It has to come AFTER the table's `unset`, or the shell
+    // reads the two lines in the wrong order and the guard fires anyway.
+    let override_var = storyhook::migration_guard::OVERRIDE_VAR;
+    let unset_at = printed
+        .lines()
+        .position(|line| line == format!("unset {override_var}"))
+        .expect("the parameter table clears the override");
+    let export_at = printed
+        .lines()
+        .position(|line| line == format!("export {override_var}='1'"))
+        .unwrap_or_else(|| {
+            panic!("--print must re-arm {override_var} for the scratch store:\n{printed}")
+        });
+    assert!(
+        export_at > unset_at,
+        "the override must be exported after the table clears it:\n{printed}"
+    );
+
     // `--print` says what it would do and does nothing: no environment, no
     // store, no daemon.
     assert!(

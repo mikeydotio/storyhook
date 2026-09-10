@@ -283,6 +283,14 @@ pub fn crash_a_starting_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> 
 /// `crash_matrix.rs`'s migration case all keep their say.
 pub fn spawn_daemon(env: &TestEnv, cwd: &Path, point: Option<FaultPoint>) -> ChildGuard {
     let mut serve = env.raw_story(cwd);
+    // The binary under test is uninstalled by construction — it sits where
+    // cargo wrote it, which is the fact the SH-630 migration guard refuses on
+    // — and the stores here are the fixtures' own, some planted at an old
+    // schema on purpose so a migration has something to crash inside. The
+    // override is the guard's sanctioned "this build, this store, on purpose",
+    // stated here rather than by each caller. The parameter table clears it
+    // for every child; this is the one place in the harness that re-arms it.
+    serve.env(storyhook::migration_guard::OVERRIDE_VAR, "1");
     if let Some(point) = point {
         // Before arming, not after failing (SH-528). A binary that cannot fire
         // faults answers this command normally and then serves for ever, and
