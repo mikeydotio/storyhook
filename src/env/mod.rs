@@ -329,7 +329,14 @@ impl Environment {
     /// stand down the daemon holding store B, because it never looks in that
     /// directory at all.
     pub fn daemon_state_dir(&self) -> PathBuf {
-        self.state_home.join("daemons").join(self.store.key())
+        self.daemons_dir().join(self.store.key())
+    }
+
+    /// The directory every store's [`Self::daemon_state_dir`] hangs under:
+    /// `daemons/` in the state home. One entry per store this state home has
+    /// ever served, and the only place `story daemon gc` looks (SH-638).
+    pub fn daemons_dir(&self) -> PathBuf {
+        self.state_home.join("daemons")
     }
 
     /// The daemon's portfile: `{pid, port, version, protocol, exe, exe_mtime,
