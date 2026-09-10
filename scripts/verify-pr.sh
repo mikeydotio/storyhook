@@ -615,8 +615,16 @@ if [ "${1:-}" = --ensure-verifier-worktree ]; then
     exit 0
 fi
 
-[ "$#" -eq 1 ] || die_json "usage: verify-pr.sh <pr-url>"
+# The gate is an argument, never a default of this script's own (SH-649):
+# the daemon reads the project's `[verify] gate` from its pointer file and
+# `GateCommand::DEFAULT` is the one place `make test` lives. A caller that
+# names no gate is refused by name rather than handed one it did not choose.
+[ "$#" -ge 3 ] && [ "$2" = -- ] \
+    || die_json "usage: verify-pr.sh <pr-url> -- <gate-command...> (the daemon passes the project's [verify] gate)"
 submitted_pr="$1"
+shift 2
+gate_command=("$@")
+gate_display="$*"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
@@ -666,11 +674,11 @@ case "$preflight_status" in
 (0)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
     gate_progress_emit_item "release gate" reused
-    verifier_window_banner "PR #$pr — merge tree $tree already certified; release gate reused, no live make-test output for this run"
+    verifier_window_banner "PR #$pr — merge tree $tree already certified; release gate reused, no live \`$gate_display\` output for this run"
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
-    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" make test || {
+    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" "${gate_command[@]}" || {
         confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
         emit_tests_failed
     }
