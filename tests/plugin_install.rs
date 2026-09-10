@@ -989,3 +989,77 @@ fn legacy_claude_code_uninstall_target_still_works_and_warns() {
     let log = fs::read_to_string(harness.home.join("claude-invocations")).unwrap();
     assert!(log.contains("plugin uninstall story@storyhook"), "{log}");
 }
+
+/// A Claude Code uninstall leaves the plugin cache behind — the provider's own
+/// `plugin uninstall` does not clear it — and `story doctor install` reads
+/// that cache as a lost registration (SH-640). A deliberate uninstall must
+/// therefore sweep every directory the install owns, or every uninstalled
+/// machine reads DEREGISTERED for ever and the flag stops meaning anything.
+#[test]
+fn claude_uninstall_sweeps_the_installed_copies_the_doctor_reads_as_residue() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    let plugins = harness.home.join(".claude/plugins");
+    let cache = plugins.join("cache/storyhook/story/2.4.2");
+    let marketplace = plugins.join("marketplaces/storyhook");
+    let legacy = plugins.join("storyhook");
+    for dir in [&cache, &marketplace, &legacy] {
+        fs::create_dir_all(dir).unwrap();
+    }
+
+    let before = harness.run(&["doctor", "install"]);
+    assert!(
+        combined(&before).contains("DEREGISTERED"),
+        "positive control: the seeded copies with no registration are a finding:\n{}",
+        combined(&before)
+    );
+
+    let output = harness.run(&["plugin", "uninstall", "claude"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let text = combined(&output);
+    for dir in [plugins.join("cache/storyhook"), marketplace, legacy] {
+        assert!(!dir.exists(), "`{}` must be swept:\n{text}", dir.display());
+        assert!(
+            text.contains(&dir.display().to_string()),
+            "the sweep must name `{}`:\n{text}",
+            dir.display()
+        );
+    }
+
+    let after = harness.run(&["doctor", "install"]);
+    assert!(
+        !combined(&after).contains("DEREGISTERED"),
+        "a deliberate uninstall leaves the doctor quiet:\n{}",
+        combined(&after)
+    );
+}
+
+/// The Codex twin: the fake `codex plugin add` writes the versioned cache the
+/// real one does, and neither's `plugin remove` clears it.
+#[test]
+fn codex_uninstall_sweeps_the_plugin_cache_the_doctor_reads_as_residue() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let installed = harness.run(&["plugin", "install", "codex"]);
+    assert!(installed.status.success(), "{}", combined(&installed));
+    let cache = harness.home.join(".codex/plugins/cache/storyhook");
+    assert!(cache.is_dir(), "positive control: the install populated the cache");
+
+    let output = harness.run(&["plugin", "uninstall", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(!cache.exists(), "the cache must be swept:\n{}", combined(&output));
+    assert!(
+        combined(&output).contains(&cache.display().to_string()),
+        "the sweep must be named:\n{}",
+        combined(&output)
+    );
+    assert!(!harness.codex_launcher().exists());
+    assert!(!harness.codex_rule().exists());
+
+    let after = harness.run(&["doctor", "install"]);
+    assert!(
+        !combined(&after).contains("DEREGISTERED"),
+        "a deliberate uninstall leaves the doctor quiet:\n{}",
+        combined(&after)
+    );
+}
