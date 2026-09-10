@@ -438,26 +438,29 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # It had been true of neither half since the --auto charter landed. The ‘ ’
 # quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
 # which it can remind the model to persist the plan. Codex may surface the
 # compatibility event, but rejects its bare allow decision; the TUI watcher
 # owns approval instead. Its built-in charter therefore carries persistence
 # across the turn itself: make it step one of the approved plan, then the plan
 # is the instruction Codex resumes from.
-# The same provider clause owns PR-title traceability: every Codex-authored PR
-# carries the resolved story id where an operator can see it in a PR list.
 # Kept provider-specific so Claude's established prompt stays byte-identical,
 # and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
-CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it. Ensure every linked pull request title contains the exact story ID <n>."
+# PR-title traceability moved to the verifier with submission (SH-647): the
+# verifier titles every pull request it opens "<n>: <title>", so neither the
+# agent nor this clause needs to.
+CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
 # targeted testing and repair remain the child's own call. The daemon-owned
-# verifier takes over after the child publishes exactly one linked PR and moves
-# the story to `verifying`; it owns the full suite, merge, closure, and reap.
+# verifier takes over after the child commits and moves the story to
+# `verifying` from inside its worktree (SH-647); it owns submission -- pushing
+# the branch and opening the pull request -- and then the full suite, merge,
+# closure, and reap.
 #
 # It used to open by anchoring every `story` write at the main checkout,
 # because a worktree carried its own copy of the tracker and a write made
@@ -501,7 +504,7 @@ AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -
 # with a single right answer independent of whether council-vote is
 # reachable, so it does not vary between COUNCIL and SOLO.
 AUTO_SCOPE_CLAUSE="When you uncover a second problem while working <n>, prefer adopting it into <n> over filing a new story: fix it in its own commit with its own regression test, and comment on <n> what you adopted and why -- that is two hats intact, since two hats governs commits, not stories. Adopt and fix it now only while at least half your context window is still unused and the extra work is small enough to finish and test in this session. Otherwise widen <n> to cover it without doing the work now -- comment what you found and leave <n> open rather than closing it, so the next session picks up where you stopped. If you cannot tell how much context remains, treat it as spent. File a new story only for work that is genuinely separate, genuinely too large for one session, or blocked on something you cannot reach."
-AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open exactly one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
+AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
 AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-$AUTO_PROMPT_HEAD $AUTO_COUNCIL_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 AUTO_PROMPT_SOLO_TPL="${STORY_AUTO_PROMPT_SOLO:-$AUTO_PROMPT_HEAD $AUTO_SOLO_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 # Which charter --auto gets: 'auto' (default) probes council_vote_available
