@@ -881,9 +881,9 @@ fn project_data_json<S: Store>(
                     .push(link);
             }
             let active = verification_activity.active();
-            let incident = tx.verification_incident()?;
+            let incident = tx.verification_incident(project)?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates(tx)?,
+                &crate::service::verification::ordered_candidates_for(tx, project)?,
                 active.as_ref(),
                 incident.as_ref(),
                 ctx.env(),
@@ -978,10 +978,12 @@ fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let expected = require_str(&obj, "incident_id")?;
-        let current = ctx.store().read(|tx| tx.verification_incident())?;
+        let current = ctx
+            .store()
+            .read(|tx| tx.verification_incident(ctx.project()))?;
         let Some(current) = current else {
             return Err(AppError::Validation(
-                "no verification incident is active".into(),
+                "no verification incident is active for this project".into(),
             ));
         };
         if !current.halted {

@@ -367,6 +367,17 @@ pub const MIGRATIONS: &[Migration] = &[
         // existing lane is.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 35,
+        name: "verification_incident_per_project",
+        sql: include_str!("schema/0035_verification_incident_per_project.sql"),
+        // A table rebuild, but of a LEAF: nothing references
+        // `verification_incident`, so dropping it under live enforcement
+        // orphans no child row (the same reasoning as version 18). Its own
+        // references to `projects` and `stories` are re-checked on the
+        // INSERT … SELECT, which is what we want.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

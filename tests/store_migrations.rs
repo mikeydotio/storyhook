@@ -10,7 +10,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use storyhook::domain::StoryEvent;
 use storyhook::store::migrate::{self, Migration};
-use storyhook::store::{SqliteStore, Store, StoreConfig, StoreError, StoryNo};
+use storyhook::store::{ReadOps, SqliteStore, Store, StoreConfig, StoreError, StoryNo};
 use storyhook_test_support::scratch_dir;
 
 /// A second migration, used to exercise the parts of the framework that only
@@ -3787,4 +3787,141 @@ fn migration_thirty_three_adds_nullable_cleanup_settings_without_rewriting_proje
         .unwrap();
     assert_eq!(row, (0, "14d".into(), None, None));
     assert_eq!(user_version(store.path()), 33);
+}
+
+// ---------------------------------------------------------------------------
+// Migration 35: one verification incident per project (SH-648)
+// ---------------------------------------------------------------------------
+
+/// Version 31's `singleton = 1` row belonged to the machine; version 35 keys
+/// the table by project so two projects' verifiers halt independently. The
+/// existing row must survive under its own project — a halt recorded before
+/// the upgrade is still a halt after it — and a second project's incident
+/// must be able to sit beside it, while a second row for the SAME project is
+/// what the key forbids.
+#[test]
+fn migration_thirty_five_keys_the_incident_by_project_and_carries_the_singleton_forward() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..34]).unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects
+             (id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq)
+         VALUES
+             (1, 'incident-a', 'alpha', 'Alpha', 'AL', '2026-01-01T00:00:00Z', 2, 2),
+             (2, 'incident-b', 'bravo', 'Bravo', 'BR', '2026-01-01T00:00:00Z', 2, 2);
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'verifying', 'OPEN'), (2, 0, 'verifying', 'OPEN');
+         INSERT INTO project_types (project_id, position, slug)
+             VALUES (1, 0, 'normal'), (2, 0, 'normal');
+         INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, state,
+                              superstate, priority, priority_rank, story_type, archived,
+                              created_at, updated_at, snapshot)
+             VALUES (1, 1, 1, 1, 'Alpha one', 'verifying', 'OPEN', 'high', 1, 'normal', 0,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}'),
+                    (2, 1, 1, 1, 'Bravo one', 'verifying', 'OPEN', 'high', 1, 'normal', 0,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
+         INSERT INTO verification_incident
+             (singleton, incident_id, project_id, story_no, generation, disposition, state,
+              attempts, detail, first_failed_at, last_failed_at)
+         VALUES (1, '1:7', 1, 1, 7, 'permanent', 'halted', 1, 'jq is required',
+                 '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z');",
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate_with(&migrate::MIGRATIONS[..35]).unwrap();
+    assert_eq!(user_version(store.path()), 35);
+
+    let conn = Connection::open(store.path()).unwrap();
+    let carried: (i64, String, i64, i64, String, String, i64, String) = conn
+        .query_row(
+            "SELECT project_id, incident_id, story_no, generation, disposition, state, attempts,
+                    detail
+             FROM verification_incident",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        carried,
+        (
+            1,
+            "1:7".into(),
+            1,
+            7,
+            "permanent".into(),
+            "halted".into(),
+            1,
+            "jq is required".into()
+        ),
+        "the machine-wide row must become its own project's row, byte for byte"
+    );
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('verification_incident')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        !columns.iter().any(|column| column == "singleton"),
+        "the singleton key must be gone: {columns:?}"
+    );
+
+    conn.execute_batch(
+        "INSERT INTO verification_incident
+             (incident_id, project_id, story_no, generation, disposition, state, attempts,
+              detail, first_failed_at, last_failed_at)
+         VALUES ('2:9', 2, 1, 9, 'retryable', 'retrying', 1, 'GitHub unavailable',
+                 '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z');",
+    )
+    .expect("a second project's incident sits beside the first");
+    let duplicate = conn.execute_batch(
+        "INSERT INTO verification_incident
+             (incident_id, project_id, story_no, generation, disposition, state, attempts,
+              detail, first_failed_at, last_failed_at)
+         VALUES ('1:8', 1, 1, 8, 'retryable', 'retrying', 1, 'a second row for alpha',
+                 '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z');",
+    );
+    assert!(
+        duplicate.is_err(),
+        "one incident per project is the key, so a second row for alpha must be refused"
+    );
+    drop(conn);
+
+    // The production reader sees each project's own row and nothing else.
+    let alpha = store
+        .read(|tx| tx.verification_incident(storyhook::store::ProjectId::new(1)))
+        .unwrap()
+        .expect("alpha's carried incident");
+    assert_eq!(alpha.incident_id, "1:7");
+    assert!(alpha.halted);
+    let bravo = store
+        .read(|tx| tx.verification_incident(storyhook::store::ProjectId::new(2)))
+        .unwrap()
+        .expect("bravo's own incident");
+    assert_eq!(bravo.incident_id, "2:9");
+    assert!(!bravo.halted);
+    assert_eq!(
+        store
+            .read(|tx| tx.verification_incidents())
+            .unwrap()
+            .iter()
+            .map(|incident| incident.incident_id.as_str())
+            .collect::<Vec<_>>(),
+        ["1:7", "2:9"]
+    );
 }

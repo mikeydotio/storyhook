@@ -830,21 +830,23 @@ where
 {
     let queue = VerificationQueue::new(store);
     let ordered = queue.ordered()?;
-    let incident = store.read(|tx| tx.verification_incident())?;
-    let incident_candidate = incident.as_ref().and_then(|incident| {
-        ordered
+    let incidents = store.read(|tx| tx.verification_incidents())?;
+    let mut incident_candidate = None;
+    for incident in &incidents {
+        match ordered
             .iter()
             .find(|candidate| incident_matches(incident, candidate))
-            .cloned()
-    });
-    if let Some(incident) = incident.as_ref() {
-        if incident_candidate.is_none() {
-            store.write(|tx| {
+        {
+            None => store.write(|tx| {
                 tx.clear_verification_incident(&incident.incident_id)?;
                 Ok(())
-            })?;
-        } else if incident.halted {
-            return Ok(TickResult::Halted);
+            })?,
+            Some(_) if incident.halted => return Ok(TickResult::Halted),
+            Some(candidate) => {
+                if incident_candidate.is_none() {
+                    incident_candidate = Some(candidate.clone());
+                }
+            }
         }
     }
     let Some(mut candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {

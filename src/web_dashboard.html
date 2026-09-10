@@ -5146,8 +5146,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
-  /** Durable machine-wide verifier halt. It comes from `/data` so the banner
-   * and card statuses are one consistent store snapshot. */
+  /** Durable verifier halt for THIS project (SH-648: one verifier, one queue
+   * and one incident per project). It comes from `/data` so the banner and
+   * card statuses are one consistent store snapshot. */
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
     var incident = state.data && state.data.verification_incident;
