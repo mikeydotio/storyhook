@@ -21,7 +21,11 @@
 //! positively confirm prints a named negative — `unknown`, `unregistered`,
 //! `not recorded` — never a blank and never `ok`. A provider CLI that is not
 //! installed is a row this tool could not check, which is a fact about the
-//! report's completeness rather than an all-clear.
+//! report's completeness rather than an all-clear. And **an absent
+//! registration is resolved against the disk, never read as "never installed"**
+//! (SH-640): a provider whose installed copies are still present lost its
+//! registration, and that row is flagged — the quiet `not registered` is
+//! reserved for a provider that left nothing behind.
 //!
 //! **It never says "revert."** A change sitting in the checkout is a change
 //! aimed at the next release, so the remedy named is always the release, never
@@ -51,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env::Environment;
 use crate::error::AppError;
+use crate::plugin::PluginTarget;
 
 /// One line of the report.
 struct Row {
@@ -182,15 +187,9 @@ fn store_row(env: &Environment) -> Row {
     Row::ok("store", format!("schema {found}"))
 }
 
-#[derive(Clone, Copy)]
-enum ProviderConfig {
-    Claude,
-    Codex,
-}
-
-fn configured_source(body: &str, format: ProviderConfig) -> Result<Option<String>, String> {
-    match format {
-        ProviderConfig::Claude => {
+fn configured_source(body: &str, target: PluginTarget) -> Result<Option<String>, String> {
+    match target {
+        PluginTarget::ClaudeCode => {
             let value: serde_json::Value = serde_json::from_str(body)
                 .map_err(|error| format!("its configuration is invalid JSON: {error}"))?;
             let Some(marketplace) = value.get("storyhook") else {
@@ -209,7 +208,7 @@ fn configured_source(body: &str, format: ProviderConfig) -> Result<Option<String
             }
             Err("its storyhook marketplace source has no path, repository or URL".to_string())
         }
-        ProviderConfig::Codex => {
+        PluginTarget::Codex => {
             let value: toml::Value = toml::from_str(body)
                 .map_err(|error| format!("its configuration is invalid TOML: {error}"))?;
             let Some(marketplace) = value
@@ -228,19 +227,62 @@ fn configured_source(body: &str, format: ProviderConfig) -> Result<Option<String
     }
 }
 
+/// No registration for storyhook in the provider's configuration — which
+/// means one of two things, and the row says which (SH-640).
+///
+/// A provider that was never installed here is the quiet case this row exists
+/// for: a Codex-only or Claude-only machine must not carry a finding. A
+/// provider whose installed copies are still on disk was installed here and
+/// has since lost its registration — a new session of that provider gets no
+/// `/story` at all — and that is a finding, never an `ok`. Absence is resolved
+/// against what the disk already holds rather than promoted to "never" (the
+/// SH-372 rule): the copies are the evidence, since the managed-path manifest
+/// names both providers on every install and cannot tell them apart.
+fn unregistered(label: &'static str, target: PluginTarget) -> Row {
+    let residue = match crate::plugin::install_residue(target) {
+        Ok(residue) => residue,
+        Err(_) => {
+            return Row::flagged(
+                label,
+                "unknown",
+                "its installed copies could not be looked for: the home directory could \
+                 not be resolved",
+            );
+        }
+    };
+    if residue.is_empty() {
+        return Row::ok(label, "not registered");
+    }
+    let copies = residue
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Row::flagged(
+        label,
+        "not registered",
+        format!(
+            "DEREGISTERED: {} no longer lists the storyhook marketplace, but installed \
+             copies remain at {copies} — run `story plugin install {}`",
+            target.display_name(),
+            target.install_token()
+        ),
+    )
+}
+
 /// A provider's registered marketplace source, read from the provider's own
 /// configuration rather than by invoking it — this must answer on a machine
 /// where the provider CLI is not installed, and must not pay a subprocess.
-fn provider_row(label: &'static str, config: &Path, format: ProviderConfig) -> Row {
+fn provider_row(label: &'static str, config: &Path, target: PluginTarget) -> Row {
     if !config.exists() {
-        return Row::ok(label, "not registered");
+        return unregistered(label, target);
     }
     let Ok(body) = std::fs::read_to_string(config) else {
         return Row::flagged(label, "unknown", "its configuration could not be read");
     };
-    let source = match configured_source(&body, format) {
+    let source = match configured_source(&body, target) {
         Ok(Some(source)) => source,
-        Ok(None) => return Row::ok(label, "not registered"),
+        Ok(None) => return unregistered(label, target),
         Err(finding) => return Row::flagged(label, "unknown", finding),
     };
     let expected = crate::plugin::release_marketplace_root().ok();
@@ -321,12 +363,12 @@ pub fn report() -> Result<String, AppError> {
         provider_row(
             "claude plugin",
             &home.join(".claude/plugins/known_marketplaces.json"),
-            ProviderConfig::Claude,
+            PluginTarget::ClaudeCode,
         ),
         provider_row(
             "codex plugin",
             &home.join(".codex/config.toml"),
-            ProviderConfig::Codex,
+            PluginTarget::Codex,
         ),
         hook_row(),
     ];
