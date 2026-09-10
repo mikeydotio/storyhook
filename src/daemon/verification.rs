@@ -30,7 +30,7 @@ use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationQueue,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
 };
 use crate::store::{
     GlobalSeq, PrLink, ProjectId, ReadOps, Store, VerificationFailureDisposition,
@@ -988,6 +988,9 @@ where
     let lifecycle_entry = inflight.enter();
     name_verification(&lifecycle_entry, &candidate, &started_at);
     let mut active = activity.acquire(&candidate, started_at);
+    // The generation this tick has already submitted, so the `continue` after
+    // recording a submission re-derives the candidate without pushing twice.
+    let mut submitted: Option<Option<GlobalSeq>> = None;
 
     loop {
         match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
@@ -1002,8 +1005,33 @@ where
             env.clone(),
         )
         .no_hooks(true);
+        if submission_due(&candidate, submitted) {
+            submitted = Some(candidate.verifying_generation);
+            match submit_candidate(&queue, &ctx, actuator, &candidate)? {
+                GenerationWrite::Applied(Some(result)) => return Ok(result),
+                // Recorded: the link is a store fact now. Re-derive rather than
+                // trust a PrLink built here, so whatever `ordered_candidates`
+                // makes of it (registered, single, open) is what gets verified.
+                GenerationWrite::Applied(None) | GenerationWrite::Superseded => continue,
+            }
+        }
         let pull_request = match &candidate.pull_request {
             Ok(pull_request) => pull_request.clone(),
+            Err(VerificationProblem::MissingPullRequest) if candidate.cleanup_lease.is_none() => {
+                match return_for_repair(&queue, &ctx, actuator, &candidate, UNLEASED_SUBMISSION)? {
+                    GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
+                    GenerationWrite::Superseded => match refresh_authority(
+                        &queue,
+                        &mut active,
+                        &lifecycle_entry,
+                        env,
+                        &mut candidate,
+                    )? {
+                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+                    },
+                }
+            }
             Err(problem) => {
                 match return_for_repair(&queue, &ctx, actuator, &candidate, &problem.message())? {
                     GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
@@ -1091,7 +1119,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;
@@ -1135,7 +1163,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Link the PR for this checkout's origin, push it, then move {} back to verifying.",
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; the verifier pushes and links the pull request.",
                         candidate.story_id
                     ),
                 )?;
@@ -1150,7 +1178,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `make test`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `make test`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;
@@ -1174,6 +1202,102 @@ where
             AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
             AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
+    }
+}
+
+/// The diagnosis for a story that entered `verifying` with no lease (SH-647):
+/// the verifier has no branch to push, and the agent's own charter names the
+/// one thing that fixes it.
+const UNLEASED_SUBMISSION: &str = "verification could not submit this story: it entered \
+`verifying` from outside its dispatched worktree, so no cleanup lease names a branch to push \
+and no pull request is linked. From inside the story's worktree, commit the work and run \
+`story move <id> verifying` again; the verifier pushes the branch and opens the pull request.";
+
+/// Whether this tick owes the candidate a submission (SH-647): it is leased
+/// — so a branch is known — and its linked pull request is either absent or
+/// the single acceptable one. Every leased generation is submitted, linked or
+/// not, because after a RED return the agent only commits; the push is what
+/// carries the fix to the remote. A generation already submitted by this tick
+/// is not submitted again on the `continue` that re-derives it.
+fn submission_due(candidate: &VerificationCandidate, submitted: Option<Option<GlobalSeq>>) -> bool {
+    candidate.cleanup_lease.is_some()
+        && matches!(
+            candidate.pull_request,
+            Ok(_) | Err(VerificationProblem::MissingPullRequest)
+        )
+        && submitted != Some(candidate.verifying_generation)
+}
+
+/// Runs the actuator's submission and records what it left behind.
+///
+/// `Applied(None)` means the link and SUBMITTED comment are recorded and the
+/// caller should re-derive the candidate; `Applied(Some(result))` means this
+/// tick is over — the story was returned to its agent (a refusal, or an
+/// adopted pull request that is not the one the agent linked), or an
+/// infrastructure incident was recorded and the story waits in `verifying`
+/// for the next tick to re-run the same idempotent steps.
+fn submit_candidate<S: Store, A: VerificationActuator>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    actuator: &A,
+    candidate: &VerificationCandidate,
+) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
+    let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
+    let submitted = actuator.submit(candidate);
+    super::activity::emit(
+        if submitted.is_ok() { "INFO" } else { "ERROR" },
+        "verifier",
+        "event",
+        &activity_context,
+        &format!("submission outcome: {submitted:?}"),
+    );
+    match submitted {
+        Ok(pull_request) => {
+            if let Ok(linked) = &candidate.pull_request
+                && linked.number != pull_request.number
+            {
+                {
+                    let diagnosis = format!(
+                        "verification found pull request {} open for this story's branch, but the \
+                         story links {} instead; unlink one (`story unlink-pr`) or close it, then \
+                         run `story move {} verifying` again",
+                        pull_request.url, linked.url, candidate.story_id
+                    );
+                    return Ok(
+                        return_for_repair(queue, ctx, actuator, candidate, &diagnosis)?
+                            .map(|_| Some(TickResult::Returned)),
+                    );
+                }
+            }
+            match queue.record_generation_submitted(ctx, candidate, &pull_request) {
+                Ok(write) => Ok(write.map(|_| None)),
+                // The helper left a pull request on a repository this project
+                // has not registered: a configuration fault between the
+                // worktree's origin and the project's, which no retry and no
+                // agent can repair. Halt loudly rather than loop on it.
+                Err(AppError::Validation(detail)) => Ok(record_infrastructure_failure(
+                    queue,
+                    ctx,
+                    candidate,
+                    VerificationFailureDisposition::Permanent,
+                    &detail,
+                )?
+                .map(Some)),
+                Err(error) => Err(error),
+            }
+        }
+        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
+            queue, ctx, actuator, candidate, &display,
+        )?
+        .map(|_| Some(TickResult::Returned))),
+        Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
+            queue,
+            ctx,
+            candidate,
+            VerificationFailureDisposition::Retryable,
+            &detail,
+        )?
+        .map(Some)),
     }
 }
 

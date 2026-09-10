@@ -21,8 +21,8 @@ use storyhook::error::AppError;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
-    VerificationProblem, VerificationQueue,
+    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{
     ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
@@ -2858,6 +2858,487 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
             .read(|tx| tx.verification_incident())
             .unwrap()
             .is_none()
+    );
+}
+
+/// A fresh lease for `story_id`, rooted under `root`.
+fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story_id.into(),
+        repository_path: root.to_path_buf(),
+        worktree_path: root.join(".claude/worktrees").join(story_id),
+        branch: format!("worktree-{story_id}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: root.join("tmux.sock"),
+        },
+    }
+}
+
+/// A story dispatched from a worktree and moved to `verifying` from inside
+/// it: the lease follows the transition, exactly as `story move` records it
+/// (SH-647). With `url`, the agent (or an earlier generation) linked a PR.
+fn leased_submission(
+    fixture: &ServiceFixture,
+    root: &std::path::Path,
+    title: &str,
+    url: Option<&str>,
+) -> (String, StoryCleanupLease) {
+    let ctx = fixture.ctx();
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: title.into(),
+            priority: Some(Priority::High.as_str().to_string()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    if let Some(url) = url {
+        PrLinkService::new(&ctx).link(&id, url, true).unwrap();
+    }
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let lease = lease_for(root, &id);
+    append_cleanup_lease(fixture, &id, lease.clone());
+    (id, lease)
+}
+
+fn story_row(fixture: &ServiceFixture, id: &str) -> storyhook::store::StoryRow {
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", id).unwrap()))
+        .unwrap()
+        .unwrap()
+}
+
+fn submitted_pr(url: &str, number: u64, adopted: bool) -> SubmittedPullRequest {
+    SubmittedPullRequest {
+        url: url.into(),
+        number,
+        base: "dev".into(),
+        head_oid: "0123abcd".into(),
+        adopted,
+    }
+}
+
+fn submitting_actuator(
+    outcome: VerificationOutcome,
+    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+) -> FakeActuator {
+    FakeActuator {
+        outcome,
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+        submission,
+        submitted: Mutex::new(Vec::new()),
+    }
+}
+
+/// The target: a leased story with no pull request is submitted first — the
+/// link and a SUBMITTED comment land under the generation guard — and then
+/// verified in the same tick against the pull request the helper opened.
+#[test]
+fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, lease) = leased_submission(&fixture, root.path(), "submit me", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, false))),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Completed
+    );
+
+    assert_eq!(
+        actuator.submitted.lock().unwrap().as_slice(),
+        std::slice::from_ref(&id)
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(
+        row.state, "done",
+        "verification ran on the submitted pull request"
+    );
+    let submitted_comment = row
+        .snapshot
+        .comments
+        .iter()
+        .find(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+        .expect("the submission is recorded on the story");
+    assert!(
+        submitted_comment.text.contains(&lease.branch),
+        "{}",
+        submitted_comment.text
+    );
+    assert!(
+        submitted_comment.text.contains(PR_ONE),
+        "{}",
+        submitted_comment.text
+    );
+    assert!(
+        submitted_comment.text.contains("opened"),
+        "{}",
+        submitted_comment.text
+    );
+    let links = fixture
+        .store()
+        .read(|tx| tx.pr_links(fixture.project()))
+        .unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].1.url, PR_ONE);
+    assert!(links[0].1.close_on_merge);
+    assert_eq!(links[0].1.status, "merged");
+}
+
+/// Every leased generation is submitted, linked pull request or not: after a
+/// RED return the agent only commits, so the push is what carries the fix.
+#[test]
+fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verifying() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "fixed", Some(PR_ONE));
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, true))),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Completed
+    );
+
+    assert_eq!(
+        actuator.submitted.lock().unwrap().as_slice(),
+        std::slice::from_ref(&id),
+        "submitted exactly once, then verified"
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "done");
+    let submitted_comments = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+        .count();
+    assert_eq!(submitted_comments, 1);
+    assert!(row.snapshot.comments.iter().any(|comment| {
+        comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX) && comment.text.contains("adopted")
+    }));
+}
+
+/// An unleased story is not the verifier's to push: it is returned naming the
+/// cause — the story entered `verifying` from outside its worktree — and the
+/// actuator is never asked to submit.
+#[test]
+fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_attempt() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let ctx = fixture.ctx();
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "moved from the main checkout".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let root = scratch_dir();
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, false))),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Returned
+    );
+
+    assert!(actuator.submitted.lock().unwrap().is_empty());
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("no cleanup lease"), "{}", notified[0]);
+    assert!(
+        notified[0].contains("story move <id> verifying"),
+        "{}",
+        notified[0]
+    );
+}
+
+/// A refusal the helper classes as the agent's returns the story with the
+/// helper's own words — the dirty files — and never reaches verification.
+#[test]
+fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        Some(Err(SubmissionFailure::Refused {
+            reason: "dirty-worktree".into(),
+            display: "story.sh submit: SH-1's worktree has uncommitted changes. Dirty: src/lib.rs."
+                .into(),
+        })),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Returned
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("Dirty: src/lib.rs")),
+        "the diagnosis is durable on the story"
+    );
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("Dirty: src/lib.rs"), "{}", notified[0]);
+    let links = fixture
+        .store()
+        .read(|tx| tx.pr_links(fixture.project()))
+        .unwrap();
+    assert!(links.is_empty(), "a refused submission links nothing");
+}
+
+/// Infrastructure is the verifier's: a retryable incident is recorded, the
+/// story stays in `verifying`, and the next tick re-runs the same idempotent
+/// steps — adopting whatever the failed attempt left on GitHub.
+#[test]
+fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retries() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let (id, _) = leased_submission(&fixture, root.path(), "flaky github", None);
+    let failing = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        Some(Err(SubmissionFailure::Infrastructure {
+            detail: "gh could not list pull requests: error connecting to api.github.com".into(),
+        })),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &failing).unwrap(),
+        TickResult::RetryLater
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "verifying", "the story is still the verifier's");
+    assert!(row.awaiting.is_none());
+    assert!(
+        failing.notified.lock().unwrap().is_empty(),
+        "the agent is not bothered"
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident())
+        .unwrap()
+        .expect("an incident is recorded");
+    assert!(
+        incident.detail.contains("api.github.com"),
+        "{}",
+        incident.detail
+    );
+    assert!(!incident.halted);
+
+    // GitHub came back: the crashed attempt's pull request is adopted and the
+    // story proceeds to verification.
+    let recovered = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, true))),
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &recovered).unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(story_row(&fixture, &id).state, "done");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none(),
+        "the incident clears with the generation"
+    );
+}
+
+/// The helper's answer and the story's own link must name one pull request.
+#[test]
+fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "two PRs", Some(PR_ONE));
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        Some(Ok(submitted_pr(PR_TWO, 2, true))),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Returned
+    );
+
+    assert_eq!(story_row(&fixture, &id).state, "in-progress");
+    let notified = actuator.notified.lock().unwrap();
+    assert!(
+        notified[0].contains(PR_ONE) && notified[0].contains(PR_TWO),
+        "{}",
+        notified[0]
+    );
+}
+
+/// A submission that lands on a repository the project has not registered is
+/// a configuration fault between the worktree's origin and the project's:
+/// never linked, and the queue halts loudly rather than re-pushing forever.
+#[test]
+fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "elsewhere", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Merged {
+            tree: "must-not-run".into(),
+            detail: "must-not-run".into(),
+        },
+        Some(Ok(submitted_pr(
+            "https://github.com/other/repo/pull/9",
+            9,
+            false,
+        ))),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Halted
+    );
+
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident())
+        .unwrap()
+        .expect("a halting incident is recorded");
+    assert!(incident.halted);
+    assert!(
+        incident.detail.contains("not registered"),
+        "{}",
+        incident.detail
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.pr_links(fixture.project()))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A fake whose submission moves the story out of `verifying` underneath the
+/// verifier — the agent reclaiming its story mid-submit.
+struct MovingActuator<'a> {
+    fixture: &'a ServiceFixture,
+    story_id: String,
+}
+
+impl VerificationActuator for MovingActuator<'_> {
+    fn submit(
+        &self,
+        _candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        StoryService::new(&self.fixture.ctx())
+            .set_state(&self.story_id, "in-progress", None, None, None)
+            .unwrap();
+        Ok(submitted_pr(PR_ONE, 1, false))
+    }
+
+    fn verify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        panic!("a superseded generation must never be verified")
+    }
+
+    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        panic!("nothing is returned to an agent that already took its story back")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        panic!("nothing landed, nothing to reap")
+    }
+}
+
+/// A recorded submission belongs to its generation: a story taken back while
+/// the helper ran is left exactly as the agent left it — no link, no comment,
+/// no verification.
+#[test]
+fn a_submission_recorded_after_the_generation_moved_is_superseded() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "taken back", None);
+    let actuator = MovingActuator {
+        fixture: &fixture,
+        story_id: id.clone(),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        TickResult::Returned
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.pr_links(fixture.project()))
+            .unwrap()
+            .is_empty()
     );
 }
 
