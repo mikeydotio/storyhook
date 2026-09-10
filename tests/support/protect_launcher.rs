@@ -118,6 +118,12 @@ pub(super) const ADMITTED_READER_ARGS: [&str; 9] = [
     "ensure-cli",
 ];
 
+/// Terminal verbs the argv contract admits (SH-632): `capture` reads a pane
+/// and `doctor` runs `story doctor --json` (never `--fix`) plus a tmux probe
+/// window — terminal and domain operations, never an installed file, the
+/// distinction SH-588 drew for dispatch. Neither takes an option.
+pub(super) const ADMITTED_TERMINAL_ARGS: [&str; 3] = ["capture TST-1", "capture 1", "doctor"];
+
 /// Dispatch forms the argv contract admits (SH-588): one target, the helper's
 /// own provider/model/effort/speed/mode flags, no managed-file operand.
 pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 8] = [
@@ -133,14 +139,20 @@ pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 8] = [
 
 /// Argument lists no entry point may be admitted with: mutating verbs, unknown
 /// verbs, and malformed selectors or reader options.
-pub(super) const REJECTED_ARGS: [&str; 30] = [
+pub(super) const REJECTED_ARGS: [&str; 36] = [
     "",
     "create --title x",
     "sync",
     "handoff",
     "triage",
-    "doctor",
-    "capture TST-1",
+    "doctor extra",
+    "doctor --fix",
+    "doctor TST-1",
+    "capture",
+    "capture --help",
+    "capture TST-1 extra",
+    "capture ../TST-1",
+    "capture TST-1 TST-2",
     "reset TST-1",
     "reap TST-1",
     "notify TST-1 x",
@@ -252,7 +264,7 @@ fn installed_launcher_reader_grammar() {
     );
     for prefix in INTERPRETER_PREFIXES {
         for selector in PROJECT_SELECTORS {
-            for args in ADMITTED_READER_ARGS {
+            for args in ADMITTED_READER_ARGS.iter().chain(&ADMITTED_TERMINAL_ARGS) {
                 let text = format!("{prefix}{launcher} {selector}{args}");
                 for codex in [false, true] {
                     assert_eq!(ask(&harness, &text, codex), serde_json::json!({}), "{text}");
