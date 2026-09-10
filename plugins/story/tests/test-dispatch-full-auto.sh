@@ -63,6 +63,25 @@ case "$attended_commands $ordinary_commands $full_commands" in
   *set-environment*) fail_test "a lane marker was written to tmux session-global environment" ;;
 esac
 
+# SH-657: an engine lane runs under the tool-call ceiling its stall clock is
+# derived from. The daemon hands the helper STORY_LANE_TOOL_CEILING_MS; the
+# helper pins it on the lane's window as BASH_MAX_TIMEOUT_MS, after the
+# marker pair so the exact marker substring above stays intact. Only an
+# engine lane, and only when the daemon actually said a number.
+case "$attended_commands $ordinary_commands $full_commands" in
+  *BASH_MAX_TIMEOUT_MS*) fail_test "no lane pins a tool ceiling the daemon did not hand it" ;;
+esac
+ceiling_full=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_LANE_TOOL_CEILING_MS=600000   bash "$SCRIPT" dispatch "$id" --auto --full-auto 2>&1)
+ceiling_full_commands=$(jqf "$ceiling_full" '.commands|join(" ")')
+assert_contains "$ceiling_full_commands"   "-e STORYHOOK_AUTO= -e STORYHOOK_FULL_AUTO=$id -e STORYHOOK_DISPATCH=1 -e BASH_MAX_TIMEOUT_MS=600000 "   "Full Auto lane: the daemon's tool ceiling is pinned on the window after the markers"
+ceiling_ordinary=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_LANE_TOOL_CEILING_MS=600000   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
+case "$(jqf "$ceiling_ordinary" '.commands|join(" ")')" in
+  *BASH_MAX_TIMEOUT_MS*) fail_test "an ordinary --auto lane has no stall clock over it and pins no ceiling" ;;
+esac
+ceiling_bad=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_LANE_TOOL_CEILING_MS=ten-minutes   bash "$SCRIPT" dispatch "$id" --auto --full-auto 2>&1)
+assert_eq "$(jqf "$ceiling_bad" .ok)" "false" "a non-numeric lane ceiling is refused, not passed along"
+assert_contains "$ceiling_bad" "STORY_LANE_TOOL_CEILING_MS" "the refusal names the variable"
+
 # Non-Full-Auto JSON remains compatible. Full Auto alone identifies itself,
 # while reusing the exact provider default SH-511 already proved live.
 assert_eq "$(jqf "$attended" 'has("full_auto")')" "false" \

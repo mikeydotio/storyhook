@@ -92,6 +92,11 @@ pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
 /// share one source (SH-657's council verdict, `story show SH-657`).
 pub const HOST_TOOL_CALL_CEILING_SECS: u64 = 600;
 
+/// The environment name through which an engine lane's dispatch is told
+/// [`HOST_TOOL_CALL_CEILING_SECS`], in milliseconds; `story.sh` forwards it
+/// onto the lane's `tmux new-window -e` boundary as `BASH_MAX_TIMEOUT_MS`.
+pub const LANE_TOOL_CEILING_ENV: &str = "STORY_LANE_TOOL_CEILING_MS";
+
 /// How much slack the ceiling carries over the derived worst case.
 ///
 /// Stated as its own named factor rather than folded into the product, so a
@@ -2541,6 +2546,17 @@ pub(crate) fn run_shell_dispatch(
         .env("STORY_TARGET_SESSION", project)
         .env("STORY_CREATE_SESSION", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
+    if full_auto {
+        // The lane runs under the very ceiling its stall clock derives from
+        // (SH-657): story.sh hands this to the agent's window as
+        // `BASH_MAX_TIMEOUT_MS`, so the longest foreground tool call the
+        // agent can make and the silence the engine tolerates share one
+        // constant rather than one being a cited host default.
+        command.env(
+            LANE_TOOL_CEILING_ENV,
+            (HOST_TOOL_CALL_CEILING_SECS * 1000).to_string(),
+        );
+    }
 
     let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
         CaptureError::Stage(detail) => {
