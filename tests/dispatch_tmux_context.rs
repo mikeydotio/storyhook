@@ -215,19 +215,20 @@ printf '{{"ok":true,"socket":"%s","argv":"%s"}}\n' "$socket" "$*"
 
 #[test]
 fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
-    use storyhook::service::engine::{Dispatcher, ShellDispatcher};
+    use storyhook::service::engine::{Dispatcher, ShellDispatcher, WindowProbe};
 
     const RESULT_ENV: &str = "STORY_ENGINE_TMUX_RESULT";
     if let Some(result_path) = std::env::var_os(RESULT_ENV) {
         // Process-local environment poisoning cannot race sibling Rust tests.
         let env = TestEnv::isolated();
         let dispatcher = ShellDispatcher::new("unused-helper", env.environment());
-        let alive = dispatcher.window_alive("@1");
+        let probe = dispatcher.probe_window("@1");
         let stopped = dispatcher.kill_window("@1");
         std::fs::write(
             result_path,
             serde_json::json!({
-                "alive": alive,
+                "alive": probe == WindowProbe::Alive,
+                "probe": format!("{probe:?}"),
                 "stop_error": stopped.err().map(|error| error.to_string()),
             })
             .to_string(),

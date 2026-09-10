@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
 import {
   contrastRatio,
@@ -29,6 +29,7 @@ type EngineLane = {
   story: string | null;
   dispatched_at: string | null;
   last_observed_at: string;
+  last_progress_at: string | null;
   outcome: string | null;
   outcome_detail: string | null;
 };
@@ -87,6 +88,8 @@ function run(
         story,
         dispatched_at: dispatched,
         last_observed_at: now.toISOString(),
+        last_progress_at: now.toISOString(),
+        probe_detail: null,
         outcome: null,
         outcome_detail: null,
       },
@@ -96,6 +99,8 @@ function run(
         story: null,
         dispatched_at: null,
         last_observed_at: now.toISOString(),
+        last_progress_at: null,
+        probe_detail: null,
         outcome: null,
         outcome_detail: null,
       },
@@ -447,6 +452,84 @@ test("an ambiguous Abandon acknowledgement retains the stopped alert", async ({ 
   await expect(page.locator(".engine-alert-ack")).toBeEnabled();
 });
 
+type StoryFacts = { state: string; awaiting: string | null };
+
+async function readStory(
+  request: APIRequestContext,
+  slug: string,
+  id: string,
+): Promise<StoryFacts> {
+  const response = await request.get(
+    `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`,
+    { headers: { "X-Storyhook-Token": DASHBOARD_TOKEN } },
+  );
+  const text = await response.text();
+  expect(response.status(), text).toBe(200);
+  const body = JSON.parse(text) as { story: { story: StoryFacts } };
+  return { state: body.story.story.state, awaiting: body.story.story.awaiting };
+}
+
+/**
+ * Polls the engine status until the run holding `story` is `running` with
+ * that lane `working` and observed alive by a steady pass, and returns it.
+ *
+ * Fails immediately -- not at the deadline -- the moment the run is no
+ * longer running or the lane carries an outcome, naming both: the failure
+ * SH-626 was filed on is a lane quarantined `window-gone` and a run drained
+ * within one second, and a poll that kept waiting through that would report
+ * a timeout instead of the verdict.
+ */
+async function observedWorkingRun(
+  request: APIRequestContext,
+  slug: string,
+  story: string,
+): Promise<EngineRun> {
+  const deadline = Date.now() + REAL_ENGINE_TIMEOUT;
+  let last = "";
+  for (;;) {
+    const response = await request.get(`/api/repos/${encodeURIComponent(slug)}/engine`, {
+      headers: { "X-Storyhook-Token": DASHBOARD_TOKEN },
+    });
+    const text = await response.text();
+    expect(response.status(), text).toBe(200);
+    const body = JSON.parse(text) as { result: string; runs: EngineRun[] };
+    expect(body.result).toBe("ok");
+    // A quarantined lane is released back to idle with its story cleared,
+    // so the run is also recognised by the lane's outcome detail and by
+    // its quarantine series -- the defect must fail here by name, not at
+    // the deadline as "no run holds the story".
+    const holds = (lane: EngineLane) => lane.story === story || lane.outcome_detail === story;
+    const candidate = body.runs.find(
+      (run) =>
+        run.lanes.some(holds) ||
+        run.recent_quarantines.some((quarantine) => quarantine.story_id === story),
+    );
+    if (candidate) {
+      const lane = candidate.lanes.find(holds) ?? candidate.lanes[0];
+      const verdict = `run ${candidate.id} is ${candidate.state} (${candidate.stop_reason ?? "no stop reason"}); lane ${lane.index} is ${lane.state}, outcome ${lane.outcome ?? "none"} (${lane.outcome_detail ?? "no detail"}), last_progress_at ${lane.last_progress_at ?? "null"}`;
+      // A `dispatching` lane carries the story's pre-claim state in
+      // `outcome` (the rollback stash, `fill_idle_lanes`), so only a lane
+      // past dispatch is judged by its outcome.
+      const pending = lane.state === "dispatching" || lane.state === "working";
+      expect(
+        candidate.state === "running" && pending && (lane.state === "dispatching" || lane.outcome === null),
+        `the daemon's own steady pass must observe the dispatched lane as alive and leave it working: ${verdict}`,
+      ).toBe(true);
+      if (lane.state === "working" && lane.last_progress_at !== null) {
+        return candidate;
+      }
+      last = verdict;
+    } else {
+      last = `no run holds ${story}: ${JSON.stringify(body.runs)}`;
+    }
+    expect(
+      Date.now() < deadline,
+      `no steady pass observed ${story} working within ${REAL_ENGINE_TIMEOUT}ms; last reading: ${last}`,
+    ).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 test("Full Auto claims through the real daemon and leaves a durable acknowledged outcome", async ({
   page,
   request,
@@ -459,6 +542,9 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await page.goto("/");
   await openProject(page, ENGINE_PROJECT);
 
+  const slug = await projectSlug(request, ENGINE_PROJECT);
+  const priorState = (await readStory(request, slug, ENGINE_STORY_ID)).state;
+
   await openProjectEngineModal(page);
   const lanes = page.locator("#engine-lanes");
   await expect(lanes).toBeEnabled();
@@ -469,25 +555,19 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running", {
     timeout: REAL_ENGINE_TIMEOUT,
   });
-  const slug = await projectSlug(request, ENGINE_PROJECT);
-  const statusResponse = await request.get(`/api/repos/${slug}/engine`, {
-    headers: { "X-Storyhook-Token": DASHBOARD_TOKEN },
-  });
-  expect(statusResponse.status()).toBe(200);
-  const statusBody = (await statusResponse.json()) as {
-    result: string;
-    runs: EngineRun[];
-  };
-  expect(statusBody.result).toBe("ok");
-  const liveRun = statusBody.runs.find(
-    (candidate) =>
-      candidate.state === "running" &&
-      candidate.lanes.some((lane) => lane.story === ENGINE_STORY_ID),
-  );
-  expect(
-    liveRun,
-    `expected one running engine lane for ${ENGINE_STORY_ID}: ${JSON.stringify(statusBody)}`,
-  ).toBeDefined();
+
+  // SH-626: wait for the daemon's OWN steady pass to observe the lane and
+  // leave it working. A lane matched by story id alone is satisfied by a
+  // `dispatching` lane that no pass has looked at yet, and the very next
+  // pass runs within one change-poll interval of dispatch returning -- so
+  // that shape only ever proved the browser beat the reconciler, and lost
+  // 1 run in 5 under load. `last_progress_at` is seeded by the first pass
+  // that finds the lane alive (never by dispatch itself), so `working` with
+  // it set is positive evidence the daemon's liveness probe answered
+  // "alive", where a one-second `last_observed_at` cannot be ordered against
+  // `dispatched_at` at all (SH-336). Anything that ends the run, or writes
+  // an outcome onto the lane, is the defect and fails at once by name.
+  const liveRun = await observedWorkingRun(request, slug, ENGINE_STORY_ID);
 
   const stopResponse = await request.post(`/api/repos/${slug}/engine/stop`, {
     headers: MUTATION_HEADERS,
@@ -510,6 +590,16 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await expect(alert).toContainText("finished");
   await alert.locator(".engine-alert-ack").click();
   await expect(alert).not.toHaveClass(/open/);
+
+  // Stop-now returns the story to the state it was claimed from, and a lane
+  // no pass ever quarantined leaves no `awaiting` behind: a quarantine that
+  // landed inside `draining` is cleared from the lane silently by stop-now
+  // (`clear_quarantined_lane`) but its block reason would still be on the
+  // story, which is the one place the SH-626 verdict could hide from the
+  // assertions above.
+  const restored = await readStory(request, slug, ENGINE_STORY_ID);
+  expect(restored.state).toBe(priorState);
+  expect(restored.awaiting, `story ${ENGINE_STORY_ID} after stop-now: ${JSON.stringify(restored)}`).toBeNull();
 });
 
 test("unacknowledged runs advance newest-first with the last three linked quarantines", async ({
@@ -968,6 +1058,34 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await page.clock.runFor(1_000);
   await expect(elapsed).not.toHaveText(beforeTick || "");
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
+});
+
+/**
+ * SH-626: a lane whose pane tmux could not be asked about is loud on the
+ * status surface, not only in the daemon journal. The daemon carries what
+ * tmux said on the lane (`probe_detail`); the strip shows the fact and the
+ * title carries the words. A lane tmux answers for shows nothing.
+ */
+test("the lane strip names a lane whose liveness probe went unanswered", async ({ page }) => {
+  const current = run("alpha", "AA-12");
+  current.lanes[0].probe_detail =
+    "tmux exited exit status: 1 answering the liveness probe for `%1`: FAKE_TMUX_IMPLEMENTATION: unbound variable";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
+
+  const lanes = page.locator(".engine-lane");
+  await expect(lanes.nth(0).locator(".engine-lane-probe")).toHaveText("liveness unanswered");
+  await expect(lanes.nth(0)).toHaveAttribute(
+    "title",
+    /liveness unanswered: tmux exited exit status: 1 .*unbound variable/,
+  );
+  await expect(lanes.nth(1).locator(".engine-lane-probe")).toHaveCount(0);
+  await expect(lanes.nth(1)).toHaveAttribute("title", /^Lane 2: idle$/);
 });
 
 test("the live modal guards and reconciles pause and resume", async ({ page }) => {

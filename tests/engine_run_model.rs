@@ -98,6 +98,7 @@ fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
         last_progress_at: None,
         outcome: None,
         outcome_detail: None,
+        probe_detail: None,
     }
 }
 

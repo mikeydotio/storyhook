@@ -10,13 +10,19 @@
 //! states for `github_poll::tick` versus `run_check`.
 //!
 //! No daemon, no thread, no sleep: both functions are plain `pub fn`s over a
-//! `Store`, called directly against a `ServiceFixture`. `window_alive`'s
+//! `Store`, called directly against a `ServiceFixture`. `probe_window`'s
 //! real implementation spawns `tmux display-message` against a session name
-//! that does not exist, which answers `false` in well under a second
-//! whether or not `tmux` itself is even installed on the machine running
-//! this suite — exactly the observation both `Interrupted` and `WindowGone`
-//! need, so no working tmux server is required to prove the wiring end to
-//! end.
+//! that does not exist, and a real tmux answers that in its own words —
+//! three empty fields at exit 0 (`display-message -t` is CMD_FIND_CANFAIL)
+//! from a running server, or "no server running" / "error connecting to …
+//! (No such file or directory)" without one — which the probe reads as
+//! `storyhook::service::engine::WindowProbe::Gone`, exactly the observation both `Interrupted` and
+//! `WindowGone` need. **A real `tmux` on PATH is therefore required** since
+//! SH-626: a machine with no tmux at all makes the probe `Unanswered`,
+//! which the council's verdict deliberately refuses to read as a dead window
+//! (the lane is judged by its stall clock instead), so these cases would
+//! report a working lane rather than a quarantined one. `tests/
+//! dispatch_tmux_context.rs` already carries the same requirement.
 //!
 //! # Why `STORYHOOK_DISPATCH_SCRIPT` is pinned here
 //!
