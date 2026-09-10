@@ -32,14 +32,17 @@ struct EmbeddedFile {
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
+pub(crate) mod registration;
+
+/// A provider storyhook installs its plugin into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PluginTarget {
+pub(crate) enum PluginTarget {
     ClaudeCode,
     Codex,
 }
 
 impl PluginTarget {
-    fn parse(raw: &str) -> Result<Self, AppError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, AppError> {
         match raw {
             "claude" | "claude-code" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
@@ -55,6 +58,39 @@ impl PluginTarget {
             Self::Codex => "codex",
         }
     }
+
+    /// The word `story plugin install|uninstall` takes for this provider —
+    /// the canonical one, never the deprecated alias.
+    pub(crate) const fn install_token(self) -> &'static str {
+        self.executable()
+    }
+
+    /// How the provider is named to a person.
+    pub(crate) const fn display_name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    /// The provider verbs a failed install replays to put the previous
+    /// registration back.
+    fn registration_verbs(self) -> registration::Verbs {
+        match self {
+            Self::ClaudeCode => registration::Verbs {
+                remove_plugin: remove_claude_plugin,
+                remove_marketplace: remove_claude_marketplace,
+                add_marketplace: add_claude_marketplace,
+                add_plugin: install_claude_plugin,
+            },
+            Self::Codex => registration::Verbs {
+                remove_plugin: remove_codex_plugin,
+                remove_marketplace: remove_codex_marketplace,
+                add_marketplace: add_codex_marketplace,
+                add_plugin: || add_codex_plugin().map(drop),
+            },
+        }
+    }
 }
 
 fn compatibility_alias_warning(raw: &str) -> Option<&'static str> {
@@ -66,15 +102,6 @@ fn home_dir() -> Result<PathBuf, AppError> {
     let home = std::env::var("HOME")
         .map_err(|_| AppError::Storage("could not determine home directory".to_string()))?;
     Ok(PathBuf::from(home))
-}
-
-/// Resolve the Claude Code config directory (~/.claude/).
-fn claude_dir() -> Result<PathBuf, AppError> {
-    Ok(home_dir()?.join(".claude"))
-}
-
-fn claude_plugins_dir() -> Result<PathBuf, AppError> {
-    Ok(claude_dir()?.join("plugins"))
 }
 
 /// Detect a StoryHook development checkout for the explicit dispatch fallback.
@@ -146,7 +173,7 @@ fn missing_message(target: PluginTarget) -> String {
 }
 
 fn preflight_provider(target: PluginTarget) -> Result<(), AppError> {
-    if target == PluginTarget::ClaudeCode && !claude_dir()?.exists() {
+    if target == PluginTarget::ClaudeCode && !home_dir()?.join(".claude").exists() {
         return Err(AppError::Storage(
             "Claude Code not detected (~/.claude/ does not exist). Install Claude Code first, \
              then retry `story plugin install claude`."
@@ -808,10 +835,26 @@ fn append_settings_guidance(message: &mut String, project_root: &Path) {
 }
 
 fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError> {
+    let target = PluginTarget::ClaudeCode;
+    // Recorded before anything is removed, so a failure after the removes can
+    // put it back (`registration`'s module doc). A failing remove still stops
+    // here: nothing has been destroyed yet, so there is nothing to undo.
+    let previous = registration::snapshot(target);
     remove_claude_plugin()?;
     remove_claude_marketplace()?;
-    add_claude_marketplace(source)?;
-    install_claude_plugin()?;
+    (|| {
+        add_claude_marketplace(source)?;
+        install_claude_plugin()
+    })()
+    .map_err(|failure| {
+        registration::undo(
+            target,
+            &target.registration_verbs(),
+            &previous,
+            source,
+            failure,
+        )
+    })?;
 
     let mut message = format!(
         "registered storyhook plugin via the `{MARKETPLACE_NAME}` marketplace (source: {source})\n"
@@ -894,12 +937,33 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
 }
 
 fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
+    let target = PluginTarget::Codex;
+    // Recorded before anything is removed, so a failure after the removes can
+    // put it back (`registration`'s module doc). A failing remove still stops
+    // here: nothing has been destroyed yet, so there is nothing to undo.
+    let previous = registration::snapshot(target);
     remove_codex_plugin()?;
     remove_codex_marketplace()?;
-    add_codex_marketplace(source)?;
-    let installed_path = add_codex_plugin()?;
-    verify_codex_install(&installed_path)?;
-    let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
+    // The sandbox step is inside the transaction on purpose: a plugin whose
+    // skills exec a launcher that was just rolled back is half-installed, and
+    // that step restores its own files, so the two rollbacks compose — files
+    // first, then registration — into exactly the previous state.
+    let (installed_path, launcher_path, rule_path) = (|| {
+        add_codex_marketplace(source)?;
+        let installed_path = add_codex_plugin()?;
+        verify_codex_install(&installed_path)?;
+        let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
+        Ok((installed_path, launcher_path, rule_path))
+    })()
+    .map_err(|failure| {
+        registration::undo(
+            target,
+            &target.registration_verbs(),
+            &previous,
+            source,
+            failure,
+        )
+    })?;
     let mut message = format!(
         "registered the `{MARKETPLACE_NAME}` marketplace (source: {source})\n\
          installed `{PLUGIN_REF}` at {installed_path}\n\
@@ -934,19 +998,104 @@ fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> 
 /// install* overwrites, which is a narrower and better-defined thing.
 pub fn managed_paths() -> Result<Vec<PathBuf>, AppError> {
     let home = home_dir()?;
-    let claude = claude_plugins_dir()?;
-    Ok(vec![
-        claude.join("cache").join(MARKETPLACE_NAME),
-        claude.join("marketplaces").join(MARKETPLACE_NAME),
-        claude.join(LEGACY_PLUGIN_DIR_NAME),
-        release_marketplaces_root()?,
-        home.join(".codex/plugins/cache").join(MARKETPLACE_NAME),
-        home.join(CODEX_LAUNCHER_RELATIVE)
+    // The directories are the same set `story doctor install` reads as a
+    // provider's residue (SH-640) — one definition, so the hook cannot protect
+    // a prefix the doctor is blind to, or the reverse.
+    let mut paths = residue_directories_in(&home, PluginTarget::ClaudeCode);
+    paths.push(release_marketplaces_root()?);
+    paths.extend(residue_directories_in(&home, PluginTarget::Codex));
+    paths.push(
+        codex_launcher_path(&home)
             .parent()
             .expect("the launcher has a parent directory")
             .to_path_buf(),
-        home.join(CODEX_RULE_RELATIVE),
-    ])
+    );
+    paths.push(codex_rule_path(&home));
+    Ok(paths)
+}
+
+/// The storyhook-owned artifacts a provider's plugin install leaves under the
+/// provider's own home that are **present on disk** right now (SH-640).
+///
+/// A registration can be destroyed without them — on 2026-09-09 a Claude Code
+/// marketplace refresh rewrote `known_marketplaces.json` without its
+/// `storyhook` key and removed the marketplace's install directory, while the
+/// plugin cache survived. That surviving cache is what tells "this provider
+/// was installed here and its registration is gone" apart from "this provider
+/// was never installed here"; the managed-path manifest cannot, because it
+/// names both providers' prefixes on every install regardless of target.
+///
+/// Storyhook's *files* count only while they carry the marker storyhook wrote
+/// them with — `remove_managed_file` preserves an unmarked file at the same
+/// path as the user's, and this reads it the same way. Directories are
+/// storyhook's by name: nothing else writes `storyhook` under a provider's
+/// plugin cache.
+///
+/// Derived from the same constants as [`managed_paths`] and pinned to it both
+/// ways by `every_residue_probe_is_managed_and_every_provider_prefix_is_probed`,
+/// so neither list can drift alone (SH-136).
+pub(crate) fn install_residue(target: PluginTarget) -> Result<Vec<PathBuf>, AppError> {
+    Ok(install_residue_in(&home_dir()?, target))
+}
+
+fn install_residue_in(home: &Path, target: PluginTarget) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in residue_directories_in(home, target) {
+        if dir.is_dir() {
+            found.push(dir);
+        }
+    }
+    if target == PluginTarget::Codex {
+        for (file, marker) in [
+            (codex_launcher_path(home), CODEX_LAUNCHER_MARKER),
+            (codex_rule_path(home), CODEX_RULE_MARKER),
+        ] {
+            if fs::read(&file).is_ok_and(|contents| contents.starts_with(marker.as_bytes())) {
+                found.push(file);
+            }
+        }
+    }
+    found
+}
+
+/// The directories a provider install owns outright, whether or not they
+/// exist: what [`install_residue_in`] probes and what
+/// [`remove_install_residue`] sweeps.
+fn residue_directories_in(home: &Path, target: PluginTarget) -> Vec<PathBuf> {
+    match target {
+        PluginTarget::ClaudeCode => {
+            let plugins = home.join(".claude/plugins");
+            vec![
+                plugins.join("cache").join(MARKETPLACE_NAME),
+                plugins.join("marketplaces").join(MARKETPLACE_NAME),
+                plugins.join(LEGACY_PLUGIN_DIR_NAME),
+            ]
+        }
+        PluginTarget::Codex => vec![home.join(".codex/plugins/cache").join(MARKETPLACE_NAME)],
+    }
+}
+
+/// Removes the residue **directories** a provider install left behind, so a
+/// deliberate `story plugin uninstall` leaves nothing for `story doctor
+/// install` to read as a lost registration. Returns what it removed.
+///
+/// Files are not swept here: the Codex launcher and rule have their own
+/// marker-checked removal that preserves a user's unmanaged file.
+fn remove_install_residue(target: PluginTarget) -> Result<Vec<PathBuf>, AppError> {
+    let home = home_dir()?;
+    let mut removed = Vec::new();
+    for dir in residue_directories_in(&home, target) {
+        if dir.is_dir() {
+            fs::remove_dir_all(&dir).map_err(|error| {
+                AppError::Storage(format!(
+                    "failed to remove installed copies at `{}`: {error}",
+                    dir.display()
+                ))
+            })?;
+            removed.push(dir);
+        }
+    }
+    Ok(removed)
 }
 
 /// The file `hooks/protect-install.sh` reads to learn what it must protect.
@@ -1015,13 +1164,11 @@ fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
         );
     }
 
-    let legacy = claude_plugins_dir()?.join(LEGACY_PLUGIN_DIR_NAME);
-    if legacy.exists() {
-        fs::remove_dir_all(&legacy)?;
-        removed.push(format!(
-            "removed legacy plugin directory {}",
-            legacy.display()
-        ));
+    // The provider's own uninstall leaves its plugin cache behind, and the
+    // doctor reads that cache as a lost registration (SH-640): sweep every
+    // directory this install owns, the legacy layout included.
+    for dir in remove_install_residue(PluginTarget::ClaudeCode)? {
+        removed.push(format!("removed installed copies at {}", dir.display()));
     }
 
     let claude_md_path = project_root.join("CLAUDE.md");
@@ -1049,6 +1196,9 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
     remove_codex_marketplace()?;
     let mut message =
         format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
+    for dir in remove_install_residue(PluginTarget::Codex)? {
+        message.push_str(&format!("\nremoved installed copies at {}", dir.display()));
+    }
 
     let home = home_dir()?;
     let launcher = codex_launcher_path(&home);
@@ -1236,6 +1386,78 @@ mod tests {
     }
 
     use super::*;
+
+    /// The residue the doctor reads and the prefixes the hook protects are one
+    /// set, split by provider: every probe sits under a managed prefix, and
+    /// every provider-owned prefix (all but the shared release root, which no
+    /// provider install owns) is probed. The directories share one definition
+    /// by construction; this is what catches a prefix added to `managed_paths`
+    /// by hand, or a managed file whose marker the doctor never learned to
+    /// read — a doctor blind to a prefix reads a lost install there as
+    /// never-installed (SH-640).
+    #[test]
+    fn every_residue_probe_is_managed_and_every_provider_prefix_is_probed() {
+        // SAFETY: single-threaded test setup; `managed_paths` reads it back in
+        // this thread, and the sibling test above sets the same value.
+        unsafe { std::env::set_var("HOME", "/tmp/storyhook-managed-paths-fixture") };
+        let home = Path::new("/tmp/storyhook-managed-paths-fixture");
+        let managed = managed_paths().expect("resolving managed paths");
+        let release_root = release_marketplaces_root().expect("resolving the release root");
+
+        let mut probes: Vec<PathBuf> = Vec::new();
+        for target in [PluginTarget::ClaudeCode, PluginTarget::Codex] {
+            probes.extend(residue_directories_in(home, target));
+        }
+        probes.push(codex_launcher_path(home));
+        probes.push(codex_rule_path(home));
+
+        for probe in &probes {
+            assert!(
+                managed.iter().any(|prefix| probe.starts_with(prefix)),
+                "residue probe `{}` is under no managed prefix:\n{managed:?}",
+                probe.display()
+            );
+        }
+        for prefix in managed.iter().filter(|prefix| **prefix != release_root) {
+            assert!(
+                probes.iter().any(|probe| probe.starts_with(prefix)),
+                "managed prefix `{}` has no residue probe, so a lost install there \
+                 reads as never-installed:\n{probes:?}",
+                prefix.display()
+            );
+        }
+    }
+
+    /// The marker rule on files, over a real directory: a marked launcher is
+    /// residue, an unmarked one at the same path is the user's.
+    #[test]
+    fn residue_counts_directories_by_name_and_files_by_marker() {
+        let home = storyhook_test_support::scratch_dir();
+        let home = home.path();
+        assert!(install_residue_in(home, PluginTarget::ClaudeCode).is_empty());
+        assert!(install_residue_in(home, PluginTarget::Codex).is_empty());
+
+        let cache = home.join(".claude/plugins/cache/storyhook/story/2.4.2");
+        fs::create_dir_all(&cache).unwrap();
+        assert_eq!(
+            install_residue_in(home, PluginTarget::ClaudeCode),
+            vec![home.join(".claude/plugins/cache/storyhook")]
+        );
+        assert!(
+            install_residue_in(home, PluginTarget::Codex).is_empty(),
+            "one provider's residue is not the other's"
+        );
+
+        let launcher = codex_launcher_path(home);
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        fs::write(&launcher, "#!/bin/sh\nmine\n").unwrap();
+        assert!(install_residue_in(home, PluginTarget::Codex).is_empty());
+        fs::write(&launcher, format!("{CODEX_LAUNCHER_MARKER}\nexec story\n")).unwrap();
+        assert_eq!(
+            install_residue_in(home, PluginTarget::Codex),
+            vec![launcher]
+        );
+    }
 
     #[test]
     fn targets_are_typed_and_the_error_lists_both() {

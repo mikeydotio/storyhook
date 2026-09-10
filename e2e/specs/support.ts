@@ -1622,38 +1622,42 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
   );
 }
 
-/** Waits until no CSS animation or transition is still running under `root`,
- * then answers `locator`'s bounding box (SH-420, SH-401).
+/** Waits until no CSS animation or transition is still running under `root`
+ * (SH-420, SH-401, SH-623).
  *
- * A spec that drives a pointer by coordinate — `page.mouse.move/down/up`
- * rather than `locator.click()`, which is the only way to put a re-render
- * *between* mousedown and mouseup — aims at a box it read earlier. If the
- * surface is still moving when that read happens, the coordinates name where
- * the control *was*: the drawer alone slides in over `transition: transform
- * 0.2s`, so a box read the instant `#drawer` gains `open` is off by most of
- * the drawer's own width. That is SH-420's finding ("a threshold test
- * measures a settled box") one axis over — there a moving box produced a
- * wrong *measurement*, here it produces a press on the wrong *element*.
+ * The one settle instrument. It used to exist twice, byte-similar — here in
+ * `settledBoundingBox` and in `responsive.mobile.spec.ts`'s
+ * `settleAndReadTapMin` — which is the SH-136 shape this project has paid for
+ * repeatedly; `tests/tap_target_comparison.rs` now pins that both callers go
+ * through this door and that the poll here is scoped the way SH-420 measured
+ * it must be.
  *
- * The settle test is `getAnimations({ subtree: true })` filtered to
- * `running`, exactly as SH-420's own sweep does — polled rather than slept
- * against, per this suite's standing objection to a magic-number wait. The
- * residual race SH-420 names applies here unchanged: this board polls and
- * re-animates cards, so a live poll can restart an animation at any moment.
- * Scoped to `root` rather than the document for that reason — the drawer's
- * own transition is what a drawer spec must wait out, and an unrelated card
- * animating on the board behind it is not this spec's business.
+ * The settle test is `getAnimations({ subtree: true })` filtered to `running`
+ * — polled rather than slept against, per this suite's standing objection to
+ * a magic-number wait. **Scoped to `root`, never `document`**: this board
+ * polls and re-animates cards, so a document-wide wait would hold a drawer
+ * measurement hostage to a toast animating somewhere else, and a live poll can
+ * restart a card animation at any moment (the residual race SH-420 names; it
+ * is in the failure message so the next reader does not re-derive it).
  *
- * A settled box can still be outside a scrollport (SH-577: Comments at y=727
- * in a 720px viewport). Scroll without focusing or activating the control,
- * then require the exact centre the callers press to hit it or a descendant.
- * Visibility and viewport intersection alone cannot rule out an overlay or
- * ancestor clipping. This prepares input; it never sends the gesture itself. */
-export async function settledBoundingBox(
-  root: Locator,
-  locator: Locator,
-): Promise<{ x: number; y: number; width: number; height: number }> {
-  await locator.scrollIntoViewIfNeeded();
+ * `paused` is deliberately not `running`. A paused animation is not moving,
+ * so a box read under it IS settled — just not at its final position. Nothing
+ * in the dashboard pauses an animation; the one place this suite does
+ * (`settle-the-measured-box.spec.ts`, holding the drawer mid-flight on
+ * purpose) relies on exactly this, and `settledBoundingBox`'s centre-hit half
+ * is what refuses a held frame whose target is still off-screen.
+ *
+ * **What a caller must get right is WHICH box it settles** (SH-623). The
+ * drawer's own right edge was inside the viewport before its transition had
+ * moved at all — `translateX(100%)` of a 0-wide box is 0px — while its close
+ * button, laid out past that 0-wide header, sat 100px off-screen. Settle the
+ * surface whose motion you are waiting out, then measure the element you are
+ * actually asserting about; a proxy claim on an ancestor is a different
+ * claim, and can be true before the motion starts.
+ *
+ * `surface` names the root in the failure message; the default is the
+ * locator's own description, which is derived rather than typed. */
+export async function awaitSettled(root: Locator, surface: string = String(root)): Promise<void> {
   await expect
     .poll(
       async () =>
@@ -1673,11 +1677,41 @@ export async function settledBoundingBox(
         ),
       {
         message:
-          "animations under this surface never settled, so a coordinate-driven " +
-          "press would aim at a moving box (SH-420/SH-401)",
+          `${surface}: animations under this surface never settled, so a ` +
+          "measurement or a coordinate-driven press taken now would aim at a " +
+          "moving box (SH-420/SH-401/SH-623). A live poll can restart card " +
+          "animations at any moment -- if this is flaking rather than hanging, " +
+          "that is the residual race, not a new defect.",
       },
     )
     .toEqual([]);
+}
+
+/** Waits until nothing under `root` is still animating (`awaitSettled`), then
+ * answers `locator`'s bounding box once its centre really reaches it
+ * (SH-420, SH-401, SH-577).
+ *
+ * A spec that drives a pointer by coordinate — `page.mouse.move/down/up`
+ * rather than `locator.click()`, which is the only way to put a re-render
+ * *between* mousedown and mouseup — aims at a box it read earlier. If the
+ * surface is still moving when that read happens, the coordinates name where
+ * the control *was*: the drawer alone slides in over `transition: transform
+ * 0.2s`, so a box read the instant `#drawer` gains `open` is off by most of
+ * the drawer's own width. That is SH-420's finding ("a threshold test
+ * measures a settled box") one axis over — there a moving box produced a
+ * wrong *measurement*, here it produces a press on the wrong *element*.
+ *
+ * A settled box can still be outside a scrollport (SH-577: Comments at y=727
+ * in a 720px viewport). Scroll without focusing or activating the control,
+ * then require the exact centre the callers press to hit it or a descendant.
+ * Visibility and viewport intersection alone cannot rule out an overlay or
+ * ancestor clipping. This prepares input; it never sends the gesture itself. */
+export async function settledBoundingBox(
+  root: Locator,
+  locator: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  await locator.scrollIntoViewIfNeeded();
+  await awaitSettled(root);
 
   let box: { x: number; y: number; width: number; height: number } | null = null;
   await expect.poll(async () => {

@@ -190,6 +190,34 @@ that lost, described this same merged design. `story show SH-420` carries the
 verdict; per SH-363 no tracked file names the council's own directory, which
 survives no fresh clone.
 
+**As built — the settled box is the measured box (SH-623).** The settle wait
+above is now one instrument, `support.ts`'s `awaitSettled(root, surface)`;
+`settleAndReadTapMin` and `settledBoundingBox` (the coordinate-press preparer,
+SH-401/SH-422) both go through it, and `tests/tap_target_comparison.rs` pins
+that wiring on both callers — it had existed as two byte-similar copies for as
+long as the second one did. The story that forced the split is a different
+fault from SH-420's, one level up: not *when* the box was measured but *which*
+box the wait was pointed at. `notice-dock-geometry.spec.ts` waited on `#drawer`'s
+own right edge being inside the viewport and then hit-tested `#drawer-close`.
+Measured (`settle-the-measured-box.spec.ts`, which pauses the drawer's own
+transitions and seeks across them): the closed drawer is `width: 0; transform:
+translateX(100%)`, and 100% of a 0-wide box is 0px, so its right edge reads
+exactly `1280.00` at **t=0**, before the transition has moved at all — while
+the header lays its `nowrap` items out past that 0-wide box and the close
+button's centre sits at `1377`, outside the viewport, where `elementFromPoint`
+answers null. The retired predicate was true before the motion started; a
+proxy claim on an ancestor is a different claim from the one the test makes.
+Two more specs carried the shape as arithmetic rather than a sighting and were
+fixed alongside: `responsive.mobile.spec.ts` and `detail-panel.spec.ts` both
+polled the drawer's *width* to its final value and then read transform-derived
+edges with exact equality — a rounded width reaches 480 while the transform is
+still up to 0.5px from rest across the bezier's flat tail (~24ms), and even an
+exact width does, because a border-box width is quantised to layout units
+while the transform is a float (~3ms). `awaitSettled` filters `running` and a
+paused animation is deliberately not running: nothing in the dashboard pauses,
+the witness pauses on purpose, and `settledBoundingBox`'s centre-hit half is
+what refuses a held frame whose target is still off-screen.
+
 ### Overlay widths (D5)
 
 `.toast-stack`/`.dispatch-history` both read `max-width: min(<rem-ceiling>,
