@@ -13,6 +13,17 @@ fn write_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write dispatcher fixture");
 }
 
+/// The `XDG_STATE_HOME` a child must be handed to resolve `env`'s own state
+/// home: the parent of `<...>/storyhook`, which is how `Environment` reads the
+/// variable back (`$XDG_STATE_HOME/storyhook`).
+fn xdg_state_home_of(env: &Environment) -> String {
+    env.state_home()
+        .parent()
+        .expect("a state home has a parent")
+        .to_string_lossy()
+        .to_string()
+}
+
 fn request() -> DispatchRequest {
     DispatchRequest {
         project: "alpha".to_string(),
@@ -94,10 +105,11 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","future":{"nested":true},"cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH""#,
+        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","state_home":"%s","future":{"nested":true},"cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH" "${XDG_STATE_HOME:-unset}""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
+    let expected_state_home = xdg_state_home_of(&env);
     let outcome = ShellDispatcher::new(&script, env)
         .dispatch(request())
         .unwrap();
@@ -110,6 +122,9 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     assert_eq!(outcome.payload["session"], "alpha");
     assert_eq!(outcome.payload["create"], "1");
     assert_eq!(outcome.payload["store"], expected_store);
+    // SH-633: a child told the store but not the state home found no daemon
+    // under its own state home and started a second one for the same store.
+    assert_eq!(outcome.payload["state_home"], expected_state_home);
     assert_eq!(outcome.payload["future"]["nested"], true);
 }
 
@@ -179,10 +194,11 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","store":"%s","closed_window":true,"worktree_status":"dirty","lease_env":%s,"cleanup":{"lease":%s,"postconditions":{"tmux_story_windows_absent":true}}}\n' "$*" "$STORYHOOK_STORE_PATH" "$STORYHOOK_REAP_LEASE_V1" "$STORYHOOK_REAP_LEASE_V1""#,
+        r#"printf '{"ok":true,"argv":"%s","store":"%s","state_home":"%s","closed_window":true,"worktree_status":"dirty","lease_env":%s,"cleanup":{"lease":%s,"postconditions":{"tmux_story_windows_absent":true}}}\n' "$*" "$STORYHOOK_STORE_PATH" "${XDG_STATE_HOME:-unset}" "$STORYHOOK_REAP_LEASE_V1" "$STORYHOOK_REAP_LEASE_V1""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
+    let expected_state_home = xdg_state_home_of(&env);
 
     let outcome = ShellDispatcher::new(&script, env)
         .unclaim(unclaim_request())
@@ -191,6 +207,7 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     assert_eq!(outcome.state, DispatchOutcomeState::Ok);
     assert_eq!(outcome.payload["argv"], "--project alpha unclaim ALPHA-7");
     assert_eq!(outcome.payload["store"], expected_store);
+    assert_eq!(outcome.payload["state_home"], expected_state_home);
     assert_eq!(outcome.payload["closed_window"], true);
     assert_eq!(outcome.payload["worktree_status"], "dirty");
     assert_eq!(
