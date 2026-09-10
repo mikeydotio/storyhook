@@ -2098,7 +2098,10 @@ fn reconciled_feature(repo: &MergeRepo) -> (String, String) {
     assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
     repo.write("f", "main changes the base file\n");
     repo.git(&["add", "f"]);
-    assert_ok(&repo.git(&["commit", "-qm", "main moves"]), "advancing main");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main moves"]),
+        "advancing main",
+    );
     assert_ok(&repo.git(&["checkout", "-q", "feature"]), "onto feature");
     repo.write("f", "reconciled\n");
     repo.git(&["add", "f"]);
@@ -2133,7 +2136,10 @@ fn a_pull_ref_lagging_its_branch_is_retried_not_reported_as_a_conflict() {
     assert_eq!(payload["result"], "infrastructure-failure");
     assert_eq!(payload["disposition"], "retryable");
     let detail = payload["detail"].as_str().unwrap();
-    assert!(detail.contains(&old), "the stale projection is named: {detail}");
+    assert!(
+        detail.contains(&old),
+        "the stale projection is named: {detail}"
+    );
     assert!(detail.contains(&new), "the branch tip is named: {detail}");
     assert!(
         detail.contains("refs/heads/feature"),
@@ -2159,7 +2165,10 @@ fn a_pull_ref_disagreeing_with_the_api_is_retryable_not_permanent() {
     repo.publish_origin(42, &old);
 
     let out = repo.refresh_submission(&open_pr_metadata(42, &new));
-    assert_ok(&out, "refreshing a submission whose API and pull ref disagree");
+    assert_ok(
+        &out,
+        "refreshing a submission whose API and pull ref disagree",
+    );
     let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
     assert_eq!(payload["result"], "infrastructure-failure");
     assert_eq!(payload["disposition"], "retryable");
@@ -2184,11 +2193,16 @@ fn an_agreed_head_proceeds_whether_or_not_it_conflicts() {
     assert_eq!(payload["result"], "refs-current", "{payload}");
     assert_eq!(payload["head"], new);
     assert_eq!(repo.rev_parse("refs/remotes/origin/pr/42"), new);
-    assert_eq!(
-        repo.git(&["rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"])
+    assert!(
+        !repo
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature"
+            ])
             .status
             .success(),
-        false,
         "reading the branch tip must not write a remote-tracking ref for it"
     );
 
@@ -2219,7 +2233,10 @@ fn a_head_branch_absent_from_origin_is_an_invalid_submission() {
     let repo = MergeRepo::new();
     let (old, _new) = reconciled_feature(&repo);
     repo.publish_origin(42, &old);
-    assert_ok(&repo.git(&["branch", "-D", "feature"]), "deleting the branch on origin");
+    assert_ok(
+        &repo.git(&["branch", "-D", "feature"]),
+        "deleting the branch on origin",
+    );
 
     let out = repo.refresh_submission(&open_pr_metadata(42, &old));
     assert_ok(&out, "refreshing a submission whose branch is gone");
