@@ -54,6 +54,28 @@
 //!    still succeeds) — the SH-306 doctrine that a gate's silence must never
 //!    be mistaken for "nothing needed reporting."
 //!
+//! # Where the artifact was written
+//!
+//! SH-630: the write-side migration guard (`src/migration_guard.rs`) and the
+//! login-agent install guard (`src/daemon/install_guard.rs`) both asked one
+//! question — *is this the `story` `$PATH` runs?* — and `$PATH` is the
+//! caller's own claim about itself. `PATH="$PWD/target/debug:$PATH" story …`
+//! made a worktree's debug binary "installed" in its own eyes and migrated
+//! the production store past what the real installed release understood.
+//! [`STORYHOOK_BUILD_DIR`] is the fact neither caller can rewrite: the
+//! directory cargo wrote this binary into, `OUT_DIR`'s third ancestor
+//! (`<profile dir>/build/<pkg>-<hash>/out`). A binary still inside it has
+//! not been installed by any mechanism this tree knows — `make install`,
+//! `story update` and `cargo install` all *copy out* — and both guards refuse
+//! it whatever `$PATH` says. Stamped verbatim, never canonicalized: the
+//! directory need not exist when this script runs, and the reader
+//! canonicalizes against the filesystem it actually has. An `OUT_DIR` of a
+//! shape this script does not understand stamps nothing and says so with a
+//! [`cargo::warning`]: guessing an ancestor would name a directory the
+//! binary does not land in, which turns the guard's refusal into a permit.
+//! No `OUT_DIR` at all (the standalone `tests/build_identity.rs` runner)
+//! stamps nothing, silently.
+//!
 //! # Why no `rerun-if-*` directive
 //!
 //! Emitting any `cargo::rerun-if-*` directive replaces cargo's default rerun
@@ -90,6 +112,10 @@ fn main() {
 
     if let Some(id) = build_id {
         println!("cargo::rustc-env=STORYHOOK_BUILD_ID={id}");
+    }
+
+    if let Some(dir) = resolve_build_dir() {
+        println!("cargo::rustc-env=STORYHOOK_BUILD_DIR={}", dir.display());
     }
 
     // Deliberately no cargo::rerun-if-changed or cargo::rerun-if-env-changed
@@ -193,6 +219,40 @@ fn validate_relative_path(path: &Path) -> io::Result<()> {
             io::ErrorKind::InvalidData,
             format!("embedded marketplace path is unsafe: {}", path.display()),
         ))
+    }
+}
+
+/// The directory cargo writes this package's binaries into, from `OUT_DIR`'s
+/// documented shape — see the module doc's "Where the artifact was written".
+///
+/// `None` with no warning when `OUT_DIR` is unset (a standalone run); `None`
+/// with a `cargo::warning` when it is set but is not `…/build/<pkg>-<hash>/out`,
+/// because a guessed ancestor is worse than no stamp.
+fn resolve_build_dir() -> Option<PathBuf> {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR")?);
+    let mut ancestors = out_dir.ancestors();
+    let leaf_is_out = ancestors
+        .next()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "out");
+    // `<pkg>-<hash>`: any name; its parent is what identifies the shape.
+    let _package = ancestors.next();
+    let under_build = ancestors
+        .next()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "build");
+    let profile_dir = ancestors.next();
+    match (leaf_is_out && under_build, profile_dir) {
+        (true, Some(dir)) if !dir.as_os_str().is_empty() => Some(dir.to_path_buf()),
+        _ => {
+            println!(
+                "cargo::warning=STORYHOOK_BUILD_DIR not stamped: OUT_DIR ({}) is not of the \
+                 form <profile dir>/build/<pkg>-<hash>/out, so the directory this binary \
+                 lands in cannot be named",
+                out_dir.display()
+            );
+            None
+        }
     }
 }
 
