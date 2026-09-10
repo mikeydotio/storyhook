@@ -4,6 +4,13 @@
 StoryHook story workspaces. The daemon invokes the same service once per day
 by default.
 
+It is not the primary reaper. The centralized verifier reaps a story's window,
+worktree, branch and caches on the green path (`verification-workflow.md`,
+"Green: merge, done, reap"); this command is a second path to the same
+resources with no story-state gate and wider authority (it deletes the remote
+branch), and SH-653 subordinates it to the verifier as that path's retry,
+never an independent one.
+
 ## Ownership and eligibility
 
 Cleanup authority comes only from a versioned `StoryCleanupLease` recorded in
