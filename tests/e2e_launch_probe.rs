@@ -136,9 +136,11 @@ fn the_launch_probe_is_wired_into_every_project_run() {
     );
 
     // The runner exports the selected project's name for the probe — after
-    // `--list` (no global setup runs there, so a filter selecting nothing is
-    // answered without a launch) and before the real run.
-    let list = offset_of(&runner, "--list --reporter=list", "scripts/run-e2e.sh");
+    // the `--list` probe (no global setup runs there, so a filter selecting
+    // nothing is answered without a launch) and before the real run. Since
+    // SH-625 the probe is `scripts/e2e-selection.sh`'s `e2e_list_selection`,
+    // which is where the `--list` flags themselves now live.
+    let list = offset_of(&runner, "e2e_list_selection ", "scripts/run-e2e.sh");
     let export = offset_of(
         &runner,
         "export E2E_PROJECT=\"$project\"",
