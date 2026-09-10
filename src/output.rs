@@ -133,6 +133,10 @@ pub struct EngineLaneView {
     pub state: EngineLaneState,
     pub story: Option<String>,
     pub elapsed_seconds: Option<u64>,
+    /// What the liveness probe last said when it did not say "alive"
+    /// (SH-626); absent while tmux answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -201,6 +205,7 @@ impl EngineRunView {
                     state: lane.state,
                     story: lane.story_id,
                     elapsed_seconds,
+                    probe_detail: lane.probe_detail,
                     outcome: lane.outcome,
                     outcome_detail: lane.outcome_detail,
                 }
@@ -1590,6 +1595,26 @@ fn render_engine_run(run: &EngineRunView) -> String {
                 .map(format_elapsed)
                 .unwrap_or_else(|| "-".to_string())
         ));
+    }
+    let unanswered: Vec<&EngineLaneView> = run
+        .lanes
+        .iter()
+        .filter(|lane| lane.probe_detail.is_some())
+        .collect();
+    if !unanswered.is_empty() {
+        // SH-626: a lane whose pane tmux could not be asked about is judged
+        // by its stall clock alone until tmux answers; say so where the
+        // operator is looking, not only in the daemon journal.
+        body.push_str(
+            "\nwindow liveness unanswered (judged by the stall clock until tmux answers):\n",
+        );
+        for lane in unanswered {
+            body.push_str(&format!(
+                "  lane {}: {}\n",
+                lane.index + 1,
+                lane.probe_detail.as_deref().unwrap_or_default()
+            ));
+        }
     }
     if !run.needs_human.is_empty() {
         body.push_str("\nneeds a human (no-auto):\n");

@@ -4,7 +4,7 @@ use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTar
 use storyhook::env::Environment;
 use storyhook::service::engine::{
     DispatchOutcome, DispatchOutcomeState, DispatchRequest, Dispatcher, ShellDispatcher,
-    UnclaimRequest,
+    UnclaimRequest, WindowProbe,
 };
 use storyhook::store::{EngineAgent, EngineSpeed};
 use storyhook_test_support::{DispatcherCall, DispatcherStep, FakeDispatcher, scratch_dir};
@@ -271,7 +271,7 @@ fn fake_dispatcher_scripts_calls_in_order_and_records_them() {
 
     assert_eq!(fake.dispatch(request()).unwrap(), refused);
     assert_eq!(fake.unclaim(unclaim_request()).unwrap(), refused);
-    assert!(!fake.window_alive("@7"));
+    assert!(matches!(fake.probe_window("@7"), WindowProbe::Gone { .. }));
     fake.kill_window("@7").unwrap();
     assert_eq!(
         fake.calls(),

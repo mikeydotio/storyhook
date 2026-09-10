@@ -377,6 +377,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
                     elapsed_seconds: Some(61),
+                    probe_detail: Some("tmux exited 1: unbound variable".to_string()),
                     outcome: None,
                     outcome_detail: None,
                 }],

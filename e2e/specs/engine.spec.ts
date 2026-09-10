@@ -88,6 +88,8 @@ function run(
         story,
         dispatched_at: dispatched,
         last_observed_at: now.toISOString(),
+        last_progress_at: now.toISOString(),
+        probe_detail: null,
         outcome: null,
         outcome_detail: null,
       },
@@ -97,6 +99,8 @@ function run(
         story: null,
         dispatched_at: null,
         last_observed_at: now.toISOString(),
+        last_progress_at: null,
+        probe_detail: null,
         outcome: null,
         outcome_detail: null,
       },
@@ -1054,6 +1058,34 @@ test("project launch is guarded once and becomes a live lane instrument", async 
   await page.clock.runFor(1_000);
   await expect(elapsed).not.toHaveText(beforeTick || "");
   await expect(page.locator(".engine-lane").nth(1)).toContainText("idle");
+});
+
+/**
+ * SH-626: a lane whose pane tmux could not be asked about is loud on the
+ * status surface, not only in the daemon journal. The daemon carries what
+ * tmux said on the lane (`probe_detail`); the strip shows the fact and the
+ * title carries the words. A lane tmux answers for shows nothing.
+ */
+test("the lane strip names a lane whose liveness probe went unanswered", async ({ page }) => {
+  const current = run("alpha", "AA-12");
+  current.lanes[0].probe_detail =
+    "tmux exited exit status: 1 answering the liveness probe for `%1`: FAKE_TMUX_IMPLEMENTATION: unbound variable";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
+
+  const lanes = page.locator(".engine-lane");
+  await expect(lanes.nth(0).locator(".engine-lane-probe")).toHaveText("liveness unanswered");
+  await expect(lanes.nth(0)).toHaveAttribute(
+    "title",
+    /liveness unanswered: tmux exited exit status: 1 .*unbound variable/,
+  );
+  await expect(lanes.nth(1).locator(".engine-lane-probe")).toHaveCount(0);
+  await expect(lanes.nth(1)).toHaveAttribute("title", /^Lane 2: idle$/);
 });
 
 test("the live modal guards and reconciles pause and resume", async ({ page }) => {

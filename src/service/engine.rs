@@ -215,6 +215,43 @@ pub enum LaneClassification {
     HardStop(HardStopKind),
 }
 
+/// What the liveness probe learned about a lane's window (SH-626).
+///
+/// Three answers, not two, because "tmux says the pane is dead" and "tmux
+/// could not be asked" are different facts and used to collapse into one
+/// `false` named `window-gone`. That is how a harness defect — the daemon's
+/// `tmux` double dying on an unset variable, exit 1 — was reported for months
+/// as a lane whose window had closed (SH-312's shape: an ambiguous outcome
+/// reported as a definite one; SH-576's: a confident diagnosis produced
+/// downstream of an unchecked failure). Each non-alive answer carries the
+/// reason in the probe's own words so the block reason names the cause.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowProbe {
+    /// The window holds a live process that is the agent it was launched with.
+    Alive,
+    /// tmux answered, and the answer is that the window is gone or no longer
+    /// holds the agent: the target cannot be found, the pane is dead, its
+    /// pid is not running, or its foreground command is something else.
+    Gone { detail: String },
+    /// tmux could not be asked, or answered in a shape the probe does not
+    /// understand: it could not be spawned, did not answer within
+    /// [`TMUX_TIMEOUT`], exited nonzero for a reason that is not "no such
+    /// target", or printed something other than the three fields requested.
+    /// A fact about the machine, not about the window.
+    Unanswered { detail: String },
+}
+
+impl WindowProbe {
+    /// The probe's own reason when the window is not simply alive.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Alive => None,
+            Self::Gone { detail } | Self::Unanswered { detail } => Some(detail),
+        }
+    }
+}
+
 /// One lane's facts as of one pass, gathered before anything is decided.
 ///
 /// Separating observation from classification is what lets the taxonomy be
@@ -228,8 +265,8 @@ pub struct LaneObservation {
     pub story_verifying: bool,
     /// Whether the agent blocked the story or set `awaiting` on it.
     pub agent_blocked: bool,
-    /// Whether the lane's window still runs the agent it was launched with.
-    pub window_alive: bool,
+    /// What the liveness probe learned about the lane's window.
+    pub window: WindowProbe,
     /// The story's current change-feed position, or `None` if it could not be
     /// resolved (a deleted story, say).
     pub head_global_seq: Option<i64>,
@@ -252,6 +289,9 @@ pub struct LaneObservation {
 pub struct ReconcileReport {
     /// The run this pass reconciled.
     pub run_id: RunId,
+    /// Lanes whose liveness probe could not be answered this pass, with the
+    /// probe's own reason (SH-626). Not a hard stop — see [`WindowProbe`].
+    pub unanswered: Vec<(u32, String)>,
     /// Lane indices freed because their story completed.
     pub completed: Vec<u32>,
     /// Lane indices held this pass because their story reached `verifying`.
@@ -318,11 +358,18 @@ pub fn classify(
     if observation.story_verifying {
         return LaneClassification::Verifying;
     }
-    if !observation.window_alive {
-        return LaneClassification::HardStop(match pass {
-            ReconcilePass::Steady => HardStopKind::WindowGone,
-            ReconcilePass::Restart => HardStopKind::Interrupted,
-        });
+    match observation.window {
+        // An unanswered probe contributes no evidence this pass (SH-626,
+        // council verdict on the story): it is a fact about the machine, not
+        // the window, so the lane is judged by the store fact D3 already makes
+        // primary — the stall clock below, which a dead agent cannot advance.
+        WindowProbe::Alive | WindowProbe::Unanswered { .. } => {}
+        WindowProbe::Gone { .. } => {
+            return LaneClassification::HardStop(match pass {
+                ReconcilePass::Steady => HardStopKind::WindowGone,
+                ReconcilePass::Restart => HardStopKind::Interrupted,
+            });
+        }
     }
     if pass == ReconcilePass::Restart {
         return LaneClassification::Progressing;
@@ -441,7 +488,7 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
-    fn window_alive(&self, window: &str) -> bool;
+    fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
 }
 
@@ -462,8 +509,10 @@ impl Dispatcher for StoreOnlyDispatcher {
         Err(store_only_dispatcher_error())
     }
 
-    fn window_alive(&self, _window: &str) -> bool {
-        false
+    fn probe_window(&self, _window: &str) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: store_only_dispatcher_error().to_string(),
+        }
     }
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
@@ -538,25 +587,96 @@ impl Dispatcher for ShellDispatcher {
         )
     }
 
-    fn window_alive(&self, window: &str) -> bool {
+    fn probe_window(&self, window: &str) -> WindowProbe {
         let mut command = self.tmux();
         command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let captured = match run_captured(command, TMUX_TIMEOUT) {
-            Ok(captured) if captured.status.success() => captured,
-            _ => return false,
+            Ok(captured) => captured,
+            Err(CaptureError::Timeout(_)) => {
+                return WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux did not answer the liveness probe for `{window}` within {}s",
+                        TMUX_TIMEOUT.as_secs()
+                    ),
+                };
+            }
+            Err(error) => {
+                return WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux could not be run for the liveness probe of `{window}`: {}",
+                        error.detail()
+                    ),
+                };
+            }
         };
-        let answer = String::from_utf8_lossy(&captured.stdout);
-        let mut fields = answer.trim_end().splitn(3, '\t');
-        let Some(pid) = fields.next().and_then(|raw| raw.parse::<i32>().ok()) else {
-            return false;
-        };
-        let Some(command) = fields.next() else {
-            return false;
-        };
-        if fields.next() != Some("0") || !pid_is_live(pid) {
-            return false;
+        if !captured.status.success() {
+            let stderr = String::from_utf8_lossy(&captured.stderr).trim().to_string();
+            // tmux exits 1 both for "no such target" and for anything else
+            // that went wrong; only its own vocabulary separates the two.
+            return if tmux_reports_a_missing_target(&stderr) {
+                WindowProbe::Gone {
+                    detail: format!("tmux cannot find `{window}`: {stderr}"),
+                }
+            } else {
+                WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux exited {} answering the liveness probe for `{window}`: {}",
+                        captured.status,
+                        if stderr.is_empty() {
+                            "(no stderr)"
+                        } else {
+                            &stderr
+                        }
+                    ),
+                }
+            };
         }
-        ProcessIdentity::from_process().matches(command)
+        let answer = String::from_utf8_lossy(&captured.stdout);
+        let answer = answer.trim_end_matches(['\r', '\n']);
+        let mut fields = answer.splitn(3, '\t');
+        let (Some(pid), Some(command), Some(dead)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "tmux answered the liveness probe for `{window}` with {answer:?}, not the three fields asked for"
+                ),
+            };
+        };
+        // `display-message -t` is `CMD_FIND_CANFAIL` in tmux itself: a target
+        // it cannot find is not an error, the format simply expands with no
+        // pane behind it — three empty fields, exit 0 (measured on tmux
+        // 3.7c). That IS tmux's answer that the pane is gone, in the only
+        // words it uses for it.
+        if pid.is_empty() && command.is_empty() && dead.is_empty() {
+            return WindowProbe::Gone {
+                detail: format!("tmux finds no pane `{window}`"),
+            };
+        }
+        let Ok(pid) = pid.parse::<i32>() else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "tmux answered the liveness probe for `{window}` with pane pid {pid:?}, not a number"
+                ),
+            };
+        };
+        if dead != "0" {
+            return WindowProbe::Gone {
+                detail: format!("tmux reports pane `{window}` dead (pane_dead={dead})"),
+            };
+        }
+        if !pid_is_live(pid) {
+            return WindowProbe::Gone {
+                detail: format!("pane `{window}`'s process {pid} is not running"),
+            };
+        }
+        if !ProcessIdentity::from_process().matches(command) {
+            return WindowProbe::Gone {
+                detail: format!(
+                    "pane `{window}` runs `{command}` (pid {pid}), not the agent it was launched with"
+                ),
+            };
+        }
+        WindowProbe::Alive
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
@@ -914,6 +1034,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let slug = self.project_slug()?;
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
+            unanswered: Vec::new(),
             completed: Vec::new(),
             verifying: Vec::new(),
             quarantined: Vec::new(),
@@ -935,9 +1056,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         // ---- apply: free completions, hold handoffs, quarantine hard stops
         let mut hard_stops = Vec::new();
         for (lane, classification, observation) in observed {
+            if let WindowProbe::Unanswered { detail } = &observation.window {
+                report.unanswered.push((lane.lane_index, detail.clone()));
+            }
             match classification {
                 LaneClassification::Progressing => {
-                    self.record_progress(&lane, observation.head_global_seq, pass)?;
+                    self.record_progress(
+                        &lane,
+                        observation.head_global_seq,
+                        &observation.window,
+                        pass,
+                    )?;
                 }
                 LaneClassification::Verifying => {
                     // Held, not freed: the story still owns a live worktree
@@ -945,7 +1074,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     // (SH-521). The story DID move to reach this handoff, so
                     // the stall clock restarts the same way a Progressing
                     // lane's does.
-                    if self.record_progress(&lane, observation.head_global_seq, pass)? {
+                    if self.record_progress(
+                        &lane,
+                        observation.head_global_seq,
+                        &observation.window,
+                        pass,
+                    )? {
                         report.verifying.push(lane.lane_index);
                     }
                 }
@@ -960,6 +1094,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         &lane,
                         kind,
                         observation.awaiting_reason.as_deref(),
+                        observation.window.detail(),
                         observation.head_global_seq,
                     )? {
                         report.quarantined.push((lane.lane_index, kind));
@@ -1062,7 +1197,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut observed = Vec::with_capacity(facts.len());
         for (lane, row) in facts {
             // The window probe is a subprocess, so it runs outside the read.
-            let window_alive = lane
+            let window = lane
                 .pane_id
                 .as_deref()
                 .filter(|pane| valid_pane_id(pane))
@@ -1072,7 +1207,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         .as_deref()
                         .map(|window| exact_window_target(slug, window))
                 })
-                .is_some_and(|target| self.dispatcher.window_alive(&target));
+                .map_or_else(
+                    || WindowProbe::Gone {
+                        detail: "the lane records neither a pane id nor a window name to probe"
+                            .to_string(),
+                    },
+                    |target| self.dispatcher.probe_window(&target),
+                );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             let observation = LaneObservation {
                 story_closed: row
@@ -1084,7 +1225,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 agent_blocked: row.as_ref().is_some_and(|row| {
                     row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
                 }),
-                window_alive,
+                window,
                 head_global_seq,
                 last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),
                 seconds_since_progress: lane
@@ -1103,6 +1244,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         Ok(observed)
     }
 
+    /// One activity-journal line per CHANGE in what the probe says about a
+    /// lane, never per pass — [`probe_journal_edge`] decides, this only
+    /// writes.
+    fn journal_probe_edge(&self, lane: &EngineLaneRecord, probe: &WindowProbe) {
+        let Some((level, message)) = probe_journal_edge(lane.probe_detail.as_deref(), probe) else {
+            return;
+        };
+        let context = format!(
+            "run={} lane={} story={}",
+            lane.run_id,
+            lane.lane_index,
+            lane.story_id.as_deref().unwrap_or("-")
+        );
+        crate::daemon::activity::emit(level, "engine/probe", "event", &context, &message);
+    }
+
     /// Records that a lane's story moved, so the stall clock restarts from the
     /// change rather than from the observation.
     ///
@@ -1117,11 +1274,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         &self,
         lane: &EngineLaneRecord,
         head_global_seq: Option<i64>,
+        probe: &WindowProbe,
         pass: ReconcilePass,
     ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut updated = lane.clone();
         updated.last_observed_at = observed_at.clone();
+        // What tmux last said, when it did not say "alive" (SH-626). Written
+        // every pass so status reads the current truth; JOURNALED only on
+        // the edge, because a live run is reconciled roughly once a second
+        // and a line per pass is the SH-263 self-noise shape.
+        updated.probe_detail = probe.detail().map(str::to_string);
+        if updated.probe_detail != lane.probe_detail {
+            self.journal_probe_edge(lane, probe);
+        }
         let moved = pass == ReconcilePass::Restart
             || match (head_global_seq, lane.last_progress_seq.map(GlobalSeq::get)) {
                 (Some(head), Some(recorded)) => head != recorded,
@@ -1187,13 +1353,29 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         lane: &EngineLaneRecord,
         kind: HardStopKind,
         existing_reason: Option<&str>,
+        window_detail: Option<&str>,
         head_global_seq: Option<i64>,
     ) -> Result<Option<EngineQuarantineRecord>, AppError> {
         let observed_at = self.ctx.now();
         let mut fired_reason = None;
         if lane.story_id.is_some() {
+            // The probe's own words travel with a window verdict (SH-626):
+            // "window-gone" alone once hid a tmux that could not be run at
+            // all behind the same three words as a window that had closed.
+            let probe = match kind {
+                HardStopKind::WindowGone | HardStopKind::Interrupted => window_detail
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default(),
+                // A stall reached while the probe could not be asked is the
+                // council's backstop for a dead-but-unobservable lane, so the
+                // last probe failure travels with it.
+                HardStopKind::Stalled => window_detail
+                    .map(|detail| format!(" (window liveness unknown: {detail})"))
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
             let provenance = format!(
-                "Full Auto: {} on lane {} of run {run_id}{}{}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
+                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
                 kind.as_str(),
                 lane.lane_index,
                 lane.window_name
@@ -1216,6 +1398,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         quarantined.last_observed_at = observed_at.clone();
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
+        quarantined.probe_detail = window_detail.map(str::to_string);
         let applied = self.ctx.store().write(|tx| {
             let project = self.ctx.project();
             if !observation_is_current(tx, project, lane, head_global_seq)? {
@@ -1895,6 +2078,7 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         last_progress_at: None,
         outcome: None,
         outcome_detail: None,
+        probe_detail: None,
     }
 }
 
@@ -2481,6 +2665,51 @@ pub(crate) fn prompt_override_violation(
         .map(|(name, _)| name)
 }
 
+/// The activity-journal line, if any, that a change in what the probe says
+/// about a lane earns (SH-626, council verdict on the story): an unanswered
+/// probe is an ERROR on entry and on every change of reason — the machine,
+/// not the window, is what failed, and the lane is judged by its stall clock
+/// alone until tmux answers — and the recovery is an INFO, so the two
+/// bracket the outage. Never one line per pass: a live run is reconciled
+/// roughly once a second (SH-263's self-noise shape). A `Gone` answer earns
+/// nothing here because it is a hard stop, written on the story and the
+/// quarantine record instead. `previous` is what the lane last recorded.
+fn probe_journal_edge(
+    previous: Option<&str>,
+    probe: &WindowProbe,
+) -> Option<(&'static str, String)> {
+    match probe {
+        WindowProbe::Unanswered { detail } if previous != Some(detail.as_str()) => Some((
+            "ERROR",
+            format!(
+                "window liveness unanswered; the lane is judged by its stall clock until tmux answers: {detail}"
+            ),
+        )),
+        WindowProbe::Alive if previous.is_some() => {
+            Some(("INFO", "window liveness probe answers again".to_string()))
+        }
+        WindowProbe::Alive | WindowProbe::Gone { .. } | WindowProbe::Unanswered { .. } => None,
+    }
+}
+
+/// Whether a nonzero tmux exit was tmux's own answer that the target does not
+/// exist, in tmux's own words: `cmd-find.c`'s "can't find <kind>: <target>",
+/// and `client.c`'s "no server running on <socket>" or "error connecting to
+/// <socket> (<errno>)" — the latter only for the two errnos that prove the
+/// server is gone, `ENOENT` (no socket) and `ECONNREFUSED` (a socket nobody
+/// listens on). tmux prints the same "error connecting to" line for `EACCES`
+/// and for a socket it cannot stat, which say nothing about the server, so
+/// those stay [`WindowProbe::Unanswered`] (SH-626's council condition). A
+/// window whose server is gone is gone; any other failure is a fact about
+/// the machine, not the window.
+fn tmux_reports_a_missing_target(stderr: &str) -> bool {
+    stderr.contains("can't find")
+        || stderr.contains("no server running")
+        || (stderr.contains("error connecting to")
+            && (stderr.contains("(No such file or directory)")
+                || stderr.contains("(Connection refused)")))
+}
+
 fn pid_is_live(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -2675,6 +2904,73 @@ mod tests {
         ));
     }
 
+    /// SH-626: the journal hears about a probe on the edge, never per pass.
+    #[test]
+    fn probe_journal_lines_are_edge_triggered() {
+        let broken = WindowProbe::Unanswered {
+            detail: "tmux exited 1".to_string(),
+        };
+        let also_broken = WindowProbe::Unanswered {
+            detail: "tmux timed out".to_string(),
+        };
+        let entry = probe_journal_edge(None, &broken).expect("entry is an edge");
+        assert_eq!(entry.0, "ERROR");
+        assert!(entry.1.contains("tmux exited 1"), "{}", entry.1);
+        assert_eq!(
+            probe_journal_edge(Some("tmux exited 1"), &broken),
+            None,
+            "the same reason on the next pass is not a new line"
+        );
+        assert_eq!(
+            probe_journal_edge(Some("tmux exited 1"), &also_broken).map(|line| line.0),
+            Some("ERROR"),
+            "a changed reason is a new line"
+        );
+        assert_eq!(
+            probe_journal_edge(Some("tmux exited 1"), &WindowProbe::Alive).map(|line| line.0),
+            Some("INFO"),
+            "recovery closes the bracket"
+        );
+        assert_eq!(probe_journal_edge(None, &WindowProbe::Alive), None);
+        assert_eq!(
+            probe_journal_edge(
+                None,
+                &WindowProbe::Gone {
+                    detail: "pane_dead=1".to_string()
+                }
+            ),
+            None,
+            "a dead window is a hard stop, written on the story rather than journaled here"
+        );
+    }
+
+    /// SH-626's council condition: only tmux's own "no such target" and the
+    /// two errnos that prove the server is gone read as a missing target.
+    #[test]
+    fn tmux_missing_target_vocabulary_is_narrow() {
+        assert!(tmux_reports_a_missing_target("can't find pane: %7"));
+        assert!(tmux_reports_a_missing_target("can't find window: =s:=w"));
+        assert!(tmux_reports_a_missing_target(
+            "no server running on /private/tmp/tmux-501/default"
+        ));
+        assert!(tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (No such file or directory)"
+        ));
+        assert!(tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Connection refused)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Permission denied)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Operation timed out)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "tmux: line 3: FAKE_TMUX_IMPLEMENTATION: unbound variable"
+        ));
+        assert!(!tmux_reports_a_missing_target(""));
+    }
+
     #[test]
     fn bounded_capture_terminates_a_process_group() {
         let mut command = Command::new("sh");
@@ -2693,21 +2989,103 @@ mod tests {
             &live,
             &format!("printf '{}\\tcodex\\t0\\n'", std::process::id()),
         );
-        assert!(dispatcher_with_tmux(root.path(), &live).window_alive("@7"));
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &live).probe_window("@7"),
+            WindowProbe::Alive
+        );
 
         let shell = root.path().join("tmux-shell");
         executable(
             &shell,
             &format!("printf '{}\\tzsh\\t0\\n'", std::process::id()),
         );
-        assert!(!dispatcher_with_tmux(root.path(), &shell).window_alive("@7"));
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &shell).probe_window("@7")
+        else {
+            panic!("a pane running a shell is gone");
+        };
+        assert!(detail.contains("runs `zsh`"), "{detail}");
 
         let dead = root.path().join("tmux-dead");
         executable(
             &dead,
             &format!("printf '{}\\tcodex\\t1\\n'", std::process::id()),
         );
-        assert!(!dispatcher_with_tmux(root.path(), &dead).window_alive("@7"));
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &dead).probe_window("@7")
+        else {
+            panic!("a dead pane is gone");
+        };
+        assert!(detail.contains("pane_dead=1"), "{detail}");
+
+        // tmux's own shape for a target it cannot find: `display-message -t`
+        // is CMD_FIND_CANFAIL, so the format expands empty at exit 0.
+        let unfound = root.path().join("tmux-unfound");
+        executable(&unfound, "printf '\\t\\t\\n'");
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &unfound).probe_window("@7")
+        else {
+            panic!("three empty fields at exit 0 is tmux saying the pane is gone");
+        };
+        assert!(detail.contains("finds no pane"), "{detail}");
+
+        let exited = root.path().join("tmux-exited");
+        executable(&exited, "printf 'can'\\''t find pane: @7\\n' >&2; exit 1");
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &exited).probe_window("@7")
+        else {
+            panic!("tmux's own `can't find` is an answer: the target is gone");
+        };
+        assert!(detail.contains("can't find pane"), "{detail}");
+    }
+
+    /// SH-626: a tmux that cannot be asked is not a window that closed. Every
+    /// shape the browser harness's broken double produced -- a nonzero exit
+    /// with an unrelated message, an empty answer, a non-numeric pid, a
+    /// spawn failure -- is `Unanswered` and names its own cause.
+    #[test]
+    fn shell_window_probe_reports_a_tmux_it_could_not_ask_as_unanswered() {
+        let root = storyhook_test_support::scratch_dir();
+        let broken = root.path().join("tmux-broken");
+        executable(
+            &broken,
+            "printf 'tmux: line 3: FAKE_TMUX_IMPLEMENTATION: unbound variable\\n' >&2; exit 1",
+        );
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &broken).probe_window("%1")
+        else {
+            panic!("an exit that is not tmux's `can't find` is not an answer about the window");
+        };
+        assert!(
+            detail.contains("exited") && detail.contains("unbound variable"),
+            "the probe carries tmux's exit and its stderr: {detail}"
+        );
+
+        let silent = root.path().join("tmux-silent");
+        executable(&silent, "exit 0");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &silent).probe_window("%1")
+        else {
+            panic!("an empty answer is not three fields");
+        };
+        assert!(detail.contains("not the three fields"), "{detail}");
+
+        let garbled = root.path().join("tmux-garbled");
+        executable(&garbled, "printf 'claude\\tclaude\\t0\\n'");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &garbled).probe_window("%1")
+        else {
+            panic!("a non-numeric pid is not an answer");
+        };
+        assert!(detail.contains("not a number"), "{detail}");
+
+        let missing = root.path().join("tmux-missing");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &missing).probe_window("%1")
+        else {
+            panic!("a tmux that cannot be spawned is not an answer");
+        };
+        assert!(detail.contains("could not be run"), "{detail}");
     }
 
     #[test]
