@@ -45,6 +45,7 @@ fn progressing() -> LaneObservation {
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
         awaiting_reason: None,
+        returned_for_repair: false,
     }
 }
 
