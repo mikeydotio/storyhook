@@ -9,6 +9,9 @@ block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
 build_identity	:(glob)**/*
+build_slots	.cargo/config.toml
+build_slots	scripts/machine-lock.sh
+build_slots	scripts/rustc-slot.py
 checkout_path_readers	:(glob)**/*
 checkout_path_readers	:(glob)src/**/*.rs
 commit_identity	:(glob)**/*
