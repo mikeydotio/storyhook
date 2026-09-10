@@ -20,7 +20,7 @@ use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, ENGINE_LANE_BUDGET,
     EngineService, GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation,
     OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS,
-    STALL_MARGIN, StartRequest, classify,
+    STALL_MARGIN, StartRequest, WindowProbe, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -56,7 +56,7 @@ fn progressing() -> LaneObservation {
         story_closed: false,
         story_verifying: false,
         agent_blocked: false,
-        window_alive: true,
+        window: WindowProbe::Alive,
         head_global_seq: Some(200),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
@@ -94,12 +94,54 @@ fn an_agent_blocked_story_is_a_hard_stop() {
 #[test]
 fn a_missing_window_on_an_open_story_is_a_hard_stop() {
     let observation = LaneObservation {
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::WindowGone)
+    );
+}
+
+/// SH-626 (council verdict on the story): a probe tmux could not answer is
+/// not a dead window. It contributes no evidence this pass, so a lane whose
+/// story is moving keeps progressing under both passes.
+#[test]
+fn an_unanswered_probe_on_a_moving_story_is_not_a_hard_stop() {
+    let observation = LaneObservation {
+        window: WindowProbe::Unanswered {
+            detail: "tmux exited 1: unbound variable".to_string(),
+        },
+        ..progressing()
+    };
+    for pass in [ReconcilePass::Steady, ReconcilePass::Restart] {
+        assert_eq!(
+            classify(&observation, STALL_CEILING_SECS, pass),
+            LaneClassification::Progressing,
+            "{pass:?}"
+        );
+    }
+}
+
+/// SH-626's backstop: with the probe unanswerable, the lane is judged by the
+/// stall clock alone, so an unmoved seq past the ceiling is still caught —
+/// later, and by the store fact a dead agent cannot forge.
+#[test]
+fn an_unanswered_probe_still_lets_the_stall_ceiling_catch_a_dead_lane() {
+    let observation = LaneObservation {
+        window: WindowProbe::Unanswered {
+            detail: "tmux did not answer within 3s".to_string(),
+        },
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled)
     );
 }
 
@@ -206,7 +248,9 @@ fn an_unresolvable_story_is_not_a_stall() {
 fn a_verifying_story_with_a_dead_window_is_held_not_window_gone() {
     let observation = LaneObservation {
         story_verifying: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -251,7 +295,9 @@ fn a_verifying_story_past_the_ceiling_is_held_not_stalled() {
 fn a_closed_story_wins_over_a_closed_window() {
     let observation = LaneObservation {
         story_closed: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -270,7 +316,9 @@ fn a_closed_story_wins_over_every_other_signal() {
         story_closed: true,
         story_verifying: true,
         agent_blocked: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         head_global_seq: Some(100),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(STALL_CEILING_SECS * 10),
@@ -289,7 +337,9 @@ fn a_closed_story_wins_over_every_other_signal() {
 fn an_agent_block_wins_over_a_closed_window() {
     let observation = LaneObservation {
         agent_blocked: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -546,6 +596,28 @@ fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str) {
         .store()
         .write(|tx| tx.put_engine_lane(&lane))
         .unwrap();
+}
+
+fn awaiting_of(fixture: &ServiceFixture, number: i64) -> Option<String> {
+    fixture
+        .store()
+        .read(|tx| {
+            tx.story(
+                fixture.project(),
+                storyhook::store::ids::StoryNo::new(number),
+            )
+        })
+        .unwrap()
+        .unwrap()
+        .awaiting
+}
+
+fn run_of(fixture: &ServiceFixture, run_id: &str) -> storyhook::store::EngineRunRecord {
+    fixture
+        .store()
+        .read(|tx| tx.engine_run(run_id))
+        .unwrap()
+        .unwrap()
 }
 
 fn lane_at(fixture: &ServiceFixture, run_id: &str, index: u32) -> EngineLaneRecord {
@@ -830,6 +902,12 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
     assert!(
         awaiting.contains("window-gone") && awaiting.contains(&run_id),
         "the reason names the kind and the run so a human can act on it: {awaiting}"
+    );
+    // SH-626: the probe's own words travel with the verdict, so "window-gone"
+    // can never again stand in for "tmux could not be asked".
+    assert!(
+        awaiting.contains("scripted: tmux reports `=fixture:=story-SH-1` gone"),
+        "the reason carries what tmux actually said: {awaiting}"
     );
 }
 
@@ -1807,6 +1885,87 @@ fn a_dispatched_lane_is_observed_through_its_exact_pane_id() {
 
     assert!(report.quarantined.is_empty());
     assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(story));
+}
+
+/// SH-626, wired: a probe tmux could not answer leaves the lane working,
+/// blocks nothing, counts toward nothing, and is loud on the status surface
+/// — the probe's own words are on the lane and in the pass report — until
+/// tmux answers again, when the lane clears them.
+#[test]
+fn an_unanswered_probe_leaves_the_lane_working_and_names_itself_on_the_lane() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "lane behind a broken tmux", &[]);
+    let detail = "tmux exited exit status: 1 answering the liveness probe for `%1`: FAKE_TMUX_IMPLEMENTATION: unbound variable";
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowUnanswered {
+            window: format!("=fixture:=story-{story}"),
+            detail: detail.to_string(),
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{story}"),
+            alive: true,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(
+        report.quarantined.is_empty(),
+        "an unanswered probe is not a verdict"
+    );
+    assert_eq!(report.unanswered, [(0, detail.to_string())]);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(lane.probe_detail.as_deref(), Some(detail));
+    assert!(
+        lane.last_progress_seq.is_some(),
+        "the stall clock is seeded exactly as it would be for an answered probe"
+    );
+    assert_eq!(
+        awaiting_of(&fixture, 1),
+        None,
+        "nothing was written onto the story"
+    );
+    assert_eq!(run_of(&fixture, &run_id).consecutive_hard_stops, 0);
+
+    // tmux answers again: the lane clears what it said.
+    let recovered = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(recovered.unanswered.is_empty());
+    assert_eq!(lane_at(&fixture, &run_id, 0).probe_detail, None);
+}
+
+/// SH-626's backstop, wired: with the probe unanswerable for the whole life
+/// of a lane, a story that stops moving is still quarantined at the stall
+/// ceiling, and the block reason carries what tmux said so the reader knows
+/// the window's own state was never observed.
+#[test]
+fn a_dead_lane_behind_an_unanswerable_probe_is_caught_by_the_stall_ceiling() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "dead lane behind a broken tmux", &[]);
+    let detail = "tmux did not answer the liveness probe for `%1` within 3s";
+    let unanswered = || DispatcherStep::WindowUnanswered {
+        window: format!("=fixture:=story-{story}"),
+        detail: detail.to_string(),
+    };
+    let fake = FakeDispatcher::new([unanswered(), unanswered()]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let seeded = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(seeded.quarantined.is_empty());
+
+    let past = "2026-01-02T00:00:00Z";
+    let report = reconcile_at(&fixture, &fake, &run_id, past);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::Stalled)]);
+    let awaiting = awaiting_of(&fixture, 1).expect("a stalled story carries a reason");
+    assert!(
+        awaiting.contains("stalled") && awaiting.contains(detail),
+        "the stall reason names the probe that could not be asked: {awaiting}"
+    );
 }
 
 /// The stall row, wired: the seq has not moved and the ceiling has passed.

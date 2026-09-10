@@ -282,13 +282,15 @@ impl storyhook::service::engine::Dispatcher for ChangeDuringProbe<'_> {
     fn kill_window(&self, _: &str) -> Result<(), storyhook::error::AppError> {
         panic!("must preserve pane")
     }
-    fn window_alive(&self, _: &str) -> bool {
+    fn probe_window(&self, window: &str) -> storyhook::service::engine::WindowProbe {
         if !self.changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
             StoryService::new(self.ctx)
                 .set_state(self.story, self.state, None, None, None)
                 .unwrap();
         }
-        false
+        storyhook::service::engine::WindowProbe::Gone {
+            detail: format!("scripted: `{window}` closed under the observation"),
+        }
     }
 }
 

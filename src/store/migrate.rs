@@ -358,6 +358,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // projects inherit the code defaults without a stored rewrite.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 34,
+        name: "engine_lane_probe",
+        sql: include_str!("schema/0034_engine_lane_probe.sql"),
+        // One nullable diagnostic column added in place; NULL reads as "the
+        // probe last said alive, or has not run", which is what every
+        // existing lane is.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

@@ -32,6 +32,7 @@ use crate::service::Ctx;
 use crate::service::engine::{
     ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher,
     EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
+    WindowProbe,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -545,6 +546,9 @@ struct HttpLaneView {
     /// `dispatched_at` (SH-336), which is what the browser suite needed in
     /// SH-626 to tell "observed alive" from "not yet observed".
     last_progress_at: Option<String>,
+    /// What the liveness probe last said when it did not say "alive"
+    /// (SH-626): `null` while tmux answers, otherwise the probe's own words.
+    probe_detail: Option<String>,
     outcome: Option<String>,
     outcome_detail: Option<String>,
 }
@@ -560,6 +564,7 @@ impl From<EngineLaneRecord> for HttpLaneView {
             dispatched_at: value.dispatched_at,
             last_observed_at: value.last_observed_at,
             last_progress_at: value.last_progress_at,
+            probe_detail: value.probe_detail,
             outcome: value.outcome,
             outcome_detail: value.outcome_detail,
         }
@@ -583,8 +588,10 @@ impl Dispatcher for NoopDispatcher {
         ))
     }
 
-    fn window_alive(&self, _window: &str) -> bool {
-        false
+    fn probe_window(&self, _window: &str) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: "engine HTTP reached a window probe without a shell dispatcher".to_string(),
+        }
     }
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
@@ -627,6 +634,7 @@ mod tests {
             last_progress_at: None,
             outcome: None,
             outcome_detail: None,
+            probe_detail: None,
         };
         let unobserved = serde_json::to_value(HttpLaneView::from(lane.clone())).unwrap();
         assert!(
@@ -635,9 +643,12 @@ mod tests {
         );
         lane.last_progress_seq = Some(crate::store::GlobalSeq::new(7));
         lane.last_progress_at = Some("2026-01-01T00:00:01Z".to_string());
+        lane.probe_detail = Some("tmux exited 1: unbound variable".to_string());
         let observed = serde_json::to_value(HttpLaneView::from(lane)).unwrap();
         assert_eq!(observed["last_progress_at"], "2026-01-01T00:00:01Z");
         assert_eq!(observed["last_observed_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(observed["probe_detail"], "tmux exited 1: unbound variable");
+        assert!(unobserved["probe_detail"].is_null());
     }
 
     #[test]

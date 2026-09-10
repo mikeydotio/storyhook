@@ -1,0 +1,29 @@
+-- storyhook store — schema version 34: a lane records what its liveness
+-- probe last said when it did not say "alive" (SH-626).
+--
+-- # Why a column and not a pass report
+--
+-- The Full Auto reconciler asks tmux whether a lane's pane still holds the
+-- agent on every pass. Until SH-626 that probe answered a bare bool, and "tmux
+-- could not be asked" collapsed into "the window is gone": a harness defect —
+-- the daemon's `tmux` double dying on an unset variable, exit 1 — quarantined
+-- lanes as `window-gone` for months with nothing naming the real cause.
+--
+-- The probe now answers three ways (alive / gone / unanswered), and a council
+-- ruled (recorded on SH-626) that an unanswered probe contributes no evidence
+-- to the pass but must be LOUD on two surfaces: the daemon activity journal,
+-- edge-triggered, and engine status. Status and the dashboard read this
+-- table, not a pass's in-memory report, so what the probe said has to be
+-- here. The same column is what makes the journal line edge-triggered: a
+-- pass writes the line only when the stored detail differs from what it just
+-- observed, and a live run is reconciled roughly once a second, so a per-pass
+-- line would be the SH-263 self-noise shape.
+--
+-- # Nullable on purpose
+--
+-- NULL means the last probe answered "alive", or the lane is idle, or nothing
+-- has probed it since this migration ran. It is a diagnostic, never a
+-- lifecycle state or a counter: `state`, `outcome` and the stall clock decide
+-- what happens to a lane, this column only says what tmux last said.
+
+ALTER TABLE engine_lanes ADD COLUMN probe_detail TEXT;

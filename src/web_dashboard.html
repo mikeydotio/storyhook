@@ -597,6 +597,10 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .engine-lane-index { font-family: var(--mono); color: var(--fg-faint); }
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
+/* SH-626: the daemon could not ask tmux whether this lane's pane is alive;
+ * the lane is judged by its stall clock until it can. Loud on the status
+ * surface, not only in the daemon journal. */
+.engine-lane-probe { color: var(--warn); white-space: nowrap; font-weight: 700; }
 .engine-stop-options { display: flex; flex-direction: column; gap: 0.75rem; }
 .engine-stop-choice { display: flex; flex-direction: column; gap: 0.125rem; }
 .engine-stop-choice span { color: var(--fg-muted); font-size: 0.8125rem; }
@@ -5276,8 +5280,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       node.textContent = formatEngineElapsed(node.dataset.startedAt);
       var lane = node.parentNode;
       var story = lane.querySelector(".engine-lane-story");
+      var probe = lane.querySelector(".engine-lane-probe");
       lane.title = lane.querySelector(".engine-lane-index").textContent.replace("L", "Lane ")
-        + ": " + (story ? story.textContent : "") + " · " + node.textContent;
+        + ": " + (story ? story.textContent : "") + " · " + node.textContent
+        + (probe && probe.dataset.detail ? " · liveness unanswered: " + probe.dataset.detail : "");
     });
   }
 
@@ -5930,15 +5936,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     (run.lanes || []).forEach(function(lane) {
       var subject = lane.story || lane.state;
       var elapsed = formatEngineElapsed(lane.dispatched_at);
+      // SH-626: what tmux last said when it did not say "alive", carried by
+      // the daemon on the lane. Shown on the strip because a journal line
+      // nobody reads is the SH-306 shape; the full reason is the title.
+      var probe = typeof lane.probe_detail === "string" && lane.probe_detail ? lane.probe_detail : null;
       strip.appendChild(el("div", {
         class: "engine-lane",
         title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
+          + (probe ? " · liveness unanswered: " + probe : "")
       }, [
         el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
         el("span", { class: "engine-lane-story" }, [subject]),
         elapsed ? el("span", {
           class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
-        }, [elapsed]) : null
+        }, [elapsed]) : null,
+        probe ? el("span", { class: "engine-lane-probe", dataset: { detail: probe } }, ["liveness unanswered"]) : null
       ]));
     });
   }
