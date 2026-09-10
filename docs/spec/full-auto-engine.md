@@ -61,13 +61,12 @@ of what was decided and stay as written; `docs/spec/verification-workflow.md`
 is now the design of record for everything from submission to reap, and three
 rows read differently against it. D4's "priority then age": the age that ships
 is story `created_at`, and SH-651 makes it the time the story entered
-`verifying`. D5's "serialize every project": what ships is one global worker
-over one queue spanning every project, and SH-648 makes the worker, the queue,
-the incident halt and the conflict hold per project. D14's "the locks in D4/D5
-are sized against" a machine-wide budget: the `gate` and `merge` locks are
-keyed by name alone today, and SH-648 keys them by project, so two projects'
-suites may overlap on one machine — a trade-off that spec states rather than
-this table.
+`verifying`. D5's "serialize every project": what shipped for a year was one
+global worker over one queue spanning every project; since SH-648 the worker,
+the queue, the incident halt and the conflict hold are per project. D14's
+"the locks in D4/D5 are sized against" a machine-wide budget: the `gate` and
+`merge` locks are keyed by project since SH-648, so two projects' suites may
+overlap on one machine — a trade-off that spec states rather than this table.
 
 ## Assumptions recorded rather than asked
 
@@ -583,16 +582,17 @@ silent — which is the bar.
 ## Central verification and machine locks
 
 `scripts/machine-lock.sh <name> -- <command...>`: a pid-checked, stale-tolerant
-machine-wide lock, in the shape `browser-watch.sh`'s own lock already uses.
+advisory lock, in the shape `browser-watch.sh`'s own lock already uses.
 Three names are live — the two below and `release-observer`, taken by
 `scripts/release-watch.sh` around one observer pass (`release-observer.md`) —
-and lane agents acquire none of them themselves (SH-521). The key is the name
-alone today, so every clone and every repository on the machine shares one of
-each; SH-648 adds a project component. `verification-workflow.md`'s "The
-locks" section is the statement of record, including the one invariant every
-verification depends on: `merge-watch.sh`'s environment scrub must never strip
-`STORYHOOK_MACHINE_LOCKS`, or the inner `gate` take inside `make test` waits on
-its own outer holder for ever.
+and lane agents acquire none of them themselves (SH-521). `gate` and `merge`
+carry the project — the canonical git common dir, hashed into the key
+(SH-648) — so every worktree of one clone shares one of each and a different
+repository does not; `release-observer` stays machine-wide.
+`verification-workflow.md`'s "The locks" section is the statement of record,
+including the one invariant every verification depends on: `merge-watch.sh`'s
+environment scrub must never strip `STORYHOOK_MACHINE_LOCKS`, or the inner
+`gate` take inside `make test` waits on its own outer holder for ever.
 
 - **`gate`** — the verification worker takes it once around the complete
   speculative `make test` run against the predicted merge tree. The two Rust

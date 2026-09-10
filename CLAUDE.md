@@ -1773,6 +1773,29 @@ Standing rules for every wave:
   inside, and reentrancy travels only in that variable, so stripping it deadlocks every
   verification against its own outer holder for ever. Nothing fences that invariant;
   the comment above the list and the spec are what say so.
+- **`gate` and `merge` are project-scoped locks; the verifier is one worker per project**
+  (SH-648, D-B of SH-645: "project-wide, not machine-wide"). `scripts/machine-lock.sh`
+  declares the scope of each name itself (a caller flag would let a forgotten flag
+  silently over-serialize) and derives the project component rather than taking one:
+  the canonical git common dir (`cd "$(git rev-parse --git-common-dir)" && pwd -P`, the
+  derivation `verify-pr.sh` already keys receipts by), hashed whole with git's own object
+  hash into `<name>.<hash>.lock` under the one lock root. Every worktree of one clone —
+  and `merge-watch.sh`'s speculative checkout, whose swapped gitlink's `commondir` names
+  the same directory — resolves the same key, which is what keeps the inner
+  `run-tests.sh` take reentrant with the outer `verify-pr.sh` hold; a second clone does
+  not. A project-scoped name outside a repository is refused by name, never widened to
+  the machine (SH-576). `STORYHOOK_MACHINE_LOCKS` carries the full key and
+  `machine-lock.sh --held <name>` is its only reader outside the take — `land-pr.sh` asks,
+  it no longer parses; fixtures read lock paths back from `--plan` and one test computes
+  the key independently so that is not a tautology. `release-observer` stays machine-wide
+  (one Lima guest). In the daemon, `VerificationActivity` is a map keyed by project,
+  every `tick_with*` names its project, `poll_verification` supervises one worker per
+  registered project (spawned on `Change::Catalog`, retiring when its project is gone),
+  and the incident is one row per project (migration 35). A halt or a conflict hold in
+  one project never stalls another; a queued story's position is its own project's.
+  Stated limit: the tmux verifier mirror is one fixed pane, so two projects verifying at
+  once show whichever started last. Design of record: `docs/spec/verification-workflow.md`,
+  "The locks" and the SH-648 "As built" entry.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
