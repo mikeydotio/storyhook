@@ -1510,6 +1510,13 @@ Standing rules for every wave:
   on the way: `check-no-orphan-servers.sh`'s own-tree pattern was anchored on the bare
   `target/debug/story` and had been blind to every leased daemon since SH-532. Design of
   record: `docs/spec/test-tiers.md`'s "The browser runner gets the same lease".
+  **The plugin shell leg leases too** (SH-639): the `lib.sh` instance that mints a test's
+  home leases the artifact with the test's own pid as owner, prepends the lease directory,
+  and releases it after `story daemon stop`; `Makefile`'s bare `target/debug` prepend is
+  gone. A nested instance that INHERITS the home reuses the outer lease through `PATH` and
+  never mints its own — identity is a path compare, so a second lease path would itself
+  restart the shared daemon. `test-binary-lease.sh` pins both, with a positive control that
+  the bare replaced artifact does restart it.
 - **A child told the store but not the state home starts a second daemon for that store**
   (SH-633). Filed as an e2e-harness leak of 40 runtime directories; measured at 1,199 —
   every browser-tier run since August *and* the Rust suite's own real-helper reap test —
