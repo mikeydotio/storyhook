@@ -926,35 +926,55 @@ jq -e --arg fields "$5" '
             .unwrap_or(0)
     }
 
-    /// Installs a fake `make` at `<repo>/bin/make` — the release gate the
-    /// public path runs is `make test`, and it resolves through `PATH` inside
-    /// the poller worktree (`merge-watch.sh --speculative-run`). The body
-    /// must not touch tracked files there, or the poller restore turns the run
-    /// into an infrastructure failure rather than a red.
+    /// Installs a fake `make` at `<repo>/bin/make` — the gate `verify_public`
+    /// hands the public path is `make test`, and it resolves through `PATH`
+    /// inside the poller worktree (`merge-watch.sh --speculative-run`). The
+    /// body must not touch tracked files there, or the poller restore turns
+    /// the run into an infrastructure failure rather than a red.
     fn fake_make(&self, body: &str) {
+        self.fake_gate("make", body);
+    }
+
+    /// Installs a fake gate executable at `<repo>/bin/<name>` (SH-649): the
+    /// public path runs whatever argv it is handed, resolved through `PATH`
+    /// inside the poller worktree, so a configured gate is any name here.
+    fn fake_gate(&self, name: &str, body: &str) {
         let bin = self.path().join("bin");
         fs::create_dir_all(&bin).expect("fixture: bin directory");
-        let script = bin.join("make");
+        let script = bin.join(name);
         fs::write(
             &script,
             format!("#!/usr/bin/env bash\nset -uo pipefail\n{body}\n"),
         )
-        .expect("fixture: writing the fake make");
+        .expect("fixture: writing the fake gate");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
-            .expect("fixture: fake make executable");
+            .expect("fixture: fake gate executable");
     }
 
-    /// Runs the PUBLIC path — `verify-pr.sh <pr-url>` — against this fixture's
-    /// local origin, with the fake `gh`/`make` first on `PATH` and the same
-    /// containment `verification_gate` applies.
+    /// Runs the PUBLIC path with the default gate — `verify-pr.sh <pr-url> --
+    /// make test`, the argv the daemon hands it for a project whose pointer
+    /// names no `[verify] gate`.
     fn verify_public(&self) -> Output {
+        self.verify_public_with_gate(&["make", "test"])
+    }
+
+    /// Runs the PUBLIC path — `verify-pr.sh <pr-url> -- <gate...>` — against
+    /// this fixture's local origin, with the fake `gh` and any fake gate first
+    /// on `PATH` and the same containment `verification_gate` applies. An
+    /// empty `gate` omits the `--` entirely, which is the usage-refusal case.
+    fn verify_public_with_gate(&self, gate: &[&str]) -> Output {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let mut path = std::ffi::OsString::from(self.path().join("bin"));
         path.push(":");
         path.push(inherited);
-        Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg(checkout().join("scripts/verify-pr.sh"))
-            .arg("https://github.com/acme/widgets/pull/42")
+            .arg("https://github.com/acme/widgets/pull/42");
+        if !gate.is_empty() {
+            command.arg("--").args(gate);
+        }
+        command
             .current_dir(self.path())
             .env("PATH", path)
             .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
@@ -2983,5 +3003,159 @@ fn a_recheck_that_finds_a_different_pr_or_a_closed_one_posts_no_verdict() {
     assert!(
         payload["detail"].as_str().unwrap().contains("CLOSED"),
         "{payload}"
+    );
+}
+
+/// The gate is the daemon's to name, never this script's to assume (SH-649):
+/// `verify-pr.sh <pr-url>` with no `-- <gate...>` is refused by name before
+/// GitHub is so much as asked, because a script that quietly ran `make test`
+/// would be a second place the default lived — and the wrong one, since the
+/// project's pointer may say otherwise.
+#[test]
+fn the_public_path_refuses_to_run_without_a_named_gate() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    repo.fake_make("exit 0\n");
+
+    let payload = public_payload(&repo.verify_public_with_gate(&[]));
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("usage: verify-pr.sh <pr-url> -- <gate-command...>"),
+        "{detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 0, "refused before GitHub is asked");
+}
+
+/// The configured argv reaches the gate word for word, resolved through
+/// `PATH` inside the poller worktree exactly as `make test` is. The red form
+/// is used so the run stops at the gate and the recorded argv is the whole
+/// evidence.
+#[test]
+fn a_configured_gate_runs_with_the_argv_it_was_named_with() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let record = repo.path().join("gate-argv");
+    repo.fake_gate(
+        "gate-bin",
+        &format!("printf '%s\\n' \"$@\" > '{}'\nexit 3\n", record.display()),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci", "unit"]));
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    assert_eq!(
+        fs::read_to_string(&record).expect("the gate ran and recorded its argv"),
+        "--ci\nunit\n"
+    );
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("failed with exit status 3"),
+        "the gate's own status is reported: {detail}"
+    );
+}
+
+/// A gate that exits 0 but mints no `gate`/`full` receipt has certified
+/// nothing, and landing would refuse it downstream with a diagnosis about the
+/// wrong layer ("no longer has a qualifying release-gate receipt", from
+/// `reconcile_land_refusal`, after `gh` had been asked again). The public
+/// path re-asks `merge-preflight.sh` — the reader `land-pr.sh` consults —
+/// immediately after the gate and refuses by name, before any landing read.
+/// The configured argv is recorded on the way, which is also the proof that
+/// the gate this refusal names is the one that ran.
+#[test]
+fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_landing() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let record = repo.path().join("gate-argv");
+    repo.fake_gate(
+        "gate-bin",
+        &format!("printf '%s\\n' \"$@\" > '{}'\nexit 0\n", record.display()),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci"]));
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("certified nothing"), "{detail}");
+    assert!(
+        detail.contains("`gate-bin --ci`"),
+        "names the gate: {detail}"
+    );
+    assert!(
+        detail.contains("gate-receipt.sh postlude"),
+        "names the remedy: {detail}"
+    );
+    let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    assert!(detail.contains(&tree), "names the tree: {detail}");
+    assert_eq!(fs::read_to_string(&record).expect("the gate ran"), "--ci\n");
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/gate-receipts")
+            .join(&tree)
+            .exists(),
+        "nothing certified the tree"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        1,
+        "refused after the entry read and before any landing read"
+    );
+}
+
+/// The positive control, without which a check that always refused would
+/// pass the test above: a gate that certifies through the production writer
+/// (`gate-receipt.sh preflight` then `postlude`, inside the speculative
+/// checkout) gets past the check and on to landing — where this fixture's
+/// fake `gh` is asked again, which is what proves the refusal did not fire.
+#[test]
+fn a_configured_gate_that_certifies_through_the_production_writer_proceeds_to_landing() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let hooks = checkout().join(".githooks");
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    // The hooks link is untracked, so the poller restore tolerates it; the
+    // production writer needs an executable pre-push beside it to enrol.
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{writer}' preflight && bash '{writer}' postlude\n",
+            hooks.display(),
+            writer = writer.display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
+    let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    assert!(
+        fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("the gate certified the tree: {e}"))
+            .contains("tier gate"),
+        "the production writer minted a gate-tier receipt"
+    );
+    let detail = payload["detail"].as_str().unwrap_or("");
+    assert!(
+        !detail.contains("certified nothing"),
+        "a certified tree is not refused: {payload}"
+    );
+    assert!(
+        repo.fake_gh_calls() >= 2,
+        "landing was attempted after the gate: {payload}"
     );
 }

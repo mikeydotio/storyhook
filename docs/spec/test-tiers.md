@@ -1008,6 +1008,59 @@ outcome from both the command's own failure and a waiter's exit 75. External
 This ordering prevents the next verifier from entering while descendants of
 the failed holder are still active.
 
+### As built: a holder's startup is not under the silence clock (SH-643)
+
+Recorded because the first load-sensitive failure the Rust side of this
+watchdog ever produced was in its own test file, and the obvious repair was
+the wrong one. `tests/machine_lock.rs` drove the script with a bare
+`--max-idle 2` at eight sites, each with a holder whose first statement wrote
+the journal. On 2026-09-10, under load 25–64 on 10 cores (a concurrent full
+suite plus a rustc build), four cases failed together: the holder existed for
+the whole ceiling and was never scheduled once — `ps` reported ELAPSED 00:02,
+TIME 0:00.00, and the diagnosis read `<journal is empty>`. The silence clock
+starts at fork, so the fixture's own spawn latency, not the mechanism, had
+decided the verdict.
+
+**Measured before anything was changed**, because the story offered a load
+multiplier in the browser suite's shape (above) as one candidate:
+spawn-to-first-line of the exact holder shape is 8 ms on this machine at a
+load ratio of 0.92, and exceeded 2000 ms at 2.5–6.4 in the incident — 250x the
+latency for 5x the contention. Spawn starvation is not proportional to
+`loadavg / cores`; a multiplier would have granted 5–13 s against an unbounded
+quantity, and a spawn probe taken moments earlier samples a bursty quantity
+once. Both estimate the starvation. Neither removes the dependence on it.
+
+**What ships removes it.** `ProgressFeeder`, in the fixture and never in the
+script: the test process appends a legal `item` line under its own path every
+half poll until a per-case sentinel says the holder has finished its setup —
+its own journal line, a pid file it wrote, the first line of the raw capture —
+then stops. The clock therefore only ever measures a *running* holder, which
+is what every case there was always about, and the production journal has
+many writers already, so the shape is honest (SH-364). The feeder is
+self-bounding (`poll_ceiling`, so a sentinel that never comes is a named
+failure and never a hang — SH-528), creates the journal exactly once and never
+recreates one the holder removed, and reports why it stopped; every case
+asserts the reason it expects, which is what turned one case from vacuous into
+load-bearing (`arbitrary_output_does_not_renew_the_idle_ceiling` also passed
+when the chatterer never ran). Every `--max-idle` is derived from the script's
+own `LOCK_POLL_SECS`: `idle_ceiling` where the watchdog is the subject, two
+observations plus one stated poll of slack for a running holder, and
+`patience_ceiling` where it is only a failsafe. The regression test constructs
+the straddle (SH-420): a holder whose first statement sleeps past the ceiling,
+red without the feeder on any machine, green with it.
+
+**The class is fenced** in `tests/timing_assertions.rs`, the same doctrine one
+process boundary over: every flag `scripts/machine-lock.sh`'s own usage line
+declares with `<seconds>` may never be followed, in a tracked test file, by a
+string literal of bare digits. The vocabulary is derived from the artifact, so
+a flag the script gains is fenced without an edit to the test.
+
+**Named rather than glossed:** a *running* holder starved for a whole poll
+between its own progress writes is outside the feeder and inside the one poll
+of slack; the incident's running holders held under the same load. If one ever
+does not, the repair is a spawn-free holder (`time.sleep` in-process), never a
+wider slack.
+
 ### The escape hatch is reported, always
 
 `STORYHOOK_GATE_LOCK=0` skips the lock and prints a line on **stderr** naming

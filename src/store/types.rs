@@ -381,10 +381,13 @@ pub struct EngineLaneRecord {
     /// one-second RFC3339 timestamp is blind to a burst of agent writes inside
     /// one second (SH-336: a timestamp is not an ordering key).
     pub last_progress_seq: Option<GlobalSeq>,
-    /// When [`Self::last_progress_seq`] last advanced — the stall detector's
-    /// "how long since" half. `None` until the first observation, which the
-    /// reconciler seeds rather than reading as a stall (SH-372: absence states
-    /// nothing).
+    /// When the lane last showed observed activity on **either** channel —
+    /// [`Self::last_progress_seq`] advancing, or the pane writing to its pty
+    /// (tmux's `#{window_activity}`, SH-657) — the stall detector's "how long
+    /// since" half. The column keeps its name; its meaning widened when the
+    /// store-only clock proved to bound nothing an agent actually does.
+    /// `None` until the first observation, which the reconciler seeds rather
+    /// than reading as a stall (SH-372: absence states nothing).
     pub last_progress_at: Option<String>,
     /// Completion, skip, or hard-stop classification.
     pub outcome: Option<String>,

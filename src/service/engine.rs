@@ -74,14 +74,28 @@ pub const HARD_STOP_BREAKER: u32 = 3;
 /// fails if the two ever drift.
 pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
 
-/// `make test`'s measured warm median, in seconds, from
-/// `docs/rearch/baseline/timings.md`.
+/// How long a live agent may legitimately show **no output on its pty and no
+/// story event**, in seconds: one foreground tool call.
 ///
-/// Kept beside the ceiling it feeds so the derivation is legible at the point
-/// of use; `stall_ceiling_derives_from_the_measured_suite_median` reads the
-/// same figure back out of that document and fails if the measurement moves,
-/// in the shape `tests/machine_lock.rs` already uses for `GATE_MEDIAN_SECS`.
-pub const GATE_MEDIAN_SECS: u64 = 36;
+/// Claude Code bounds a foreground `Bash` call at 600 s — the tool's own
+/// schema says `timeout … max 600000` ms (`BASH_MAX_TIMEOUT_MS`). Measured on
+/// tmux 3.7c for SH-657: a working agent redraws its pane sub-second while
+/// the model streams or thinks, and the pane goes static only inside a tool
+/// call; an idle agent at a prompt stays static for hours. So the longest
+/// silence on *both* channels a live lane can show is one such call, and
+/// that is the deadline [`STALL_CEILING_SECS`] disproves (SH-394).
+///
+/// The engine makes this bound its own rather than a cited host default:
+/// [`crate::api::dispatch`]'s engine lanes export `BASH_MAX_TIMEOUT_MS`
+/// derived from this constant onto the lane's `tmux new-window -e` boundary,
+/// so the environment the agent runs under and the ceiling that judges it
+/// share one source (SH-657's council verdict, `story show SH-657`).
+pub const HOST_TOOL_CALL_CEILING_SECS: u64 = 600;
+
+/// The environment name through which an engine lane's dispatch is told
+/// [`HOST_TOOL_CALL_CEILING_SECS`], in milliseconds; `story.sh` forwards it
+/// onto the lane's `tmux new-window -e` boundary as `BASH_MAX_TIMEOUT_MS`.
+pub const LANE_TOOL_CEILING_ENV: &str = "STORY_LANE_TOOL_CEILING_MS";
 
 /// How much slack the ceiling carries over the derived worst case.
 ///
@@ -89,32 +103,36 @@ pub const GATE_MEDIAN_SECS: u64 = 36;
 /// reader can see what is measurement and what is judgement (SH-394).
 pub const STALL_MARGIN: u64 = 2;
 
-/// How long a lane may show no observable progress before it is a hard stop.
+/// How long a lane may show no observable progress — on **every** channel the
+/// engine reads — before it is a hard stop.
 ///
 /// **Derived from the deadline it disproves, never a bare literal** (SH-394).
-/// This ceiling was first derived when a lane's longest *legitimate* silence
-/// was its own full `make test` run, queuing on the machine-wide `gate` lock
-/// behind up to [`ENGINE_LANE_BUDGET`] other lanes doing the same (SH-457
-/// takes that lock inside `scripts/run-tests.sh`).
+/// Two channels feed the clock: the story's change-feed position
+/// (`stories.head_global_seq`) and the pane's last pty output
+/// (`#{window_activity}`, SH-657). A lane is stalled only when BOTH have been
+/// silent longer than this, so the deadline being disproved is the longest
+/// silence a live agent can show on both at once —
+/// [`HOST_TOOL_CALL_CEILING_SECS`], one foreground tool call.
 ///
-/// **SH-521 moved that run out of the lane.** A lane now runs only its own
-/// new and directly impacted tests (D4); the full suite runs once, on one
-/// serialized daemon verification worker, for a story that has already
-/// reached `verifying` — which [`LaneClassification::Verifying`] holds
-/// outside this ceiling entirely, precisely because that queue can
-/// legitimately outrun it. What remains behind this ceiling is a lane's own
-/// much smaller test leg, so [`GATE_MEDIAN_SECS`] — the full suite's measured
-/// warm median — stays a generous, conservative bound on it rather than a
-/// tight one: SH-394's rule is to widen a fixture's own cost over tightening
-/// an assertion that sits too close to flake, and re-deriving down to a
-/// narrower, less-measured figure would be exactly that.
+/// **History, kept because it is the case that made the rule.** This ceiling
+/// was first derived as `ENGINE_LANE_BUDGET × make-test median × margin`
+/// (288 s), on the reasoning that a lane's longest legitimate silence was its
+/// own `make test` run queuing behind other lanes. That bounded the wrong
+/// thing: the clock never measured test time, it measured time between story
+/// events, and an autonomous agent writes nothing to the store between its
+/// dispatch and its plan comment — 267–616 s on this tracker's own history,
+/// and far longer during implementation. Eight of the first eight stall
+/// verdicts the engine ever wrote were false, each on an agent that was
+/// working (SH-657, `docs/rca/full-auto-stalls-working-lanes.md`). A store
+/// silence has no bounded legitimate span, so no ceiling over the store
+/// alone can be derived; the pty channel is what makes a deadline exist.
 ///
-/// **If a lane's own test leg is ever folded back into a `make test` run
-/// serialized behind other lanes, this ceiling must be re-derived, not
-/// merely raised** — that was the original 873s-vs-median distinction this
-/// constant was built to make, and SH-521 changed which run is being bounded
-/// without changing that underlying rule.
-pub const STALL_CEILING_SECS: u64 = ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS * STALL_MARGIN;
+/// **Stated limit, not glossed:** an agent whose *turn ended* waiting on a
+/// background task is silent on both channels for the task's whole
+/// duration, which the host does not bound. A process-tree activity signal
+/// would cover it and is filed separately, gated on measuring that such
+/// waits actually exceed this ceiling in a lane.
+pub const STALL_CEILING_SECS: u64 = HOST_TOOL_CALL_CEILING_SECS * STALL_MARGIN;
 
 /// How often a live run should be reconciled in the absence of any other wake.
 ///
@@ -228,7 +246,15 @@ pub enum LaneClassification {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowProbe {
     /// The window holds a live process that is the agent it was launched with.
-    Alive,
+    ///
+    /// `last_output_at` is tmux's own `#{window_activity}`: the unix time the
+    /// pane last wrote to its pty (SH-657). It is a fact about bytes the
+    /// confirmed process emitted, not about what the screen shows — SH-226's
+    /// rule is that rendered output is never evidence a process is *running*,
+    /// and the process is confirmed separately, above. `None` when tmux
+    /// answered the field empty or unparseable: absence states nothing
+    /// (SH-372), and the lane is then judged by the store channel alone.
+    Alive { last_output_at: Option<i64> },
     /// tmux answered, and the answer is that the window is gone or no longer
     /// holds the agent: the target cannot be found, the pane is dead, its
     /// pid is not running, or its foreground command is something else.
@@ -246,7 +272,7 @@ impl WindowProbe {
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
         match self {
-            Self::Alive => None,
+            Self::Alive { .. } => None,
             Self::Gone { detail } | Self::Unanswered { detail } => Some(detail),
         }
     }
@@ -272,9 +298,15 @@ pub struct LaneObservation {
     pub head_global_seq: Option<i64>,
     /// The seq recorded the last time this lane was seen to move.
     pub last_progress_seq: Option<i64>,
-    /// Seconds since [`Self::last_progress_seq`] last advanced, or `None` when
-    /// no progress has been observed yet.
+    /// Seconds since the lane last showed any observed activity — a moved
+    /// seq or pty output (SH-657) — or `None` when nothing has been observed
+    /// yet.
     pub seconds_since_progress: Option<u64>,
+    /// Seconds since the pane last wrote to its pty, from the probe's own
+    /// `#{window_activity}` (SH-657), or `None` when the probe did not answer
+    /// it: the window is gone, tmux could not be asked, or the field was
+    /// empty. `None` contributes no evidence either way.
+    pub seconds_since_output: Option<u64>,
     /// The story's own `awaiting` text, when it has one — the reason to
     /// relay verbatim if this lane is quarantined, rather than overwriting it
     /// with a message composed here (SH-120).
@@ -363,7 +395,7 @@ pub fn classify(
         // council verdict on the story): it is a fact about the machine, not
         // the window, so the lane is judged by the store fact D3 already makes
         // primary — the stall clock below, which a dead agent cannot advance.
-        WindowProbe::Alive | WindowProbe::Unanswered { .. } => {}
+        WindowProbe::Alive { .. } | WindowProbe::Unanswered { .. } => {}
         WindowProbe::Gone { .. } => {
             return LaneClassification::HardStop(match pass {
                 ReconcilePass::Steady => HardStopKind::WindowGone,
@@ -381,11 +413,18 @@ pub fn classify(
         (Some(head), Some(recorded)) => head == recorded,
         _ => false,
     };
-    if unmoved
+    let store_silent = unmoved
         && observation
             .seconds_since_progress
-            .is_some_and(|elapsed| elapsed > stall_ceiling_secs)
-    {
+            .is_some_and(|elapsed| elapsed > stall_ceiling_secs);
+    // The pty is the second channel (SH-657): a pane that wrote within the
+    // ceiling holds a live agent whatever the store says. Its absence
+    // (`None`) is no evidence, so the store verdict stands alone then —
+    // which is the SH-626 backstop for a dead-but-unobservable lane.
+    let pty_silent = observation
+        .seconds_since_output
+        .is_none_or(|elapsed| elapsed > stall_ceiling_secs);
+    if store_silent && pty_silent {
         return LaneClassification::HardStop(HardStopKind::Stalled);
     }
     LaneClassification::Progressing
@@ -396,13 +435,15 @@ pub fn classify(
 pub const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 
 /// The one `display-message` format the liveness probe asks a lane's pane
-/// for: its pid, its foreground command, and whether tmux itself considers
-/// the pane dead, tab-separated. Exported so the fixture that has to answer
+/// for: its pid, its foreground command, whether tmux itself considers the
+/// pane dead, and when the window last wrote to its pty (`#{window_activity}`,
+/// unix seconds — the second stall channel, SH-657), tab-separated. Exported so the fixture that has to answer
 /// it (`plugins/story/tests/fakes/tmux`'s composite arm, SH-575) and the
 /// harness fence that proves the daemon's own environment can reach that
 /// fixture (`tests/e2e_provider_doubles.rs`, SH-626) ask with this exact
 /// spelling rather than a copy of it (SH-136).
-pub const WINDOW_PROBE_FORMAT: &str = "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}";
+pub const WINDOW_PROBE_FORMAT: &str =
+    "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}";
 
 const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
     "STORY_PROMPT",
@@ -633,21 +674,22 @@ impl Dispatcher for ShellDispatcher {
         }
         let answer = String::from_utf8_lossy(&captured.stdout);
         let answer = answer.trim_end_matches(['\r', '\n']);
-        let mut fields = answer.splitn(3, '\t');
-        let (Some(pid), Some(command), Some(dead)) = (fields.next(), fields.next(), fields.next())
+        let mut fields = answer.splitn(4, '\t');
+        let (Some(pid), Some(command), Some(dead), Some(activity)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
         else {
             return WindowProbe::Unanswered {
                 detail: format!(
-                    "tmux answered the liveness probe for `{window}` with {answer:?}, not the three fields asked for"
+                    "tmux answered the liveness probe for `{window}` with {answer:?}, not the four fields asked for"
                 ),
             };
         };
         // `display-message -t` is `CMD_FIND_CANFAIL` in tmux itself: a target
         // it cannot find is not an error, the format simply expands with no
-        // pane behind it — three empty fields, exit 0 (measured on tmux
+        // pane behind it — every field empty, exit 0 (measured on tmux
         // 3.7c). That IS tmux's answer that the pane is gone, in the only
         // words it uses for it.
-        if pid.is_empty() && command.is_empty() && dead.is_empty() {
+        if pid.is_empty() && command.is_empty() && dead.is_empty() && activity.is_empty() {
             return WindowProbe::Gone {
                 detail: format!("tmux finds no pane `{window}`"),
             };
@@ -676,7 +718,12 @@ impl Dispatcher for ShellDispatcher {
                 ),
             };
         }
-        WindowProbe::Alive
+        // An empty or non-numeric activity stamp is not a reason to doubt a
+        // pane whose pid and identity just checked out; it only means the
+        // pty channel has nothing to say this pass (SH-372).
+        WindowProbe::Alive {
+            last_output_at: activity.parse::<i64>().ok(),
+        }
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
@@ -1089,12 +1136,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     }
                 }
                 LaneClassification::HardStop(kind) => {
+                    let stall = stall_evidence(&observation);
                     if let Some(record) = self.quarantine_lane(
                         run_id,
                         &lane,
                         kind,
-                        observation.awaiting_reason.as_deref(),
-                        observation.window.detail(),
+                        QuarantineEvidence {
+                            existing_reason: observation.awaiting_reason.as_deref(),
+                            window_detail: observation.window.detail(),
+                            stall: stall.as_deref(),
+                        },
                         observation.head_global_seq,
                     )? {
                         report.quarantined.push((lane.lane_index, kind));
@@ -1215,6 +1266,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     |target| self.dispatcher.probe_window(&target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
+            let seconds_since_output = match &window {
+                WindowProbe::Alive {
+                    last_output_at: Some(at),
+                } => seconds_between_unix(*at, &now),
+                _ => None,
+            };
             let observation = LaneObservation {
                 story_closed: row
                     .as_ref()
@@ -1232,6 +1289,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .last_progress_at
                     .as_deref()
                     .and_then(|at| elapsed_secs(at, &now)),
+                seconds_since_output,
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
             };
             let classification = if row.is_none() {
@@ -1297,6 +1355,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         if moved {
             updated.last_progress_seq = head_global_seq.map(GlobalSeq::new);
             updated.last_progress_at = Some(observed_at);
+        } else if let Some(output_at) = pty_output_after(probe, lane.last_progress_at.as_deref()) {
+            // The store did not move but the pane did (SH-657): the agent is
+            // working without writing to the store, which is most of what an
+            // agent does. The clock restarts from the OUTPUT, not from this
+            // observation — tmux's stamp is exact and the tick is coarse.
+            updated.last_progress_at = Some(output_at);
         }
         Ok(self.ctx.store().write(|tx| {
             if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
@@ -1352,10 +1416,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         run_id: &RunId,
         lane: &EngineLaneRecord,
         kind: HardStopKind,
-        existing_reason: Option<&str>,
-        window_detail: Option<&str>,
+        evidence: QuarantineEvidence<'_>,
         head_global_seq: Option<i64>,
     ) -> Result<Option<EngineQuarantineRecord>, AppError> {
+        let QuarantineEvidence {
+            existing_reason,
+            window_detail,
+            stall: stall_evidence,
+        } = evidence;
         let observed_at = self.ctx.now();
         let mut fired_reason = None;
         if lane.story_id.is_some() {
@@ -1369,9 +1437,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 // A stall reached while the probe could not be asked is the
                 // council's backstop for a dead-but-unobservable lane, so the
                 // last probe failure travels with it.
-                HardStopKind::Stalled => window_detail
-                    .map(|detail| format!(" (window liveness unknown: {detail})"))
-                    .unwrap_or_default(),
+                // A stall names what was measured on each channel (SH-657):
+                // a verdict whose evidence nobody can see is the SH-418
+                // shape, and 8 of the first 8 were wrong.
+                HardStopKind::Stalled => format!(
+                    "{}{}",
+                    stall_evidence
+                        .map(|evidence| format!(" ({evidence})"))
+                        .unwrap_or_default(),
+                    window_detail
+                        .map(|detail| format!(" (window liveness unknown: {detail})"))
+                        .unwrap_or_default()
+                ),
                 _ => String::new(),
             };
             let provenance = format!(
@@ -2057,6 +2134,60 @@ pub(crate) fn elapsed_secs(earlier: &str, later: &str) -> Option<u64> {
     u64::try_from((later - earlier).num_seconds()).ok()
 }
 
+/// Seconds from a unix timestamp to an RFC3339 instant, or `None` when the
+/// stamp is unrepresentable or lies in `later`'s future (a clock that has
+/// gone backwards states nothing about silence, SH-372).
+pub(crate) fn seconds_between_unix(earlier_unix: i64, later: &str) -> Option<u64> {
+    let earlier = chrono::DateTime::from_timestamp(earlier_unix, 0)?;
+    let later = chrono::DateTime::parse_from_rfc3339(later).ok()?;
+    u64::try_from((later.with_timezone(&chrono::Utc) - earlier).num_seconds()).ok()
+}
+
+/// What a hard stop's reason is composed from, as observed on the pass that
+/// quarantined the lane (SH-120: relayed, never replaced).
+#[derive(Clone, Copy, Debug, Default)]
+struct QuarantineEvidence<'a> {
+    /// The story's own `awaiting` text, when the agent set one.
+    existing_reason: Option<&'a str>,
+    /// The liveness probe's own words when it did not say "alive" (SH-626).
+    window_detail: Option<&'a str>,
+    /// Both stall channels' measurements, for a `Stalled` verdict (SH-657).
+    stall: Option<&'a str>,
+}
+
+/// What the two stall channels measured, in words an operator can check
+/// against the lane (SH-657); `None` for any non-stall observation.
+fn stall_evidence(observation: &LaneObservation) -> Option<String> {
+    let store = observation.seconds_since_progress?;
+    let pty = match observation.seconds_since_output {
+        Some(secs) => format!("{secs}s since the pane last wrote to its terminal"),
+        None => "the pane's terminal output could not be read".to_string(),
+    };
+    Some(format!(
+        "no story event for {store}s and {pty}; the ceiling is {STALL_CEILING_SECS}s"
+    ))
+}
+
+/// The probe's pty output stamp, rendered as the store's RFC3339 spelling,
+/// when it is later than the lane's recorded activity — `None` when the
+/// probe carries no stamp or the stamp is not newer (SH-657).
+fn pty_output_after(probe: &WindowProbe, recorded_at: Option<&str>) -> Option<String> {
+    let WindowProbe::Alive {
+        last_output_at: Some(output_at),
+    } = probe
+    else {
+        return None;
+    };
+    let output = chrono::DateTime::from_timestamp(*output_at, 0)?;
+    let newer = match recorded_at.and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok()) {
+        Some(recorded) => output > recorded.with_timezone(&chrono::Utc),
+        // Nothing recorded yet: the seq seeds on this same pass, so an
+        // absent mark defers to that rather than to the pty.
+        None => false,
+    };
+    newer.then(|| output.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 /// An empty lane at `lane_index`, ready to be filled.
 ///
 /// The progress pair is cleared along with the story: an idle lane holds no
@@ -2415,6 +2546,17 @@ pub(crate) fn run_shell_dispatch(
         .env("STORY_TARGET_SESSION", project)
         .env("STORY_CREATE_SESSION", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
+    if full_auto {
+        // The lane runs under the very ceiling its stall clock derives from
+        // (SH-657): story.sh hands this to the agent's window as
+        // `BASH_MAX_TIMEOUT_MS`, so the longest foreground tool call the
+        // agent can make and the silence the engine tolerates share one
+        // constant rather than one being a cited host default.
+        command.env(
+            LANE_TOOL_CEILING_ENV,
+            (HOST_TOOL_CALL_CEILING_SECS * 1000).to_string(),
+        );
+    }
 
     let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
         CaptureError::Stage(detail) => {
@@ -2685,10 +2827,12 @@ fn probe_journal_edge(
                 "window liveness unanswered; the lane is judged by its stall clock until tmux answers: {detail}"
             ),
         )),
-        WindowProbe::Alive if previous.is_some() => {
+        WindowProbe::Alive { .. } if previous.is_some() => {
             Some(("INFO", "window liveness probe answers again".to_string()))
         }
-        WindowProbe::Alive | WindowProbe::Gone { .. } | WindowProbe::Unanswered { .. } => None,
+        WindowProbe::Alive { .. } | WindowProbe::Gone { .. } | WindowProbe::Unanswered { .. } => {
+            None
+        }
     }
 }
 
@@ -2927,11 +3071,25 @@ mod tests {
             "a changed reason is a new line"
         );
         assert_eq!(
-            probe_journal_edge(Some("tmux exited 1"), &WindowProbe::Alive).map(|line| line.0),
+            probe_journal_edge(
+                Some("tmux exited 1"),
+                &WindowProbe::Alive {
+                    last_output_at: None
+                }
+            )
+            .map(|line| line.0),
             Some("INFO"),
             "recovery closes the bracket"
         );
-        assert_eq!(probe_journal_edge(None, &WindowProbe::Alive), None);
+        assert_eq!(
+            probe_journal_edge(
+                None,
+                &WindowProbe::Alive {
+                    last_output_at: None
+                }
+            ),
+            None
+        );
         assert_eq!(
             probe_journal_edge(
                 None,
@@ -2987,17 +3145,48 @@ mod tests {
         let live = root.path().join("tmux-live");
         executable(
             &live,
-            &format!("printf '{}\\tcodex\\t0\\n'", std::process::id()),
+            &format!(
+                "printf '{}\\tcodex\\t0\\t1789066115\\n'",
+                std::process::id()
+            ),
         );
         assert_eq!(
             dispatcher_with_tmux(root.path(), &live).probe_window("@7"),
-            WindowProbe::Alive
+            WindowProbe::Alive {
+                last_output_at: Some(1_789_066_115)
+            },
+            "the fourth field is tmux's #{{window_activity}}, carried as the pty channel (SH-657)"
+        );
+
+        // An empty or non-numeric activity stamp says nothing about a pane
+        // whose pid and identity checked out: alive, pty channel unknown.
+        let quiet = root.path().join("tmux-quiet");
+        executable(
+            &quiet,
+            &format!("printf '{}\\tcodex\\t0\\t\\n'", std::process::id()),
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &quiet).probe_window("@7"),
+            WindowProbe::Alive {
+                last_output_at: None
+            }
+        );
+        let garbled_stamp = root.path().join("tmux-garbled-stamp");
+        executable(
+            &garbled_stamp,
+            &format!("printf '{}\\tcodex\\t0\\tyesterday\\n'", std::process::id()),
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &garbled_stamp).probe_window("@7"),
+            WindowProbe::Alive {
+                last_output_at: None
+            }
         );
 
         let shell = root.path().join("tmux-shell");
         executable(
             &shell,
-            &format!("printf '{}\\tzsh\\t0\\n'", std::process::id()),
+            &format!("printf '{}\\tzsh\\t0\\t1789066115\\n'", std::process::id()),
         );
         let WindowProbe::Gone { detail } =
             dispatcher_with_tmux(root.path(), &shell).probe_window("@7")
@@ -3009,7 +3198,10 @@ mod tests {
         let dead = root.path().join("tmux-dead");
         executable(
             &dead,
-            &format!("printf '{}\\tcodex\\t1\\n'", std::process::id()),
+            &format!(
+                "printf '{}\\tcodex\\t1\\t1789066115\\n'",
+                std::process::id()
+            ),
         );
         let WindowProbe::Gone { detail } =
             dispatcher_with_tmux(root.path(), &dead).probe_window("@7")
@@ -3021,11 +3213,11 @@ mod tests {
         // tmux's own shape for a target it cannot find: `display-message -t`
         // is CMD_FIND_CANFAIL, so the format expands empty at exit 0.
         let unfound = root.path().join("tmux-unfound");
-        executable(&unfound, "printf '\\t\\t\\n'");
+        executable(&unfound, "printf '\\t\\t\\t\\n'");
         let WindowProbe::Gone { detail } =
             dispatcher_with_tmux(root.path(), &unfound).probe_window("@7")
         else {
-            panic!("three empty fields at exit 0 is tmux saying the pane is gone");
+            panic!("every field empty at exit 0 is tmux saying the pane is gone");
         };
         assert!(detail.contains("finds no pane"), "{detail}");
 
@@ -3066,12 +3258,26 @@ mod tests {
         let WindowProbe::Unanswered { detail } =
             dispatcher_with_tmux(root.path(), &silent).probe_window("%1")
         else {
-            panic!("an empty answer is not three fields");
+            panic!("an empty answer is not four fields");
         };
-        assert!(detail.contains("not the three fields"), "{detail}");
+        assert!(detail.contains("not the four fields"), "{detail}");
+
+        // The three-field answer an older fixture gives is not an answer
+        // either: the probe asked four questions and got three.
+        let short = root.path().join("tmux-short");
+        executable(
+            &short,
+            &format!("printf '{}\\tcodex\\t0\\n'", std::process::id()),
+        );
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &short).probe_window("%1")
+        else {
+            panic!("three fields is not the four asked for");
+        };
+        assert!(detail.contains("not the four fields"), "{detail}");
 
         let garbled = root.path().join("tmux-garbled");
-        executable(&garbled, "printf 'claude\\tclaude\\t0\\n'");
+        executable(&garbled, "printf 'claude\\tclaude\\t0\\t1\\n'");
         let WindowProbe::Unanswered { detail } =
             dispatcher_with_tmux(root.path(), &garbled).probe_window("%1")
         else {

@@ -18,11 +18,20 @@ pub enum DispatcherStep {
     DispatchFailure(String),
     Unclaim(DispatchOutcome),
     UnclaimFailure(String),
-    /// A scripted answer from tmux: `alive` maps to [`WindowProbe::Alive`],
-    /// otherwise to [`WindowProbe::Gone`] with a scripted reason.
+    /// A scripted answer from tmux: `alive` maps to [`WindowProbe::Alive`]
+    /// with no pty stamp (the pane is live, its terminal channel unknown —
+    /// the store-only judgement every pre-SH-657 fixture encodes), otherwise
+    /// to [`WindowProbe::Gone`] with a scripted reason.
     WindowAlive {
         window: String,
         alive: bool,
+    },
+    /// A scripted live pane whose pty last wrote at `last_output_at` (unix
+    /// seconds) — tmux's `#{window_activity}`, the second stall channel
+    /// (SH-657).
+    WindowActive {
+        window: String,
+        last_output_at: i64,
     },
     /// A scripted probe tmux could not answer (SH-626).
     WindowUnanswered {
@@ -111,11 +120,22 @@ impl Dispatcher for FakeDispatcher {
             } => {
                 assert_eq!(expected, window, "FakeDispatcher window probe target");
                 if alive {
-                    WindowProbe::Alive
+                    WindowProbe::Alive {
+                        last_output_at: None,
+                    }
                 } else {
                     WindowProbe::Gone {
                         detail: format!("scripted: tmux reports `{window}` gone"),
                     }
+                }
+            }
+            DispatcherStep::WindowActive {
+                window: expected,
+                last_output_at,
+            } => {
+                assert_eq!(expected, window, "FakeDispatcher window probe target");
+                WindowProbe::Alive {
+                    last_output_at: Some(last_output_at),
                 }
             }
             DispatcherStep::WindowUnanswered {

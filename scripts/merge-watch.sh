@@ -283,7 +283,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
         # WHAT THIS LIST MUST NEVER CONTAIN: `STORYHOOK_MACHINE_LOCKS`, and
         # `STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH`. `verify-pr.sh` runs this
         # whole script under `machine-lock.sh gate`; the gate command is
-        # `make test`, which reaches `run-tests.sh`, which re-execs itself
+        # `make test` (unless the project's `[verify] gate` says otherwise,
+        # SH-649), which reaches `run-tests.sh`, which re-execs itself
         # under `machine-lock.sh gate` -- and that inner take is reentrant
         # ONLY because the name list travels in the environment
         # (`machine-lock.sh`, "REENTRANCY"). A holder is judged by liveness,
