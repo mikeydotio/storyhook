@@ -104,8 +104,9 @@ esac
 #
 # The optional lease directory is not decoration either (SH-635). Since SH-532
 # the Rust suite runs `story` from a PID-owned hard link under
-# `target/debug/.storyhook-test-binaries/<pid>-<nonce>/`, and since SH-635 so
-# does the browser runner -- so a daemon of THIS checkout is spelled
+# `target/debug/.storyhook-test-binaries/<pid>-<nonce>/`, since SH-635 so
+# does the browser runner, and since SH-639 so does every plugin shell test --
+# so a daemon of THIS checkout is spelled
 # `.../target/debug/.storyhook-test-binaries/<pid>-<nonce>/story ...` at least as
 # often as `.../target/debug/story ...`. A pattern anchored on the bare artifact
 # alone could see only the daemons that had never been leased; every leaked
