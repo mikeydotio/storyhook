@@ -221,7 +221,7 @@ fn started_of(pid: u32) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The `--max-wait` a reclamation case gives the script.
+/// The `--max-wait` a holder-identity case gives the script.
 ///
 /// Not a speed assertion and not a bare literal (SH-394): reclaiming is decided
 /// on the **first** observation of a lock, so any positive multiple of the
@@ -232,6 +232,11 @@ fn started_of(pid: u32) -> String {
 /// forever, and an unbounded case would hang the whole suite instead of
 /// reporting the mutation. Measured: without this, deleting the start-time
 /// comparison hung `cargo test` indefinitely rather than turning one test red.
+///
+/// The live-holder control shares it rather than carrying its own: there a
+/// correct implementation waits the whole budget and a wrong one exits at
+/// once, so the number bounds only the case's own wall clock, and one
+/// derivation for all three identity cases is one fewer number to disagree.
 fn reclaim_deadline() -> String {
     (lock_poll_secs() * 2).to_string()
 }
@@ -302,6 +307,11 @@ const WAIT_POLLS_ALLOWED: u64 = 30;
 fn poll_ceiling() -> std::time::Duration {
     std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED)
 }
+
+/// `--max-wait 0`: observe the lock exactly once and refuse if it is held. A
+/// semantic value, not a ceiling — named so the fence in
+/// `tests/timing_assertions.rs` needs no exemption for its spelling.
+const NO_WAIT: &str = "0";
 
 /// The journal path every holder in this file reports under. One name, so a
 /// holder's line can be told from anything else in the journal by path alone.
@@ -1252,7 +1262,14 @@ fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
     let victim = ChildGuard::spawn(&mut command).expect("spawning a live holder");
     fixture.plant("gate", &victim.pid().to_string(), &started_of(victim.pid()));
 
-    let out = fixture.run(&["--max-wait", "1", "gate", "--", "echo", "MUST-NOT-RUN"]);
+    let out = fixture.run(&[
+        "--max-wait",
+        &reclaim_deadline(),
+        "gate",
+        "--",
+        "echo",
+        "MUST-NOT-RUN",
+    ]);
 
     assert_eq!(
         code(&out),
@@ -1287,7 +1304,7 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
     wait_for(&fixture.lock("gate").join("pid"));
 
     let second = fixture
-        .command(&["--max-wait", "0", "gate", "--", "echo", "MUST-NOT-RUN"])
+        .command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"])
         .env("STORYHOOK_GATE_PROGRESS", &journal)
         .env("STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH", "release gate")
         .output()
@@ -1722,7 +1739,7 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
         std::fs::write(&journal, "").unwrap();
         fixture.plant("merge", &pid.to_string(), &started);
         let output = fixture
-            .command(&["--max-wait", "0", "merge", "--", "true"])
+            .command(&["--max-wait", NO_WAIT, "merge", "--", "true"])
             .env("STORYHOOK_GATE_PROGRESS", &journal)
             .output()
             .unwrap();
