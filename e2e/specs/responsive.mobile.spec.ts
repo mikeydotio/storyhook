@@ -55,6 +55,14 @@ for (const width of SWEEP_WIDTHS) {
       .locator(".card-title", { hasText: "Wire up the auth flow" })
       .click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
+    // Settle the drawer's own motion, then state the width. The poll below
+    // used to be the wait as well as the claim, and those are different
+    // things (SH-623): a rounded width reaches 480 while the transform is
+    // still up to 0.5px from rest -- `cubic-bezier(0.2, 0.9, 0.3, 1)` has a
+    // flat tail, so that is the last ~12% of the transition -- and
+    // `panelLeft`/`panelRight` below are read from the transform, with exact
+    // equality. A width claim is not a transform claim.
+    await awaitSettled(page.locator("#drawer"), `the story detail peer @ ${width}px`);
 
     await expect
       .poll(async () =>
