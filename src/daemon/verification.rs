@@ -1,5 +1,6 @@
 //! The daemon-owned centralized verification worker (SH-521).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,9 +42,9 @@ pub const INFRASTRUCTURE_RETRY_ATTEMPTS: u32 = super::verification_progress::PUB
     / RECOVERY_WAKE.as_secs() as u32
     + 1;
 
-/// One verification generation currently owned by this daemon's serialized
-/// verifier. Queue rank is deliberately absent: priority may change while an
-/// attempt is running, but ownership cannot (SH-549).
+/// One verification generation currently owned by one of this daemon's
+/// per-project verifiers. Queue rank is deliberately absent: priority may
+/// change while an attempt is running, but ownership cannot (SH-549).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveVerification {
     /// Store identity of the story's project.
@@ -56,38 +57,53 @@ pub struct ActiveVerification {
     pub started_at: String,
 }
 
-/// Process-local source of truth for verifier ownership.
+/// Process-local source of truth for verifier ownership: one slot per
+/// project (SH-648).
 ///
 /// Ownership cannot survive the daemon process that owns the synchronous
 /// verification subprocess, so persisting it would create stale leases after
-/// crashes. Clones share one slot across the verifier, progress publisher and
-/// HTTP dispatcher.
+/// crashes. Clones share one registry across every project worker, the
+/// progress publisher and the HTTP dispatcher.
 #[derive(Clone, Default)]
 pub struct VerificationActivity {
-    active: Arc<Mutex<Option<ActiveVerification>>>,
+    active: Arc<Mutex<BTreeMap<ProjectId, ActiveVerification>>>,
 }
 
 impl VerificationActivity {
     /// Creates an empty registry. After daemon restart every surviving
-    /// `verifying` story is queued until the new worker acquires it.
+    /// `verifying` story is queued until its project's worker acquires it.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns the generation owned at this instant, if any.
+    /// Returns the generation `project`'s worker owns at this instant, if any.
     #[must_use]
-    pub fn active(&self) -> Option<ActiveVerification> {
+    pub fn active_for(&self, project: ProjectId) -> Option<ActiveVerification> {
         self.active
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .get(&project)
+            .cloned()
+    }
+
+    /// Every project's owned generation, ordered by project.
+    #[must_use]
+    pub fn active_all(&self) -> Vec<ActiveVerification> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Marks `candidate` active until the returned guard is dropped.
     ///
-    /// The daemon has one serialized worker; a second simultaneous acquire is
-    /// therefore an invariant violation rather than another queue slot.
+    /// Each project has exactly one serialized worker; a second simultaneous
+    /// acquire for the same project is therefore an invariant violation
+    /// rather than another queue slot. Two projects acquiring at once is the
+    /// point.
     #[must_use]
     pub fn acquire(
         &self,
@@ -100,9 +116,13 @@ impl VerificationActivity {
             generation: candidate.verifying_generation,
             started_at,
         };
-        let mut slot = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(slot.is_none(), "the serialized verifier acquired twice");
-        *slot = Some(active.clone());
+        let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            !slots.contains_key(&candidate.project),
+            "the serialized verifier for project {} acquired twice",
+            candidate.project_slug
+        );
+        slots.insert(candidate.project, active.clone());
         VerificationGuard {
             registry: self.clone(),
             active,
@@ -120,13 +140,13 @@ pub struct VerificationGuard {
 
 impl Drop for VerificationGuard {
     fn drop(&mut self) {
-        let mut slot = self
+        let mut slots = self
             .registry
             .active
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if slot.as_ref() == Some(&self.active) {
-            *slot = None;
+        if slots.get(&self.active.project) == Some(&self.active) {
+            slots.remove(&self.active.project);
         }
     }
 }
@@ -136,7 +156,7 @@ impl VerificationGuard {
     /// generation of the same story.
     ///
     /// Reconciliation temporarily removes the story from the queue, then
-    /// creates a new generation when the agent resubmits it. The serialized
+    /// creates a new generation when the agent resubmits it. The project's
     /// worker still owns the story throughout, so replacing the generation is
     /// one guarded mutation rather than a release followed by a new acquire.
     fn replace(&mut self, candidate: &VerificationCandidate, started_at: String) {
@@ -148,13 +168,13 @@ impl VerificationGuard {
             generation: candidate.verifying_generation,
             started_at,
         };
-        let mut slot = self
+        let mut slots = self
             .registry
             .active
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(slot.as_ref(), Some(&self.active));
-        *slot = Some(replacement.clone());
+        assert_eq!(slots.get(&self.active.project), Some(&self.active));
+        slots.insert(self.active.project, replacement.clone());
         self.active = replacement;
     }
 }
@@ -772,11 +792,13 @@ pub enum TickResult {
     Halted,
 }
 
-/// Runs one verification attempt. Public for store-backed integration tests.
+/// Runs one verification attempt for `project`. Public for store-backed
+/// integration tests.
 pub fn tick_with<S: Store, A: VerificationActuator>(
     store: &S,
     env: &Environment,
     actuator: &A,
+    project: ProjectId,
 ) -> Result<TickResult, AppError> {
     let inflight = InFlight::new(env.clone());
     tick_with_activity(
@@ -785,6 +807,7 @@ pub fn tick_with<S: Store, A: VerificationActuator>(
         actuator,
         &VerificationActivity::new(),
         &inflight,
+        project,
     )
 }
 
@@ -803,12 +826,19 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     actuator: &A,
     activity: &VerificationActivity,
     inflight: &InFlight,
+    project: ProjectId,
 ) -> Result<TickResult, AppError> {
-    tick_with_reconciliation(store, env, actuator, activity, inflight, |_| Ok(None))
+    tick_with_reconciliation(store, env, actuator, activity, inflight, project, |_| {
+        Ok(None)
+    })
 }
 
-/// Runs one verification cycle while allowing a conflicted story to retain
-/// the serialized verifier until its next submission.
+/// Runs one verification cycle for `project` while allowing a conflicted
+/// story to retain that project's verifier until its next submission.
+///
+/// Everything here is the project's own (SH-648): its ordered queue, its
+/// incident halt, its cleanup pass, its slot in `activity`. Another
+/// project's halt or hold is invisible from this tick.
 ///
 /// `wait_for_resubmission` owns only the wait mechanism. The verifier validates
 /// that the returned candidate is a newer generation of the reserved story,
@@ -821,6 +851,7 @@ pub fn tick_with_reconciliation<S, A, W>(
     actuator: &A,
     activity: &VerificationActivity,
     inflight: &InFlight,
+    project: ProjectId,
     mut wait_for_resubmission: W,
 ) -> Result<TickResult, AppError>
 where
@@ -829,28 +860,26 @@ where
     W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
 {
     let queue = VerificationQueue::new(store);
-    let ordered = queue.ordered()?;
-    let incidents = store.read(|tx| tx.verification_incidents())?;
-    let mut incident_candidate = None;
-    for incident in &incidents {
-        match ordered
+    let ordered = queue.ordered_for(project)?;
+    let incident = store.read(|tx| tx.verification_incident(project))?;
+    let incident_candidate = incident.as_ref().and_then(|incident| {
+        ordered
             .iter()
             .find(|candidate| incident_matches(incident, candidate))
-        {
-            None => store.write(|tx| {
+            .cloned()
+    });
+    if let Some(incident) = incident.as_ref() {
+        if incident_candidate.is_none() {
+            store.write(|tx| {
                 tx.clear_verification_incident(&incident.incident_id)?;
                 Ok(())
-            })?,
-            Some(_) if incident.halted => return Ok(TickResult::Halted),
-            Some(candidate) => {
-                if incident_candidate.is_none() {
-                    incident_candidate = Some(candidate.clone());
-                }
-            }
+            })?;
+        } else if incident.halted {
+            return Ok(TickResult::Halted);
         }
     }
     let Some(mut candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
-        let Some(candidate) = queue.next_cleanup()? else {
+        let Some(candidate) = queue.next_cleanup_for(project)? else {
             return Ok(TickResult::Idle);
         };
         let ctx = Ctx::new(
@@ -1302,16 +1331,14 @@ pub fn wait_for_reconciled_candidate(
         if stop.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        if let Some(candidate) =
-            VerificationQueue::new(store)
-                .ordered()?
-                .into_iter()
-                .find(|candidate| {
-                    candidate.project == reserved.project
-                        && candidate.story_id == reserved.story_id
-                        && candidate.verifying_generation.is_some()
-                        && candidate.verifying_generation != reserved.verifying_generation
-                })
+        if let Some(candidate) = VerificationQueue::new(store)
+            .ordered_for(reserved.project)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.story_id == reserved.story_id
+                    && candidate.verifying_generation.is_some()
+                    && candidate.verifying_generation != reserved.verifying_generation
+            })
         {
             return Ok(Some(candidate));
         }
@@ -1319,7 +1346,8 @@ pub fn wait_for_reconciled_candidate(
     }
 }
 
-/// Runs the event-driven verifier until daemon shutdown.
+/// Runs the verifiers until daemon shutdown: one worker per registered
+/// project, supervised (SH-648).
 pub(crate) fn poll_verification(
     store: &impl Store,
     env: &Environment,
@@ -1328,12 +1356,117 @@ pub(crate) fn poll_verification(
     activity: &VerificationActivity,
     inflight: &InFlight,
 ) {
+    poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
+        ShellVerificationActuator::new(env.clone())
+    });
+}
+
+/// The supervisor behind [`poll_verification`], with the actuator injected
+/// per project. Public for the integration tests that prove two projects
+/// verify at once and that a project registered while the daemon runs gets
+/// a worker.
+///
+/// One thread per project rather than one thread multiplexing projects,
+/// because overlap is the point (D-B): a `verify-pr.sh` run blocks its
+/// worker for the length of a suite, and another project's suite must not
+/// wait behind it. Workers are spawned on start and on every
+/// [`Change::Catalog`] (a project registered or deregistered), and
+/// re-checked on the recovery cadence so a missed catalog change costs one
+/// `RECOVERY_WAKE` rather than a project that is never served.
+///
+/// The live set is held across "read the catalog, spawn what is missing" and
+/// across a worker's own retirement, so a project deleted and re-registered
+/// under the same id cannot briefly have two workers — which would trip the
+/// per-project `acquire` assertion. The nested scope joins every worker
+/// before this returns, so daemon shutdown still drains them all.
+pub fn poll_verification_with<S, A, F>(
+    store: &S,
+    env: &Environment,
+    bus: &ChangeBus,
+    stop: &AtomicBool,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    actuator_for: F,
+) where
+    S: Store,
+    A: VerificationActuator,
+    F: Fn(ProjectId) -> A + Sync,
+{
     let subscription = bus.subscribe();
-    let actuator = ShellVerificationActuator::new(env.clone());
+    let live: Mutex<BTreeSet<ProjectId>> = Mutex::new(BTreeSet::new());
+    std::thread::scope(|scope| {
+        while !stop.load(Ordering::Relaxed) {
+            match store.read(|tx| tx.projects()) {
+                Ok(projects) => {
+                    let mut live_workers = live.lock().unwrap_or_else(PoisonError::into_inner);
+                    for project in projects {
+                        if !live_workers.insert(project.id) {
+                            continue;
+                        }
+                        let live = &live;
+                        let actuator = actuator_for(project.id);
+                        scope.spawn(move || {
+                            poll_project_verification(
+                                store, env, bus, stop, activity, inflight, project.id, &actuator,
+                            );
+                            live.lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .remove(&project.id);
+                        });
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "storyhook: verification supervisor could not read the projects: {error}"
+                    );
+                }
+            }
+            // Wake on a catalog change or a resync; otherwise re-check on the
+            // recovery cadence. Project-level changes are the workers' own.
+            let deadline = Instant::now() + RECOVERY_WAKE;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match subscription.recv(remaining) {
+                    Some(Change::Catalog | Change::Resync) => break,
+                    Some(_) | None => continue,
+                }
+            }
+        }
+    });
+}
+
+/// Runs one project's event-driven verifier until daemon shutdown, or until
+/// the project no longer exists — a deleted project's worker retires itself
+/// on its next idle tick rather than blocking for ever on a queue nobody can
+/// fill.
+#[allow(clippy::too_many_arguments)]
+fn poll_project_verification(
+    store: &impl Store,
+    env: &Environment,
+    bus: &ChangeBus,
+    stop: &AtomicBool,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    project: ProjectId,
+    actuator: &impl VerificationActuator,
+) {
+    let subscription = bus.subscribe();
     while !stop.load(Ordering::Relaxed) {
-        match tick_with_reconciliation(store, env, &actuator, activity, inflight, |reserved| {
-            wait_for_reconciled_candidate(store, &subscription, stop, reserved)
-        }) {
+        match tick_with_reconciliation(
+            store,
+            env,
+            actuator,
+            activity,
+            inflight,
+            project,
+            |reserved| wait_for_reconciled_candidate(store, &subscription, stop, reserved),
+        ) {
             Ok(TickResult::Completed | TickResult::Returned) => continue,
             Ok(TickResult::RetryLater) => {
                 let retry_at = Instant::now() + RECOVERY_WAKE;
@@ -1357,6 +1490,15 @@ pub(crate) fn poll_verification(
                 {}
             }
             Ok(TickResult::Idle) => {
+                match store.read(|tx| tx.project(project)) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return,
+                    Err(error) => {
+                        eprintln!(
+                            "storyhook: verification worker could not confirm its project: {error}"
+                        );
+                    }
+                }
                 while matches!(subscription.recv(RECOVERY_WAKE), Some(Change::Ping))
                     && !stop.load(Ordering::Relaxed)
                 {}

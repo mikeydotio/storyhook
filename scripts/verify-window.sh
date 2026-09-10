@@ -46,9 +46,14 @@
 # store-scoped, so two daemons share one pane -- whichever last started
 # wins the display. Deliberate simplicity for
 # a single-operator, single-terminal workflow, not a defect: an operator
-# checking in wants one place to look, and D4 already makes each store's
-# own verification serial, so true concurrent writers are the rare case of
-# two DIFFERENT stores verifying at the same instant.
+# checking in wants one place to look, and D4 makes each PROJECT's own
+# verification serial, so concurrent writers are two different projects
+# verifying at the same instant. STATED LIMIT since SH-648 (one verifier per
+# project): that case is no longer rare on a machine with two active
+# projects, and this one pane then shows whichever verification last
+# started. The mirror is best effort and non-fatal, so nothing is lost but
+# the view; a window per project inside the fixed session is the obvious
+# repair and a separate story, since SH-545's council chose one window.
 #
 # CONTRACT: sourced by scripts/verify-pr.sh, in the same source-if-present
 # shape scripts/gate-progress.sh already uses -- a caller that cannot find

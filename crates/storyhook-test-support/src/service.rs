@@ -40,6 +40,10 @@ pub const FIXTURE_NOW: &str = "2026-01-01T00:00:00Z";
 pub struct ServiceFixture {
     store: SqliteStore,
     project: ProjectId,
+    /// Projects added by [`ServiceFixture::add_project`], so the drop-time
+    /// drift check covers every project the fixture created, not only the
+    /// seeded one.
+    extra_projects: std::sync::Mutex<Vec<ProjectId>>,
     cwd: TempDir,
     clock: Clock,
     env: Environment,
@@ -93,12 +97,42 @@ impl ServiceFixture {
         Self {
             store,
             project,
+            extra_projects: std::sync::Mutex::new(Vec::new()),
             cwd: scratch_dir(),
             clock: Clock::Fixed(FIXTURE_NOW.to_string()),
             env,
             drift_expected: std::sync::atomic::AtomicBool::new(false),
             _dir: dir,
         }
+    }
+
+    /// Registers a second project in the same store, with the seeded
+    /// project's catalog and its own checkout path — for the tests whose
+    /// subject is that two projects are independent (SH-648: one verifier
+    /// per project). The id is what every per-project door takes.
+    pub fn add_project(&self, slug: &str, prefix: &str) -> ProjectId {
+        let states = default_states();
+        let project = self
+            .store
+            .write(|tx| {
+                let project = tx.create_project(&NewProject {
+                    uuid: format!("fixture-uuid-{slug}"),
+                    slug: slug.to_string(),
+                    name: slug.to_string(),
+                    prefix: prefix.to_string(),
+                    created_at: FIXTURE_NOW.into(),
+                })?;
+                tx.set_checkout_path(project, Some(&Path::new("/checkouts").join(slug)))?;
+                tx.put_states(project, &states)?;
+                tx.put_types(project, &default_types())?;
+                Ok(project)
+            })
+            .expect("seeding a second fixture project");
+        self.extra_projects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(project);
+        project
     }
 
     /// Adds a member the assignment paths can find.
@@ -127,9 +161,14 @@ impl ServiceFixture {
     /// consulting the (deleted) sync-engine config document — they read
     /// `ReadOps::project_remotes` now, which is exactly what this writes.
     pub fn link_origin(&self, url: &str) {
+        self.link_origin_for(self.project, url);
+    }
+
+    /// [`Self::link_origin`] for a project added by [`Self::add_project`].
+    pub fn link_origin_for(&self, project: ProjectId, url: &str) {
         let remote = RemoteUrl::normalize(url).expect("a well-formed remote url");
         self.store
-            .write(|tx| tx.link_remote(self.project, &remote, FIXTURE_NOW))
+            .write(|tx| tx.link_remote(project, &remote, FIXTURE_NOW))
             .expect("registering an origin");
     }
 
@@ -169,8 +208,13 @@ impl ServiceFixture {
     /// and a struct holding both would be self-referential.
     #[must_use]
     pub fn ctx(&self) -> Ctx<'_, SqliteStore> {
-        Ctx::new(&self.store, self.project, self.cwd.path(), self.env.clone())
-            .clock(self.clock.clone())
+        self.ctx_for(self.project)
+    }
+
+    /// [`Self::ctx`] over a project added by [`Self::add_project`].
+    #[must_use]
+    pub fn ctx_for(&self, project: ProjectId) -> Ctx<'_, SqliteStore> {
+        Ctx::new(&self.store, project, self.cwd.path(), self.env.clone()).clock(self.clock.clone())
     }
 
     /// Installs a `hooks.toml` in the fixture's working directory.
@@ -205,17 +249,24 @@ impl ServiceFixture {
     /// chosen point — for instance immediately after the operation under test,
     /// before any teardown could obscure which write was responsible.
     pub fn assert_no_drift(&self) {
-        let diff = diff_read_model(&self.store, self.project).expect("diffing the read model");
-        assert!(
-            diff.is_clean(),
-            "the read model has drifted from its events:\n{}",
-            diff.describe()
-        );
-        assert!(
-            diff.asymmetric_relations.is_empty(),
-            "a relation is asserted by one story and not by the other:\n{}",
-            diff.describe()
-        );
+        let extra = self
+            .extra_projects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for project in std::iter::once(self.project).chain(extra) {
+            let diff = diff_read_model(&self.store, project).expect("diffing the read model");
+            assert!(
+                diff.is_clean(),
+                "the read model of project {project} has drifted from its events:\n{}",
+                diff.describe()
+            );
+            assert!(
+                diff.asymmetric_relations.is_empty(),
+                "a relation is asserted by one story and not by the other:\n{}",
+                diff.describe()
+            );
+        }
     }
 }
 

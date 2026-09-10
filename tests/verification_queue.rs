@@ -132,7 +132,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 
     let statuses = status_snapshot(
         &ordered,
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -154,7 +154,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
     drop(guard);
     let statuses = status_snapshot(
         &ordered,
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -349,7 +349,7 @@ fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_w
 
     let statuses = status_snapshot(
         &[new_candidate],
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -392,7 +392,9 @@ fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_w
             .next()
             .unwrap()
             .unwrap()],
-        VerificationActivity::new().active().as_ref(),
+        VerificationActivity::new()
+            .active_for(fixture.project())
+            .as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -427,7 +429,7 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 
     let statuses = status_snapshot(
         &[candidate],
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -453,7 +455,7 @@ impl ActivityObservingActuator {
     fn assert_owned(&self, candidate: &VerificationCandidate) {
         let active = self
             .activity
-            .active()
+            .active_for(candidate.project)
             .expect("ownership must be visible while verification is active");
         assert_eq!(active.project, candidate.project);
         assert_eq!(active.story_id, candidate.story_id);
@@ -489,8 +491,8 @@ impl VerificationActuator for ActivityObservingActuator {
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
         assert_eq!(
-            self.activity.active(),
-            None,
+            self.activity.active_all(),
+            Vec::new(),
             "process-local ownership must end before post-merge cleanup"
         );
         assert!(
@@ -563,6 +565,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
             )
             .unwrap(),
             expected
@@ -571,7 +574,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
             actuator.observed_story.lock().unwrap().as_deref(),
             Some(id.as_str())
         );
-        assert_eq!(activity.active(), None);
+        assert_eq!(activity.active_for(fixture.project()), None);
         assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 
         if expected == TickResult::RetryLater {
@@ -579,7 +582,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
             assert!(matches!(
                 status_snapshot(
                     &ordered,
-                    activity.active().as_ref(),
+                    activity.active_for(fixture.project()).as_ref(),
                     fixture.env(),
                     FIXTURE_NOW
                 )[0]
@@ -612,6 +615,7 @@ fn ownership_is_cleared_during_unwind() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
         );
     }));
 
@@ -620,7 +624,7 @@ fn ownership_is_cleared_during_unwind() {
         actuator.observed_story.lock().unwrap().as_deref(),
         Some("SH-1")
     );
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -655,11 +659,12 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
         &actuator,
         &activity,
         &inflight,
+        fixture.project(),
     )
     .expect_err("the injected outcome write must fail");
 
     assert!(error.to_string().contains("outcome recording interrupted"));
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -751,7 +756,7 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         reaped: Mutex::new(Vec::new()),
     };
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let returned = fixture
@@ -959,7 +964,7 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
     };
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let row = fixture
@@ -1094,6 +1099,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
                 |_| Ok(None),
             )
             .unwrap(),
@@ -1249,6 +1255,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
             )
             .unwrap(),
             TickResult::Returned
@@ -1294,7 +1301,7 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let story_no = StoryNo::parse_id("SH", &id).unwrap();
@@ -1390,6 +1397,7 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
         &actuator,
         &activity,
         &inflight,
+        fixture.project(),
         |reserved| {
             assert_eq!(reserved.story_id, held);
             reserved_generations
@@ -1397,7 +1405,10 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
                 .unwrap()
                 .push(reserved.verifying_generation);
             assert_eq!(
-                activity.active().as_ref().map(|active| &active.story_id),
+                activity
+                    .active_for(fixture.project())
+                    .as_ref()
+                    .map(|active| &active.story_id),
                 Some(&held),
                 "process-local ownership must span reconciliation"
             );
@@ -1443,7 +1454,7 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
     assert_eq!(generations[0], first_generation);
     assert_ne!(generations[0], generations[1]);
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [held.as_str()]);
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -1476,6 +1487,7 @@ fn a_failed_conflict_notification_releases_the_reservation() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
             |_| panic!("a failed notification must not enter the reservation wait"),
         )
         .unwrap(),
@@ -1488,7 +1500,7 @@ fn a_failed_conflict_notification_releases_the_reservation() {
         .unwrap();
     assert_eq!(row.state, "in-progress");
     assert!(row.awaiting.unwrap().contains("pane unavailable"));
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -1508,7 +1520,13 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
         TickResult::Returned
     );
     let row = fixture
@@ -2262,7 +2280,13 @@ fn an_unreachable_agent_is_marked_awaiting_instead_of_silently_retried() {
         reaped: Mutex::new(Vec::new()),
     };
 
-    tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap();
+    tick_with(
+        fixture.store(),
+        &Environment::at(root.path()),
+        &actuator,
+        fixture.project(),
+    )
+    .unwrap();
     let row = fixture
         .store()
         .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
@@ -2290,19 +2314,19 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
     let env = Environment::at(root.path());
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::RetryLater
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::RetryLater
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let row = fixture
@@ -2339,7 +2363,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let incident = fixture
@@ -2436,7 +2460,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
             .is_none()
     );
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted,
         "acknowledgement must make the still-current candidate eligible again"
     );
@@ -2465,11 +2489,11 @@ fn a_halt_fires_one_post_commit_verification_hook() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let lines: Vec<serde_json::Value> = std::fs::read_to_string(fixture.cwd().join("hooks.log"))
@@ -2519,7 +2543,7 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     assert!(
@@ -2568,7 +2592,7 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     assert!(
@@ -2599,7 +2623,7 @@ fn a_green_attempt_closes_then_reaps_the_story() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     let story_no = StoryNo::parse_id("SH", &id).unwrap();
@@ -2647,7 +2671,7 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     };
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     assert_eq!(
@@ -2655,7 +2679,7 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         std::slice::from_ref(&id)
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Idle
     );
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
@@ -2979,7 +3003,7 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
         reaped: Mutex::new(Vec::new()),
     };
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
 
@@ -3209,7 +3233,7 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
             notified: Mutex::new(Vec::new()),
             reaped: Mutex::new(Vec::new()),
         };
-        tick_with(fixture.store(), &env, &actuator).unwrap();
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap();
         let story_no = StoryNo::parse_id("SH", &id).unwrap();
         let row = fixture
             .store()
@@ -3228,5 +3252,672 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
             "the literal must be gone: {}",
             comment.text
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One verifier per project (SH-648)
+// ---------------------------------------------------------------------------
+
+/// A story submitted in a project other than the fixture's seeded one.
+fn submitted_in(
+    fixture: &ServiceFixture,
+    project: storyhook::store::ProjectId,
+    title: &str,
+    priority: Priority,
+    url: &str,
+) -> String {
+    let ctx = fixture.ctx_for(project);
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: title.into(),
+            priority: Some(priority.as_str().to_string()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    PrLinkService::new(&ctx).link(&id, url, true).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    id
+}
+
+/// The second fixture project, with its own origin: a submission there links
+/// a PR on a different repository, as a second registered checkout would.
+fn second_project(fixture: &ServiceFixture) -> storyhook::store::ProjectId {
+    let project = fixture.add_project("gadgets", "GD");
+    fixture.link_origin_for(project, "https://github.com/acme/gadgets");
+    project
+}
+
+const GADGETS_PR_ONE: &str = "https://github.com/acme/gadgets/pull/1";
+
+/// An actuator that holds one project's verification open until released,
+/// and lands every other project's on sight. Its `entered` channel names the
+/// project whose worker reached the blocking call, so a test can prove two
+/// workers are inside `verify` at once.
+struct ProjectGateActuator {
+    held: storyhook::store::ProjectId,
+    entered: std::sync::mpsc::Sender<storyhook::store::ProjectId>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl VerificationActuator for ProjectGateActuator {
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.entered
+            .send(candidate.project)
+            .expect("the test observes every entry");
+        if candidate.project == self.held {
+            self.release
+                .lock()
+                .expect("locking the release channel")
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("the test must release the held verifier");
+        }
+        VerificationOutcome::Merged {
+            tree: format!("tree-{}", candidate.project_slug),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        }
+    }
+
+    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        Ok(())
+    }
+}
+
+/// D-B: two projects' verifications overlap. Project A's worker is held
+/// inside its actuator; project B's tick, sharing the SAME activity registry
+/// and in-flight ledger, completes while A is held, and both attempts are
+/// visible as owned at the same instant.
+#[test]
+fn two_projects_verify_concurrently() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "held", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(
+        &fixture,
+        gadgets,
+        "flows past",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let actuator = ProjectGateActuator {
+        held: widgets,
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    };
+
+    let (widgets_result, gadgets_result) = thread::scope(|scope| {
+        let widgets_worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+                widgets,
+            )
+        });
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("widgets' worker must reach its actuator"),
+            widgets
+        );
+
+        let gadgets_result = tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            gadgets,
+        )
+        .unwrap();
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("gadgets' worker must reach its actuator while widgets is held"),
+            gadgets
+        );
+        assert_eq!(
+            activity
+                .active_for(widgets)
+                .map(|active| active.story_id)
+                .as_deref(),
+            Some(widgets_story.as_str()),
+            "widgets is still owned while gadgets ran to completion"
+        );
+        assert_eq!(
+            activity.active_for(gadgets),
+            None,
+            "gadgets' attempt released its own slot and nobody else's"
+        );
+
+        release_tx.send(()).unwrap();
+        (widgets_worker.join().unwrap().unwrap(), gadgets_result)
+    });
+
+    assert_eq!(widgets_result, TickResult::Completed);
+    assert_eq!(gadgets_result, TickResult::Completed);
+    assert!(activity.active_all().is_empty());
+    for (project, id, prefix) in [
+        (widgets, &widgets_story, "SH"),
+        (gadgets, &gadgets_story, "GD"),
+    ] {
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(project, StoryNo::parse_id(prefix, id).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "done", "{id}");
+    }
+}
+
+/// Both owned at once is the observable the previous test cannot assert
+/// while one tick runs on the calling thread: two held workers, two entries
+/// in `active_all`, two `verify` records in the in-flight ledger.
+#[test]
+fn two_held_verifications_are_both_visible_as_owned() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    submitted(&fixture, "held one", Priority::High, PR_ONE);
+    submitted_in(
+        &fixture,
+        gadgets,
+        "held two",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let mut gates = Vec::new();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    for project in [widgets, gadgets] {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        gates.push((
+            project,
+            release_tx,
+            ProjectGateActuator {
+                held: project,
+                entered: entered_tx.clone(),
+                release: Mutex::new(release_rx),
+            },
+        ));
+    }
+
+    let fixture = &fixture;
+    let activity = &activity;
+    let inflight = &inflight;
+    thread::scope(|scope| {
+        let workers: Vec<_> = gates
+            .iter()
+            .map(|(project, _, actuator)| {
+                scope.spawn(move || {
+                    tick_with_activity(
+                        fixture.store(),
+                        fixture.env(),
+                        actuator,
+                        activity,
+                        inflight,
+                        *project,
+                    )
+                })
+            })
+            .collect();
+        let mut entered = vec![
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+        ];
+        entered.sort();
+        assert_eq!(entered, [widgets, gadgets]);
+
+        assert_eq!(activity.active_all().len(), 2);
+        let published = lifecycle::read_inflight(fixture.env());
+        assert_eq!(published.len(), 2, "{published:?}");
+        assert!(published.iter().all(|entry| entry.command == "verify"));
+        assert_ne!(published[0].request_id, published[1].request_id);
+
+        for (_, release, _) in &gates {
+            release.send(()).unwrap();
+        }
+        for worker in workers {
+            assert_eq!(worker.join().unwrap().unwrap(), TickResult::Completed);
+        }
+    });
+    assert!(activity.active_all().is_empty());
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+/// A halt is the project's own: widgets halts on a permanent infrastructure
+/// failure and stays halted, gadgets drains, and each project's dashboard
+/// and acknowledgement see only their own incident.
+#[test]
+fn a_halt_in_one_project_leaves_the_other_draining() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(&fixture, gadgets, "healthy", Priority::High, GADGETS_PR_ONE);
+
+    let halting = FakeActuator {
+        outcome: VerificationOutcome::InfrastructureFailure {
+            detail: "not inside a git worktree".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    let landing = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "gadgets-tree".into(),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &halting, widgets).unwrap(),
+        TickResult::Halted
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &halting, widgets).unwrap(),
+        TickResult::Halted,
+        "widgets stays halted until acknowledged"
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &landing, gadgets).unwrap(),
+        TickResult::Completed,
+        "gadgets must drain while widgets is halted"
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident(widgets))
+        .unwrap()
+        .expect("widgets' halt is durable");
+    assert_eq!(incident.story.to_id("SH"), widgets_story);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(gadgets))
+            .unwrap()
+            .is_none(),
+        "gadgets has no incident of its own"
+    );
+    let gadgets_row = fixture
+        .store()
+        .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", &gadgets_story).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(gadgets_row.state, "done");
+
+    let headers = [Header::from_bytes("Host", "127.0.0.1:3456").unwrap()];
+    let data = |slug: &str| -> serde_json::Value {
+        let response = rest::route(
+            fixture.store(),
+            fixture.env(),
+            &Method::Get,
+            &format!("/api/repos/{slug}/data"),
+            &headers,
+            "",
+            &TrustedHosts::default(),
+        );
+        serde_json::from_str(response.reply.text_body().expect("UTF-8 text response")).unwrap()
+    };
+    assert_eq!(
+        data("fixture")["verification_incident"]["story_id"],
+        widgets_story
+    );
+    assert_eq!(
+        data("gadgets")["verification_incident"],
+        serde_json::Value::Null,
+        "another project's halt must not be reported on this project's dashboard"
+    );
+
+    let ack_headers = [
+        Header::from_bytes("Host", "127.0.0.1:3456").unwrap(),
+        Header::from_bytes("X-Storyhook", "1").unwrap(),
+        Header::from_bytes("Content-Type", "application/json").unwrap(),
+    ];
+    let body = serde_json::json!({"incident_id": incident.incident_id}).to_string();
+    let wrong_project = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        "/api/repos/gadgets/verification/ack",
+        &ack_headers,
+        &body,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(
+        wrong_project.reply.status,
+        422,
+        "widgets' incident cannot be acknowledged through gadgets: {}",
+        wrong_project
+            .reply
+            .text_body()
+            .expect("UTF-8 text response")
+    );
+    let ack = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        "/api/repos/fixture/verification/ack",
+        &ack_headers,
+        &body,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(ack.reply.status, 200);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(widgets))
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The conflict queue-hold reserves ONE project's worker for the conflicted
+/// story. Inside widgets' hold, gadgets' tick — the same activity registry —
+/// runs to completion.
+#[test]
+fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(
+        &fixture,
+        gadgets,
+        "unrelated",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let conflicting = FakeActuator {
+        outcome: VerificationOutcome::Conflict {
+            detail: "base moved".into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    let landing = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "gadgets-tree".into(),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+    let other_drained_during_hold = Mutex::new(None);
+
+    let result = tick_with_reconciliation(
+        fixture.store(),
+        fixture.env(),
+        &conflicting,
+        &activity,
+        &inflight,
+        widgets,
+        |reserved| {
+            assert_eq!(reserved.story_id, widgets_story);
+            assert_eq!(
+                activity
+                    .active_for(widgets)
+                    .map(|active| active.story_id)
+                    .as_deref(),
+                Some(widgets_story.as_str()),
+                "the hold keeps widgets' worker reserved"
+            );
+            let drained = tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &landing,
+                &activity,
+                &inflight,
+                gadgets,
+            )?;
+            *other_drained_during_hold.lock().unwrap() = Some(drained);
+            Ok(None)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Returned);
+    assert_eq!(
+        *other_drained_during_hold.lock().unwrap(),
+        Some(TickResult::Completed),
+        "gadgets must land while widgets' worker is held for reconciliation"
+    );
+    let gadgets_row = fixture
+        .store()
+        .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", &gadgets_story).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(gadgets_row.state, "done");
+    assert!(activity.active_all().is_empty());
+}
+
+/// A queued story's position counts its own project's queue, never the
+/// machine's: two projects with two stories each both report positions 1
+/// and 2 in their progress comments.
+#[test]
+fn a_queued_candidate_position_counts_only_its_own_project() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let gadgets = second_project(&fixture);
+    let widgets_first = submitted(&fixture, "widgets first", Priority::High, PR_ONE);
+    let widgets_second = submitted(&fixture, "widgets second", Priority::Low, PR_TWO);
+    let gadgets_first = submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets first",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+    let gadgets_second = submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets second",
+        Priority::Low,
+        "https://github.com/acme/gadgets/pull/2",
+    );
+
+    publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:02:00Z",
+        &VerificationActivity::new(),
+    )
+    .unwrap();
+
+    assert!(last_comment(&fixture, &widgets_first).contains("QUEUED (position 1)"));
+    assert!(last_comment(&fixture, &widgets_second).contains("QUEUED (position 2)"));
+    let gadgets_comment = |id: &str| -> String {
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", id).unwrap()))
+            .unwrap()
+            .unwrap();
+        row.snapshot.comments.last().unwrap().text.clone()
+    };
+    assert!(
+        gadgets_comment(&gadgets_first).contains("QUEUED (position 1)"),
+        "{}",
+        gadgets_comment(&gadgets_first)
+    );
+    assert!(
+        gadgets_comment(&gadgets_second).contains("QUEUED (position 2)"),
+        "{}",
+        gadgets_comment(&gadgets_second)
+    );
+}
+
+/// The supervisor itself: one worker per registered project from the start,
+/// both inside their actuators at once; a project registered while the
+/// daemon runs gets a worker on the catalog change; stop drains every worker.
+#[test]
+fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use storyhook::daemon::bus::{Change, ChangeBus};
+    use storyhook::daemon::verification::poll_verification_with;
+
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    submitted(&fixture, "widgets work", Priority::High, PR_ONE);
+    submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets work",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let bus = ChangeBus::new();
+    let stop = AtomicBool::new(false);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let releases: Mutex<Vec<(storyhook::store::ProjectId, std::sync::mpsc::Sender<()>)>> =
+        Mutex::new(Vec::new());
+
+    /// Stops the supervisor when the scope unwinds, so an assertion that
+    /// fails below turns this test red instead of joining a supervisor
+    /// nobody told to stop (measured: without this, every mutation of the
+    /// supervisor hung the binary rather than failing the case).
+    struct StopOnDrop<'a> {
+        stop: &'a AtomicBool,
+        bus: &'a ChangeBus,
+    }
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.bus.publish(Change::Catalog);
+        }
+    }
+
+    thread::scope(|scope| {
+        let _stop_on_unwind = StopOnDrop {
+            stop: &stop,
+            bus: &bus,
+        };
+        let supervisor = scope.spawn(|| {
+            poll_verification_with(
+                fixture.store(),
+                fixture.env(),
+                &bus,
+                &stop,
+                &activity,
+                &inflight,
+                |project| {
+                    let (release_tx, release_rx) = std::sync::mpsc::channel();
+                    releases.lock().unwrap().push((project, release_tx));
+                    ProjectGateActuator {
+                        held: project,
+                        entered: entered_tx.clone(),
+                        release: Mutex::new(release_rx),
+                    }
+                },
+            );
+        });
+
+        let mut entered = vec![
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+        ];
+        entered.sort();
+        assert_eq!(
+            entered,
+            [widgets, gadgets],
+            "both projects' workers must be inside their actuators at once"
+        );
+        assert_eq!(activity.active_all().len(), 2);
+
+        // A project registered while the daemon runs.
+        let sprockets = fixture.add_project("sprockets", "SP");
+        fixture.link_origin_for(sprockets, "https://github.com/acme/sprockets");
+        submitted_in(
+            &fixture,
+            sprockets,
+            "sprockets work",
+            Priority::High,
+            "https://github.com/acme/sprockets/pull/1",
+        );
+        bus.publish(Change::Catalog);
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("the catalog change must spawn sprockets' worker"),
+            sprockets
+        );
+        assert_eq!(activity.active_all().len(), 3);
+
+        for (_, release) in releases.lock().unwrap().iter() {
+            release.send(()).unwrap();
+        }
+        // Every worker lands its story, then idles; stop drains them.
+        let deadline = Instant::now() + lifecycle::CONTROL_DEADLINE;
+        while Instant::now() < deadline && !activity.active_all().is_empty() {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            activity.active_all().is_empty(),
+            "{:?}",
+            activity.active_all()
+        );
+        drop(_stop_on_unwind);
+        supervisor.join().unwrap();
+    });
+
+    for (project, prefix) in [(widgets, "SH"), (gadgets, "GD")] {
+        let rows = fixture
+            .store()
+            .read(|tx| tx.stories(project, &storyhook::store::StoryQuery::all().state("done")))
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{prefix}: {rows:?}");
     }
 }

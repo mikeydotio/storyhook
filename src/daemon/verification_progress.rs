@@ -363,7 +363,7 @@ fn publish_project(
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
     let ordered = VerificationQueue::new(store).ordered_for(project)?;
-    let active = activity.active();
+    let active = activity.active_for(project);
     let incident = store.read(|tx| tx.verification_incident(project))?;
     let statuses =
         status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
