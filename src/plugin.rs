@@ -32,6 +32,8 @@ struct EmbeddedFile {
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
+pub(crate) mod registration;
+
 /// A provider storyhook installs its plugin into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PluginTarget {

@@ -56,6 +56,7 @@ use std::path::{Path, PathBuf};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::plugin::PluginTarget;
+use crate::plugin::registration::{config_path, configured_source};
 
 /// One line of the report.
 struct Row {
@@ -185,46 +186,6 @@ fn store_row(env: &Environment) -> Row {
         );
     }
     Row::ok("store", format!("schema {found}"))
-}
-
-fn configured_source(body: &str, target: PluginTarget) -> Result<Option<String>, String> {
-    match target {
-        PluginTarget::ClaudeCode => {
-            let value: serde_json::Value = serde_json::from_str(body)
-                .map_err(|error| format!("its configuration is invalid JSON: {error}"))?;
-            let Some(marketplace) = value.get("storyhook") else {
-                return Ok(None);
-            };
-            let source = marketplace
-                .get("source")
-                .ok_or_else(|| "its storyhook marketplace has no `source` record".to_string())?;
-            if let Some(source) = source.as_str() {
-                return Ok(Some(source.to_string()));
-            }
-            for key in ["path", "repo", "url"] {
-                if let Some(source) = source.get(key).and_then(serde_json::Value::as_str) {
-                    return Ok(Some(source.to_string()));
-                }
-            }
-            Err("its storyhook marketplace source has no path, repository or URL".to_string())
-        }
-        PluginTarget::Codex => {
-            let value: toml::Value = toml::from_str(body)
-                .map_err(|error| format!("its configuration is invalid TOML: {error}"))?;
-            let Some(marketplace) = value
-                .get("marketplaces")
-                .and_then(|value| value.get("storyhook"))
-            else {
-                return Ok(None);
-            };
-            marketplace
-                .get("source")
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-                .map(Some)
-                .ok_or_else(|| "its storyhook marketplace has no string `source`".to_string())
-        }
-    }
 }
 
 /// No registration for storyhook in the provider's configuration — which
@@ -362,12 +323,12 @@ pub fn report() -> Result<String, AppError> {
         store_row(&env),
         provider_row(
             "claude plugin",
-            &home.join(".claude/plugins/known_marketplaces.json"),
+            &config_path(&home, PluginTarget::ClaudeCode),
             PluginTarget::ClaudeCode,
         ),
         provider_row(
             "codex plugin",
-            &home.join(".codex/config.toml"),
+            &config_path(&home, PluginTarget::Codex),
             PluginTarget::Codex,
         ),
         hook_row(),
