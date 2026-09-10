@@ -1336,6 +1336,78 @@ Standing rules for every wave:
   notice is checked explicitly and refuses by name. Introduced by `0da1b66a0`, the same
   commit as SH-576 and likewise after the v2.4.0 tag, so the Linux half of the pinned
   toolchain had never assembled a release either.
+- **A browser that cannot launch is not N failing tests, and a re-run is never a laundering**
+  (SH-627). The v2.5.0 release read three single, non-repeating browser failures as a flake
+  population; a council ruled no retries, no re-run, no receipt over a known-unfixed defect,
+  and demoted every code-read mechanism to a hypothesis. Measurement then found the
+  population was the machine: gate 3 ran *concurrently with the council itself* (3.5× the
+  wall clock, 2.4× the load-grace resets), and WindowServer crashed at 01:31, after which
+  every `webkit.launch()` hung — Playwright's `browser` fixture is worker-scoped with
+  `timeout: 0`, its launch bounded only by `DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT` (180 s), and
+  under `workers: 1` a fresh worker pays it again for every test, so gate 4 reported *45 tree
+  failures* over two and a quarter hours for one dead browser and was misread twice. The
+  quiesced run after WebKit was restored went green 5/5 — the first `tier full` receipt this
+  repo has ever minted. `e2e/launch-probe.ts` (the config's `globalSetup`) now launches the
+  selected project's own engine once before any worker starts and refuses by name — the
+  machine, not the tree — with the engine resolved as Playwright's own fixture resolves it
+  and no deadline of its own; `tests/e2e_launch_probe.rs` pins that wiring and pins
+  `retries: 0`/`workers: 1` as the council's decision. Quiesce the machine before the release
+  tier, and read `story list --label flake` for the population before calling a red "the
+  usual one". Design of record: `docs/spec/test-tiers.md`'s third "As built" reading.
+- **The two halves of one plugin must agree, and a plugin hook knows its plugin by where it
+  was loaded from** (SH-632). `protect-install.sh` admitted helper verbs only through the
+  Codex launcher while `references/helper-command.md` told every other host to run
+  `<plugin-root>/bin/story.sh` — always a managed path — so on Claude Code the router's own
+  `/story do|view|list|capture|doctor` were refused before execution. A host runs one copy of
+  a plugin's hooks per session (a `--plugin-dir` plugin overrides the installed one), so the
+  hook's own `${BASH_SOURCE[0]}/..` IS the skill's `<plugin-root>`, the identity
+  `session-start.sh` already derives for the dispatch sentinel; the hook admits that one
+  helper by realpath, never a byte compare of 4,000 lines and never a host record —
+  `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
+  Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
+- **`$PATH` is the caller's claim about itself, never evidence of installation** (SH-630).
+  The SH-404 migration guard refused a binary that was not the `story` `$PATH` resolves,
+  and on 2026-09-09 a `PATH="$PWD/target/debug:$PATH" story project list` from the main
+  checkout — typed by an agent session to try the build gate 5 had just produced, while
+  that gate was still running — made `$PATH` resolve `story` to the very binary asking.
+  The client stood down the installed v2.4.3 daemon on version skew, spawned itself as the
+  replacement with that `$PATH` inherited, and the replacement's `open_store` found
+  `running == installed`, permitted, and migrated the production store 32 → 33 at
+  13:06:01Z; the next installed-`story` call restarted the daemon back onto v2.4.3 and
+  every write was refused until `make install`. **The story as filed blamed the verifier's
+  worktree binary and pid 2782**; the daemon's own activity journal exonerates both — the
+  verifier's binary is a different build that never touched the store, and 2782 was the
+  same session's later `link-pr`, which *restored* writes. Read the journal before trusting
+  a description. **The control test was the incident**: `tests/migration_guard.rs` ran the
+  test binary with its own directory first on `$PATH` (`TestEnv::path_with_binary()`) and
+  asserted the migration proceeded. The predicate consulted an input the caller controls,
+  and prefixing a build directory onto `$PATH` is the most natural way anyone tries a build
+  (SH-631's repro, `Makefile`'s plugin leg and `plugins/story/tests/lib.sh` all do it). The
+  fact the caller cannot rewrite is where the binary *is*: `build.rs` stamps
+  `STORYHOOK_BUILD_DIR` (`OUT_DIR`'s third ancestor, the directory cargo writes the binary
+  into), and a binary still inside it is refused before `$PATH` is consulted, by the
+  migration guard and by the SH-411 install guard, which had the identical hole one
+  command over (`… story daemon install` enthroned a worktree build by agreement). This is
+  what "installed" means in this tree and in every mechanism it ships — `make install`,
+  `story update` and `cargo install` all *copy out* — so the sanctioned recovery
+  (`make install` from `main`) satisfies it by construction. SH-404 rejected "a
+  build-provenance sentinel" and the objection stands for what it was about: a *flag set at
+  install time*, which every `cargo test` binary would lack too. A *location fact recorded
+  at the build* has the opposite property: a test binary is uninstalled by construction and
+  correctly refused, and the permit side is proven for real by copying the binary out, with
+  positive controls that the source **is** inside the stamp and the copy **is not**
+  (mutation-checked: dropping the stamp makes the suite panic, never pass). The `$PATH`
+  clause stays as a second refusal (a copy at `/tmp/story`), never again the only one. Two
+  harnesses run an uninstalled build against a planted non-fresh default-shaped store and
+  now say so with the override: `storyhook_test_support::crash`, and `make scratch` through
+  the shared isolation's `--uninstalled-build` — in `scripts/test-env.sh`, not the calling
+  script, because SH-531's fence forbids a harness re-exporting a table parameter on its own.
+  Every other harness is safe for the one reason it always was: a fresh store has no schema
+  to protect. Design of record: the module docs on `src/migration_guard.rs`,
+  `src/daemon/install_guard.rs` and `src/path_identity.rs`, and `build.rs`'s "Where the
+  artifact was written". The daemon ping-pong the journal also shows — an uninstalled client
+  of a different build stands down the default store's custodian and seats itself, every
+  alternate call — is filed separately as SH-634, not fixed here.
 - **A shell test owns its daemon, and stands it down before deleting its home** (SH-631).
   Filed as "the plugin suite fails deterministically on dev, masked by leg-reuse" — 33 of
   74 tests, every one `a storyhook daemon is already running`. Measured before anything

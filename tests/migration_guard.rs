@@ -1,5 +1,5 @@
-//! A binary that is not the `story` on `$PATH` must not carry the machine's
-//! default store forward (SH-404).
+//! A binary that is not installed must not carry the machine's default store
+//! forward (SH-404, SH-630).
 //!
 //! `cargo build`, in a worktree or anywhere else, produces a binary that
 //! resolves the real data home and applies every pending migration to it —
@@ -13,24 +13,44 @@
 //!
 //! SH-54 gave the *read* side a gate: an older binary refuses a newer store
 //! with one clear sentence. This is its write-side counterpart
-//! (`storyhook::migration_guard`): a binary that is not the one `$PATH` would
-//! run refuses to advance the *default* store's schema at all.
+//! (`storyhook::migration_guard`). SH-404 asked one question — *is this the
+//! `story` `$PATH` runs?* — and on 2026-09-09 the answer was yes for a
+//! `target/debug/story` whose caller had put `target/debug` first on `$PATH`
+//! to try it (SH-630): the production store went 32 → 33 and the installed
+//! release served it read-only. `$PATH` is the caller's own claim about
+//! itself. The guard now also asks a question the caller cannot answer for
+//! it: *has this binary left the directory cargo wrote it into?* `build.rs`
+//! stamps that directory at the build, and a binary still inside it is
+//! refused whatever `$PATH` says.
+//!
+//! **The control here used to be the incident.** The old control ran the
+//! test binary with its own directory first on `$PATH` — exactly the
+//! SH-630 invocation — and asserted the migration proceeded. The control is
+//! now an *installed copy*: the test binary copied out of its build
+//! directory, which is what `make install`, `story update` and `cargo install`
+//! all do, and the only thing any of them does.
 //!
 //! | case | expected |
 //! |---|---|
-//! | planted v1 store, a decoy `story` first on `$PATH` | refused; exit 2; names the store, both versions, both executables, the override |
-//! | …and after that refusal | `PRAGMA user_version` and `schema_migrations` are unchanged — nothing was written |
-//! | planted v1 store, the normal `$PATH` | succeeds; migrates to the current schema — the control |
-//! | planted v1 store, decoy `$PATH`, the override set | succeeds |
-//! | a fresh store, decoy `$PATH` | succeeds — a store with no schema has no peer binary to break |
-//! | planted v1 store, nothing named `story` on `$PATH` | succeeds — the fail-open, measured rather than claimed |
+//! | planted v1 store, the test binary with its own directory first on `$PATH` (SH-630) | refused; exit 2; names the build directory; nothing written |
+//! | planted v1 store, the test binary, a decoy `story` first on `$PATH` (SH-404) | refused; exit 2; names both executables, the override; nothing written |
+//! | planted v1 store, the installed copy, its own directory on `$PATH` | succeeds; migrates to the current schema — the control |
+//! | planted v1 store, the test binary, decoy `$PATH`, the override set | succeeds |
+//! | a fresh store, the test binary, decoy `$PATH` | succeeds — a store with no schema has no peer binary to break |
+//! | planted v1 store, the installed copy, nothing named `story` on `$PATH` | succeeds — the fail-open, measured rather than claimed |
+//! | planted v1 store, the test binary, nothing named `story` on `$PATH` | refused — the launchd shape SH-411 met, closed on this side too |
+//!
+//! Every case that runs the installed copy first checks that the copy is
+//! *outside* the stamped build directory and the test binary is *inside* it.
+//! A build with no stamp would otherwise pass every row above vacuously.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use rusqlite::Connection;
 use storyhook::migration_guard::OVERRIDE_VAR;
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, scratch_dir, scratch_dir_named, story_binary};
 
 /// A store at schema v1, planted where `story` will find it.
 ///
@@ -98,30 +118,72 @@ fn path_without_story() -> (tempfile::TempDir, OsString) {
     (dir, path)
 }
 
-// ---------------------------------------------------------------------------
-// The refusal
-// ---------------------------------------------------------------------------
+/// The directory `build.rs` stamped into this test binary — the one every
+/// row in this file's table turns on. A test binary without it cannot prove
+/// anything here, so its absence is a panic rather than a skipped case.
+fn stamped_build_dir() -> PathBuf {
+    storyhook::path_identity::build_dir().expect(
+        "this test binary carries no STORYHOOK_BUILD_DIR stamp — build.rs did not run with \
+         OUT_DIR, so nothing in this file can tell an installed binary from an uninstalled one",
+    )
+}
 
-/// The incident, as a test: a binary that is not the one `$PATH` names must
-/// not migrate the default store.
-#[test]
-fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
-    let env = env_with_a_v1_store();
-    let cwd = scratch_dir();
-    let (_decoy, hostile_path) = decoy_story_dir();
-    assert_eq!(
-        user_version(env.store_path()),
-        1,
-        "the fixture must start at v1"
-    );
+/// The test binary, copied out of its build directory — what `make install`
+/// does, and the only thing it does. One copy per test process, kept for the
+/// process's whole life: the debug binary is large and every permit-side test
+/// wants the same file.
+///
+/// **Both halves of the positive control live here.** The source must be
+/// *inside* the stamped directory or the incident tests are not testing the
+/// incident; the copy must be *outside* it or the control is the incident
+/// again. Either failing is a fixture defect, and it panics rather than
+/// letting a row pass for the wrong reason (SH-364).
+fn installed_copy() -> &'static Path {
+    static COPY: LazyLock<PathBuf> = LazyLock::new(|| {
+        let build_dir = stamped_build_dir();
+        let source = std::fs::canonicalize(story_binary()).expect("canonicalizing the test binary");
+        assert!(
+            source.starts_with(&build_dir),
+            "positive control: the binary under test ({}) must sit inside the directory \
+             build.rs stamped ({}), or the refusal rows below test nothing",
+            source.display(),
+            build_dir.display()
+        );
 
-    let out = env
-        .raw_story(cwd.path())
-        .env("PATH", &hostile_path)
-        .args(["project", "list"])
-        .output()
-        .expect("running story");
+        let dir = scratch_dir_named("installed-story");
+        let copy = dir.path().join("story");
+        std::fs::copy(&source, &copy).expect("copying the test binary out of its build directory");
+        let copy = std::fs::canonicalize(&copy).expect("canonicalizing the installed copy");
+        assert!(
+            !copy.starts_with(&build_dir),
+            "positive control: the installed copy ({}) must sit outside the stamped build \
+             directory ({}), or the control is the incident",
+            copy.display(),
+            build_dir.display()
+        );
+        // Leaked deliberately: the copy has to outlive every test in this
+        // process, and it is scratch output, not project state.
+        std::mem::forget(dir);
+        copy
+    });
+    &COPY
+}
 
+/// Runs the installed copy the way `TestEnv::raw_story` runs the test binary —
+/// same isolation, same working directory — with `$PATH` set to `path`.
+fn installed_story(env: &TestEnv, cwd: &Path, path: &OsString) -> std::process::Command {
+    let mut cmd = std::process::Command::new(installed_copy());
+    cmd.current_dir(cwd);
+    env.apply(&mut cmd);
+    cmd.env("PATH", path);
+    cmd
+}
+
+/// The assertions every refusal shares: exit 2, the store named, both
+/// versions named, the override named, no `story update`, and — after the
+/// daemon is stood down, immediately before the file is touched — the bytes
+/// unchanged.
+fn assert_refused(env: &TestEnv, out: &std::process::Output) -> String {
     assert!(
         !out.status.success(),
         "expected a refusal, got success:\n{}",
@@ -142,12 +204,6 @@ fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
     assert!(
         stderr.contains("from schema 1 to"),
         "both versions: {stderr}"
-    );
-    assert!(
-        stderr.contains(&story_binary().display().to_string())
-            || stderr.contains("target/debug/story")
-            || stderr.contains("target/debug/deps"),
-        "the binary actually running: {stderr}"
     );
     assert!(
         stderr.contains(OVERRIDE_VAR),
@@ -174,31 +230,147 @@ fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
         1,
         "and must not have recorded a migration it did not run"
     );
+    stderr
 }
 
 // ---------------------------------------------------------------------------
-// The four ways this must NOT fire
+// The refusals
 // ---------------------------------------------------------------------------
 
-/// The control: the same store, the same command, the ordinary `$PATH` a
-/// developer actually has — and it migrates normally. Without this, the test
-/// above would pass equally well for a guard that refuses everything.
+/// SH-630, as a test: the binary's own directory first on `$PATH`, so the
+/// SH-404 comparison agrees with itself — and the migration is refused anyway,
+/// because the binary is still where cargo wrote it.
 #[test]
-fn the_binary_that_path_names_migrates_normally() {
+fn a_binary_still_where_cargo_wrote_it_refuses_even_with_its_own_directory_first_on_path() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
+    let (_decoy, decoy_path) = decoy_story_dir();
+    // Positive control for this row specifically: the binary IS inside the
+    // stamped directory. `installed_copy` checks the same thing; this row
+    // must not depend on a permit-side test having run first.
+    let build_dir = stamped_build_dir();
+    let running = std::fs::canonicalize(story_binary()).expect("canonicalizing the test binary");
+    assert!(
+        running.starts_with(&build_dir),
+        "the binary under test must sit inside the stamped build directory"
+    );
+    let own_dir = story_binary()
+        .parent()
+        .expect("the test binary has a directory")
+        .to_path_buf();
+    let path = std::env::join_paths([own_dir.as_os_str(), decoy_path.as_os_str()])
+        .expect("joining PATH entries");
     assert_eq!(
         user_version(env.store_path()),
         1,
         "the fixture must start at v1"
     );
 
-    let status = env
+    let out = env
         .raw_story(cwd.path())
+        .env("PATH", &path)
         .args(["project", "list"])
-        .status()
+        .output()
         .expect("running story");
-    assert!(status.success(), "an ordinary run must succeed: {status}");
+
+    let stderr = assert_refused(&env, &out);
+    assert!(
+        stderr.contains(&build_dir.display().to_string()),
+        "the refusal must name the build directory the binary never left: {stderr}"
+    );
+    assert!(
+        stderr.contains("make install"),
+        "the refusal must name the way to install it: {stderr}"
+    );
+}
+
+/// SH-404, as a test: a binary that is not the one `$PATH` names must not
+/// migrate the default store. Still refused, and still for its own reason —
+/// the message names both executables.
+#[test]
+fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
+    let env = env_with_a_v1_store();
+    let cwd = scratch_dir();
+    let (_decoy, hostile_path) = decoy_story_dir();
+    assert_eq!(
+        user_version(env.store_path()),
+        1,
+        "the fixture must start at v1"
+    );
+
+    let out = env
+        .raw_story(cwd.path())
+        .env("PATH", &hostile_path)
+        .args(["project", "list"])
+        .output()
+        .expect("running story");
+
+    let stderr = assert_refused(&env, &out);
+    assert!(
+        stderr.contains(&story_binary().display().to_string())
+            || stderr.contains("target/debug/story")
+            || stderr.contains("target/debug/deps"),
+        "the binary actually running: {stderr}"
+    );
+}
+
+/// The launchd shape SH-411 met on the install side: a plist carries no
+/// `PATH`, so a login daemon started from a worktree build has nothing to
+/// disagree with. SH-404's fail-open let it migrate; a binary still in its
+/// build directory is refused before `$PATH` is ever consulted.
+#[test]
+fn no_story_on_path_still_refuses_a_binary_in_its_build_directory() {
+    let env = env_with_a_v1_store();
+    let cwd = scratch_dir();
+    let (_empty, empty_path) = path_without_story();
+
+    let out = env
+        .raw_story(cwd.path())
+        .env("PATH", &empty_path)
+        .args(["project", "list"])
+        .output()
+        .expect("running story");
+
+    let stderr = assert_refused(&env, &out);
+    assert!(
+        stderr.contains(&stamped_build_dir().display().to_string()),
+        "the refusal must name the build directory: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The four ways this must NOT fire
+// ---------------------------------------------------------------------------
+
+/// The control: the same store, the same command, the binary installed —
+/// copied out of its build directory, its own directory on `$PATH` — and it
+/// migrates normally. Without this, every refusal above would pass equally
+/// well for a guard that refuses everything.
+#[test]
+fn the_installed_copy_migrates_normally() {
+    let env = env_with_a_v1_store();
+    let cwd = scratch_dir();
+    let own_dir = installed_copy()
+        .parent()
+        .expect("the installed copy has a directory")
+        .as_os_str()
+        .to_owned();
+    assert_eq!(
+        user_version(env.store_path()),
+        1,
+        "the fixture must start at v1"
+    );
+
+    let out = installed_story(&env, cwd.path(), &own_dir)
+        .args(["project", "list"])
+        .output()
+        .expect("running the installed copy");
+    assert!(
+        out.status.success(),
+        "an installed binary must migrate normally: {}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     env.stop_daemon();
     assert_eq!(
@@ -210,7 +382,8 @@ fn the_binary_that_path_names_migrates_normally() {
 
 /// The deliberate override — named in the refusal message, so it can be found
 /// without reading source, the same idiom `STORYHOOK_ALLOW_TEMP_PROJECT` uses
-/// elsewhere in this tree.
+/// elsewhere in this tree. It clears both clauses: the binary is in its build
+/// directory *and* not the one on `$PATH`.
 #[test]
 fn the_override_lets_an_uninstalled_binary_migrate_on_purpose() {
     let env = env_with_a_v1_store();
@@ -238,10 +411,11 @@ fn the_override_lets_an_uninstalled_binary_migrate_on_purpose() {
 }
 
 /// A fresh store has no peer binary to break — the condition the guard checks
-/// before it ever looks at `$PATH`. This is what keeps the guard from
-/// breaking a first run out of a worktree, and it is the exact shape that
-/// keeps `make test`'s own plugin harness green: it also shadows `story` on
-/// `$PATH` while creating its store fresh in the same run.
+/// before it ever looks at the binary or `$PATH`. This is what keeps the guard
+/// from breaking a first run out of a worktree, and it is the exact shape that
+/// keeps `make test`'s own plugin harness and `scripts/run-e2e.sh` green: both
+/// run an uninstalled build, with `target/debug` first on `$PATH`, against a
+/// store created fresh in the same run.
 #[test]
 fn a_fresh_store_is_created_and_migrated_under_a_hostile_path() {
     let env = TestEnv::isolated();
@@ -267,12 +441,13 @@ fn a_fresh_store_is_created_and_migrated_under_a_hostile_path() {
     );
 }
 
-/// The fail-open, measured rather than claimed: with nothing named `story` on
-/// `$PATH`, there is nothing to disagree with, so the migration proceeds. A
-/// launchd-started daemon takes exactly this branch — the plist
-/// `daemon::commands` writes carries no `PATH` at all.
+/// The fail-open, measured rather than claimed: an installed binary with
+/// nothing named `story` on `$PATH` has nothing to disagree with, so the
+/// migration proceeds. A launchd-started daemon takes exactly this branch —
+/// the plist `daemon::commands` writes carries no `PATH` at all — and since
+/// SH-411 that plist names an installed binary, never a build directory.
 #[test]
-fn no_story_on_path_permits_the_migration() {
+fn no_story_on_path_permits_the_installed_copy() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
     let (_empty, empty_path) = path_without_story();
@@ -282,15 +457,15 @@ fn no_story_on_path_permits_the_migration() {
         "the fixture must start at v1"
     );
 
-    let status = env
-        .raw_story(cwd.path())
-        .env("PATH", &empty_path)
+    let out = installed_story(&env, cwd.path(), &empty_path)
         .args(["project", "list"])
-        .status()
-        .expect("running story");
+        .output()
+        .expect("running the installed copy");
     assert!(
-        status.success(),
-        "nothing on $PATH means nothing provably at risk: {status}"
+        out.status.success(),
+        "nothing on $PATH means nothing provably at risk: {}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
     );
 
     env.stop_daemon();
