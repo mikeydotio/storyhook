@@ -2150,6 +2150,39 @@ or identity-changed submissions return for repair, textual conflicts retain
 their conflict outcome, and unavailable GitHub or fetch remains retryable.
 No diagnostic-text parsing participates in these decisions.
 
+### SH-636 — the PR head is checked against the branch it mirrors
+
+`refs/pull/N/head` and the API's `headRefOid` are both projections of a PR's
+head branch, written by GitHub's asynchronous post-push pipeline; they lag
+together, so `verify-pr.sh`'s original guard — fetched pull head equals
+reported head — passed vacuously in the exact window a prompt resubmission
+lands in. Measured on SH-630 / PR #737 from the daemon's activity journal and
+the registered checkout's reflog: the verifier read both projections about
+one second after the push, got the pre-push head from each, and reported
+that head's conflict a second time; the pull ref caught up 16 seconds later
+while `origin/dev` never moved.
+
+`refresh_submission_refs` now also reads `refs/heads/<headRefName>` on
+origin — the source the projections mirror, updated synchronously by the
+push — with `ls-remote` rather than a fetch, so no remote-tracking ref for
+the feature branch is written into the registered checkout. Three-way
+agreement is the precondition for preflight. A disagreement is a
+**retryable** infrastructure result naming all three oids and the branch,
+never a conflict and never permanent: the daemon's existing bounded cadence
+(D15's three attempts) re-asks, and a lag that outlasts it halts with the
+oids in the detail. The former permanent "moved while its refs were being
+refreshed" verdict joins that class. A head branch absent from origin is an
+invalid submission. GitHub's PR head stays the single identity through
+landing — `land-pr.sh` still pins the merge to it — rather than preflighting
+the branch tip directly, so no second notion of "the head" enters the
+landing path. No in-script polling deadline was added: GitHub publishes no
+propagation bound to derive one from, and the daemon already owns a derived
+budget for "external infrastructure not ready".
+
+`merge-preflight.sh`'s CONFLICT note now names the oid each ref resolved
+to, so a stale reading is visible in the story comment itself rather than
+inferred from blob ids.
+
 ### SH-473 — close-out coverage and operator contract
 
 The browser harness gives every Playwright project invocation its own seed,
