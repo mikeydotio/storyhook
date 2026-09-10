@@ -188,3 +188,62 @@ The observed machine also had a stale 2.4.0 plugin with its 2.4.2 CLI. Updating
 that projection alone cannot repair the checkout's dispatch refusal. Ship the
 corrected hook in a release, then install its packaged plugin; do not patch a
 cache file or create an installed-edit override.
+
+## As built: the plugin's own helper is admitted by identity (SH-632)
+
+SH-588's door was the byte-verified Codex launcher, and only that. Every other
+host is told by `references/helper-command.md` to run
+`<plugin-root>/bin/story.sh` directly — and `<plugin-root>` is always under a
+managed prefix (`~/.claude/plugins/cache/storyhook/story/<ver>` for a user-scope
+install, the release projection or the Codex cache when a session is launched
+with `--plugin-dir`, which is what dispatch passes). So on Claude Code the
+router's own `/story do`, `view`, `list`, `capture` and `doctor` were refused
+before execution: the skill said run X, the hook said X is forbidden.
+
+The helper is now a second admitted entry point with the same argv contract,
+identified by **where the hook itself was loaded from**. A host runs one copy
+of a plugin's hooks per session — Claude Code's own binary states that a
+`--plugin-dir` plugin "overrides installed version" — so the `<plugin-root>` the
+skill resolved and the hook's own `../` are one directory; `session-start.sh`
+derives the same fact for the dispatch sentinel. The check, in the launcher's
+shape but without a byte compare (the helper's bytes are trusted exactly as the
+hook's own are — same installer, same directory): the spelled path is a proper
+path beneath a managed prefix; it resolves to the `bin/story.sh` beside the
+hook; no component below `HOME` (or, outside it, below the managed prefix's
+parent) is a symlink — the launcher's own redirect rule; and it opens
+`O_NOFOLLOW` as a regular file. Nothing is executed to classify. The root is
+derived after the substring prefilter, so the inert path still pays for no
+subshell, and assigned unconditionally, so an exported variable cannot name a
+root on the hook's behalf (SH-411).
+
+**Why not a stable Claude launcher.** The Codex launcher exists because Codex's
+command rules match exact argv prefixes and the cache path is versioned; Claude
+has no such rule. A Claude analogue would also need an identity for "the
+enabled plugin", and the only record — `installed_plugins.json` — names the
+user-scope cache while a dispatched session runs from the Codex cache via
+`--plugin-dir`: keyed on that record, the door would refuse every dispatched
+session, including the one that filed SH-632.
+
+**Verbs.** `capture <id>` and `doctor` join the contract: one reads a pane, the
+other runs `story doctor --json` (never `--fix`) plus a tmux probe window —
+terminal and domain operations, never an installed file, the distinction
+SH-588 drew for dispatch. Both adapters drop their `STORY_AGENT=<provider>`
+prefix: an environment assignment is not an admitted form, and Codex's
+`prefix_rule` would not match it either. `story plugin run codex` sets
+`STORY_AGENT=codex` for the helper it runs when the caller did not, since the
+launcher is Codex's own.
+
+**Readers.** `ls`, `find`, `wc`, `stat`, `diff` and `cmp` join the inspection
+vocabulary — the adapter table says "load the matching file from
+`<plugin-root>/adapters/`", which needs a directory listing. `find`'s writing
+and executing primaries are refused by name. `bash -c '…'` stays refused: it is
+a second shell program, and the plain form is what the adapter needs.
+
+**Tests.** `plugin_install::protect_helper` runs an *installed copy* of the
+hook — written from the tracked tree by the fixture, because the door's whole
+claim is about the hook's own location — from three roots under three managed
+prefixes, and proves the tracked hook and every other root's hook refuse the
+same helper even with identical bytes. The argv vocabularies are shared items
+so both doors are tested against one grammar. Mutation-checked in both
+directions: removing the own-root comparison fails two tests, removing the
+redirect check fails one, removing `-delete` from `find`'s refusals fails one.

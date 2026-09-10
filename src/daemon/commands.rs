@@ -717,6 +717,7 @@ mod tests {
         install_guard::Inputs {
             uid: 501,
             running: story.clone(),
+            build_dir: None,
             installed_story: Some(story),
             this_binary: false,
         }
