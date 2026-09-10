@@ -163,8 +163,27 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
             // or network work on the candidate: a refused story costs no
             // fetch, and a story the verifier has not finished with is never
             // inspected on disk at all.
-            if let Err(skip) = verifier_release(&lease.story_id, stories.get(&lease.story_id)) {
-                skipped.push(skip);
+            let marker = match verifier_release(&lease.story_id, stories.get(&lease.story_id)) {
+                Ok(marker) => marker,
+                Err(skip) => {
+                    skipped.push(skip);
+                    continue;
+                }
+            };
+            // A lease whose resources are already gone is not a removal —
+            // decided from local facts alone, before the fetch. After a
+            // COMPLETE it is what the verifier already verified and is not
+            // worth a line on every pass; after a REQUIRED it is a retry
+            // with nothing left to retry, which is worth saying.
+            if nothing_left(&repository, &lease) {
+                if marker == ReapMarker::Required {
+                    skipped.push(CleanupSkip {
+                        story_id: lease.story_id.clone(),
+                        reason: "already-clean".into(),
+                        detail: "exact worktree and local branch are absent; nothing to retry"
+                            .into(),
+                    });
+                }
                 continue;
             }
             match clean_candidate(&repository, &lease, dry_run) {
@@ -242,6 +261,19 @@ fn verifier_release(story_id: &str, facts: Option<&StoryFacts>) -> Result<ReapMa
                 .into(),
         )),
     }
+}
+
+/// Whether every resource cleanup would remove is already absent: the
+/// worktree path, its registration, and the local branch. Local facts only,
+/// so a pass over an already-reaped backlog costs no network.
+fn nothing_left(repository: &Path, lease: &StoryCleanupLease) -> bool {
+    if lease.worktree_path.exists()
+        || ref_exists(repository, &format!("refs/heads/{}", lease.branch))
+    {
+        return false;
+    }
+    git_text(repository, &["worktree", "list", "--porcelain"])
+        .is_ok_and(|listing| worktree_record(&listing, &lease.worktree_path).is_none())
 }
 
 fn is_operational_failure(reason: &str) -> bool {
