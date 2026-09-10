@@ -107,6 +107,33 @@ fn it_reports_the_installed_set_on_an_ordinary_machine() {
     }
 }
 
+/// The `binary` row used to answer `ok` whenever the `story` on `$PATH` was
+/// the one running — which the harness arranges by putting the build
+/// directory first on `$PATH`, exactly the SH-630 invocation. The binary under
+/// test has never left the directory cargo wrote it into, and the row says so
+/// rather than calling it installed.
+#[test]
+fn the_binary_row_flags_a_binary_still_in_its_build_directory() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+
+    let out = env
+        .story(project.path())
+        .args(["doctor", "install"])
+        .output()
+        .expect("running `story doctor install`");
+
+    assert!(out.status.success(), "{}", text(&out));
+    let report = text(&out);
+    let build_dir = storyhook::path_identity::build_dir()
+        .expect("a cargo-built test binary must carry STORYHOOK_BUILD_DIR");
+    assert!(
+        report.contains("not installed") && report.contains(&build_dir.display().to_string()),
+        "the binary row must say this build never left {}:\n{report}",
+        build_dir.display()
+    );
+}
+
 #[test]
 fn it_still_answers_when_the_store_is_from_a_newer_storyhook() {
     let env = TestEnv::isolated();
