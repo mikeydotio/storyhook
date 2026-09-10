@@ -26,6 +26,8 @@
 //! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
 //!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
+//! * [`seat_guard`] — what an *uninstalled* build is refused on the default
+//!   store: replacing its daemon, or starting one at all (SH-634).
 //! * [`serve`] — the listeners and the accept loop.
 //! * [`subscribe`] — a client for [`bus`]'s change feed: what
 //!   [`crate::tui::event::EventSource`] uses instead of a store handle of its
@@ -49,6 +51,7 @@ pub mod github_poll;
 pub mod http1;
 pub mod install_guard;
 pub mod lifecycle;
+pub mod seat_guard;
 pub mod serve;
 pub mod subscribe;
 pub mod tailnet;
