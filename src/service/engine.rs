@@ -565,7 +565,7 @@ impl Dispatcher for ShellDispatcher {
             &self.story_sh_path,
             &request.project,
             &request.story,
-            request.agent,
+            Some(request.agent),
             true,
             true,
             &options,
@@ -2332,15 +2332,19 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
-/// engine lane so that only the engine receives that identity and isolation
-/// boundary. Full Auto lanes copy their run's immutable provider options into
-/// `options`; attended dispatch supplies its request-scoped selections.
+/// engine lane so that only the engine — and, since SH-650, the verifier
+/// re-dispatching a story that engine lane holds — receives that identity and
+/// isolation boundary. Full Auto lanes copy their run's immutable provider
+/// options into `options`; attended dispatch supplies its request-scoped
+/// selections; `agent: None` names no provider and leaves the helper to read
+/// the one the dispatch being resumed recorded (`surviving_dispatch_provider`
+/// in `story.sh`), which only a resume has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
     story: &str,
-    agent: EngineAgent,
+    agent: Option<EngineAgent>,
     auto: bool,
     full_auto: bool,
     options: &DispatchOptions,
@@ -2380,8 +2384,10 @@ pub(crate) fn run_shell_dispatch(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story)
-        .arg(format!("--agent={}", agent.as_str()));
+        .arg(story);
+    if let Some(agent) = agent {
+        command.arg(format!("--agent={}", agent.as_str()));
+    }
     if options.resume {
         command.arg("--resume");
     }
@@ -2390,13 +2396,16 @@ pub(crate) fn run_shell_dispatch(
     }
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
-        debug_assert!(
-            !options.resume,
-            "Full Auto reuses its fresh engine-owned claim and never resumes artifacts"
-        );
-        // Full Auto dispatch follows the engine's atomic claim immediately. `--force`
-        // reuses that sole claim while the helper still rejects worktree, branch, or pane artifacts.
-        command.arg("--full-auto").arg("--force");
+        command.arg("--full-auto");
+        // The engine's own Full Auto dispatch follows its atomic claim
+        // immediately: `--force` reuses that sole claim while the helper still
+        // rejects worktree, branch, or pane artifacts. A RESUME of a lane's
+        // story (the verifier's re-dispatch, SH-650) reconstructs exactly those
+        // artifacts instead, and the helper refuses `--resume --force` as a
+        // contradiction, so the two flags never travel together.
+        if !options.resume {
+            command.arg("--force");
+        }
     }
     if let Some(model) = &options.model {
         command.arg(format!("--model={model}"));

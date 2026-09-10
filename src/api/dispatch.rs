@@ -1548,7 +1548,7 @@ fn run_child(
         script,
         project,
         story,
-        engine_agent,
+        Some(engine_agent),
         auto,
         false,
         &options,
