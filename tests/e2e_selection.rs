@@ -321,6 +321,59 @@ fn the_total_parser_reads_plural_singular_and_refuses_junk() {
     assert_eq!(stdout_of(&out), "");
 }
 
+#[test]
+fn tests_run_sums_the_projects_that_ran_and_reads_absence_as_zero() {
+    let fx = Fixture::new();
+    let selected = fx.root.path().join("selected");
+    let out = fx.shell(&format!(
+        "e2e_selection_tests_run {}",
+        shell_quote(&selected.to_string_lossy())
+    ));
+    assert_eq!(code_of(&out), 0, "{}", stderr_of(&out));
+    assert_eq!(
+        stdout_of(&out),
+        "0\n",
+        "an absent directory means nothing ran"
+    );
+
+    fs::create_dir_all(&selected).expect("creating selected/");
+    let out = fx.shell(&format!(
+        "e2e_selection_tests_run {}",
+        shell_quote(&selected.to_string_lossy())
+    ));
+    assert_eq!(
+        stdout_of(&out),
+        "0\n",
+        "an empty directory means nothing ran"
+    );
+
+    fs::write(selected.join("chromium"), "34\n").unwrap();
+    fs::write(selected.join("webkit"), "0\n").unwrap();
+    fs::write(selected.join("mobile-webkit"), "36\n").unwrap();
+    let out = fx.shell(&format!(
+        "e2e_selection_tests_run {}",
+        shell_quote(&selected.to_string_lossy())
+    ));
+    assert_eq!(code_of(&out), 0, "{}", stderr_of(&out));
+    assert_eq!(stdout_of(&out), "70\n");
+
+    fs::write(selected.join("webkit"), "not a count\n").unwrap();
+    let out = fx.shell(&format!(
+        "e2e_selection_tests_run {}",
+        shell_quote(&selected.to_string_lossy())
+    ));
+    assert_eq!(
+        code_of(&out),
+        1,
+        "a marker that is not a count is refused, not summed as 0"
+    );
+    assert!(
+        stderr_of(&out).contains("not a test count"),
+        "got:\n{}",
+        stderr_of(&out)
+    );
+}
+
 /// The matrix in the library's header was measured against one Playwright.
 /// The drift it cannot see at run time — a future Playwright exiting 0 on a
 /// load error — would quietly reopen SH-625, so an upgrade of the pin has to
@@ -400,6 +453,39 @@ fn the_runner_lists_through_the_library_and_never_bare() {
     assert!(
         runner.contains("known_total=\"$(e2e_selection_total \"$list_output\")\""),
         "the checklist total is read through the same parser the verdict used"
+    );
+}
+
+#[test]
+fn the_runner_refuses_a_run_in_which_nothing_ran() {
+    let runner = without_shell_comments(&read_checkout_file("scripts/run-e2e.sh"));
+
+    let record = offset_of(&runner, ">\"$results_root/selected/$project\"");
+    let real_run = offset_of(
+        &runner,
+        "npx playwright test --project=\"$project\" --output=",
+    );
+    assert!(
+        record < real_run,
+        "each project records its selected count BEFORE its real run, so a red project \
+         still counts as having run (record at {record}, run at {real_run})"
+    );
+
+    let decide = offset_of(&runner, "projects_to_run=");
+    let consulted = offset_of(
+        &runner,
+        "e2e_selection_tests_run \"$results_root/selected\"",
+    );
+    let final_exit = offset_of(&runner, "exit \"$overall_status\"");
+    assert!(
+        decide < consulted && consulted < final_exit,
+        "the whole-run count is consulted after the project loop and before the final exit \
+         (loop at {decide}, consulted at {consulted}, exit at {final_exit})"
+    );
+    let refusal = &runner[consulted..final_exit];
+    assert!(
+        refusal.contains("exit 1"),
+        "a run that executed no test exits nonzero rather than reporting green"
     );
 }
 

@@ -604,6 +604,11 @@ WRAPPER
   known_total="$(e2e_selection_total "$list_output")"
   export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$project"
   gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
+  # This project is about to run $known_total tests: say so where the outer
+  # loop can add it up (SH-625). Written BEFORE the real run, so a red project
+  # still counts as having run -- the verdict below carries its own failure.
+  mkdir -p "$results_root/selected"
+  printf '%s\n' "$known_total" >"$results_root/selected/$project"
   e2e_start=$(date +%s)
   # The two specs that dispatch for real -- ordinary dispatch and Full Auto --
   # consulted after the real run below. Asking Playwright's own list is
@@ -699,6 +704,21 @@ else
       overall_status=$status
     }
   done
+fi
+
+# A run in which no project selected a test executed nothing, and nothing
+# executed is not a pass (SH-625) -- whatever each project's own verdict was.
+# The per-project skip above is legitimate inside the loop (a `.mobile.spec.ts`
+# filter gives `chromium`/`webkit` nothing while the mobile pair runs), and
+# only the SUM can tell that case from a filter typo, or from a single
+# explicit `--project=` given a filter it cannot match: a caller who named
+# specs meant to run them. Every gate-tier caller passes no filter, so this
+# can only ever fire on an interactive or triage run -- exactly the moment
+# someone is deciding whether a fix works.
+tests_run="$(e2e_selection_tests_run "$results_root/selected")"
+if [ "$overall_status" = 0 ] && [ "$tests_run" = 0 ]; then
+  echo "run-e2e.sh: no project selected a test under this filter — nothing ran, refusing to report green (SH-625)" >&2
+  exit 1
 fi
 
 exit "$overall_status"
