@@ -44,7 +44,11 @@ fn scaffold_agents_md_keeps_durable_context_in_story_comments() {
         .stdout(predicate::str::contains(
             "Record test results and final context: `story comment",
         ))
-        .stdout(predicate::str::contains("Do not create `HANDOFF.md`."));
+        // SH-621: the workflow names where durable context goes and says
+        // nothing about `HANDOFF.md`, a local, ignored, temporary artifact
+        // that an instruction here once forbade — contradicting the standing
+        // rule that writes it between sessions.
+        .stdout(predicate::str::contains("HANDOFF.md").not());
 }
 
 #[test]

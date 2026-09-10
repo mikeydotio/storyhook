@@ -376,6 +376,27 @@ impl ManifestFixture {
         self.dir.path()
     }
 
+    /// The smallest plugin marketplace `build.rs` will embed — two manifests
+    /// and one regular file under `plugins/story` — so a run that sets
+    /// `OUT_DIR` (which is what makes `build.rs` embed at all) gets past the
+    /// embedding to the stamp under test. Returns the `OUT_DIR` to hand it,
+    /// created, since the embed writes there.
+    fn with_marketplace_and_out_dir(&self, out_dir: &Path) {
+        for manifest in [
+            ".agents/plugins/marketplace.json",
+            ".claude-plugin/marketplace.json",
+        ] {
+            let path = self.path().join(manifest);
+            std::fs::create_dir_all(path.parent().expect("a parent"))
+                .expect("fixture: manifest dir");
+            std::fs::write(path, "{}\n").expect("fixture: manifest");
+        }
+        let plugin = self.path().join("plugins").join("story");
+        std::fs::create_dir_all(&plugin).expect("fixture: plugin dir");
+        std::fs::write(plugin.join("README.md"), "fixture\n").expect("fixture: plugin file");
+        std::fs::create_dir_all(out_dir).expect("fixture: OUT_DIR");
+    }
+
     fn git(&self, args: &[&str]) -> Output {
         run(self.path(), "git", args)
     }
@@ -589,6 +610,106 @@ fn a_missing_script_with_git_present_warns_but_still_succeeds() {
         "a .git directory IS present, so a missing script is unexpected and \
          must not be silent (the SH-306 doctrine: a gate's silence must not be \
          mistaken for 'nothing needed reporting')"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// build.rs — where the artifact was written (SH-630)
+// ---------------------------------------------------------------------------
+
+fn emitted_build_dir(out: &Output) -> Option<String> {
+    stdout(out)
+        .lines()
+        .find_map(|line| line.strip_prefix("cargo::rustc-env=STORYHOOK_BUILD_DIR="))
+        .map(str::to_string)
+}
+
+/// Cargo hands a build script `OUT_DIR` as `<profile dir>/build/<pkg>-<hash>/out`,
+/// and `<profile dir>` is where the binary itself lands. The stamp is that
+/// ancestor, verbatim: no canonicalization here, because the directory need
+/// not exist yet at the moment the script runs and the reader canonicalizes
+/// at runtime against the filesystem it actually has.
+#[test]
+fn an_out_dir_of_cargos_shape_stamps_the_profile_directory() {
+    let fixture = ManifestFixture::with_git_and_script();
+    let profile = fixture.path().join("target").join("debug");
+    let out_dir = profile
+        .join("build")
+        .join("storyhook-0123456789abcdef")
+        .join("out");
+    fixture.with_marketplace_and_out_dir(&out_dir);
+    let out = fixture.run_build_script(&[("OUT_DIR", &out_dir.display().to_string())]);
+    assert_ok(&out, "build.rs with a cargo-shaped OUT_DIR");
+
+    assert_eq!(
+        emitted_build_dir(&out).as_deref(),
+        Some(profile.display().to_string().as_str()),
+        "the stamp must be OUT_DIR's third ancestor — the directory the binary is written \
+         into\nfull stdout: {}",
+        stdout(&out)
+    );
+    assert!(!emitted_warning(&out), "the expected case must be silent");
+}
+
+/// The standalone runner and any non-cargo invocation: no `OUT_DIR`, no stamp,
+/// silently — the same contract `STORYHOOK_BUILD_ID` has for a missing `.git`.
+#[test]
+fn no_out_dir_stamps_no_build_directory() {
+    let fixture = ManifestFixture::with_git_and_script();
+    let out = fixture.run_build_script(&[]);
+    assert_ok(&out, "build.rs without OUT_DIR");
+
+    assert_eq!(
+        emitted_build_dir(&out),
+        None,
+        "without OUT_DIR there is no build directory to name"
+    );
+    assert!(
+        !emitted_warning(&out),
+        "a missing OUT_DIR is the normal standalone case"
+    );
+}
+
+/// An `OUT_DIR` that is not `…/build/<pkg>-<hash>/out` is a cargo this script
+/// was not written against. Guessing an ancestor would stamp a directory that
+/// is *not* where the binary lands, and the guards reading it would then call
+/// an uninstalled binary installed — so nothing is stamped, and the SH-306
+/// doctrine applies: the silence is reported rather than passed off as
+/// "nothing needed stamping".
+#[test]
+fn an_out_dir_of_an_unexpected_shape_warns_and_stamps_nothing() {
+    let fixture = ManifestFixture::with_git_and_script();
+    let odd = fixture.path().join("somewhere").join("out");
+    fixture.with_marketplace_and_out_dir(&odd);
+    let out = fixture.run_build_script(&[("OUT_DIR", &odd.display().to_string())]);
+    assert_ok(&out, "build.rs must never fail a build over an odd OUT_DIR");
+
+    assert_eq!(
+        emitted_build_dir(&out),
+        None,
+        "an OUT_DIR whose shape this script does not understand must not be guessed at"
+    );
+    assert!(
+        emitted_warning(&out),
+        "an OUT_DIR was given and not understood — that must not be silent"
+    );
+}
+
+/// The stamp reaches production: this test binary was built by cargo, so it
+/// carries the stamp, and it sits inside the directory the stamp names. This
+/// is the positive control every guard test in `tests/migration_guard.rs`
+/// depends on, stated once where the stamp itself is proven.
+#[test]
+fn this_checkouts_own_binary_sits_inside_its_stamped_build_directory() {
+    let build_dir = storyhook::path_identity::build_dir()
+        .expect("a cargo-built test binary must carry STORYHOOK_BUILD_DIR");
+    let running = std::fs::canonicalize(storyhook_test_support::story_binary())
+        .expect("canonicalizing the binary under test");
+    assert!(
+        running.starts_with(&build_dir),
+        "{} must sit inside the stamped build directory {}",
+        running.display(),
+        build_dir.display()
     );
 }
 
