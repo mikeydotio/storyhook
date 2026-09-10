@@ -376,12 +376,23 @@ impl ManifestFixture {
         self.dir.path()
     }
 
-    /// The smallest plugin marketplace `build.rs` will embed — two manifests
-    /// and one regular file under `plugins/story` — so a run that sets
+    /// The smallest payloads `build.rs` will embed — two marketplace
+    /// manifests and one regular file under `plugins/story`, plus the
+    /// verifier script family (SH-654), symlinked in by the names the real
+    /// table carries rather than a second list — so a run that sets
     /// `OUT_DIR` (which is what makes `build.rs` embed at all) gets past the
-    /// embedding to the stamp under test. Returns the `OUT_DIR` to hand it,
-    /// created, since the embed writes there.
+    /// embedding to the stamp under test. Creates the `OUT_DIR` to hand it,
+    /// since the embed writes there.
     fn with_marketplace_and_out_dir(&self, out_dir: &Path) {
+        // Copied, not symlinked: `build.rs` refuses a symlink in a payload on
+        // purpose (a release binary must carry bytes, not a pointer), and the
+        // tracked-tree.sh symlink beside these is never embedded.
+        let scripts = self.path().join("scripts");
+        std::fs::create_dir_all(&scripts).expect("fixture: scripts dir");
+        for (name, _, _) in storyhook::daemon::verifier_bundle::files() {
+            std::fs::copy(checkout().join("scripts").join(name), scripts.join(name))
+                .unwrap_or_else(|e| panic!("fixture: copying {name}: {e}"));
+        }
         for manifest in [
             ".agents/plugins/marketplace.json",
             ".claude-plugin/marketplace.json",
