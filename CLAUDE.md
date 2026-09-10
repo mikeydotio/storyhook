@@ -1336,6 +1336,17 @@ Standing rules for every wave:
   notice is checked explicitly and refuses by name. Introduced by `0da1b66a0`, the same
   commit as SH-576 and likewise after the v2.4.0 tag, so the Linux half of the pinned
   toolchain had never assembled a release either.
+- **The two halves of one plugin must agree, and a plugin hook knows its plugin by where it
+  was loaded from** (SH-632). `protect-install.sh` admitted helper verbs only through the
+  Codex launcher while `references/helper-command.md` told every other host to run
+  `<plugin-root>/bin/story.sh` — always a managed path — so on Claude Code the router's own
+  `/story do|view|list|capture|doctor` were refused before execution. A host runs one copy of
+  a plugin's hooks per session (a `--plugin-dir` plugin overrides the installed one), so the
+  hook's own `${BASH_SOURCE[0]}/..` IS the skill's `<plugin-root>`, the identity
+  `session-start.sh` already derives for the dispatch sentinel; the hook admits that one
+  helper by realpath, never a byte compare of 4,000 lines and never a host record —
+  `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
+  Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
