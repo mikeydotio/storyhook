@@ -286,8 +286,8 @@ Standing rules for every wave:
   isolates_the_data_dir_also_contains_its_daemon` pins it to whichever scripts export
   `STORYHOOK_DATA_DIR`, the same set `…_neutralizes_the_store_path` derives beside it;
   today that's `scripts/run-tests.sh`, `scripts/capture-baseline.sh`, `scripts/run-e2e.sh`,
-  and *both* `plugins/story/tests/{lib.sh,run-tests.sh}` — the last two because
-  `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. `TestEnv`
+  and *both* `plugins/story/tests/{lib.sh,run-tests.sh}` — the runner isolates only
+  itself, and every test mints its own root through `lib.sh` (SH-631, below). `TestEnv`
   can't drift the same way: it pins both variables once, in
   `storyhook_test_support::daemon_containment()`. Four Rust test files `env_clear()` on
   purpose and call `daemon_containment()` afterward to reinstate containment, rather than
@@ -1336,6 +1336,32 @@ Standing rules for every wave:
   notice is checked explicitly and refuses by name. Introduced by `0da1b66a0`, the same
   commit as SH-576 and likewise after the v2.4.0 tag, so the Linux half of the pinned
   toolchain had never assembled a release either.
+- **A shell test owns its daemon, and stands it down before deleting its home** (SH-631).
+  Filed as "the plugin suite fails deterministically on dev, masked by leg-reuse" — 33 of
+  74 tests, every one `a storyhook daemon is already running`. Measured before anything
+  was changed: the suite passed 74/74 on the named tree, and the plugin leg held a
+  **real** green receipt for that exact fingerprint from the night before (150 receipts,
+  real runs every 1–2 h), so neither half of the premise survived. What the evidence did
+  prove was 77 fixture roots in `/tmp`, each holding one daemon journal — "parent process
+  N is gone; exiting" — written *after* the harness `rm -rf`'d it: teardown deleted the
+  store under a live daemon, which noticed its parent had died up to one `SHUTDOWN_CHECK`
+  later and whose exit journal (`Journal::append` → `create_dir_all`) resurrected the
+  directory. That window is also what `check-no-orphan-servers.sh` reads as "a daemon
+  serving a store that no longer exists". The 33-failure signature — shutdown *answered*,
+  pidfile lock never released, no "did not stand down" context — is a daemon that wedged
+  under two concurrent plugin suites and a night of churn; it did not reproduce and is
+  not claimed fixed. What made one wedge cost 33 tests was `run-tests.sh` isolating
+  **once** and exporting `STORYHOOK_TEST_HOME` for the whole run, so 74 tests shared one
+  daemon parented to the runner, while `bash test-foo.sh` minted its own — two renderings
+  of one harness (SH-531). By user determination: the runner now isolates only itself
+  and every test mints its own root and daemon (`STORYHOOK_PARENT_PID` = the test), and
+  `lib.sh`'s `_cleanup` runs `story daemon stop --force` **before** the `rm -rf` — the
+  `TestEnv::stop_daemon` rule, arriving for the shell harness — failing the test if the
+  stop fails, because a daemon that cannot be stopped is a leak (SH-306). Pinned
+  behaviourally by `test-daemon-containment.sh`, mutation-checked. Design of record:
+  `docs/spec/test-environments.md`. Sibling found and filed separately: the e2e harness's
+  daemons write pidfiles, backups and journals into the developer's **real**
+  `~/.local/state/storyhook/daemons/` (40 of them on the filing day).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).

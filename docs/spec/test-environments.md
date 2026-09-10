@@ -268,6 +268,54 @@ the call is spelled.
   checkout's own `target/debug` and **refuses** when that binary is absent,
   because a fallback here is precisely the silent substitution being fixed.
 
+## Every shell test owns its daemon, and stands it down before deleting its home
+
+Settled on SH-631 (2026-09-09), by user determination between two containment
+models. `plugins/story/tests/run-tests.sh` used to isolate **once** and export
+one `STORYHOOK_TEST_HOME` for the whole run — the variable `lib.sh` reads as
+"already isolated" — so 74 tests shared one store, one daemon and
+`STORYHOOK_PARENT_PID` = the runner, while a standalone `bash test-foo.sh`
+minted its own. Two renderings of one harness, in the exact shape this document
+exists to end. Now the runner isolates only *itself* (a root nothing writes
+into, kept so the runner can never reach a real store by accident and so the
+`tests/store_isolation.rs` containment scan still sees it) and leaves
+`STORYHOOK_TEST_HOME` unset, so `lib.sh`'s mint branch runs for every test:
+own root, own daemon, `STORYHOOK_PARENT_PID` = the test's own pid. A daemon
+dies with its test by construction, and a daemon that wedges in test K costs
+test K rather than every test after it — which is what 33 of 74 failures on
+the filing night were. A nested `bash -c 'source lib.sh'` still inherits its
+caller's home and shares its daemon; only the process that minted the home
+owns it, tracked by `_STORYHOOK_OWNS_TEST_HOME`.
+
+The defect the evidence actually proved was narrower than the one filed. The
+shared-home suite **passed 74/74** on the tree the story named, and the plugin
+leg had a real (not reused) green receipt for that exact fingerprint from the
+night before — but 77 fixture roots were sitting in `/tmp`, each holding
+nothing but a daemon journal reading "parent process N is gone; exiting".
+Teardown deleted the home under a live daemon; the daemon noticed its parent
+had died up to one `SHUTDOWN_CHECK` (250ms) later, and its exit journal
+(`Journal::append` → `create_dir_all`) recreated the directory it was writing
+into. That window is also exactly what `check-no-orphan-servers.sh` reports as
+"a daemon serving a store that no longer exists". So `lib.sh`'s `_cleanup` now
+runs `story daemon stop --force` **before** the `rm -rf` — the rule
+`TestEnv::stop_daemon` already states for the Rust suite — and a stop that
+fails fails the test: a daemon that could not be stopped is a leak, reported
+where it happened rather than left for the next run's preflight to refuse over
+(SH-306). `--force` rather than graceful because a stop that waits for ever on
+a wedged daemon is a wedged suite (SH-528).
+
+`plugins/story/tests/test-daemon-containment.sh` pins both halves behaviourally:
+this process is its daemon's parent and its home was minted, not inherited;
+and a child test process's daemon is dead the instant the child is, with its
+home neither surviving nor reappearing after four `SHUTDOWN_CHECK`s. Mutation
+checked: with the teardown stop disabled the second half is red again. The cost
+is one daemon spawn and stop per test, measured on the PR rather than assumed,
+on a leg `leg.sh --reuse plugin` fingerprint-reuses whenever its inputs are
+unchanged. The wedge itself — a daemon that answered its shutdown and never
+released the pidfile lock, under two concurrent plugin suites and a night of
+daemon churn — did not reproduce and is deliberately not claimed fixed; what is
+fixed is its blast radius, and any recurrence now names one test.
+
 ## Deliberately out of scope
 
 Named rather than silently dropped:
