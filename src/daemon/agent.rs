@@ -494,6 +494,24 @@ fn others(env: &Environment) -> Vec<OtherAgent> {
     found
 }
 
+/// The plist of another login agent on this machine that names `store`, if
+/// one does — the fact `story daemon gc` asks before reclaiming a store's
+/// runtime directory (SH-638): a directory launchd would recreate at the
+/// next login is not garbage, it is a stray agent, and the operator's remedy
+/// is `daemon uninstall`, not `rm`.
+///
+/// Compared on the canonical store path, the same identity [`served_store`]
+/// resolves and the daemon keys its state directory by, so an agent written
+/// with an un-canonical `--store-path` still matches. `pub(crate)` rather
+/// than exposing [`OtherAgent`]: gc needs one fact, not the report.
+pub(crate) fn agent_serving(env: &Environment, store: &Path) -> Option<PathBuf> {
+    let store = crate::env::canonical_ish(store).unwrap_or_else(|_| store.to_path_buf());
+    others(env)
+        .into_iter()
+        .find(|other| other.serves == store)
+        .map(|other| other.plist)
+}
+
 /// The block naming every other storyhook login agent this machine has, or
 /// `String::new()` when there are none. `pub` rather than folded only into
 /// [`report`]: `install`'s and `uninstall`'s own success messages append it
@@ -1236,5 +1254,24 @@ mod tests {
             said.contains("cannot find a program in that plist"),
             "{said}"
         );
+    }
+    /// `agent_serving` answers with the plist that names the store, and
+    /// nothing for a store no agent names — the gc gate (SH-638).
+    #[test]
+    fn agent_serving_finds_the_plist_naming_a_store() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let named = dir.path().join("named.db");
+        let plist = write_raw_plist(
+            &env,
+            &format!("{LAUNCHD_LABEL}.deadbeefdeadbeef.plist"),
+            &format!(
+                "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string>\
+                 <string>--store-path</string><string>{}</string></array>",
+                named.display()
+            ),
+        );
+        assert_eq!(agent_serving(&env, &named), Some(plist));
+        assert_eq!(agent_serving(&env, &dir.path().join("other.db")), None);
     }
 }
