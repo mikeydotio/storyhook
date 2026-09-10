@@ -47,6 +47,14 @@
 //! * `lock_root` changed to read `$XDG_STATE_HOME` — the plausible, wrong
 //!   implementation — → **1 red**:
 //!   `the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it`.
+//! * [`ProgressFeeder`] made to write nothing (SH-643) → **1 red**:
+//!   `a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject`, and
+//!   nothing else at idle — the right blast radius, since every other holder
+//!   starts in milliseconds on a quiet machine and only the constructed
+//!   straddle needs the feeder there. Under load the four cases the story
+//!   was filed on are what it protects. `RUNNING_SLACK_POLLS` set to 0 turns
+//!   nothing red at idle and is not a pin: it is a stated margin, which is
+//!   exactly what a mutation check cannot judge (SH-394).
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
 //! script as shipped, every test passes.
