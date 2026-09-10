@@ -9,7 +9,14 @@ use tempfile::TempDir;
 use crate::project::ProjectBuilder;
 use crate::scratch::scratch_dir_named;
 
-const BINARY_SNAPSHOT_DIR: &str = ".storyhook-test-binaries";
+/// Where a process-owned lease of the `story` artifact lives, relative to the
+/// artifact's own directory (SH-532). `scripts/binary-lease.sh` is the shell
+/// rendering of the same lease for `scripts/run-e2e.sh` (SH-635) and spells
+/// this name itself, because a shell script cannot read a Rust constant;
+/// `tests/binary_lease.rs` fails the build if the two spellings diverge, and
+/// both sweepers rely on sharing this directory and the `<pid>-<nonce>` entry
+/// shape so that either one reclaims the other's dead leases.
+pub const BINARY_SNAPSHOT_DIR: &str = ".storyhook-test-binaries";
 
 /// The environment variables a storyhook process is allowed to see, and what
 /// each of them is set to, come from one place:

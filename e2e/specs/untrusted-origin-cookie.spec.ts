@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support";
-import { requiredEnv } from "./support";
+import { requiredEnv, storyBinary } from "./support";
 
-const STORY_BINARY = resolve("../target/debug/story");
+const STORY_BINARY = storyBinary();
 const REPO_ROOT = resolve("..");
 const NAMED_TOKEN = requiredEnv("DASHBOARD_NAMED_TOKEN");
 const COOKIE_NAME = requiredEnv("DASHBOARD_COOKIE_NAME");
