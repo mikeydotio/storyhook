@@ -1336,6 +1336,24 @@ Standing rules for every wave:
   notice is checked explicitly and refuses by name. Introduced by `0da1b66a0`, the same
   commit as SH-576 and likewise after the v2.4.0 tag, so the Linux half of the pinned
   toolchain had never assembled a release either.
+- **A browser that cannot launch is not N failing tests, and a re-run is never a laundering**
+  (SH-627). The v2.5.0 release read three single, non-repeating browser failures as a flake
+  population; a council ruled no retries, no re-run, no receipt over a known-unfixed defect,
+  and demoted every code-read mechanism to a hypothesis. Measurement then found the
+  population was the machine: gate 3 ran *concurrently with the council itself* (3.5× the
+  wall clock, 2.4× the load-grace resets), and WindowServer crashed at 01:31, after which
+  every `webkit.launch()` hung — Playwright's `browser` fixture is worker-scoped with
+  `timeout: 0`, its launch bounded only by `DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT` (180 s), and
+  under `workers: 1` a fresh worker pays it again for every test, so gate 4 reported *45 tree
+  failures* over two and a quarter hours for one dead browser and was misread twice. The
+  quiesced run after WebKit was restored went green 5/5 — the first `tier full` receipt this
+  repo has ever minted. `e2e/launch-probe.ts` (the config's `globalSetup`) now launches the
+  selected project's own engine once before any worker starts and refuses by name — the
+  machine, not the tree — with the engine resolved as Playwright's own fixture resolves it
+  and no deadline of its own; `tests/e2e_launch_probe.rs` pins that wiring and pins
+  `retries: 0`/`workers: 1` as the council's decision. Quiesce the machine before the release
+  tier, and read `story list --label flake` for the population before calling a red "the
+  usual one". Design of record: `docs/spec/test-tiers.md`'s third "As built" reading.
 - **The two halves of one plugin must agree, and a plugin hook knows its plugin by where it
   was loaded from** (SH-632). `protect-install.sh` admitted helper verbs only through the
   Codex launcher while `references/helper-command.md` told every other host to run
