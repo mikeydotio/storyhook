@@ -22,6 +22,7 @@ use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
+use crate::lane_budget::WindowCensus;
 #[cfg(test)]
 use crate::process::read_capture;
 use crate::process::{CaptureError, Captured, run_captured};
@@ -301,6 +302,11 @@ pub struct ReconcileReport {
     pub quarantined: Vec<(u32, HardStopKind)>,
     /// Lane indices filled this pass, with the story each claimed.
     pub filled: Vec<(u32, String)>,
+    /// The machine-wide census the fill measured its budget against
+    /// (SH-655): every live agent window on the dispatcher's tmux server,
+    /// manual sessions included. `None` when the pass never reached a fill
+    /// (the run was not running, or reconciliation stopped earlier).
+    pub census: Option<WindowCensus>,
     /// The run's state after the pass.
     pub run_state: EngineRunState,
     /// The run's stop reason after the pass, when it has one.
@@ -491,6 +497,11 @@ pub trait Dispatcher: Send + Sync {
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
+    /// The live agent windows on the tmux server this dispatcher fills
+    /// lanes on — every dispatched session, engine-filled or manual, counted
+    /// against the one machine budget (SH-655). Taken once per fill pass;
+    /// an unanswered census is no evidence (SH-626), never zero.
+    fn census(&self) -> WindowCensus;
 }
 
 /// Refusing dispatcher for lifecycle operations that are store-only.
@@ -518,6 +529,12 @@ impl Dispatcher for StoreOnlyDispatcher {
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
         Err(store_only_dispatcher_error())
+    }
+
+    fn census(&self) -> WindowCensus {
+        WindowCensus::Unanswered {
+            detail: store_only_dispatcher_error().to_string(),
+        }
     }
 }
 
@@ -551,6 +568,13 @@ impl ShellDispatcher {
         // independent of the terminal that originally started the daemon.
         apply_dispatch_allowlist(&mut command);
         command
+    }
+}
+
+impl ShellDispatcher {
+    /// The window census on the server this dispatcher's lanes live on.
+    fn shell_census(&self) -> WindowCensus {
+        crate::lane_budget::census_through(self.tmux())
     }
 }
 
@@ -705,6 +729,10 @@ impl Dispatcher for ShellDispatcher {
                 error.detail()
             ))),
         }
+    }
+
+    fn census(&self) -> WindowCensus {
+        self.shell_census()
     }
 }
 
@@ -1036,6 +1064,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
             unanswered: Vec::new(),
+            census: None,
             completed: Vec::new(),
             verifying: Vec::new(),
             quarantined: Vec::new(),
@@ -1582,6 +1611,26 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cloned()
             .collect();
 
+        // THE MACHINE CENSUS (SH-655). `occupied_lane_count` sees the store's
+        // own lanes; a session `/story do` opened by hand is the same window,
+        // worktree and cold build and is in no table. So the budget is also
+        // measured against the live agent windows on this dispatcher's tmux
+        // server — taken ONCE per pass, outside the claim transaction (a
+        // subprocess inside a write transaction would hold the store for as
+        // long as tmux takes to answer), and advanced by hand for every
+        // window this pass has opened since, which the census cannot yet see.
+        // An unanswered census is no evidence (SH-626): the store's count
+        // still bounds the engine's own lanes, and the daemon journals the
+        // outage on its edge rather than once per pass.
+        let census = if idle.is_empty() {
+            None
+        } else {
+            Some(self.dispatcher.census())
+        };
+        let census_live = census.as_ref().and_then(WindowCensus::live);
+        report.census = census;
+        let mut dispatched_this_pass = 0usize;
+
         for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
@@ -1601,6 +1650,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         let eligible = current.state == EngineRunState::Running
                             && scope_is_available(tx, self.ctx.project(), &current.scope)?
                             && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
+                            && census_live.is_none_or(|live| {
+                                live + dispatched_this_pass < ENGINE_LANE_BUDGET
+                            })
                             && occupied_run_lane_count(&lanes) < current.lanes as usize
                             && lanes.iter().any(|candidate| candidate == &lane);
                         if eligible {
@@ -1665,6 +1717,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     live.outcome = None;
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
+                    dispatched_this_pass += 1;
                     report.filled.push((lane.lane_index, story));
                 }
                 DispatchOutcomeState::Refused => {
@@ -3044,6 +3097,40 @@ mod tests {
     /// shape the browser harness's broken double produced -- a nonzero exit
     /// with an unrelated message, an empty answer, a non-numeric pid, a
     /// spawn failure -- is `Unanswered` and names its own cause.
+    /// SH-655: the dispatcher's census asks its OWN tmux program, on the
+    /// server its lanes live on, for every window carrying
+    /// `@storyhook-agent` with a live pane -- and a tmux it cannot ask is
+    /// unanswered, never an empty machine.
+    #[test]
+    fn shell_census_counts_live_agent_windows_on_its_own_server() {
+        let root = storyhook_test_support::scratch_dir();
+        let answering = root.path().join("tmux-answering");
+        executable(
+            &answering,
+            "case \" $* \" in (*' list-windows -a -F '*) \
+             printf 'storyhook:SH-1\\tclaude\\t0\\nstoryhook:SH-2\\tclaude\\t1\\nstoryhook:zsh\\t\\t0\\n'; exit 0;; \
+             esac; exit 1",
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &answering).census(),
+            WindowCensus::Counted {
+                windows: vec!["storyhook:SH-1".to_string()]
+            }
+        );
+
+        let broken = root.path().join("tmux-broken");
+        executable(
+            &broken,
+            "printf 'no server running on /tmp/tmux-501/default\n' >&2; exit 1",
+        );
+        let WindowCensus::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &broken).census()
+        else {
+            panic!("a tmux that could not be asked is not an empty server");
+        };
+        assert!(detail.contains("no server running"), "{detail}");
+    }
+
     #[test]
     fn shell_window_probe_reports_a_tmux_it_could_not_ask_as_unanswered() {
         let root = storyhook_test_support::scratch_dir();

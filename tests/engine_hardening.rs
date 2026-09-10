@@ -282,6 +282,11 @@ impl storyhook::service::engine::Dispatcher for ChangeDuringProbe<'_> {
     fn kill_window(&self, _: &str) -> Result<(), storyhook::error::AppError> {
         panic!("must preserve pane")
     }
+    fn census(&self) -> storyhook::lane_budget::WindowCensus {
+        storyhook::lane_budget::WindowCensus::Counted {
+            windows: Vec::new(),
+        }
+    }
     fn probe_window(&self, window: &str) -> storyhook::service::engine::WindowProbe {
         if !self.changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
             StoryService::new(self.ctx)
