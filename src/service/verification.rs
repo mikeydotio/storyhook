@@ -21,6 +21,38 @@ use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 /// The required OPEN state that hands a published PR to the verifier.
 pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
 
+/// The required OPEN state a story is returned to when verification hands it
+/// back to its agent (conflict, red, or an invalid submission). Named once so
+/// the Full Auto reconciler recognises "returned for repair" by the same
+/// spelling the verifier writes (SH-650, `returned_for_repair`).
+pub const RETURNED_STATE: &str = "in-progress";
+
+/// Whether the story's own state history ends with the verifier's return:
+/// its latest `StoryStateChanged` is [`RETURNED_STATE`] and the one before it
+/// is [`VERIFYING_STATE`], with no state change since (SH-650).
+///
+/// This is the store-derived fact the engine reads instead of a lane mark the
+/// verifier would have to write: between `record_generation_returned` and the
+/// respawned pane coming alive, the story is `in-progress` with no `awaiting`
+/// and a dead window, and a reconciler that took the dead window as evidence
+/// would quarantine the lane and strike the breaker for the very remediation
+/// the verifier is delivering. The fact ends, by construction, at the story's
+/// next state change — the agent resubmitting to `verifying`, or a person
+/// moving it — and is overridden earlier by `awaiting` (the verifier's own
+/// refusal to re-dispatch), which the engine classifies ahead of the window.
+pub fn returned_for_repair(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<bool, StoreError> {
+    let events = tx.events_for(project, story)?;
+    let mut changes = events.iter().rev().filter_map(|event| match event.known() {
+        Some(StoryEvent::StoryStateChanged { state, .. }) => Some(state.as_str()),
+        _ => None,
+    });
+    Ok(changes.next() == Some(RETURNED_STATE) && changes.next() == Some(VERIFYING_STATE))
+}
+
 /// Durable comment prefix proving the centralized release gate landed a PR.
 pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
@@ -243,11 +275,10 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 return Ok(GenerationWrite::Superseded);
             }
             let states = tx.state_map(project)?;
-            let target = states.get("in-progress").cloned().ok_or_else(|| {
-                AppError::Validation(
-                    "project has no required OPEN `in-progress` state; run `story doctor --fix`"
-                        .to_string(),
-                )
+            let target = states.get(RETURNED_STATE).cloned().ok_or_else(|| {
+                AppError::Validation(format!(
+                    "project has no required OPEN `{RETURNED_STATE}` state; run `story doctor --fix`"
+                ))
             })?;
             clear_candidate_incident(tx, candidate)?;
             append_state_transition(
