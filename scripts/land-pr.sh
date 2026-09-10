@@ -58,12 +58,27 @@ require_merge_lock() {
     esac
 }
 
+# Confirms the refreshed refs describe one PR head before anything is merged.
+#
+# `fetched_head` (refs/pull/N/head) and `head_sha` (the API's headRefOid) are
+# both projections GitHub writes asynchronously after a push, and they lag
+# TOGETHER (SH-636), so comparing them to each other passes vacuously in the
+# window right after a push. `fetched_branch` is the tip of
+# refs/heads/<headRefName> on origin — the push itself — and is the one
+# reading that provably moved. With two stale projections and no branch
+# read, `--match-head-commit <stale>` either merges the recorded head and
+# the new commit is lost when the branch is deleted below, or merges the
+# branch tip and the landed-tree check hard-fails on an already-merged PR;
+# refusing here is cheaper than either (SH-637).
+#
+#   validate_refresh <number> <base-name> <fetched-base> <fetched-head> <fetched-branch> <metadata>
 validate_refresh() {
     number="$1"
     expected_base_ref="$2"
     fetched_base="$3"
     fetched_head="$4"
-    current="$5"
+    fetched_branch="$5"
+    current="$6"
 
     state="$(printf '%s\n' "$current" | jq -er '.state')" \
         || die "PR #$number returned no state"
@@ -87,14 +102,34 @@ validate_refresh() {
         || die "PR #$number changed base branches while its refs were being refreshed"
     [ "$fetched_head" = "$head_sha" ] \
         || die "PR #$number head moved while it was being refreshed ($fetched_head fetched, $head_sha reported); rerun land-pr.sh"
+    [ "$fetched_head" = "$fetched_branch" ] \
+        || die "PR #$number head is still propagating ($fetched_head fetched from refs/pull/$number/head, $fetched_branch on refs/heads/$head_ref, $head_sha reported); GitHub updates a pull request's head asynchronously after a branch push, so nothing was merged; rerun land-pr.sh"
+}
+
+# Reads the tip of refs/heads/<branch> on origin — the push itself, not a
+# projection of it — without writing a remote-tracking ref into this
+# checkout. Fully qualified on purpose: `--exit-code` matches by suffix, so a
+# bare name could be answered by a tag spelled the same way.
+branch_tip_on_origin() {
+    tip_number="$1"
+    tip_branch="$2"
+    listing="$(git ls-remote --exit-code origin "refs/heads/$tip_branch" 2>/dev/null)"
+    case "$?" in
+    (0) ;;
+    (2) die "PR #$tip_number's head branch refs/heads/$tip_branch does not exist on origin" ;;
+    (*) die "could not read refs/heads/$tip_branch on origin for PR #$tip_number" ;;
+    esac
+    tip="$(printf '%s\n' "$listing" | awk 'NR == 1 { print $1 }')"
+    [ -n "$tip" ] || die "origin listed refs/heads/$tip_branch for PR #$tip_number without an oid"
+    printf '%s\n' "$tip"
 }
 
 # Pure metadata/ref seam. Tests supply GitHub's wire shape and real commit IDs
 # directly; they do not imitate the GitHub service or a merge mutation.
 if [ "${1:-}" = "--validate-refresh" ]; then
-    [ "$#" -eq 6 ] \
-        || die "private usage: land-pr.sh --validate-refresh <number> <base-name> <fetched-base> <fetched-head> <metadata>"
-    validate_refresh "$2" "$3" "$4" "$5" "$6"
+    [ "$#" -eq 7 ] \
+        || die "private usage: land-pr.sh --validate-refresh <number> <base-name> <fetched-base> <fetched-head> <fetched-branch> <metadata>"
+    validate_refresh "$2" "$3" "$4" "$5" "$6" "$7"
     printf '%s\n' "$fetched_base"
     exit 0
 fi
@@ -190,12 +225,14 @@ if [ "${1:-}" = "--locked" ]; then
     command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
     command -v jq >/dev/null 2>&1 || die "jq is required and was not found"
 
-    initial="$(gh pr view "$pr" --json number,baseRefName 2>/dev/null)" \
+    initial="$(gh pr view "$pr" --json number,baseRefName,headRefName 2>/dev/null)" \
         || die "could not read PR '$pr' — is gh authenticated, and does the PR exist?"
     number="$(printf '%s\n' "$initial" | jq -er '.number')" \
         || die "PR '$pr' returned no number"
     base_ref="$(printf '%s\n' "$initial" | jq -er '.baseRefName')" \
         || die "PR #$number returned no base branch"
+    initial_head_ref="$(printf '%s\n' "$initial" | jq -er '.headRefName')" \
+        || die "PR #$number returned no head branch"
 
     base_remote_ref="refs/remotes/origin/$base_ref"
     head_remote_ref="refs/remotes/origin/pr/$number"
@@ -212,7 +249,13 @@ if [ "${1:-}" = "--locked" ]; then
         || die "could not resolve fetched base ref $base_remote_ref"
     fetched_head="$(git rev-parse "$head_remote_ref" 2>/dev/null)" \
         || die "could not resolve fetched head ref $head_remote_ref"
-    validate_refresh "$number" "$base_ref" "$fetched_base" "$fetched_head" "$current"
+    fetched_branch="$(branch_tip_on_origin "$number" "$initial_head_ref")" || exit 1
+    validate_refresh "$number" "$base_ref" "$fetched_base" "$fetched_head" "$fetched_branch" "$current"
+    # The branch read above was of the name the FIRST view reported; a PR
+    # whose head branch was renamed in between was compared against the
+    # wrong branch, so the agreement just established proves nothing.
+    [ "$head_ref" = "$initial_head_ref" ] \
+        || die "PR #$number changed head branch from $initial_head_ref to $head_ref while its refs were being refreshed; rerun land-pr.sh"
 
     exec bash "$script" --certified-run "$fetched_base" "$head_sha" -- \
         bash "$script" --merge "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"

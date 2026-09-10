@@ -2238,6 +2238,20 @@ Three moved-head retries on one generation exhaust D15's budget and halt the
 verifier queue until that story's generation changes — three pushes during
 three successive gates without a resubmission, which is loud on purpose.
 
+`land-pr.sh` is the GREEN direction's guard and had the same two-projection
+compare. Under the merge lock it now also reads the tip of
+`refs/heads/<headRefName>` on origin (`ls-remote`, no remote-tracking ref)
+and `validate_refresh` requires it to equal the fetched pull head and the
+API head, after its existing pull-vs-API check and keeping that check's
+message so SH-604's reconcile path still recognises a moved head. Two stale
+projections plus `--match-head-commit <stale>` would otherwise either merge
+the recorded head — the new commit lost when the branch is deleted — or
+merge the branch tip and hard-fail the landed-tree check on an already-merged
+PR; the refusal is cheaper than either, and `verify-pr.sh`'s
+`reconcile_land_refusal` already converges it to a retry while the verified
+tree stays current. A head branch renamed between the two `gh pr view` reads
+is refused too, since the branch that was read is then not the PR's.
+
 ### SH-473 — close-out coverage and operator contract
 
 The browser harness gives every Playwright project invocation its own seed,
