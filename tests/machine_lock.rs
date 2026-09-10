@@ -301,6 +301,36 @@ fn poll_ceiling() -> std::time::Duration {
     std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED)
 }
 
+/// The journal path every holder in this file reports under. One name, so a
+/// holder's line can be told from anything else in the journal by path alone.
+const HOLDER_PATH: &str = "release gate/rust-suite";
+
+/// How many watchdog observations a one-poll progress cadence needs before
+/// it is provably observable as a reset. At 1 the watchdog fires on the first
+/// non-growth sample, and a writer on the same period can miss a sample by
+/// phase alone; at 2 one missed sample is tolerated.
+const OBSERVABLE_POLLS: u64 = 2;
+
+/// One poll of scheduling slack for a **running** holder between its progress
+/// writes — a `sleep 1` in a running `sh` is still a fork+exec. A stated
+/// margin (SH-394), not a claim about speed.
+///
+/// It does not cover the holder's *startup*, and no margin could: SH-643
+/// measured spawn-to-first-line at 8ms on this machine at a load ratio of
+/// 0.92 and at more than 2000ms at 2.5–6.4 — 250x the latency for 5x the
+/// contention, so neither a load multiplier nor an earlier sample bounds it.
+/// Startup is [`ProgressFeeder`]'s job. If a running holder's own `sleep`
+/// ever exceeds this slack, the fix is a spawn-free holder (`time.sleep`
+/// in-process), never a wider slack.
+const RUNNING_SLACK_POLLS: u64 = 1;
+
+/// The `--max-idle` a case gives the script when the watchdog **is** the
+/// subject: the smallest ceiling at which a one-poll cadence is observable as
+/// a reset, plus the running holder's stated slack.
+fn idle_ceiling() -> String {
+    (lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS)).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // The script's own derived constants, read back out of it
 // ---------------------------------------------------------------------------
@@ -691,6 +721,84 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
     assert!(
         !fixture.lock("gate").exists(),
         "journal loss must still reap and release the holder"
+    );
+}
+
+/// SH-643, the constructed straddle (SH-420's posture): a holder whose
+/// **startup** outlasts the silence ceiling. On 2026-09-10, at load 25–64 on
+/// 10 cores, four cases in this file failed because their holder was never
+/// scheduled inside a bare `--max-idle 2` — `ps` showed ELAPSED 00:02, TIME
+/// 0:00.00, journal empty — so the fixture's own spawn latency, not the
+/// mechanism, decided the verdict. Here the starvation is a `sleep` one poll
+/// longer than the ceiling, deterministic on any machine. What the case is
+/// about is unchanged: a holder that is **running** and then silent is
+/// diagnosed with its own last line and reaped.
+#[test]
+fn a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let ceiling = idle_ceiling();
+    let starved_for = lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS + 1);
+    let helper = fixture.helper(
+        "late-starter.sh",
+        &format!(
+            "#!/bin/sh\nsleep {starved_for}\nprintf '{{\"kind\":\"item\",\"path\":\"{HOLDER_PATH}\",\"status\":\"running\",\"at\":\"fixture-time\"}}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n"
+        ),
+    );
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &ceiling,
+            "gate",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a late-starting holder");
+
+    assert_eq!(
+        code(&out),
+        124,
+        "a running-then-silent holder expires: {out:?}"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!(
+            "made no progress for {ceiling}s (ceiling {ceiling}s)"
+        )),
+        "stderr: {err}"
+    );
+    let text = std::fs::read_to_string(&journal).expect("reading the journal");
+    assert!(
+        text.contains(HOLDER_PATH),
+        "the holder's own line must have reached the journal before the silence was judged — \
+         a verdict reached during its startup is a verdict about the machine, not the holder\n\
+         journal: {text}"
+    );
+    assert_last_progress_was_reported(&err, &text);
+}
+
+/// The watchdog prints the journal's last record verbatim before it appends
+/// its own `failed` item (`machine-lock.sh`'s expiry path). Pinned against the
+/// journal actually written rather than a substring, so whichever writer's
+/// line happens to be last is the line the diagnosis must name.
+fn assert_last_progress_was_reported(err: &str, journal_text: &str) {
+    let lines: Vec<&str> = journal_text.lines().collect();
+    let (failed, before) = lines
+        .split_last()
+        .expect("the watchdog appends its own failed item to the journal");
+    assert!(
+        failed.contains(r#""path":"release gate","status":"failed""#),
+        "the journal's last line must be the watchdog's own failed item: {failed}"
+    );
+    let last_seen = before
+        .last()
+        .expect("something must have progressed before the stall");
+    assert!(
+        err.contains(&format!("last gate progress: {last_seen}")),
+        "the diagnosis must name the journal's true last record verbatim\nexpected: {last_seen}\nstderr: {err}"
     );
 }
 
