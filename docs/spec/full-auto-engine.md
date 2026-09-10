@@ -2239,7 +2239,7 @@ keeps SH-604's ruling for a head moved after a green gate. So that the
 now reports a completed red through its return status and
 `emit_tests_failed` posts it; only the moment moved.
 
-The public path — `verify-pr.sh <pr-url>`, above every private seam — was
+The public path — `verify-pr.sh <pr-url> -- <gate…>` since SH-649, `verify-pr.sh <pr-url>` then, above every private seam — was
 untested, and the defect lived there. `tests/merge_gate.rs` now drives it
 end to end against its local origin with a call-counting fake `gh` (a
 `before-call-N` hook is the "head moves between fetch and verdict"
