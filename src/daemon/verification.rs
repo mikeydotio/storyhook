@@ -24,8 +24,8 @@ use crate::process::{
 use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
-    Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationQueue,
+    Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
+    VERIFICATION_GREEN_PREFIX, VerificationCandidate, VerificationQueue,
 };
 use crate::store::{
     GlobalSeq, PrLink, ProjectId, ReadOps, Store, VerificationFailureDisposition,
@@ -1229,7 +1229,7 @@ fn record_cleanup_required(
         ctx,
         candidate,
         &format!(
-            "CENTRAL VERIFICATION CLEANUP REQUIRED — the PR landed and the story is done, but automatic reap failed: {error}"
+            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done, but automatic reap failed: {error}"
         ),
     )
 }
