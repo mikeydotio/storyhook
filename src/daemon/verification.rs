@@ -346,7 +346,7 @@ impl ShellVerificationActuator {
             // inherit a daemon starter's stale provider convention.
             .env_remove("STORY_AGENT")
             .env("STORY_BIN", self.story_binary())
-            .env("STORYHOOK_STORE_PATH", self.env.store_path())
+            .envs(self.env.child_vars())
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
         if let Some(extra) = extra {
@@ -410,7 +410,7 @@ impl ShellVerificationActuator {
             .current_dir(&lease.repository_path)
             .env_remove("STORY_AGENT")
             .env("STORY_BIN", self.story_binary())
-            .env("STORYHOOK_STORE_PATH", self.env.store_path())
+            .envs(self.env.child_vars())
             .env(CLEANUP_LEASE_ENV, encoded)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
