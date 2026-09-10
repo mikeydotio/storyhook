@@ -3179,6 +3179,14 @@ cmd_capture() {
 
 # cmd_notify <story-id> <message> — resume the exact dispatched agent after
 # centralized verification returns its PR for repair (SH-521).
+#
+# Every refusal slug this verb can emit is classified BY NAME on the daemon
+# side (`NOTIFY_REFUSALS`, src/daemon/verification.rs) as either "no live
+# agent in that window" -- the verifier re-dispatches in place (SH-650) -- or
+# "something else", which parks the story. tests/notify_reasons.rs derives the
+# slugs from this function's own `refuse "..."` literals, so adding one here
+# without classifying it there fails the build rather than falling through to
+# whichever default happens to be safe.
 cmd_notify() {
   local id="${1:-}" message="${2:-}"
   [ -n "$id" ] && [ -n "$message" ] && [ "$#" -eq 2 ] \
@@ -3201,6 +3209,14 @@ cmd_notify() {
   claude | codex) configure_agent "$provider" ;;
   *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
   esac
+  # A pane whose process has exited under remain-on-exit still answers the
+  # provider option and a FROZEN #{pane_current_command} (pane_is_dead's doc),
+  # so it passes both gates above and pane_runs below. Ask tmux the one
+  # question that distinguishes it, first: the verifier re-dispatches on this
+  # refusal (SH-650), and must never read a corpse as `delivery-failed`, the
+  # refusal that means the agent IS live and a respawn would kill it.
+  ! pane_is_dead "$pane" \
+    || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
   pane_runs "$pane" \
     || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
 
