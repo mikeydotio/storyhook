@@ -342,12 +342,14 @@ reaper. A candidate is eligible only when its versioned cleanup lease
 matches the current project, its story is CLOSED and carries the verifier's
 CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
 latest verification, its exact tmux window is absent, the worktree is clean
-and unlocked, and every worktree/local/origin branch tip is contained by a
+and unlocked, and every worktree and local-branch tip is contained by a
 freshly fetched origin default branch.
 
 Cleanup removes the exact leased worktree, its contained build artifacts,
-and the exact local and origin branches. It never removes the main checkout
-or shared build artifacts outside an eligible worktree. Open stories,
+and the exact local branch. It never removes the main checkout, shared build
+artifacts outside an eligible worktree, or a remote branch: the verifier's
+merge step deletes the remote branch, and cleanup neither reads nor writes
+it, so nothing on the remote can be lost by this command. Open stories,
 stories the verifier has not marked, missing or malformed leases,
 unverifiable tmux/Git state, dirty work, and unmerged commits are reported
 and preserved.
@@ -363,7 +365,7 @@ The daemon runs the same service daily by default. Configure it per project:
   story project settings set cleanup.auto false
   story project settings set cleanup.interval 12h
 
-Remote fetch and deletion use Git's configured origin credentials. An
+The default-branch fetch uses Git's configured origin credentials. An
 authentication or network failure fails closed: the report names the failed
 step and a later explicit or scheduled pass can retry idempotently.
 "#,

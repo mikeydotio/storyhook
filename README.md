@@ -484,11 +484,11 @@ reap's retry path, never an independent reaper. StoryHook considers only
 resources named by its versioned cleanup leases, and preserves a candidate
 unless its story is CLOSED and carries the verifier's CLEANUP COMPLETE or
 CLEANUP REQUIRED comment, the exact story tmux window is absent, the worktree
-is clean and unlocked, and every worktree, local, and origin branch tip is
-contained by the freshly fetched origin default branch. Eligible cleanup
-removes the worktree and its build artifacts plus the exact local and remote
-branches; it never removes the primary checkout, and `--dry-run` names every
-candidate it declined and why.
+is clean and unlocked, and every worktree and local-branch tip is contained
+by the freshly fetched origin default branch. Eligible cleanup removes the
+worktree and its build artifacts plus the exact local branch; it never
+removes the primary checkout or a remote branch (the verifier's merge step
+owns that), and `--dry-run` names every candidate it declined and why.
 
 Automatic cleanup is enabled daily. Change it per project with
 `story project settings set cleanup.auto false` or
