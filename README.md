@@ -423,6 +423,7 @@ story decompose --stdin [--dry-run]
 story migrate [<path>] [--dry-run]
 
 story doctor [--fix]
+story lane-budget [--json]
 story doctor abandoned
 story doctor abandoned clear (--all | <request-id>)
 story doctor crashes
