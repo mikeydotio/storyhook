@@ -1426,6 +1426,108 @@ cmd_capabilities() {
     '{ok:true, agent:$agent} + $caps'
 }
 
+# configure_dispatch_provider <agent> — resolve the provider and the
+# model/effort/speed selectors for ONE dispatch, and compose the launch
+# templates from them. Assigns cmd_dispatch's own locals (bash scopes a
+# caller's `local`s dynamically over the functions it calls): resolved_model,
+# resolved_effort, resolved_speed, effective_model, launch_source,
+# launch_overridden, ignored_general_override, plus configure_agent's globals
+# and LAUNCH_TPL/READY_LAUNCH_BIN. Reads cmd_dispatch's requested_* flags,
+# auto and full_auto.
+#
+# Called once per dispatch, AFTER the story is identified and BEFORE the
+# tmux/worktree gates and the claim, so an invalid provider or selector can
+# never claim a story or create a worktree. It used to run before the story
+# was even looked up; SH-650 moved it, because which provider a RESUME should
+# relaunch is a fact recorded on the surviving window (surviving_window_
+# provider), and that window is named by the canonical story id.
+configure_dispatch_provider() {
+  # The caller has already applied the precedence (explicit flag, then a
+  # resumed window's record, then STORY_AGENT); this only configures it.
+  configure_agent "$1"
+
+  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
+  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
+  # --agent already has beneath STORY_AGENT, above. Resolved and validated
+  # here, before any claim/worktree side effect, same as --agent.
+  resolved_model="${requested_model:-${STORY_MODEL:-}}"
+  resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
+  resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
+  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
+    validate_agent_model "$resolved_model"
+    validate_agent_effort "$resolved_effort"
+    validate_agent_speed "$resolved_speed"
+    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
+    # overrides (configure_agent, above) with no seam to splice a selector
+    # into without guessing at their shape. Refuse by name rather than
+    # silently ignore the selector or mangle the operator's own command
+    # line -- the same posture SH-511's header comment already commits to
+    # for a launch override that weakens unattendedness.
+    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
+    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
+    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
+    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
+    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+  fi
+  # Reported in the result JSON below. Claude always launches SOME model
+  # (opusplan is baked into its templates even unselected); Codex has no
+  # such default -- an unselected Codex model stays "" and is omitted from
+  # the JSON entirely, the same presence-signals-selection contract effort
+  # already has.
+  effective_model="$resolved_model"
+  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
+
+  launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
+  ignored_general_override=""
+  if [ -n "$full_auto" ]; then
+    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
+    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
+    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
+    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  elif [ -n "$auto" ]; then
+    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  fi
+}
+
+# surviving_dispatch_provider <canonical-id> — echo the provider a RESUME
+# should relaunch, read from what the abandoned dispatch left behind, or
+# nothing when no surviving resource records one.
+#
+# Two facts, in order. The window's `@storyhook-agent` option (the record
+# cmd_notify already trusts) survives a dead pane under remain-on-exit. When
+# the window is gone entirely, the worktree the story's branch is checked out
+# in still names its CONTAINER, and the container is provider-derived
+# (DEFAULT_WORKTREE_IGNORE_PATH, configure_agent): a resume under the wrong
+# provider does not merely relaunch the wrong binary, it looks for the
+# worktree in the other provider's container, finds only the branch, and
+# fails to reattach it ("already used by worktree"). An operator container
+# override (STORY_WORKTREE_IGNORE_PATH) matches neither spelling and says
+# nothing, so the caller falls through to its own precedence.
+#
+# READ-ONLY and tolerant on purpose: runs before the tmux precondition and
+# from the checkout (branch_worktree_path needs the repository), and a dry run
+# outside tmux must still render.
+surviving_dispatch_provider() {
+  local wname pane provider path
+  wname=$(resolve_wname "$1")
+  pane=$(pane_for_window "$wname" 2>/dev/null) || pane=""
+  if [ -n "$pane" ]; then
+    provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null) || provider=""
+    case "$provider" in
+      claude | codex) printf '%s' "$provider"; return 0 ;;
+    esac
+  fi
+  path=$(branch_worktree_path "worktree-$wname") || return 0
+  case "$path" in
+    */.claude/worktrees/"$wname") printf 'claude' ;;
+    */.codex/worktrees/"$wname") printf 'codex' ;;
+  esac
+}
+
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
@@ -1503,60 +1605,12 @@ cmd_dispatch() {
     || fail "--full-auto requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  # The explicit dispatch option outranks STORY_AGENT. Both are resolved
-  # before the tmux/story/checkout gates, so an invalid provider can never
-  # claim a story or create a worktree.
-  if [ -n "$requested_agent" ]; then
-    configure_agent "$requested_agent"
-  else
-    configure_agent "${STORY_AGENT:-claude}"
-  fi
-
-  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
-  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
-  # --agent already has beneath STORY_AGENT, above. Resolved and validated
-  # here, before any claim/worktree side effect, same as --agent.
-  local resolved_model="${requested_model:-${STORY_MODEL:-}}"
-  local resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
-  local resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
-  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
-    validate_agent_model "$resolved_model"
-    validate_agent_effort "$resolved_effort"
-    validate_agent_speed "$resolved_speed"
-    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
-    # overrides (configure_agent, above) with no seam to splice a selector
-    # into without guessing at their shape. Refuse by name rather than
-    # silently ignore the selector or mangle the operator's own command
-    # line -- the same posture SH-511's header comment already commits to
-    # for a launch override that weakens unattendedness.
-    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
-    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
-    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
-    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
-    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-  fi
-  # Reported in the result JSON below. Claude always launches SOME model
-  # (opusplan is baked into its templates even unselected); Codex has no
-  # such default -- an unselected Codex model stays "" and is omitted from
-  # the JSON entirely, the same presence-signals-selection contract effort
-  # already has.
-  local effective_model="$resolved_model"
-  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
-
-  local launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
-  local ignored_general_override=""
-  if [ -n "$full_auto" ]; then
-    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
-    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
-    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
-    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  elif [ -n "$auto" ]; then
-    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  fi
+  # Provider and selectors are resolved by configure_dispatch_provider once the
+  # story is identified (below); declared here so its assignments land in this
+  # scope.
+  local resolved_model="" resolved_effort="" resolved_speed="" effective_model=""
+  local launch_source="" launch_overridden="" ignored_general_override=""
+  local window_provider=""
 
   # A named target is identified before the tmux/worktree gates because an
   # epic never crosses either boundary: it is an engine scope, not a story to
@@ -1576,9 +1630,12 @@ cmd_dispatch() {
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
+
     # SH-499: epic identity is the explicit type, never the mere presence of
     # a parent-of edge. Ordinary stories with subtasks still reach ID MODE.
     if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      # An epic has no dispatch resources to read a provider from.
+      configure_dispatch_provider "${requested_agent:-${STORY_AGENT:-claude}}"
       [ -z "$resume" ] \
         || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
       # An epic dispatch never reaches LAUNCH_TPL -- SH-468's engine run
@@ -1615,6 +1672,21 @@ cmd_dispatch() {
   fi
   enter_checkout
   local dir="$PROJECT_ROOT"
+
+  # The provider, and everything composed from it. SH-650: a resume relaunches
+  # the provider the abandoned dispatch recorded, unless the caller named one
+  # explicitly. Precedence is the explicit flag, then the surviving record
+  # (surviving_dispatch_provider), then STORY_AGENT, then claude: the record is
+  # a fact about the thing being resumed, the environment variable is the
+  # caller's claim about itself (SH-630), and a resume that silently switched
+  # provider on that claim would rewrite the window option with a lie and look
+  # for the worktree in the wrong container. NEXT MODE has no story yet and
+  # cannot resume, so it reads no record. Resolved here, from the checkout,
+  # because the worktree half of the record needs the repository.
+  if [ -n "$id" ] && [ -n "$resume" ] && [ -z "$requested_agent" ]; then
+    window_provider=$(surviving_dispatch_provider "$id")
+  fi
+  configure_dispatch_provider "${requested_agent:-${window_provider:-${STORY_AGENT:-claude}}}"
 
   # The target SESSION is knowable before either claim mode runs even though
   # NEXT MODE's window name is not. ID MODE needs it now for its transactional
