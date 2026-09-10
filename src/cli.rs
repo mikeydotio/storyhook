@@ -877,7 +877,7 @@ impl Invocation {
     /// yes, re-send an invocation that is still unforced, and be answered with
     /// the same question forever. A confirmation loop with no error and no
     /// compile failure. The top level then kept exactly that wildcard, and
-    /// `HideState` fell through it (SH-638). Listing every variant of every
+    /// `HideState` fell through it for as long as it existed (SH-638). Listing every variant of every
     /// level means the next one is a compile error here instead.
     ///
     /// `DaemonAction::Stop { force }` is deliberately **not** set: that flag
@@ -897,11 +897,10 @@ impl Invocation {
                 | ProjectAction::Settings(_) => {}
             },
             Self::Delete { force, .. } => *force = true,
-            // Answers `ConfirmationRequired` too, and was never forced on
-            // the re-run: `story archive-state` at a terminal printed its
-            // plan twice and archived nothing (SH-638). Corrected in the
-            // commit after the one that made this list exhaustive.
-            Self::HideState { .. } => {}
+            // Answers `ConfirmationRequired` too, and until SH-638 was never
+            // forced on the re-run: `story archive-state` at a terminal
+            // printed its plan twice and archived nothing.
+            Self::HideState { force, .. } => *force = true,
             Self::Daemon { action } => match action {
                 DaemonAction::Logs { .. }
                 | DaemonAction::Serve { .. }
@@ -5194,6 +5193,52 @@ mod tests {
         UnclaimComment, parse_invocation,
     };
     use crate::error::AppError;
+
+    /// Every verb that answers `ConfirmationRequired` must come back forced,
+    /// or the client asks, hears yes, and re-sends the same question
+    /// (SH-638: `story archive-state` printed its plan twice and archived
+    /// nothing). `daemon stop --force` is the negative control: that flag
+    /// signals a process rather than skipping a prompt, and `forced()` must
+    /// never invent it.
+    #[test]
+    fn forced_authorizes_every_confirming_verb_and_nothing_else() {
+        fn parse(args: &[&str]) -> Invocation {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+                .expect("a well-formed invocation")
+        }
+        let forced = parse(&["archive-state", "done"]).forced();
+        assert_eq!(
+            forced,
+            Invocation::HideState {
+                state: "done".into(),
+                force: true
+            }
+        );
+        assert!(matches!(
+            parse(&["delete", "SH-1"]).forced(),
+            Invocation::Delete { force: true, .. }
+        ));
+        assert!(matches!(
+            parse(&["project", "delete"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::Delete { force: true }
+            }
+        ));
+        assert!(matches!(
+            parse(&["project", "set-prefix", "NEW"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::SetPrefix { force: true, .. }
+            }
+        ));
+        assert_eq!(
+            parse(&["daemon", "stop"]).forced(),
+            Invocation::Daemon {
+                action: super::DaemonAction::Stop { force: false }
+            }
+        );
+        let untouched = parse(&["list"]);
+        assert_eq!(untouched.clone().forced(), untouched);
+    }
 
     #[test]
     fn routes_move_command() {
