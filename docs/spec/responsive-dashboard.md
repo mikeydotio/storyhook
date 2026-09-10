@@ -370,6 +370,59 @@ decorative treatment, static control wiring, and absence of the retired SVG mach
 retain accessible names, and track live control state. Native `<select>` indicators
 remain browser-owned for the cross-engine reasons in “Tap targets (D3)” above.
 
+### A text assertion never rides an aria-hidden glyph (SH-622)
+
+The product above is correct, and the first release-tier run after it merged
+still failed four specs. `toHaveText` and `toContainText` compare `textContent`
+(or `innerText`), and both include an `aria-hidden` subtree; the accessible name
+excludes one by specification. Six assertions reading a control's own words
+through `toHaveText` therefore read the decoration too — `"Columns (1)"`
+received `"Columns (1)🔽"` — and a seventh counted an `svg` element as a proxy
+for an icon. SH-620's own sweep updated every spec whose subject *is* an icon
+and could not see a spec whose subject is a control. `make test` excludes the
+browser suite (SH-394), so it merged green: SH-418's thesis, SH-416 the
+precedent, paid a second time.
+
+The rule those four repairs established: **assert a control's own words with
+`toHaveAccessibleName()`; assert the words on the element that holds only the
+words; only a spec whose subject is the glyph asserts its text.** The fence
+that keeps it is hung on the door every spec already walks through —
+`e2e/specs/support.ts`'s exported `expect`, now
+`baseExpect.extend({ toHaveText, toContainText })` — because nothing static
+can see the subject: a third of the suite's 523 text assertions target a bare
+local variable, and the dashboard attaches glyphs to buttons it finds by
+`querySelector` as often as to ones it builds. Both shadowing matchers delegate
+to Playwright's own matcher first, in the caller's direction (`.not` included,
+so a negated assertion polls the right way), then judge the elements the
+locator actually resolved to. `toHaveText` is refused whenever its subject
+holds an `[aria-hidden="true"]` descendant with text, whether or not the
+comparison passed — a passing one has encoded decoration, a failing one is the
+SH-622 symptom. `toContainText` is refused only when the expectation *names*
+hidden text; a substring claim that never mentions the glyph does not ride it,
+and deciding anything finer would re-implement Playwright's matching in
+`support.ts`. The key is `aria-hidden`, not `.emoji-icon`: `.engine-lane-chip`
+is already a second producer of the class.
+
+Why shadowing a built-in matcher is sound, read from Playwright 1.63's
+`lib/matchers/expect.js` rather than assumed: `extend()` layers user matchers
+over the built-ins for `expect(x).<name>`, skips a built-in name only for the
+asymmetric-matcher registration, and returns a new `expect` without touching
+the base — so `baseExpect` inside the shadowing matcher is the unguarded
+original and delegation cannot recurse.
+
+Two limits are stated rather than glossed. A direct read — `textContent()`,
+`allTextContents()`, `node.textContent` inside `evaluate` — and the `hasText`
+filter never pass through an `expect` matcher and are outside the door
+(`story-context-menu-status.spec.ts` reads a `.ctxmenu-item`'s text that gains
+a warning glyph when the item is disabled, and stays as it is, named here). And
+the refusal reaches the browser tier only: `tests/e2e_text_assertion_door.rs`
+is a *wiring* fence in SH-360's sense — it proves on every merge that only
+`support.ts` takes Playwright's own `expect`, that the door registers both
+matchers, and that every text-asserting spec imports `expect` from
+`./support` — never that the door refuses. `e2e/specs/text-assertion-door.spec.ts`
+is what proves that, against the static project selector, including the case
+where Playwright's own comparison would have passed.
+
 ## What guards each defect
 
 Every behavioral test below runs under both `mobile-chromium` (Blink) and, since SH-348,
@@ -386,6 +439,7 @@ row says otherwise.
 | D8 (column peek) | `web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones` | `responsive.mobile.spec.ts`: "the next board column peeks on the narrowest supported phone" (plus its own "stays at 18rem" companion) |
 | D9 (actions menu) | `web_serve_root_html_exposes_card_actions_on_every_pointer` | `story-context-menu.spec.ts`: "the visible card actions button matches right-click without opening the drawer"; `responsive.mobile.spec.ts`: mobile card/list parity and focus policy |
 | Chrome budget (topbar + filter bar) | — | `responsive.mobile.spec.ts`: "the topbar and collapsed filter bar together stay within a measured chrome budget" |
+| Text assertion riding an aria-hidden glyph (SH-622) | `tests/e2e_text_assertion_door.rs` (not `web_test.rs`): only `support.ts` takes Playwright's `expect`, the door registers both text matchers, every text-asserting spec imports from `./support` | `text-assertion-door.spec.ts` (desktop, both engines): refusal even when the base comparison would pass, refusal of `.not`, label/glyph/name subjects legal, `toContainText` refused only when it names hidden text, delegation fidelity |
 
 ## Verification this design can't cover
 
