@@ -2131,6 +2131,16 @@ fn shell_cleanup_rejects_nonzero_identity_version_and_postcondition_receipts() {
     }
 }
 
+/// Stops the daemon a real helper started for a fixture store, on every exit
+/// path — a daemon a test cannot get rid of is a leak (SH-306, SH-631).
+struct StandDown(Environment);
+
+impl Drop for StandDown {
+    fn drop(&mut self) {
+        let _ = lifecycle::stop(&self.0, lifecycle::StopMode::Force);
+    }
+}
+
 #[test]
 fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checkout() {
     let fixture = ServiceFixture::new();
@@ -2189,7 +2199,24 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
         helper,
         story_binary().to_path_buf(),
     );
+    // The real helper runs real `story` commands, which start a daemon for the
+    // fixture store. Whatever else happens below, that daemon is stood down
+    // where the fixture's own environment says it is (SH-631's rule) — which
+    // only works because SH-633 made the child publish there.
+    let _stand_down = StandDown(fixture.env().clone());
     actuator.reap(&candidate).unwrap();
+
+    // SH-633: the child is told the state home its parent resolved, not only
+    // the store. Before that fix the helper's `story` calls resolved the state
+    // home from the developer's real $HOME, found no daemon there for this
+    // store, and started a second one — leaving its pidfile, backups and
+    // journal beside production's, once per run, for ever.
+    assert!(
+        fixture.env().daemon_file().exists(),
+        "the daemon the helper started published no portfile under the fixture's own state \
+         home ({}); it is serving the fixture store from some other state home",
+        fixture.env().daemon_state_dir().display()
+    );
 
     assert!(!worktree.exists(), "the leased original worktree survived");
     let branch = Command::new("git")
