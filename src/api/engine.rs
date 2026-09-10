@@ -32,6 +32,7 @@ use crate::service::Ctx;
 use crate::service::engine::{
     ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher,
     EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
+    WindowProbe,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -537,6 +538,17 @@ struct HttpLaneView {
     worktree: Option<String>,
     dispatched_at: Option<String>,
     last_observed_at: String,
+    /// When the lane's story was last seen to move — seeded by the first
+    /// steady pass that finds the lane alive, `null` until then. This is the
+    /// only positive evidence that a reconcile pass observed a lane and left
+    /// it working: `last_observed_at` says only that the reconciler looked,
+    /// and at one-second resolution it cannot be ordered against
+    /// `dispatched_at` (SH-336), which is what the browser suite needed in
+    /// SH-626 to tell "observed alive" from "not yet observed".
+    last_progress_at: Option<String>,
+    /// What the liveness probe last said when it did not say "alive"
+    /// (SH-626): `null` while tmux answers, otherwise the probe's own words.
+    probe_detail: Option<String>,
     outcome: Option<String>,
     outcome_detail: Option<String>,
 }
@@ -551,6 +563,8 @@ impl From<EngineLaneRecord> for HttpLaneView {
             worktree: value.worktree_path,
             dispatched_at: value.dispatched_at,
             last_observed_at: value.last_observed_at,
+            last_progress_at: value.last_progress_at,
+            probe_detail: value.probe_detail,
             outcome: value.outcome,
             outcome_detail: value.outcome_detail,
         }
@@ -574,8 +588,10 @@ impl Dispatcher for NoopDispatcher {
         ))
     }
 
-    fn window_alive(&self, _window: &str) -> bool {
-        false
+    fn probe_window(&self, _window: &str) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: "engine HTTP reached a window probe without a shell dispatcher".to_string(),
+        }
     }
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
@@ -599,6 +615,40 @@ mod tests {
             .iter()
             .map(|(name, value)| Header::from_bytes(*name, *value).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_lane_view_carries_its_progress_seed_verbatim() {
+        let mut lane = EngineLaneRecord {
+            run_id: "run-1".to_string(),
+            lane_index: 0,
+            state: crate::store::EngineLaneState::Working,
+            story_id: Some("P-1".to_string()),
+            pane_id: Some("%1".to_string()),
+            window_name: Some("P-1".to_string()),
+            worktree_path: None,
+            cleanup_lease: None,
+            dispatched_at: Some("2026-01-01T00:00:00Z".to_string()),
+            last_observed_at: "2026-01-01T00:00:00Z".to_string(),
+            last_progress_seq: None,
+            last_progress_at: None,
+            outcome: None,
+            outcome_detail: None,
+            probe_detail: None,
+        };
+        let unobserved = serde_json::to_value(HttpLaneView::from(lane.clone())).unwrap();
+        assert!(
+            unobserved["last_progress_at"].is_null(),
+            "a lane no pass has found alive reports null, never a fabricated time: {unobserved}"
+        );
+        lane.last_progress_seq = Some(crate::store::GlobalSeq::new(7));
+        lane.last_progress_at = Some("2026-01-01T00:00:01Z".to_string());
+        lane.probe_detail = Some("tmux exited 1: unbound variable".to_string());
+        let observed = serde_json::to_value(HttpLaneView::from(lane)).unwrap();
+        assert_eq!(observed["last_progress_at"], "2026-01-01T00:00:01Z");
+        assert_eq!(observed["last_observed_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(observed["probe_detail"], "tmux exited 1: unbound variable");
+        assert!(unobserved["probe_detail"].is_null());
     }
 
     #[test]

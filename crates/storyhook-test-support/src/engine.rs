@@ -7,7 +7,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use storyhook::error::AppError;
-use storyhook::service::engine::{DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest};
+use storyhook::service::engine::{
+    DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe,
+};
 
 /// One answer the fake will consume, in exact call order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,9 +18,16 @@ pub enum DispatcherStep {
     DispatchFailure(String),
     Unclaim(DispatchOutcome),
     UnclaimFailure(String),
+    /// A scripted answer from tmux: `alive` maps to [`WindowProbe::Alive`],
+    /// otherwise to [`WindowProbe::Gone`] with a scripted reason.
     WindowAlive {
         window: String,
         alive: bool,
+    },
+    /// A scripted probe tmux could not answer (SH-626).
+    WindowUnanswered {
+        window: String,
+        detail: String,
     },
     KillWindow {
         window: String,
@@ -94,16 +103,29 @@ impl Dispatcher for FakeDispatcher {
         }
     }
 
-    fn window_alive(&self, window: &str) -> bool {
+    fn probe_window(&self, window: &str) -> WindowProbe {
         match self.next(DispatcherCall::WindowAlive(window.to_string())) {
             DispatcherStep::WindowAlive {
                 window: expected,
                 alive,
             } => {
                 assert_eq!(expected, window, "FakeDispatcher window probe target");
-                alive
+                if alive {
+                    WindowProbe::Alive
+                } else {
+                    WindowProbe::Gone {
+                        detail: format!("scripted: tmux reports `{window}` gone"),
+                    }
+                }
             }
-            step => panic!("FakeDispatcher expected a window-alive step, got {step:?}"),
+            DispatcherStep::WindowUnanswered {
+                window: expected,
+                detail,
+            } => {
+                assert_eq!(expected, window, "FakeDispatcher window probe target");
+                WindowProbe::Unanswered { detail }
+            }
+            step => panic!("FakeDispatcher expected a window probe step, got {step:?}"),
         }
     }
 

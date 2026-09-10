@@ -390,6 +390,11 @@ pub struct EngineLaneRecord {
     pub outcome: Option<String>,
     /// Diagnostic detail accompanying the outcome.
     pub outcome_detail: Option<String>,
+    /// What the liveness probe last said when it did not say "alive" —
+    /// tmux's own words, or the reason it could not be asked (SH-626).
+    /// `None` after an "alive" answer, for an idle lane, and for a lane no
+    /// pass has probed. A diagnostic, never a lifecycle input.
+    pub probe_detail: Option<String>,
 }
 
 /// A git origin registered against a project.
