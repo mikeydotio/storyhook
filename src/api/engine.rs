@@ -537,6 +537,14 @@ struct HttpLaneView {
     worktree: Option<String>,
     dispatched_at: Option<String>,
     last_observed_at: String,
+    /// When the lane's story was last seen to move — seeded by the first
+    /// steady pass that finds the lane alive, `null` until then. This is the
+    /// only positive evidence that a reconcile pass observed a lane and left
+    /// it working: `last_observed_at` says only that the reconciler looked,
+    /// and at one-second resolution it cannot be ordered against
+    /// `dispatched_at` (SH-336), which is what the browser suite needed in
+    /// SH-626 to tell "observed alive" from "not yet observed".
+    last_progress_at: Option<String>,
     outcome: Option<String>,
     outcome_detail: Option<String>,
 }
@@ -551,6 +559,7 @@ impl From<EngineLaneRecord> for HttpLaneView {
             worktree: value.worktree_path,
             dispatched_at: value.dispatched_at,
             last_observed_at: value.last_observed_at,
+            last_progress_at: value.last_progress_at,
             outcome: value.outcome,
             outcome_detail: value.outcome_detail,
         }
@@ -599,6 +608,36 @@ mod tests {
             .iter()
             .map(|(name, value)| Header::from_bytes(*name, *value).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_lane_view_carries_its_progress_seed_verbatim() {
+        let mut lane = EngineLaneRecord {
+            run_id: "run-1".to_string(),
+            lane_index: 0,
+            state: crate::store::EngineLaneState::Working,
+            story_id: Some("P-1".to_string()),
+            pane_id: Some("%1".to_string()),
+            window_name: Some("P-1".to_string()),
+            worktree_path: None,
+            cleanup_lease: None,
+            dispatched_at: Some("2026-01-01T00:00:00Z".to_string()),
+            last_observed_at: "2026-01-01T00:00:00Z".to_string(),
+            last_progress_seq: None,
+            last_progress_at: None,
+            outcome: None,
+            outcome_detail: None,
+        };
+        let unobserved = serde_json::to_value(HttpLaneView::from(lane.clone())).unwrap();
+        assert!(
+            unobserved["last_progress_at"].is_null(),
+            "a lane no pass has found alive reports null, never a fabricated time: {unobserved}"
+        );
+        lane.last_progress_seq = Some(crate::store::GlobalSeq::new(7));
+        lane.last_progress_at = Some("2026-01-01T00:00:01Z".to_string());
+        let observed = serde_json::to_value(HttpLaneView::from(lane)).unwrap();
+        assert_eq!(observed["last_progress_at"], "2026-01-01T00:00:01Z");
+        assert_eq!(observed["last_observed_at"], "2026-01-01T00:00:00Z");
     }
 
     #[test]
