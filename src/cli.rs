@@ -856,6 +856,132 @@ pub enum Invocation {
     },
 }
 
+impl Invocation {
+    /// The same invocation, with its confirmation already given.
+    ///
+    /// The second half of the two-step a destructive command runs: the first
+    /// invocation answers `Response::ConfirmationRequired` and writes nothing,
+    /// the client asks the user, and this is what it sends back. The
+    /// invocation is otherwise untouched — the *same* target, resolved the
+    /// same way — so the thing that gets destroyed is the thing that was
+    /// described.
+    ///
+    /// An invocation with nothing to confirm is returned unchanged, which is
+    /// what makes this safe to call unconditionally.
+    ///
+    /// # Why every arm is exhaustive
+    ///
+    /// The `Project` arm used to be `ProjectAction::Deinit { force, .. }`
+    /// beside a `_ => {}`, and a destructive project verb added later would
+    /// have fallen through it silently — the client would ask the user, get a
+    /// yes, re-send an invocation that is still unforced, and be answered with
+    /// the same question forever. A confirmation loop with no error and no
+    /// compile failure. The top level then kept exactly that wildcard, and
+    /// `HideState` fell through it (SH-638). Listing every variant of every
+    /// level means the next one is a compile error here instead.
+    ///
+    /// `DaemonAction::Stop { force }` is deliberately **not** set: that flag
+    /// means "signal the process", not "skip a confirmation", and `stop`
+    /// never asks one.
+    #[must_use]
+    pub fn forced(mut self) -> Self {
+        match &mut self {
+            Self::Project { action } => match action {
+                ProjectAction::Delete { force } => *force = true,
+                ProjectAction::SetPrefix { force, .. } => *force = true,
+                ProjectAction::New(_)
+                | ProjectAction::List
+                | ProjectAction::Show
+                | ProjectAction::Link(_)
+                | ProjectAction::Unlink(_)
+                | ProjectAction::Settings(_) => {}
+            },
+            Self::Delete { force, .. } => *force = true,
+            // Answers `ConfirmationRequired` too, and was never forced on
+            // the re-run: `story archive-state` at a terminal printed its
+            // plan twice and archived nothing (SH-638). Corrected in the
+            // commit after the one that made this list exhaustive.
+            Self::HideState { .. } => {}
+            Self::Daemon { action } => match action {
+                DaemonAction::Logs { .. }
+                | DaemonAction::Serve { .. }
+                | DaemonAction::Start { .. }
+                | DaemonAction::Restart
+                | DaemonAction::Stop { .. }
+                | DaemonAction::Status
+                | DaemonAction::Install { .. }
+                | DaemonAction::Uninstall
+                | DaemonAction::Token => {}
+            },
+            Self::Help
+            | Self::New { .. }
+            | Self::Publish { .. }
+            | Self::MemberAdd { .. }
+            | Self::State { .. }
+            | Self::List { .. }
+            | Self::Search { .. }
+            | Self::Next { .. }
+            | Self::Claim { .. }
+            | Self::Unclaim { .. }
+            | Self::Engine { .. }
+            | Self::Cleanup { .. }
+            | Self::Summary
+            | Self::Report { .. }
+            | Self::Doctor { .. }
+            | Self::DoctorInstall
+            | Self::DoctorAbandoned { .. }
+            | Self::DoctorCrashes { .. }
+            | Self::Show { .. }
+            | Self::Log { .. }
+            | Self::Comment { .. }
+            | Self::Assign { .. }
+            | Self::SetState { .. }
+            | Self::SetAwaiting { .. }
+            | Self::ClearAwaiting { .. }
+            | Self::SetPriority { .. }
+            | Self::SetLabels { .. }
+            | Self::Reopen { .. }
+            | Self::Hide { .. }
+            | Self::Unhide { .. }
+            | Self::BulkUpdate { .. }
+            | Self::Import { .. }
+            | Self::Decompose { .. }
+            | Self::Export
+            | Self::ImportProject { .. }
+            | Self::Migrate { .. }
+            | Self::Context { .. }
+            | Self::Handoff { .. }
+            | Self::Phase { .. }
+            | Self::Type { .. }
+            | Self::Epic { .. }
+            | Self::Graph { .. }
+            | Self::SetFields { .. }
+            | Self::Relate { .. }
+            | Self::Hooks { .. }
+            | Self::Scaffold { .. }
+            | Self::CommitSync { .. }
+            | Self::LinkPr { .. }
+            | Self::UnlinkPr { .. }
+            | Self::PrCheck { .. }
+            | Self::GithubAuth { .. }
+            | Self::HelpTopic { .. }
+            | Self::HelpCompact
+            | Self::HelpAll
+            | Self::Plugin { .. }
+            | Self::Web { .. }
+            | Self::Token { .. }
+            | Self::Store { .. }
+            | Self::SessionStart { .. }
+            | Self::Update { .. }
+            | Self::Version
+            | Self::ProjectSnapshot { .. }
+            | Self::History { .. }
+            | Self::Attachment { .. } => {}
+        }
+        self
+    }
+}
+
 /// The four forms of `story attachment` (SH-315).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentAction {
