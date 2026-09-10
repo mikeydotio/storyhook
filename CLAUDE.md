@@ -1521,6 +1521,23 @@ Standing rules for every wave:
   selected a test exits 1** — the per-project skip stays for the SH-335 loop, and only the
   sum across projects can tell that case from a filter typo. Design of record:
   `docs/spec/test-tiers.md`'s fourth "As built" reading.
+- **A wait settles the box the test measures, never an ancestor of it — a proxy claim can be
+  true before the motion starts** (SH-623). `notice-dock-geometry.spec.ts` waited on `#drawer`'s
+  own right edge being inside the viewport and then hit-tested `#drawer-close`; chromium reported
+  the button's centre as `nothing`, `elementFromPoint`'s null for a point 113px off-screen. The
+  mechanism is sharper than "the parent finished first": the closed drawer is `width: 0;
+  transform: translateX(100%)`, and 100% of a 0-wide box is 0px, so its right edge reads exactly
+  `1280.00` at **t=0**, before the transition has moved at all, while the header lays its `nowrap`
+  items out past that 0-wide box and the close button sits at x≈1377. The retired predicate was
+  true before the motion started. `support.ts`'s `awaitSettled(root, surface)` is now the one
+  settle instrument — it had lived twice, in `settledBoundingBox` and the tap-target sweep, the
+  SH-136 shape — and `tests/tap_target_comparison.rs` pins both callers to it. The witness
+  (`settle-the-measured-box.spec.ts`) constructs the straddle in SH-420's posture, pausing the
+  drawer's own transitions and seeking across them, so it costs no wall clock and wins on no
+  engine by luck. Two siblings found by arithmetic rather than sighting were fixed alongside
+  (`responsive.mobile.spec.ts`, `detail-panel.spec.ts`: a width poll, then transform-derived
+  edges with exact equality). Design of record: `docs/spec/responsive-dashboard.md`'s SH-623
+  "As built" note under "Tap targets (D3)".
 - **A text assertion never rides an aria-hidden glyph, and the fence that keeps it runs
   where the subject is known** (SH-622). `toHaveText`/`toContainText` compare
   `textContent`, which includes an `aria-hidden` subtree; the accessible name excludes

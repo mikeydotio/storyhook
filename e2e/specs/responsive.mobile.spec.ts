@@ -1,6 +1,7 @@
 import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
+  awaitSettled,
   clickHeaderAction,
   cleanUpCreatedStories,
   deleteStory,
@@ -54,6 +55,14 @@ for (const width of SWEEP_WIDTHS) {
       .locator(".card-title", { hasText: "Wire up the auth flow" })
       .click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
+    // Settle the drawer's own motion, then state the width. The poll below
+    // used to be the wait as well as the claim, and those are different
+    // things (SH-623): a rounded width reaches 480 while the transform is
+    // still up to 0.5px from rest -- `cubic-bezier(0.2, 0.9, 0.3, 1)` has a
+    // flat tail, so that is the last ~12% of the transition -- and
+    // `panelLeft`/`panelRight` below are read from the transform, with exact
+    // equality. A width claim is not a transform claim.
+    await awaitSettled(page.locator("#drawer"), `the story detail peer @ ${width}px`);
 
     await expect
       .poll(async () =>
@@ -1135,30 +1144,12 @@ async function settleAndReadTapMin(
   root: Locator,
   surface: string,
 ): Promise<number> {
-  await expect
-    .poll(
-      async () =>
-        root.evaluate((node) =>
-          node
-            .getAnimations({ subtree: true })
-            .filter((a) => a.playState === "running")
-            .map((a) => {
-              const effect = a.effect as KeyframeEffect | null;
-              const target = effect && effect.target ? effect.target.tagName : "?";
-              return `${(a as unknown as { animationName?: string }).animationName ||
-                (a as unknown as { transitionProperty?: string }).transitionProperty ||
-                "animation"} on ${target}`;
-            }),
-        ),
-      {
-        message:
-          `${surface}: animations under this surface never settled, so the ` +
-          "sweep would measure a moving box (SH-420). A live poll can restart " +
-          "card animations at any moment -- if this is flaking rather than " +
-          "hanging, that is the residual race, not a new defect.",
-      },
-    )
-    .toEqual([]);
+  // The settle wait itself lives in `support.ts` (`awaitSettled`) since
+  // SH-623, when a second, byte-similar copy of it was found there
+  // (`settledBoundingBox`); everything the comment above measured about it
+  // still holds, and `tests/tap_target_comparison.rs` pins that this sweep
+  // goes through that one door.
+  await awaitSettled(root, surface);
 
   const minPx = await root.evaluate(() =>
     parseFloat(
