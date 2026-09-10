@@ -302,6 +302,25 @@ not parse it — the SH-136 rule); the invariant here is only that it
 ## As built
 
 Deviations from this document are recorded here, one entry per child, rather
-than in a second file. None yet: SH-647..SH-653 are open, and each lands with
-its own `### SH-N — <what changed>` entry and a status update in the decisions
-table above.
+than in a second file. SH-647..SH-653 are open, and each lands with its own
+`### SH-N — <what changed>` entry and a status update in the decisions table
+above.
+
+### SH-655 — D-B's "D14's lane budget bounds agents" was not true
+
+D-B declined a machine-wide CPU cap as YAGNI on the grounds that D14's lane
+budget bounds agents. It bounded *engine* agents: the budget was enforced over
+`engine_lanes` rows alone, and a `/story do` typed by hand — the same worktree,
+window and cold workspace build — counted for nothing (seven were measured at
+load 33 on ten cores, one project active). D-B's row stays as written, per
+this document's own rule. What changed: every door that opens an agent session
+now measures one census of live agent windows against `ENGINE_LANE_BUDGET`
+(`story lane-budget`; `cmd_dispatch` refuses past it, `--over-budget`
+overrides; the engine's fill counts it), and compilation itself is bounded
+machine-wide by `scripts/rustc-slot.py` through the tracked `.cargo/config.toml`
+— so when a second project does appear and its suite overlaps this one's, the
+overlap is at most K concurrent rustc processes plus test execution, not
+N × 10 compile jobs. D-B's trade-off sentence deserves re-reading against
+that: the cap it declined now exists one layer down, on the resource that was
+actually saturating. Design of record: `docs/spec/full-auto-engine.md`'s
+SH-655 As-built entry and `docs/spec/test-tiers.md`, "The compile bound".
