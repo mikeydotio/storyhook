@@ -4033,11 +4033,20 @@ leased_reap_receipt() {
       display:$display}'
 }
 
-# cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
-# centralized verifier or the dispatched worktree itself. No current checkout
-# or ambient provider participates.
-cmd_reap_leased() {
-  local typed_id="$1" lease="$2"
+# validate_cleanup_lease <verb> <typed-story-id> <lease-json> — the half of a
+# leased verb that is about the LEASE rather than about what the verb does
+# with it, shared by `reap` and `submit` so the two cannot drift (SH-136):
+# the wire-format gate, the project and story identity, and the proof that
+# the leased repository, worktree and branch are exactly what the lease says.
+# Refuses by name on the first failure, with <verb> in the message. On
+# success the caller is standing in the leased repository and these are set:
+#   LEASE_PROJECT LEASE_STORY LEASED_REPO LEASED_WORKTREE LEASED_BRANCH
+#   LEASE_SHOW_JSON LEASE_CANONICAL_ID LEASE_STATE LEASE_SUPER
+# What the verb requires of the story's STATE is the verb's own business
+# (reap: closed and in the completion state; submit: verifying), so it is
+# checked by the caller after this returns.
+validate_cleanup_lease() {
+  local verb="$1" typed_id="$2" lease="$3"
   if ! printf '%s' "$lease" | jq -e --argjson version "$CLEANUP_LEASE_VERSION" '
       type == "object" and .version == $version
       and (.project_slug | type == "string" and length > 0)
@@ -4047,67 +4056,77 @@ cmd_reap_leased() {
       and (.branch | type == "string" and length > 0)
       and (.tmux | type == "object")
       and (.tmux.socket_path | type == "string" and startswith("/"))' >/dev/null 2>&1; then
-    refuse "invalid-cleanup-lease" "story.sh reap: the cleanup lease is malformed or uses an unsupported version."
+    refuse "invalid-cleanup-lease" "story.sh $verb: the cleanup lease is malformed or uses an unsupported version."
   fi
 
-  local lease_project lease_story leased_repo leased_worktree leased_branch
-  lease_project=$(printf '%s' "$lease" | jq -r '.project_slug')
-  lease_story=$(printf '%s' "$lease" | jq -r '.story_id')
-  leased_repo=$(printf '%s' "$lease" | jq -r '.repository_path')
-  leased_worktree=$(printf '%s' "$lease" | jq -r '.worktree_path')
-  leased_branch=$(printf '%s' "$lease" | jq -r '.branch')
+  LEASE_PROJECT=$(printf '%s' "$lease" | jq -r '.project_slug')
+  LEASE_STORY=$(printf '%s' "$lease" | jq -r '.story_id')
+  LEASED_REPO=$(printf '%s' "$lease" | jq -r '.repository_path')
+  LEASED_WORKTREE=$(printf '%s' "$lease" | jq -r '.worktree_path')
+  LEASED_BRANCH=$(printf '%s' "$lease" | jq -r '.branch')
   valid_story_id "$typed_id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $typed_id)."
 
   require_story
   resolve_project || fail "$CHECKOUT_ERROR"
-  [ "$lease_project" = "$PROJECT_SLUG" ] \
-    || refuse "cleanup-lease-project-mismatch" "story.sh reap: lease project \`$lease_project\` does not match selected project \`$PROJECT_SLUG\`."
-  local show_json result canonical_id state super done_state
-  show_json=$(story_cli show "$typed_id" --json 2>/dev/null) || true
-  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-  [ "$result" = ok ] || fail "$(printf '%s' "$show_json" | jq -r --arg id "$typed_id" '.error // ("story `" + $id + "` not found")')"
-  canonical_id=$(canonical_story_id "$show_json" "$typed_id")
-  [ "$lease_story" = "$canonical_id" ] \
-    || refuse "cleanup-lease-story-mismatch" "story.sh reap: lease story \`$lease_story\` does not match requested story \`$canonical_id\`."
-  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
-  super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+  [ "$LEASE_PROJECT" = "$PROJECT_SLUG" ] \
+    || refuse "cleanup-lease-project-mismatch" "story.sh $verb: lease project \`$LEASE_PROJECT\` does not match selected project \`$PROJECT_SLUG\`."
+  local result
+  LEASE_SHOW_JSON=$(story_cli show "$typed_id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.result // ""' 2>/dev/null || printf '')
+  [ "$result" = ok ] || fail "$(printf '%s' "$LEASE_SHOW_JSON" | jq -r --arg id "$typed_id" '.error // ("story `" + $id + "` not found")')"
+  LEASE_CANONICAL_ID=$(canonical_story_id "$LEASE_SHOW_JSON" "$typed_id")
+  [ "$LEASE_STORY" = "$LEASE_CANONICAL_ID" ] \
+    || refuse "cleanup-lease-story-mismatch" "story.sh $verb: lease story \`$LEASE_STORY\` does not match requested story \`$LEASE_CANONICAL_ID\`."
+  LEASE_STATE=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.state // ""')
+  LEASE_SUPER=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.superstate // ""')
+
+  local repository_real root worktree_real registered_branch branch_holder
+  repository_real=$(cd_resolve / "$LEASED_REPO") \
+    || refuse "cleanup-lease-repository-missing" "story.sh $verb: leased repository \`$LEASED_REPO\` is unreachable."
+  [ "$repository_real" = "$LEASED_REPO" ] \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh $verb: leased repository path is not canonical (\`$LEASED_REPO\` resolves to \`$repository_real\`)."
+  root=$(repo_root "$LEASED_REPO") \
+    || refuse "cleanup-lease-repository-invalid" "story.sh $verb: leased repository \`$LEASED_REPO\` is not a Git worktree."
+  [ "$root" = "$LEASED_REPO" ] && ! is_linked_worktree "$LEASED_REPO" \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh $verb: leased repository \`$LEASED_REPO\` is not its repository's main worktree."
+  CDPATH= cd -- "$LEASED_REPO" || refuse "cleanup-lease-repository-missing" "story.sh $verb: cannot enter leased repository \`$LEASED_REPO\`."
+  git check-ref-format --branch "$LEASED_BRANCH" >/dev/null 2>&1 \
+    || refuse "cleanup-lease-branch-invalid" "story.sh $verb: leased branch \`$LEASED_BRANCH\` is not a valid local branch name."
+  [ "$LEASED_WORKTREE" != "$LEASED_REPO" ] \
+    || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: leased worktree and repository paths are identical."
+  if [ -e "$LEASED_WORKTREE" ]; then
+    worktree_real=$(cd_resolve / "$LEASED_WORKTREE") \
+      || refuse "cleanup-lease-worktree-unreachable" "story.sh $verb: leased worktree \`$LEASED_WORKTREE\` cannot be resolved."
+    [ "$worktree_real" = "$LEASED_WORKTREE" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: leased worktree path is not canonical (\`$LEASED_WORKTREE\` resolves to \`$worktree_real\`)."
+    [ "$(repo_root "$LEASED_WORKTREE" 2>/dev/null || printf '')" = "$LEASED_REPO" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: \`$LEASED_WORKTREE\` does not belong to leased repository \`$LEASED_REPO\`."
+  fi
+  if registered_branch=$(registered_worktree_branch "$LEASED_WORKTREE"); then
+    [ "$registered_branch" = "$LEASED_BRANCH" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: \`$LEASED_WORKTREE\` is registered on \`$registered_branch\`, not leased branch \`$LEASED_BRANCH\`."
+  elif [ -e "$LEASED_WORKTREE" ]; then
+    refuse "cleanup-lease-worktree-unregistered" "story.sh $verb: leased path \`$LEASED_WORKTREE\` exists but is not a registered worktree."
+  fi
+  branch_holder=$(branch_worktree_path "$LEASED_BRANCH" || printf '')
+  [ -z "$branch_holder" ] || [ "$branch_holder" = "$LEASED_WORKTREE" ] \
+    || refuse "cleanup-lease-branch-reused" "story.sh $verb: leased branch \`$LEASED_BRANCH\` is checked out at unexpected path \`$branch_holder\`."
+}
+
+# cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
+# centralized verifier or the dispatched worktree itself. No current checkout
+# or ambient provider participates.
+cmd_reap_leased() {
+  local typed_id="$1" lease="$2"
+  validate_cleanup_lease reap "$typed_id" "$lease"
+  local leased_worktree="$LEASED_WORKTREE" leased_branch="$LEASED_BRANCH"
+  local canonical_id="$LEASE_CANONICAL_ID" state="$LEASE_STATE" super="$LEASE_SUPER"
+  local done_state
   done_state=$(story_closed_state)
   [ "$super" = CLOSED ] \
     || refuse "not-closed" "story.sh reap: $canonical_id is not closed (state \`$state\`) -- refusing to reclaim a worktree for a story that isn't done."
   [ "$state" = "$done_state" ] \
     || refuse "not-completion-state" "story.sh reap: $canonical_id is in CLOSED state \`$state\`, not completion state \`$done_state\`."
-
-  local repository_real root worktree_real registered_branch branch_holder
-  repository_real=$(cd_resolve / "$leased_repo") \
-    || refuse "cleanup-lease-repository-missing" "story.sh reap: leased repository \`$leased_repo\` is unreachable."
-  [ "$repository_real" = "$leased_repo" ] \
-    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository path is not canonical (\`$leased_repo\` resolves to \`$repository_real\`)."
-  root=$(repo_root "$leased_repo") \
-    || refuse "cleanup-lease-repository-invalid" "story.sh reap: leased repository \`$leased_repo\` is not a Git worktree."
-  [ "$root" = "$leased_repo" ] && ! is_linked_worktree "$leased_repo" \
-    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository \`$leased_repo\` is not its repository's main worktree."
-  CDPATH= cd -- "$leased_repo" || refuse "cleanup-lease-repository-missing" "story.sh reap: cannot enter leased repository \`$leased_repo\`."
-  git check-ref-format --branch "$leased_branch" >/dev/null 2>&1 \
-    || refuse "cleanup-lease-branch-invalid" "story.sh reap: leased branch \`$leased_branch\` is not a valid local branch name."
-  [ "$leased_worktree" != "$leased_repo" ] \
-    || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree and repository paths are identical."
-  if [ -e "$leased_worktree" ]; then
-    worktree_real=$(cd_resolve / "$leased_worktree") \
-      || refuse "cleanup-lease-worktree-unreachable" "story.sh reap: leased worktree \`$leased_worktree\` cannot be resolved."
-    [ "$worktree_real" = "$leased_worktree" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree path is not canonical (\`$leased_worktree\` resolves to \`$worktree_real\`)."
-    [ "$(repo_root "$leased_worktree" 2>/dev/null || printf '')" = "$leased_repo" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` does not belong to leased repository \`$leased_repo\`."
-  fi
-  if registered_branch=$(registered_worktree_branch "$leased_worktree"); then
-    [ "$registered_branch" = "$leased_branch" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` is registered on \`$registered_branch\`, not leased branch \`$leased_branch\`."
-  elif [ -e "$leased_worktree" ]; then
-    refuse "cleanup-lease-worktree-unregistered" "story.sh reap: leased path \`$leased_worktree\` exists but is not a registered worktree."
-  fi
-  branch_holder=$(branch_worktree_path "$leased_branch" || printf '')
-  [ -z "$branch_holder" ] || [ "$branch_holder" = "$leased_worktree" ] \
-    || refuse "cleanup-lease-branch-reused" "story.sh reap: leased branch \`$leased_branch\` is checked out at unexpected path \`$branch_holder\`."
 
   local default wt_status branch_status
   default=$(default_branch)
