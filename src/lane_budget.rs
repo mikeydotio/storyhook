@@ -81,7 +81,14 @@ pub fn budget() -> usize {
 /// strips `TMUX` and would ask the default socket on behalf of a client that
 /// is attached somewhere else.
 pub fn count_live_agent_windows() -> WindowCensus {
-    let mut command = Command::new("tmux");
+    census_through(Command::new("tmux"))
+}
+
+/// The same census through a caller-prepared `tmux` command — the engine's
+/// `ShellDispatcher` passes its own program and allowlisted environment, so
+/// the census it fills lanes against is taken on the server its lanes live
+/// on. One parser, one error vocabulary, two doors (SH-136).
+pub fn census_through(mut command: Command) -> WindowCensus {
     command.args(["list-windows", "-a", "-F", CENSUS_FORMAT]);
     let captured = match run_captured(command, TMUX_TIMEOUT) {
         Ok(captured) => captured,
