@@ -1750,6 +1750,41 @@ Standing rules for every wave:
   inside, and reentrancy travels only in that variable, so stripping it deadlocks every
   verification against its own outer holder for ever. Nothing fences that invariant;
   the comment above the list and the spec are what say so.
+- **A budget is enforced at every door that consumes the resource, and the resource that
+  saturates a build box is compilation** (SH-655). The harness capped the two quantities it
+  had once measured — `--test-threads=4` (daemons) and `workers: 1` (browsers) — and left
+  compilation uncapped: no `.cargo/config.toml`, no `--jobs`, cargo sized to `hw.ncpu` (10) on
+  8 performance cores, and every worktree its own cold build. D14's "machine-wide lane
+  budget" counted `engine_lanes` rows only, so a `/story do` typed by hand — the same
+  `cmd_dispatch`, worktree, window and build — counted for nothing: seven of them measured at
+  load 33, and SH-643's four `tests/machine_lock.rs` failures under load 25–64 with one
+  project active. Two mechanisms, one per resource. **Compilation:** a tracked
+  `.cargo/config.toml` names `scripts/rustc-slot.py` as `build.rustc-wrapper`; a real
+  compile takes one of K `flock` slots (K = `hw.perflevel0.logicalcpu`, derived, never
+  `hw.ncpu`) and **execs rustc in place** holding the lock on an inherited fd, so the kernel
+  releases it the instant rustc dies — no pid file, no reaper (SH-528 at the primitive). The
+  config is the only door a bare `cargo test --test foo` in an agent pane walks through,
+  which is why a semaphore around *harness* invocations lost the council 3-0
+  (`story show SH-655`), and why a `MAKEFLAGS` jobserver FIFO lost too: its tokens die with a
+  crashed holder and a starved FIFO blocks every cargo silently. A wait is reported on stderr
+  (cargo forwards it — measured) and, in a gate-held run, to the SH-524 journal so the gate's
+  silence watchdog reads a queued compile as progress rather than reaping it; an unusable
+  slot root fails open loudly. Measured, two concurrent cold builds: wall clock unchanged,
+  machine load peak 153 → 90, 729 waits none over 30s, wrapper overhead 1.3% CPU — and the
+  feared fingerprint rebuild did not exist (cargo's fingerprint omits the wrapper). Stated
+  limit: it bounds rustc *processes*, not codegen threads inside one. **Sessions:** one
+  census — live tmux windows with `@storyhook-agent` set and `pane_dead` clear, since
+  `remain-on-exit` keeps finished sessions' windows — read by every door: `story lane-budget`
+  (store-free, daemon-free, the caller's own `$TMUX`), `cmd_dispatch` refusing ahead of any
+  claim (`--over-budget` says you meant it; the plugin hook admits it by name), and the
+  engine's fill counting it beside its own lanes. Unanswered is no evidence (SH-626): the
+  verb omits `live`/`available`, the dispatch proceeds loudly — including on an older binary
+  without the verb — and the daemon journals the outage on its edge. **The suite that tests
+  the gate manufactured the gate's own failure:** fourteen plugin tests dispatched against the
+  developer's real tmux server and went red the day the gate landed on a machine at its
+  budget; `plugins/story/tests/lib.sh` now puts the fake on `PATH` for every test, the
+  SH-263 rule for its state. Design of record: `docs/spec/test-tiers.md` "The compile bound";
+  `docs/spec/full-auto-engine.md`'s SH-655 As-built.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).

@@ -1645,6 +1645,111 @@ and the churn drops from twenty process spawns a second to five. The
 supervisor's own deadline is derived from the script's two constants rather
 than the literal `18` that did not notice when the worst case moved.
 
+## The compile bound (SH-655)
+
+The harness caps the two quantities it once measured and left uncapped the one
+that consumes the machine. `--test-threads=4` bounds daemons; `workers: 1`
+bounds browsers; **compilation had no bound at all** — no `.cargo/config.toml`,
+no `--jobs`, no `CARGO_BUILD_JOBS` anywhere in the tree — so cargo sized
+itself to `hw.ncpu` (10) on a machine with 8 performance cores, and every
+worktree owns its own `target/`, so N concurrent agent sessions are N
+independent cold workspace builds. Measured on 2026-09-10: seven `/story do`
+sessions, load 33; SH-643's four `tests/machine_lock.rs` failures under load
+25–64 with one project active, the holder never scheduled once inside its
+ceiling. The merge gate's verdict had become a function of load the harness
+itself created, reported as the tree's fault.
+
+**What ships is a `build.rustc-wrapper` in a tracked `.cargo/config.toml`**
+(`scripts/rustc-slot.py`), settled by a three-seat council, 3-0
+(`story show SH-655` — never the council's own directory, SH-363). A real
+compile — an invocation carrying `--crate-name` — takes one of K `flock`
+slots and then **execs rustc in place**, holding the lock on an inherited fd:
+the slot's lifetime is rustc's own, and the kernel releases it the instant
+rustc exits, crashes or is SIGKILLed, with no pid file, no reaper and no
+stale-reclaim path (the SH-528 rule at the primitive level — `machine-lock.sh`
+needs pid+lstart liveness because its holder is a shell; this holder is the
+compiler). A probe with no crate name passes straight through. The wrapper is
+the only door every cargo invocation walks through — `make test`, a bare
+`cargo test --test foo` in an agent pane, rust-analyzer, a release build, the
+Lima guest — which is why the two candidates it beat lost: a counting
+semaphore in `machine-lock.sh` around *harness* invocations structurally
+cannot see the bare invocation that saturated the machine, and a
+GNU-make-style jobserver FIFO via `MAKEFLAGS` bounds threads rather than
+processes but loses a crashed holder's tokens for ever and blocks every cargo
+silently when starved (SH-528 and SH-306 in one mechanism).
+
+**Derived, never picked.** K is `hw.perflevel0.logicalcpu` on Darwin — the
+performance-core count, 8 here against `hw.ncpu`'s 10, because the two
+efficiency cores are markedly slower for LLVM codegen and counting them
+oversubscribes the fast ones — with a loud fallback to `hw.ncpu`, and
+`sched_getaffinity` on Linux; `STORYHOOK_BUILD_SLOTS` overrides it for the
+tests that prove the bound with a small K. The slot root derives from `$HOME`
+exactly as `machine-lock.sh`'s lock root does and **never from
+`XDG_STATE_HOME`**, which `run-tests.sh` re-exports per run: a per-run root
+would give every concurrent build its own slots and bound nothing (the SH-364
+shape). `STORYHOOK_LOCK_DIR` overrides it, the seam `tests/machine_lock.rs`
+already uses; neither variable joins the test-environment table (SH-531). The
+re-scan cadence equals `machine-lock.sh`'s `LOCK_POLL_SECS` and the report
+cadence its `WAIT_REPORT_SECS`, pinned equal by `tests/build_slots.rs` rather
+than left to drift (SH-136).
+
+**A wait is never silent (SH-306), and never reaps the gate.** Cargo forwards
+a wrapper's non-JSON stderr verbatim — measured under `cargo build`,
+`--message-format=json` and `cargo clippy` before a line was written — so a
+wait is reported as it begins, every report cadence, and when it ends with its
+duration. Inside a gate-held `make test` the same cadence appends an activity
+line to the SH-524 progress journal, whose *growth* is what `machine-lock.sh
+--max-idle` watches: a compile queued behind other sessions' builds reads as
+progress, not as a wedged holder to reap (a bound that manufactured exit-124
+false reds would have been worse than the load it removed). Like every emitter
+of that journal, this is a no-op when `STORYHOOK_GATE_PROGRESS` is unset.
+
+**Fail open, loudly.** An unusable slot root, an unopenable slot file, a lock
+call that fails for any reason but contention: one stderr line naming the root
+and the cause, then rustc runs unbounded. A compiler that refuses to compile
+over a lock directory is the SH-404/405 dead end; one that throttled nothing
+and said nothing would be SH-306's. The one failure the wrapper cannot soften
+is a missing `python3`, which stops cargo before any of this runs — so both
+release preflights (`build-release-assets.sh`, `release-linux.sh`'s guest
+check) refuse by name rather than as cargo's "could not execute process" two
+steps later (SH-576).
+
+**Measured, not assumed (direction d of the story).** Cold
+`cargo build --workspace --tests` in scratch clones on this machine while six
+other agent sessions were live — a busy machine, stated rather than hidden;
+the attributable columns are this build's own CPU seconds and its own rustc
+descendants, the load column is the whole machine's:
+
+| run | wall | own CPU (user+sys) | own rustc peak | wrapper waits | wait mean / max | machine load peak |
+|---|---|---|---|---|---|---|
+| one build, unbounded | 117s | 624s + 101s | 10 | — | — | 73 |
+| one build, K=8 slots | 118s | 633s + 108s | 10 (incl. waiting wrappers) | 96 | 1.6s / 14s | 56 |
+| two concurrent, unbounded | 218s / 221s | ≈645s + 108s each | 10 each | — | — | **153** |
+| two concurrent, K=8 slots | 212s / 227s | ≈644s + 112s each | 10 each | 367 / 362 | 2.8s / 28s | **90** |
+
+Wall clock is unchanged in every pairing — the bound costs nothing a build
+would have finished sooner without — and the wrapper's own overhead (a python
+start per rustc) is the +9s of CPU on a 725s build, 1.3%. The bound bit: 96
+waits alone, 729 across two builds, none over half a minute. Two concurrent
+cold builds peaked the machine at 153 unbounded and 90 bounded. **What the
+bound does not do, stated as a limit:** it bounds rustc *processes*, not the
+codegen threads inside one (each cargo still hands its rustcs up to `-j`
+jobserver tokens) and not test execution; the residual load above K is those
+threads plus the other sessions. If a later measurement shows load staying
+materially above K with the wrapper in force, the council's own follow-up is a
+jobserver bridge, not a wider K. **And the feared cost did not exist:** landing
+the wrapper did *not* trigger a full rebuild in any target directory — cargo's
+artifact fingerprint does not include the wrapper, and the first
+`cargo test --no-run` after the config landed recompiled only the crate that
+had changed (11s).
+
+**Also measured:** `cargo build` runs the wrapper for its `rustc -vV` probe
+(pass-through), nests correctly under clippy's `RUSTC_WORKSPACE_WRAPPER`, and
+resolves a config-relative path from a subdirectory. `RUSTC_WRAPPER` in the
+environment overrides the config by cargo's own precedence, so
+`tests/build_slots.rs` refuses any tracked file that exports it — the only
+way the bound could be silently gone for whatever that file runs.
+
 ## Out of scope, named rather than silently dropped
 
 - **Sharing `CARGO_TARGET_DIR` across worktrees.** ~185GB duplicated across
