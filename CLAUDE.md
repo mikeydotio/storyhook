@@ -1509,7 +1509,10 @@ Standing rules for every wave:
   reads it (`ls-remote`, writing no remote-tracking ref) and requires three-way agreement
   before preflight; a disagreement is a **retryable** infrastructure result naming all three
   oids, never a conflict and never permanent — the daemon's existing D15 cadence re-asks and
-  a lag past it halts loudly. No in-script poll: GitHub publishes no propagation bound to
+  a lag past it halts loudly, stalling the serialized verifier queue until the incident is
+  acknowledged or the story's generation changes (SH-637 measured three lags in one session,
+  2-27s; a minute is a GitHub incident an operator should see). SH-637 owns the sibling
+  half: re-checking the head *after* a verdict is computed and before it is posted. No in-script poll: GitHub publishes no propagation bound to
   derive a deadline from (SH-394), and the daemon already owns a derived budget for exactly
   "not ready yet". `merge-preflight.sh`'s CONFLICT line names the oid each ref resolved to,
   so a stale reading is visible in the report rather than inferred from blob ids. Design of

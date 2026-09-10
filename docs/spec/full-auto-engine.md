@@ -2170,7 +2170,11 @@ agreement is the precondition for preflight. A disagreement is a
 **retryable** infrastructure result naming all three oids and the branch,
 never a conflict and never permanent: the daemon's existing bounded cadence
 (D15's three attempts) re-asks, and a lag that outlasts it halts with the
-oids in the detail. The former permanent "moved while its refs were being
+oids in the detail — a halt that, per D15, stalls the whole serialized
+verifier queue until that story's generation changes or the incident is
+acknowledged, which is deliberate: the three occurrences SH-637 measured in
+one session all lagged between 2 and 27 seconds, and a lag past a minute is
+a GitHub incident an operator should see. The former permanent "moved while its refs were being
 refreshed" verdict joins that class. A head branch absent from origin is an
 invalid submission. GitHub's PR head stays the single identity through
 landing — `land-pr.sh` still pins the merge to it — rather than preflighting
