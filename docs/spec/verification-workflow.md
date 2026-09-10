@@ -52,7 +52,7 @@ What each step does today, and which child closes the gap:
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
 | 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the literal state `done` while `reap-leased` requires the project's **first CLOSED state** — the two agree only in a project whose first CLOSED state is spelled `done` | SH-652 (D-G) |
 | 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is a second reaper with no story-state gate and wider authority (it deletes the remote branch) | SH-653 (D-H) |
-| — | (unstated) the verifier serves any project | `scripts/verify-pr.sh` is a repo-relative literal in the shipped daemon, so only a storyhook checkout can be verified | SH-654, filed beside the epic, not in it |
+| — | (unstated) the verifier serves any project | the verifier script family ships inside the binary and runs from the daemon's own state directory; the checkout contributes its `[verify] gate` and its receipt store | done, SH-654 (filed beside the epic, not in it); landing a foreign project still needs SH-665 |
 
 ## Decisions of record
 
@@ -303,11 +303,13 @@ not parse it — the SH-136 rule); the invariant here is only that it
 
 ### What the verifier cannot do, stated rather than glossed
 
-- It verifies only a **storyhook checkout**: the daemon spawns
-  `scripts/verify-pr.sh` relative to the candidate's registered checkout, and
-  that script assumes its siblings and a `Makefile` with a `test` target beside
-  it. Any other registered project halts the queue with an invalid-JSON
-  infrastructure failure (SH-654).
+- It **lands** only a project whose gate can mint a receipt. Since SH-654 the
+  verifier itself runs against any registered checkout (see "The verifier
+  runs from the daemon's bundle" under As built), but the receipt contract
+  SH-649 put on the gate can only be met by `gate-receipt.sh postlude`, and
+  that writer lives in this checkout and enrols this checkout's
+  `.githooks` — so a foreign project passes its gate and is then refused, by
+  name, at the certifies-nothing check. SH-665 owns that gap.
 - It runs the gate tier, never the release tier, and so cannot find what only
   the browser suite finds (SH-416, SH-418, SH-622 are the precedents); the
   `browser-watch.sh` poller is what runs `make test-full` between releases.
@@ -362,15 +364,81 @@ the gate is `make test`, whose own preflight discards the outer one.
 - A gate that emits no `gate-progress.sh` journal lines runs under
   `VERIFICATION_IDLE_TIMEOUT`'s silence cap alone (derived from the default
   gate's measured contended runtime); `make test` renews it per leg.
-- Until SH-654 ships the verifier scripts with storyhook, only a storyhook
-  checkout can be verified at all, so the receipt contract is the honest
-  boundary of "configurable" rather than a regression.
+- SH-654 ships the verifier scripts with storyhook, so any registered
+  checkout is verified; the receipt contract is then the honest boundary of
+  "configurable" for a foreign project until SH-665 gives its gate a writer
+  to end in.
 
 Tests: `tests/gate_command.rs` (the rule, the reader, the pointer round
 trip), `tests/verification_queue.rs` (the shell actuator's argv, the refusal
 that spawns nothing, the derived comment text), `tests/merge_gate.rs` (the
 public path with a named gate, without one, and the certifies-nothing refusal
 with its positive control through the production receipt writer).
+
+### SH-654 — the verifier runs from the daemon's bundle, not the checkout
+
+`ShellVerificationActuator::verify` spawned `bash scripts/verify-pr.sh` with
+the registered checkout as its working directory — a repo-relative literal
+in a shipped daemon — so the only project that could ever be verified was
+storyhook itself; any other registered project halted the queue with
+"`scripts/verify-pr.sh` returned invalid JSON". Two leaks inside the family
+had the same shape: `verify-pr.sh` sourced `gate-progress.sh` and
+`verify-window.sh` from `$root/scripts/` with a silent no-op fallback (so a
+foreign project's verification would also have run with no progress
+emission, and therefore under `VERIFICATION_IDLE_TIMEOUT`'s silence cap
+alone, and no mirror), and `land-pr.sh` reached three siblings through
+`$root/scripts/`.
+
+**Built.** `build.rs` writes a second `EmbeddedFile` table,
+`EMBEDDED_VERIFIER`, from an explicit list of the ten scripts `verify-pr.sh`
+reaches through its own directory (`VERIFIER_SCRIPTS`), with paths relative
+to `scripts/`. `src/daemon/verifier_bundle.rs` projects it under the daemon's
+store-keyed state directory at `verifier/<payload digest>/` through
+`src/embedded.rs` — the SH-538 reuse/stage/verify/rename materializer,
+extracted from the plugin installer so both payloads share one opinion about
+"the on-disk copy matches this binary" — and sweeps leaves left by earlier
+builds. The actuator resolves `verify-pr.sh` from that leaf ahead of the
+journal, refusing a bundle it cannot project as a permanent infrastructure
+failure; `with_verifier_script` is the injection seam, in `with_paths`'s
+shape, and every fixture checkout now holds no `scripts/` tree at all. The
+scripts themselves source their siblings from `$script_dir` unconditionally
+and refuse a missing one by name. `merge-watch.sh`'s retired sweep body —
+unreachable since SH-521 and the only code in the family still spelling
+`bash scripts/…` — was deleted rather than exempted.
+
+**Decisions, each with one answer.** *The binary, not the plugin payload*:
+the family answers to a daemon↔script wire contract, and the plugin is
+provider-scoped and can skew from the daemon (`REQUIRED_DISPATCH_PROTOCOL`
+exists because it does); a payload the daemon carries cannot skew from it.
+*Content-addressed, not version-keyed*: two builds of one crate version with
+different script bytes — any dev build — must never rewrite a directory a
+running `verify-pr.sh` is resolving its siblings from, and a different payload
+writing a different leaf makes that structural. *The store-keyed state dir,
+not the data home*: one store has one daemon (SH-113), so no two daemons ever
+contend for a leaf, and a test store's bundle dies with its runtime directory
+(`story daemon gc`, SH-638).
+
+**Fences, derived.** `tests/verifier_bundle.rs` reads the table the build
+actually wrote: every embedded file is the tracked script byte for byte with
+its executable bit; every sibling a bundled script references
+(`$script_dir/NAME`, `"$(dirname "${BASH_SOURCE[0]}")/NAME"`, a Python
+`from NAME import` naming a tracked sibling) is bundled, so a name missing
+from `VERIFIER_SCRIPTS` fails by name; and no bundled script reaches a
+sibling through the checkout, comments stripped first.
+`tests/verifier_foreign_checkout.rs` is the regression test for the filed
+symptom — the production actuator against a repository with no `scripts/`
+directory and a fake `gh` answering a closed PR returns the PR's own verdict
+from the bundled script — mutation-checked by reverting the spawn to the
+checkout-relative literal, which reproduces the filed message exactly.
+
+**Limit, stated.** Verified is not landed. The receipt contract (SH-649)
+still requires the gate to end in `gate-receipt.sh postlude`, and that writer
+is storyhook's alone — it enrols this checkout's `.githooks` and refuses
+without an executable `.githooks/pre-push`. A foreign project therefore
+passes its gate and is refused at the certifies-nothing check, loudly.
+Filed as SH-665 rather than adopted: it is a separate mechanism (how a
+project-agnostic receipt writer reaches a foreign gate) with more than one
+defensible design.
 
 ### SH-655 — D-B's "D14's lane budget bounds agents" was not true
 
