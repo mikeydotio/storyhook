@@ -657,16 +657,22 @@ pub fn run_helper(target: &str, args: &[String]) -> Result<ExitStatus, AppError>
             helper.display()
         )));
     }
-    Command::new("bash")
-        .arg(&helper)
-        .args(args)
-        .status()
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "failed to run the installed Storyhook helper `{}`: {error}",
-                helper.display()
-            ))
-        })
+    let mut command = Command::new("bash");
+    command.arg(&helper).args(args);
+    // The launcher is Codex's own, so the helper runs as Codex without the
+    // adapter saying so: an environment prefix is neither a form the
+    // installed-artifact guard admits nor one Codex's argv-prefix rule
+    // matches (SH-632). A caller who set the variable deliberately keeps it,
+    // and the helper's own `--agent` flag still outranks either.
+    if std::env::var_os("STORY_AGENT").is_none() {
+        command.env("STORY_AGENT", "codex");
+    }
+    command.status().map_err(|error| {
+        AppError::Storage(format!(
+            "failed to run the installed Storyhook helper `{}`: {error}",
+            helper.display()
+        ))
+    })
 }
 
 fn expect_codex_field(

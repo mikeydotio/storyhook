@@ -174,6 +174,45 @@ fn the_shell_cannot_walk_around_the_structured_editors() {
         ),
         format!("mystery-reader {}", target.display()),
         format!("rg --pre 'rm -f /tmp/unrelated' x {}", target.display()),
+        // `find` carries write-capable primaries; each is refused by name.
+        format!(
+            "find {} -name '*.sh' -delete",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -exec rm {{}} \\;",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -execdir rm {{}} +",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -ok rm {{}} \\;",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -okdir rm {{}} +",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -fprint /tmp/listing",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -fprint0 /tmp/listing",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -fprintf /tmp/listing %p",
+            target.parent().unwrap().display()
+        ),
+        format!(
+            "find {} -fls /tmp/listing",
+            target.parent().unwrap().display()
+        ),
+        // A second shell program is not classified, however innocent it reads.
+        format!("bash -c 'ls {}'", target.parent().unwrap().display()),
     ] {
         let payload = serde_json::json!({
             "tool_name": "Bash",
@@ -201,6 +240,27 @@ fn read_only_shell_inspection_of_an_installed_file_is_untouched() {
         format!("cat {} | head -20", target.display()),
         format!(
             "sed -n '1,20p' {} && story show SH-550 --json",
+            target.display()
+        ),
+        // Discovering what the installed tree contains is inspection too: the
+        // adapter table says "load the matching file from <plugin-root>/adapters/",
+        // and an agent has to be able to list that directory (SH-632).
+        format!("ls {}", target.parent().unwrap().display()),
+        format!("ls -la {}", target.parent().unwrap().display()),
+        format!("find {} -name '*.md'", target.parent().unwrap().display()),
+        format!(
+            "find {} -type f -newer {}",
+            target.parent().unwrap().display(),
+            target.display()
+        ),
+        format!("wc -l {}", target.display()),
+        format!("stat {}", target.display()),
+        format!(
+            "diff {} plugins/story/skills/story/SKILL.md",
+            target.display()
+        ),
+        format!(
+            "cmp {} plugins/story/skills/story/SKILL.md",
             target.display()
         ),
     ] {
