@@ -11,6 +11,18 @@
 # standing between this run and the developer's actual
 # `~/.local/share/storyhook/store.db`. There is no second guard here.
 #
+# THE BINARY IS LEASED, NEVER RUN FROM CARGO'S OWN PATH (SH-635). After the
+# build, `target/debug/story` is hard-linked into a run-owned lease
+# (`scripts/binary-lease.sh`, the shell twin of SH-532's `story_binary()`)
+# and `$story_bin` is that lease -- for the daemon, for every seeding and
+# cleanup call here, and, through `DASHBOARD_STORY_BIN`, for every CLI call a
+# spec makes (`e2e/specs/support.ts`'s `storyBinary()` is the specs' one
+# door). Cargo replaces the artifact by rename, so any `cargo build|test|check`
+# in this checkout while a run is live leaves the lease's inode untouched.
+# Before the lease, one `cargo test` beside a live chromium run changed the
+# daemon's `(exe, exe_mtime)` identity, the next CLI call replaced the daemon
+# on a new port, and 167 tests failed in 25 minutes with nothing naming why.
+#
 # `/private/tmp` rather than `$TMPDIR`: the latter is Spotlight-indexed on
 # macOS (SH-53).
 #
@@ -36,7 +48,13 @@ cd "$(dirname "$0")/.."
 repo_root="$PWD"
 # shellcheck source=gate-progress.sh
 . "$repo_root/scripts/gate-progress.sh"
-story_bin="$repo_root/target/debug/story"
+# shellcheck source=binary-lease.sh
+. "$repo_root/scripts/binary-lease.sh"
+# shellcheck source=e2e-daemon-check.sh
+. "$repo_root/scripts/e2e-daemon-check.sh"
+# Cargo's own mutable artifact. Never invoked: `$story_bin`, assigned after
+# the build below, is the leased hard link of it.
+story_artifact="$repo_root/target/debug/story"
 results_root="$repo_root/e2e/test-results/current"
 
 # One artifact tree for this invocation. Each Playwright project gets its own
@@ -113,10 +131,20 @@ fi
 echo "run-e2e.sh: building the story binary…" >&2
 cargo build --quiet
 
-if [ ! -x "$story_bin" ]; then
-  echo "run-e2e.sh: $story_bin not found after build" >&2
+if [ ! -x "$story_artifact" ]; then
+  echo "run-e2e.sh: $story_artifact not found after build" >&2
   exit 1
 fi
+
+# The lease (SH-635, see the header). Owned by THIS pid: the per-project
+# subshells below stop their daemons before they exit, so by the time the
+# outer trap removes the lease nothing runs from it. A run killed outright
+# leaves its lease for the next sweeper -- this script's or the Rust suite's,
+# which share the root -- to reclaim once this pid is gone.
+story_bin="$(storyhook_lease_binary "$story_artifact")" || exit 1
+story_lease_dir="$(dirname "$story_bin")"
+trap 'rm -rf "$story_lease_dir"' EXIT
+echo "run-e2e.sh: leased $story_artifact as $story_bin" >&2
 
 if [ ! -d "$repo_root/e2e/node_modules" ] || ! (cd "$repo_root/e2e" && npx --no-install playwright --version >/dev/null 2>&1); then
   echo "run-e2e.sh: e2e/node_modules or the Playwright CLI is missing — run 'make e2e-install' first" >&2
@@ -157,7 +185,7 @@ run_one_project() {
   # header carries the parameters and the reason for each.
   #
   # It matters more here than anywhere else in this repository: this script
-  # starts `target/debug/story` directly -- a real, NON-test binary -- so
+  # starts a lease of `target/debug/story` -- a real, NON-test binary -- so
   # `storyhook::env::is_test_build`'s refusal does not apply and this
   # environment is the ONLY thing standing between an e2e run and the
   # developer's actual store. There is no second guard behind it.
@@ -171,6 +199,12 @@ run_one_project() {
   # shellcheck source=test-env.sh
   . "$repo_root/scripts/test-env.sh"
   storyhook_isolate "$data_root"
+
+  # The leased binary, for the specs' own CLI calls (SH-635). A spec that ran
+  # Cargo's artifact directly would, after a rebuild, itself be the client
+  # that replaces this run's daemon -- `untrusted-origin-cookie.spec.ts`
+  # restarts it on purpose, and would restart it from the wrong build.
+  export DASHBOARD_STORY_BIN="$story_bin"
 
   # This is not a store-isolation parameter, so test-env.sh deliberately does
   # not own it. It is still a browser-fixture input: an ambient proxy allowlist
@@ -610,6 +644,32 @@ WRAPPER
   status=0
   npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
+
+  # --- Was the run's binary rebuilt under it? Informational either way
+  # (SH-635): the lease is exactly what makes this harmless, and saying so
+  # turns "the artifact changed mid-run" from a silent fact into a printed
+  # one, so a reader triaging a red run can rule it out by name.
+  if ! [ "$story_bin" -ef "$story_artifact" ]; then
+    echo "run-e2e.sh: note: $story_artifact was rebuilt during this run; the lease" >&2
+    echo "  $story_bin kept every process on the build the run started with (SH-635)." >&2
+  fi
+
+  # --- Is the daemon that answered this run the one this script started?
+  # Checked on a green verdict too: a suite that passed against a daemon this
+  # harness did not configure is not a verdict (SH-226, SH-306). Pid is
+  # deliberately not part of the question -- untrusted-origin-cookie.spec.ts
+  # restarts the daemon on purpose, keeping its port -- so the check is port,
+  # executable inode and liveness, which is exactly the shape of the SH-635
+  # incident: a replaced daemon on a fresh `--port 0` binding.
+  if ! storyhook_daemon_is_still_ours "$portfile" "$port" "$story_bin"; then
+    echo "run-e2e.sh: project=$project: the daemon this run started is gone or replaced" >&2
+    echo "  (see above). Read every failure after that point as ONE dead daemon," >&2
+    echo "  not as that many tree failures -- the SH-627 shape (SH-635)." >&2
+    if [ "$status" -eq 0 ]; then
+      status=1
+    fi
+  fi
+
   gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" \
     "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$e2e_elapsed"
   if [ "$status" -ne 0 ]; then

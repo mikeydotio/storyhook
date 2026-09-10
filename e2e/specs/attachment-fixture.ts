@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, requiredEnv, test } from "./support";
+import { expect, requiredEnv, storyBinary, test } from "./support";
 
 /** Exercises real CLI storage, dashboard login, and a headerless image request. */
 export async function expectCookieAttachment(page: Page): Promise<void> {
@@ -12,7 +12,7 @@ export async function expectCookieAttachment(page: Page): Promise<void> {
   // A complete 1×1 PNG: the browser must decode it, not merely accept a signature.
   const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1sAAAAASUVORK5CYII=", "base64");
   writeFileSync(path, bytes);
-  const command = (args: string[]): string => execFileSync(resolve("../target/debug/story"), args, {
+  const command = (args: string[]): string => execFileSync(storyBinary(), args, {
     cwd: requiredEnv("DASHBOARD_ALPHA_CHECKOUT"),
     encoding: "utf8",
     timeout: test.info().timeout,
