@@ -32,6 +32,8 @@ struct EmbeddedFile {
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
+pub(crate) mod registration;
+
 /// A provider storyhook installs its plugin into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PluginTarget {
@@ -68,6 +70,25 @@ impl PluginTarget {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+        }
+    }
+
+    /// The provider verbs a failed install replays to put the previous
+    /// registration back.
+    fn registration_verbs(self) -> registration::Verbs {
+        match self {
+            Self::ClaudeCode => registration::Verbs {
+                remove_plugin: remove_claude_plugin,
+                remove_marketplace: remove_claude_marketplace,
+                add_marketplace: add_claude_marketplace,
+                add_plugin: install_claude_plugin,
+            },
+            Self::Codex => registration::Verbs {
+                remove_plugin: remove_codex_plugin,
+                remove_marketplace: remove_codex_marketplace,
+                add_marketplace: add_codex_marketplace,
+                add_plugin: || add_codex_plugin().map(drop),
+            },
         }
     }
 }
@@ -814,10 +835,26 @@ fn append_settings_guidance(message: &mut String, project_root: &Path) {
 }
 
 fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError> {
+    let target = PluginTarget::ClaudeCode;
+    // Recorded before anything is removed, so a failure after the removes can
+    // put it back (`registration`'s module doc). A failing remove still stops
+    // here: nothing has been destroyed yet, so there is nothing to undo.
+    let previous = registration::snapshot(target);
     remove_claude_plugin()?;
     remove_claude_marketplace()?;
-    add_claude_marketplace(source)?;
-    install_claude_plugin()?;
+    (|| {
+        add_claude_marketplace(source)?;
+        install_claude_plugin()
+    })()
+    .map_err(|failure| {
+        registration::undo(
+            target,
+            &target.registration_verbs(),
+            &previous,
+            source,
+            failure,
+        )
+    })?;
 
     let mut message = format!(
         "registered storyhook plugin via the `{MARKETPLACE_NAME}` marketplace (source: {source})\n"
@@ -900,12 +937,33 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
 }
 
 fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
+    let target = PluginTarget::Codex;
+    // Recorded before anything is removed, so a failure after the removes can
+    // put it back (`registration`'s module doc). A failing remove still stops
+    // here: nothing has been destroyed yet, so there is nothing to undo.
+    let previous = registration::snapshot(target);
     remove_codex_plugin()?;
     remove_codex_marketplace()?;
-    add_codex_marketplace(source)?;
-    let installed_path = add_codex_plugin()?;
-    verify_codex_install(&installed_path)?;
-    let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
+    // The sandbox step is inside the transaction on purpose: a plugin whose
+    // skills exec a launcher that was just rolled back is half-installed, and
+    // that step restores its own files, so the two rollbacks compose — files
+    // first, then registration — into exactly the previous state.
+    let (installed_path, launcher_path, rule_path) = (|| {
+        add_codex_marketplace(source)?;
+        let installed_path = add_codex_plugin()?;
+        verify_codex_install(&installed_path)?;
+        let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
+        Ok((installed_path, launcher_path, rule_path))
+    })()
+    .map_err(|failure| {
+        registration::undo(
+            target,
+            &target.registration_verbs(),
+            &previous,
+            source,
+            failure,
+        )
+    })?;
     let mut message = format!(
         "registered the `{MARKETPLACE_NAME}` marketplace (source: {source})\n\
          installed `{PLUGIN_REF}` at {installed_path}\n\
