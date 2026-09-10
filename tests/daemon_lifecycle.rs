@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, OwnedProcesses};
 use storyhook_test_support::{
-    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, path_without_tailscale, scratch_dir, story_binary,
+    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, installed_copy, path_without_tailscale,
+    scratch_dir, story_binary,
 };
 
 /// Whether `info` describes a daemon running the `story` binary this build
@@ -32,6 +33,21 @@ fn is_the_binary_under_test(info: &DaemonInfo) -> bool {
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
     info.exe == story_binary() && Some(info.exe_mtime) == expected_mtime
+}
+
+/// Whether `info` describes a daemon running `installed_copy()` — the test
+/// binary copied out of its build directory, which is what `make install`
+/// produces and what the version-skew restart is *for* (SH-634). The two
+/// skew tests below drive the replacement through this shape, because after
+/// SH-630 the control for "an installed binary replaces a stale daemon" cannot
+/// be a binary the seat guard correctly refuses.
+fn is_the_installed_copy(info: &DaemonInfo) -> bool {
+    let expected_mtime = std::fs::metadata(installed_copy())
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    info.exe == installed_copy() && Some(info.exe_mtime) == expected_mtime
 }
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
@@ -301,15 +317,23 @@ fn restarting_a_parseable_older_daemon_installs_the_current_build() {
     )
     .expect("publishing the older portfile");
 
-    env.story(dir.path())
+    // The installed shape restarts it: the test binary itself is uninstalled
+    // and would be refused the seat (SH-634, `tests/seat_guard.rs`).
+    let out = env
+        .raw_installed_story(dir.path())
         .env("PATH", &no_tailscale_path)
         .args(["daemon", "restart"])
-        .assert()
-        .success();
+        .output()
+        .expect("running the installed copy");
+    assert!(
+        out.status.success(),
+        "an installed binary must restart an older daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let replacement = env.daemon().expect("the replacement portfile");
     assert_eq!(replacement.version, env!("CARGO_PKG_VERSION"));
-    assert!(is_the_binary_under_test(&replacement));
+    assert!(is_the_installed_copy(&replacement));
     assert_ne!(replacement.token, first.token);
     assert_eq!(replacement.port, first.port);
 }
@@ -409,6 +433,70 @@ fn restart_reconciliation_precedes_daemon_publication() {
         reconcile < bind && bind < publish && publish < serve,
         "restart state must be reconciled before bind/publication/serving: \
          reconcile={reconcile}, bind={bind}, publish={publish}, serve={serve}"
+    );
+}
+
+/// The seat guard's place in `spawn_locked` and `restart` is a contract, not a
+/// convenience (SH-634). After the spawn lock, because `tests/daemon_timeouts.rs`
+/// holds that lock and calls `ensure` in-process from an uninstalled binary on
+/// an `XdgDefault` origin, and must fail *at the lock*. After the adopt-a-verdict
+/// return, so a refusal is never mistaken for a peer's attempt. Before the first
+/// side effect — the stale login-agent note, the shutdown request — so a
+/// refused client leaves the incumbent exactly as it found it; a guard below
+/// `request_shutdown` would stop the daemon and then decline to replace it,
+/// which `tests/seat_guard.rs` observes only as "the incumbent still answers".
+/// Stated here as source order because two of the three properties have no
+/// runtime observable a test could wait on.
+#[test]
+fn the_seat_guard_sits_after_the_lock_and_before_every_side_effect() {
+    let source = include_str!("../src/daemon/lifecycle.rs");
+    let spawn_locked = source
+        .split("fn spawn_locked(env: &Environment)")
+        .nth(1)
+        .and_then(|tail| tail.split("fn stand_down_legacy_daemon(").next())
+        .expect("the spawn_locked function");
+    let lock = spawn_locked
+        .find("acquire_spawn_lock(")
+        .expect("the spawn lock");
+    let adopt = spawn_locked
+        .find("attempt_verdict(env, arrived)")
+        .expect("the adopted verdict");
+    let guard = spawn_locked
+        .find("seat_guard::check(env)")
+        .expect("the seat guard");
+    let note = spawn_locked
+        .find("note_stale_login_agent(env)")
+        .expect("the stale-agent note");
+    let shutdown = spawn_locked
+        .find("request_shutdown(&stale)")
+        .expect("the shutdown request");
+    let publish = spawn_locked
+        .find("publish_attempt(env, &outcome)")
+        .expect("the attempt publication");
+    assert!(
+        lock < adopt && adopt < guard && guard < note && note < shutdown && shutdown < publish,
+        "spawn_locked: lock={lock}, adopt={adopt}, guard={guard}, note={note}, \
+         shutdown={shutdown}, publish={publish}"
+    );
+
+    let restart = source
+        .split("pub fn restart(env: &Environment)")
+        .nth(1)
+        .and_then(|tail| tail.split("fn usable(").next())
+        .expect("the restart function");
+    let lock = restart.find("acquire_spawn_lock(").expect("the spawn lock");
+    let guard = restart
+        .find("seat_guard::check(env)")
+        .expect("the seat guard");
+    let closure = restart
+        .find("let outcome = (||")
+        .expect("the published closure");
+    let stop = restart
+        .find("stop(env, StopMode::Graceful)")
+        .expect("the stop");
+    assert!(
+        lock < guard && guard < closure && closure < stop,
+        "restart: lock={lock}, guard={guard}, closure={closure}, stop={stop}"
     );
 }
 
@@ -1288,15 +1376,25 @@ fn a_daemon_from_another_build_is_replaced_rather_than_reused() {
         .expect("rewriting the portfile");
     assert!(!is_the_binary_under_test(&stale));
 
-    env.story(dir.path())
+    // The installed shape replaces it. The test binary is uninstalled by
+    // construction and is refused this seat (SH-634, `tests/seat_guard.rs`),
+    // and after SH-630 the control for the skew restart is what `make install`
+    // produces, not the incident.
+    let out = env
+        .raw_installed_story(dir.path())
         .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
-        .assert()
-        .success();
+        .output()
+        .expect("running the installed copy");
+    assert!(
+        out.status.success(),
+        "an installed binary must replace a daemon from another build: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let replacement = env.daemon().expect("a portfile after the restart");
     assert!(
-        is_the_binary_under_test(&replacement),
+        is_the_installed_copy(&replacement),
         "a daemon serving another build must be replaced, never reused"
     );
     // The token, not the pid (SH-239, one layer down: ask what a process *is*,
@@ -1439,6 +1537,8 @@ fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
         let started = Instant::now();
         let out = env
             .raw_story(dir.path())
+            // The override, for the reason stated on the wave below.
+            .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
             .args(["summary"])
             .output()
             .expect("running a client");
@@ -1476,6 +1576,11 @@ fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
                 let dir = scratch_dir();
                 let out = env
                     .raw_story(dir.path())
+                    // The subject is the spawn-lock queue behind the wedge,
+                    // not the seat guard, which would otherwise refuse this
+                    // uninstalled client in microseconds and leave the
+                    // ceiling below vacuously met (SH-634).
+                    .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
                     .args(["summary"])
                     .output()
                     .expect("running a client");
@@ -1575,6 +1680,10 @@ fn a_refused_stand_down_is_named_above_the_failure_it_causes() {
     let dir = scratch_dir();
     let out = env
         .raw_story(dir.path())
+        // The subject is what `spawn_locked` reports *after* the seat guard,
+        // which would otherwise refuse this uninstalled client before the
+        // stand-down is ever attempted (SH-634).
+        .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
         .args(["summary"])
         .output()
         .expect("running a client");
