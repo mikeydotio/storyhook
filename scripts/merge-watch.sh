@@ -280,6 +280,21 @@ if [ "${1:-}" = "--speculative-run" ]; then
     (
         trap - HUP INT TERM
         cd "$poller_wt" || exit 1
+        # WHAT THIS LIST MUST NEVER CONTAIN: `STORYHOOK_MACHINE_LOCKS`, and
+        # `STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH`. `verify-pr.sh` runs this
+        # whole script under `machine-lock.sh gate`; the gate command is
+        # `make test`, which reaches `run-tests.sh`, which re-execs itself
+        # under `machine-lock.sh gate` -- and that inner take is reentrant
+        # ONLY because the name list travels in the environment
+        # (`machine-lock.sh`, "REENTRANCY"). A holder is judged by liveness,
+        # never a clock, and the outer holder is this process's own ancestor,
+        # provably alive: strip the variable and every verification on the
+        # machine deadlocks against itself. The activity path is what the
+        # inner lock reports its wait through. Nothing fenced this before
+        # SH-646; `docs/spec/verification-workflow.md`, "The locks", is the
+        # statement of record. The names below are scrubbed because each
+        # would make the gate answer about the wrong object store, the wrong
+        # daemon store, the wrong project, or with a token it must not hold.
         exec env -u GIT_OBJECT_DIRECTORY \
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \

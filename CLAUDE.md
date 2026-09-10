@@ -1733,6 +1733,23 @@ Standing rules for every wave:
   -t` is `CMD_FIND_CANFAIL`, so a missing target answers three empty fields at exit 0, and
   "error connecting to" is printed for `EACCES` too, so only ENOENT/ECONNREFUSED read as a
   server that is gone. Design of record: `docs/spec/full-auto-engine.md`'s SH-626 section.
+- **The lifecycle from submission to reap has one design of record** (SH-645, SH-646):
+  `docs/spec/verification-workflow.md` — the four steps the operator stated on
+  2026-09-10, decisions D-A..D-H with their reasoning, the gap ledger, and the
+  mechanism as it stands until SH-647..SH-653 land; each child records its As built
+  entry there. Three specs had each owned a slice and six statements had gone stale
+  between them — `machine-lock.sh`'s header still said its callers did not exist, two
+  specs counted two lock names when `release-observer` was a third, D5 read
+  per-project against one global worker, "priority then age" meant `created_at`, and
+  `selective-testing.md` said "the full suite" of a verifier that runs the gate tier.
+  Two things it states that nothing had written down: the **conflict queue-hold**
+  (`wait_for_reconciled_candidate` reserves the verifier for a conflicted story until
+  its resubmission, but only while the paste into its pane succeeded), and the
+  invariant that **`merge-watch.sh`'s `env -u` scrub must never strip
+  `STORYHOOK_MACHINE_LOCKS`** — `verify-pr.sh` holds `gate`, `make test` re-takes it
+  inside, and reentrancy travels only in that variable, so stripping it deadlocks every
+  verification against its own outer holder for ever. Nothing fences that invariant;
+  the comment above the list and the spec are what say so.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).

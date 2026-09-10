@@ -6,10 +6,23 @@
 #                   [--max-idle <seconds>] <name> -- <command...>
 #
 # Runs <command...> with <name> held, and exits with the command's own status.
-# Two names are reserved by later stories in the Full Auto epic (SH-452):
+# Three names are live (`docs/spec/verification-workflow.md`, "The locks"):
 # `gate`, taken inside `scripts/run-tests.sh` so every `make test` on this
-# machine serializes (D4), and `merge`, taken by `scripts/land-pr.sh` (D5).
-# Neither caller exists yet; this ships the primitive alone.
+# machine serializes (D4) and again by `scripts/verify-pr.sh` around the whole
+# speculative run (SH-589); `merge`, taken by `scripts/land-pr.sh` (D5); and
+# `release-observer`, taken by `scripts/release-watch.sh` around one observer
+# pass (`docs/spec/release-observer.md`). The key is the name alone, so every
+# clone and every repository on this machine shares one of each; SH-648 adds
+# a project component. (This header used to say neither caller existed yet —
+# it shipped ahead of them, SH-456 — and was corrected by SH-646.)
+#
+# THE REENTRANCY LIST CROSSES `scripts/merge-watch.sh`'S ENVIRONMENT SCRUB.
+# `verify-pr.sh` holds `gate`, `merge-watch.sh` execs `make test` inside it,
+# and `run-tests.sh` re-execs under `machine-lock.sh gate`: that inner take
+# runs only because `STORYHOOK_MACHINE_LOCKS` (set below on a successful take)
+# survived `merge-watch.sh`'s `env -u` list. Strip it there and every
+# verification waits on its own outer holder for ever — see the comment on
+# that list, and the spec section named above.
 #
 # WHY. `make test` is 36.375s median warm and idle
 # (`docs/rearch/baseline/timings.md`) and has been measured at 873s under the
