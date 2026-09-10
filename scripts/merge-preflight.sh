@@ -177,8 +177,24 @@ output="$(cat "$output_tmp")"
 rm -f "$output_tmp"
 output_tmp=""
 
+# A ref name is what the caller merged; the oid is what it merged AT. The
+# conflict report names both, because a ref that is re-read on every attempt
+# can still resolve to the same commit twice (SH-636: GitHub's pull ref
+# lagged a push, and two byte-identical reports were only recognisable as
+# one stale reading by comparing blob ids). An unresolvable ref falls back to
+# its own spelling — that is the invalid-ref half of exit 2.
+describe_ref() {
+    ref="$1"
+    oid="$(git_private rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null)"
+    if [ -n "$oid" ] && [ "$oid" != "$ref" ]; then
+        printf '%s (%s)\n' "$ref" "$oid"
+    else
+        printf '%s\n' "$ref"
+    fi
+}
+
 if [ "$status" -ne 0 ]; then
-    note "CONFLICT — $head does not merge cleanly onto $base"
+    note "CONFLICT — $(describe_ref "$head") does not merge cleanly onto $(describe_ref "$base")"
     printf '%s\n' "$output" | sed 's/^/  /' >&2
     exit 2
 fi

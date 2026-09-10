@@ -848,6 +848,24 @@ impl MergeRepo {
         );
     }
 
+    /// Runs the head-convergence seam (SH-636) with GitHub's wire shape for
+    /// the submitted PR; the fetch, the branch-tip read and the comparison are
+    /// all real Git against the local origin.
+    fn refresh_submission(&self, metadata: &str) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/verify-pr.sh")
+                    .display()
+                    .to_string(),
+                "--refresh-submission",
+                metadata,
+            ],
+        )
+    }
+
     /// Runs the post-landing-refusal seam with authoritative metadata and real
     /// refs. GitHub itself stays outside this deterministic boundary.
     fn reconcile_landing_refusal(
@@ -1832,6 +1850,32 @@ fn a_textual_conflict_is_reported_distinctly_and_prints_no_tree() {
          conflict's virtual tree with markers baked in"
     );
     assert!(stderr(&out).contains("CONFLICT"), "got: {}", stderr(&out));
+
+    // SH-636: called with ref NAMES, the report still names the oids each
+    // resolved to — a stale reading has to be visible in the report itself,
+    // not inferred from the conflict's blob ids. Both, and on the same line.
+    let by_name = repo.preflight("branch-a", "branch-b");
+    assert_eq!(by_name.status.code(), Some(2));
+    let conflict_line = stderr(&by_name)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        conflict_line.contains(&format!("branch-b ({b})"))
+            && conflict_line.contains(&format!("branch-a ({a})")),
+        "got: {conflict_line}"
+    );
+    // An oid argument is not decorated with itself.
+    let by_oid_line = stderr(&out)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        !by_oid_line.contains(&format!("{b} ({b})")),
+        "got: {by_oid_line}"
+    );
 }
 
 /// The receipt certifies content, not a branch name — the same doctrine
@@ -1965,7 +2009,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
     let repo = MergeRepo::new();
     let script = checkout().join("scripts/verify-pr.sh");
     let script = script.to_string_lossy().to_string();
-    let ready = r#"{"number":42,"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","headRefOid":"deadbeef","mergeCommit":null}"#;
+    let ready = r#"{"number":42,"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","headRefName":"feature","headRefOid":"deadbeef","mergeCommit":null}"#;
     let validate = |metadata: &str| {
         let out = run(
             repo.path(),
@@ -2016,6 +2060,191 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
             .unwrap()
             .contains("no draft status")
     );
+
+    // SH-636: the head branch is what the pull ref mirrors, so a wire shape
+    // without it cannot be checked for convergence and is refused by name.
+    let branchless = validate(&ready.replace("\"headRefName\":\"feature\",", ""));
+    assert_eq!(branchless["result"], "infrastructure-failure");
+    assert_eq!(branchless["disposition"], "permanent");
+    assert!(
+        branchless["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no head branch")
+    );
+}
+
+/// GitHub's wire shape for an open same-repository PR whose head branch is
+/// `feature`, as `verify-pr.sh`'s `--refresh-submission` seam consumes it.
+fn open_pr_metadata(pr: u64, reported_head: &str) -> String {
+    serde_json::json!({
+        "number": pr,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": reported_head,
+        "mergeCommit": null,
+    })
+    .to_string()
+}
+
+/// The SH-630 shape: `feature` at OLD conflicts with `main`; a reconcile
+/// merge NEW resolves it. Returns `(old, new)` with `feature` left at NEW and
+/// `main` checked out, before any origin is published.
+fn reconciled_feature(repo: &MergeRepo) -> (String, String) {
+    let old = repo.branch("feature", "main", "f", "feature changes the base file\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.write("f", "main changes the base file\n");
+    repo.git(&["add", "f"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main moves"]),
+        "advancing main",
+    );
+    assert_ok(&repo.git(&["checkout", "-q", "feature"]), "onto feature");
+    repo.write("f", "reconciled\n");
+    repo.git(&["add", "f"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "feature takes main's change"]),
+        "preparing the reconcile content",
+    );
+    // A real merge commit, the shape a reconcile pushes: parents OLD and main.
+    let out = repo.git(&["merge", "-q", "-s", "ours", "--no-edit", "main"]);
+    assert_ok(&out, "recording the reconcile merge");
+    let new = repo.rev_parse("HEAD");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    assert_ne!(old, new);
+    (old, new)
+}
+
+/// SH-636's own incident, reconstructed: the branch was pushed (`refs/heads/
+/// feature` = NEW) but GitHub's two projections of it — `refs/pull/N/head`
+/// and the API's `headRefOid` — still both say OLD. Comparing the projections
+/// against each other passes; comparing them against the branch does not, and
+/// the verdict is RETRYABLE with all three oids named, never the stale head's
+/// conflict.
+#[test]
+fn a_pull_ref_lagging_its_branch_is_retried_not_reported_as_a_conflict() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a submission whose pull ref lags");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_eq!(payload["disposition"], "retryable");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&old),
+        "the stale projection is named: {detail}"
+    );
+    assert!(detail.contains(&new), "the branch tip is named: {detail}");
+    assert!(
+        detail.contains("refs/heads/feature"),
+        "the branch the pull ref mirrors is named: {detail}"
+    );
+    assert!(
+        !detail.contains("CONFLICT") && !stderr(&out).contains("CONFLICT"),
+        "no preflight may run against a head GitHub has not converged on"
+    );
+    // The retry comment has to be distinguishable from a head that moved
+    // AFTER verification (SH-604's "changed head" refusal).
+    assert!(detail.contains("not converged"), "{detail}");
+}
+
+/// The other half of the same lag: the API has caught up but the pull ref
+/// has not (or vice versa). This used to be a PERMANENT "moved while its refs
+/// were being refreshed" failure; it is the same asynchronous pipeline and
+/// gets the same bounded retry.
+#[test]
+fn a_pull_ref_disagreeing_with_the_api_is_retryable_not_permanent() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &new));
+    assert_ok(
+        &out,
+        "refreshing a submission whose API and pull ref disagree",
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_eq!(payload["disposition"], "retryable");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains(&old) && detail.contains(&new), "{detail}");
+}
+
+/// Three-way agreement is the precondition, not "no conflict": a head that
+/// GitHub HAS converged on proceeds to preflight even when it genuinely
+/// conflicts, so the convergence check cannot mask a real conflict — that
+/// is the first SH-630 return, which was correct.
+#[test]
+fn an_agreed_head_proceeds_whether_or_not_it_conflicts() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+
+    // Converged on the reconciled head.
+    repo.publish_origin(42, &new);
+    let out = repo.refresh_submission(&open_pr_metadata(42, &new));
+    assert_ok(&out, "refreshing a converged submission");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "refs-current", "{payload}");
+    assert_eq!(payload["head"], new);
+    assert_eq!(repo.rev_parse("refs/remotes/origin/pr/42"), new);
+    assert!(
+        !repo
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature"
+            ])
+            .status
+            .success(),
+        "reading the branch tip must not write a remote-tracking ref for it"
+    );
+
+    // Converged on a head that really conflicts: still current, and the
+    // production preflight then reports the conflict exactly as before.
+    assert_ok(
+        &repo.git(&["branch", "-f", "feature", &old]),
+        "rewinding the branch to the conflicting head",
+    );
+    assert_ok(
+        &repo.git(&["update-ref", "refs/pull/42/head", &old]),
+        "GitHub converging on the rewound head",
+    );
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a converged, conflicting submission");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "refs-current", "{payload}");
+    assert_eq!(payload["head"], old);
+    let conflict = repo.preflight("refs/remotes/origin/main", "refs/remotes/origin/pr/42");
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(stderr(&conflict).contains("CONFLICT"));
+}
+
+/// A PR whose head branch no longer exists on origin has nothing to converge
+/// on: that is a submission problem for the agent, not infrastructure.
+#[test]
+fn a_head_branch_absent_from_origin_is_an_invalid_submission() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    assert_ok(
+        &repo.git(&["branch", "-D", "feature"]),
+        "deleting the branch on origin",
+    );
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a submission whose branch is gone");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("refs/heads/feature"), "{detail}");
+    assert!(detail.contains("push it"), "{detail}");
 }
 
 #[test]
@@ -2141,6 +2370,7 @@ fn landing_refusal_recovers_only_the_certified_actual_merged_tree() {
             "isDraft": false,
             "isCrossRepository": false,
             "baseRefName": "main",
+            "headRefName": "feature",
             "headRefOid": head,
             "mergeCommit": {"oid": merge_oid},
         })
@@ -2194,6 +2424,7 @@ fn landing_refusal_retries_only_a_new_tree_for_the_same_submission() {
         "isDraft": false,
         "isCrossRepository": false,
         "baseRefName": "main",
+        "headRefName": "feature",
         "headRefOid": head,
         "mergeCommit": null,
     })
@@ -2253,6 +2484,7 @@ fn landing_refusal_keeps_missing_proof_and_changed_identity_distinct() {
         "isDraft": false,
         "isCrossRepository": false,
         "baseRefName": "main",
+        "headRefName": "feature",
         "headRefOid": head,
         "mergeCommit": null,
     })
@@ -2316,6 +2548,7 @@ fn landing_refusal_reports_a_conflict_in_the_refreshed_tree() {
         "isDraft": false,
         "isCrossRepository": false,
         "baseRefName": "main",
+        "headRefName": "feature",
         "headRefOid": head,
         "mergeCommit": null,
     })
