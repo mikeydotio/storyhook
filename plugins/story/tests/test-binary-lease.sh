@@ -61,6 +61,28 @@ assert_eq "$nested_resolved" "$outer_resolved" \
 assert_eq "$after" "$before" \
   "lease: a nested instance minted no lease entry of its own"
 
+# A nested instance runs whichever `story` its caller arranged, and a caller
+# may be a harness that installed its own COPY -- a distinct inode the rebuild
+# cannot touch (`tests/plugin_install.rs` sources lib.sh exactly so). That copy
+# is admitted and resolved; the first cut of this rule demanded the outer lease
+# by name and failed two of that file's tests under central verification.
+installed="$(mktemp -d /tmp/story-test-lease-installed.XXXXXX)"
+_TMP_REPOS+=("$installed")
+cp "$real_artifact" "$installed/story"
+installed_resolved="$(PATH="$installed:$PATH" bash -c 'source "$1"; command -v story' _ "$TESTS_DIR/lib.sh")"
+assert_eq "$installed_resolved" "$installed/story" \
+  "lease: a nested instance runs a caller-installed copy of the binary untouched"
+
+# What a nested instance refuses is the one shape that IS the defect: the
+# artifact's own inode reached outside the lease root -- the bare
+# `target/debug/story` a rebuild replaces under the shared daemon.
+bare_dir="$(dirname "$real_artifact")"
+if PATH="$bare_dir:$PATH" bash -c 'source "$1"' _ "$TESTS_DIR/lib.sh" >/dev/null 2>"$installed/refusal"; then
+  fail_test "lease: a nested instance ran with the BARE artifact first on PATH"
+fi
+assert_contains "$(cat "$installed/refusal")" "BARE" \
+  "lease: the bare-artifact refusal names what it found"
+
 # --- 1 & 2. the lease survives a rebuild, and so does the daemon ------------
 fixture="$(mktemp -d /tmp/story-test-lease-target.XXXXXX)"
 _TMP_REPOS+=("$fixture")

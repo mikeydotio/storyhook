@@ -226,8 +226,13 @@ fi
 # identity is a PATH compare: a second lease of the same inode at a second
 # path would make the nested instance's first `story` call stand the shared
 # daemon down -- the very restart this block exists to prevent. The nested
-# instance inherits the outer lease through the exported `$PATH` and refuses
-# by name if that is not what it finds.
+# instance changes nothing about `$PATH`: it runs whichever `story` its caller
+# arranged -- the outer lease, or a harness's own installed copy
+# (`tests/plugin_install.rs` sources this file under an inherited home with a
+# fixture `bin/story` first on `$PATH`, a distinct inode the rebuild cannot
+# touch). What it refuses, by name, is the one shape that IS the defect: the
+# artifact's own inode reached at a path outside the lease root, which is the
+# bare `target/debug/story` or a symlink to it.
 #
 # The lease directory is registered for `_cleanup`, which removes it AFTER
 # `story daemon stop --force`: the stop needs `story` on `$PATH`, so the lease
@@ -255,17 +260,25 @@ if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
   unset _STORY_LEASE _STORY_LEASE_DIR
 else
   _STORY_INHERITED="$(command -v story || true)"
-  case "$_STORY_INHERITED" in
-    "$_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR"/*/story) : ;;
-    *)
-      echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
-      echo "  so it shares its caller's daemon, but \`story\` resolves to" >&2
-      echo "  [${_STORY_INHERITED:-nothing}] rather than the caller's lease under" >&2
-      echo "  $_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR/. A second" >&2
-      echo "  binary path would restart the shared daemon (SH-639)." >&2
-      exit 1
-      ;;
-  esac
+  if [ -z "$_STORY_INHERITED" ]; then
+    echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
+    echo "  so it shares its caller's daemon and runs the caller's \`story\`," >&2
+    echo "  but nothing on \$PATH resolves that name." >&2
+    exit 1
+  fi
+  if [ "$_STORY_INHERITED" -ef "$_STORY_TARGET_DIR/debug/story" ]; then
+    case "$_STORY_INHERITED" in
+      "$_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR"/*/story) : ;;
+      *)
+        echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
+        echo "  so it shares its caller's daemon, but \`story\` resolves to the BARE" >&2
+        echo "  Cargo artifact [$_STORY_INHERITED] rather than a lease of it under" >&2
+        echo "  $_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR/. A rebuild" >&2
+        echo "  would replace it under the shared daemon (SH-639)." >&2
+        exit 1
+        ;;
+    esac
+  fi
   unset _STORY_INHERITED
 fi
 unset _STORY_TARGET_DIR
