@@ -396,3 +396,53 @@ default there instead. `StoreLocation::is_default_for_home` now owns the shared 
 for both stable-port selection and the launch-agent identity fixed in SH-414: only the
 store a process with the same `HOME` and no store-location overrides would open gets 3456;
 all other stores request an OS-assigned port.
+
+### Later amendment — a child is told both halves of the daemon's path (SH-633)
+
+The rule above says a daemon's identity is its store's, and the layout keys its runtime
+directory as `<state home>/daemons/<store key>`. That is two independently resolved
+roots joined in one expression, and the invariant held only while a parent and every
+child it spawned agreed about both. They did not. `src/env/spawn_env.rs`'s dispatch
+allowlist cleared a `story.sh` child's environment and restored `HOME` and every
+`STORYHOOK_*` name but no `XDG_*` one, and the four sites that spawn from an
+`Environment` — dispatch, unclaim, the verifier's `notify` and `reap` — published only
+`STORYHOOK_STORE_PATH`. A `story` run inside such a child kept the store, resolved its
+state home from the child's own `HOME`, found no portfile there for that store, and
+started a **second daemon for one store**, publishing its pidfile, backups and activity
+journal under the developer's real `~/.local/state/storyhook/daemons/<key>` where
+nothing ever stands it down.
+
+Measured when fixed: 1,199 such directories on the filing machine — every browser-tier
+run since August (the harness itself was correct: `run-e2e.sh` exports `XDG_STATE_HOME`
+and cannot redirect `HOME` around `npm`), the Rust suite's real-helper reap test (an
+in-process `Environment::at` fixture, whose state home was never in any process
+environment at all), and ~45 hand runs the SH-426 amendment above sanctions.
+
+As built, two mechanisms, because each covers a case the other cannot:
+
+- The three XDG base directories travel with `HOME` on the common allowlist. They refine
+  `HOME` and are not separable from it; none is a credential. This covers a state home
+  the parent *process* had. Derived fence: every `TEST_ENVIRONMENT` parameter must
+  satisfy `dispatch_permits`, so an isolation parameter added to the table and dropped by
+  the allowlist fails the build.
+- `Environment::child_vars` is the one door through which a child is handed an
+  environment: `STORYHOOK_STORE_PATH` and `XDG_STATE_HOME`, the latter the parent of
+  `state_home` (exact, since both constructors build `<XDG_STATE_HOME>/storyhook` and
+  `with_store` leaves it alone). This covers a state home the parent *environment* has.
+  Derived fence: no `src/` file but the door's may set `STORYHOOK_STORE_PATH` on a
+  `Command`. `HOME` is deliberately not published (`StoryhookProcessOnly`; these children
+  run `git` and `gh`), nor is `STORYHOOK_DAEMON_ADDR` (a client finds a daemon by
+  portfile, and the test harness owns that variable).
+
+The regression tests are behavioural at every door — stub helpers echo what they were
+handed, the real-helper reap test asserts its daemon lands under the fixture's own state
+home and stands it down there, and the real binary's `story daemon status` inside the
+verifier's child is asked where it believes the daemon lives. Under mutation that last
+test answered with the developer's own home, which is the leak stated as an assertion.
+
+Declined: the refusal SH-633 itself proposed, a temporary store under a durable state
+home. The SH-426 amendment's own refusal text sanctions exactly that shape for a session
+(`story --store-path <tmp> daemon start`), and the defect was never temp-versus-durable
+— it was parent-versus-child. Runtime directories for stores that no longer exist are
+still never reaped, for the reason SH-426 gives (an absent store may be an offline
+volume); a conservative sweeper is filed separately.
