@@ -99,8 +99,12 @@ This declaration layer exists for pre-submission discovery as well as the
 `test-changed` target. A work lane in a repository that provides the selector
 runs it against its actual tracked tree before choosing direct test targets;
 `ALL` remains a statement that selection cannot safely narrow the run, never
-permission to claim a full gate. The centralized verifier still runs the full
-suite on the proposed merge.
+permission to claim a full gate. The centralized verifier still runs
+`make test` — the gate tier, the whole Rust suite and the plugin leg with the
+browser leg deferred by design (`test-tiers.md`, SH-394) — on the proposed
+merge, never a selection; a project that wants the browser tier in its gate
+names `make test-full` there once SH-649 makes the command configurable
+(`verification-workflow.md`).
 
 ### The tier, and where it does and does not gate
 

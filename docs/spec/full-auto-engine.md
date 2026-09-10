@@ -56,6 +56,19 @@ being picked.
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
 | D16 | **Provider configuration is explicit, durable run state that operators may revise while a run is running or paused.** Each claim snapshots the current selection transactionally; occupied lanes keep the selection they launched with and future claims use the revision. | Browser preferences and provider environment variables remain outside the run, so neither can silently change it. Explicit reconfiguration gives an operator one auditable control point without interrupting work already in flight. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
 
+**Superseded in part by SH-645 (2026-09-10).** The rows above are the record
+of what was decided and stay as written; `docs/spec/verification-workflow.md`
+is now the design of record for everything from submission to reap, and three
+rows read differently against it. D4's "priority then age": the age that ships
+is story `created_at`, and SH-651 makes it the time the story entered
+`verifying`. D5's "serialize every project": what ships is one global worker
+over one queue spanning every project, and SH-648 makes the worker, the queue,
+the incident halt and the conflict hold per project. D14's "the locks in D4/D5
+are sized against" a machine-wide budget: the `gate` and `merge` locks are
+keyed by name alone today, and SH-648 keys them by project, so two projects'
+suites may overlap on one machine — a trade-off that spec states rather than
+this table.
+
 ## Assumptions recorded rather than asked
 
 | # | Assumption |
@@ -571,8 +584,15 @@ silent — which is the bar.
 
 `scripts/machine-lock.sh <name> -- <command...>`: a pid-checked, stale-tolerant
 machine-wide lock, in the shape `browser-watch.sh`'s own lock already uses.
-Two names remain reserved, but lane agents no longer acquire either release
-gate themselves (SH-521).
+Three names are live — the two below and `release-observer`, taken by
+`scripts/release-watch.sh` around one observer pass (`release-observer.md`) —
+and lane agents acquire none of them themselves (SH-521). The key is the name
+alone today, so every clone and every repository on the machine shares one of
+each; SH-648 adds a project component. `verification-workflow.md`'s "The
+locks" section is the statement of record, including the one invariant every
+verification depends on: `merge-watch.sh`'s environment scrub must never strip
+`STORYHOOK_MACHINE_LOCKS`, or the inner `gate` take inside `make test` waits on
+its own outer holder for ever.
 
 - **`gate`** — the verification worker takes it once around the complete
   speculative `make test` run against the predicted merge tree. The two Rust
@@ -2486,3 +2506,20 @@ live run reconciles itself at roughly 1 Hz for its whole life, because its own
 lane writes move `data_version`, the change poller publishes `Change::Resync`,
 and `poll_engine` wakes on any non-`Ping` change — the 72 s tick is an idle
 floor, never a rate limit.
+
+### SH-646 — the verification workflow has its own design of record
+
+**Everything from submission to reap now lives in
+`docs/spec/verification-workflow.md`, and this document keeps the engine.**
+SH-645's four-step workflow (storyhook submits; per-project serialization; a
+per-project gate command; same-window remediation, then merge, done, reap)
+exposed six stale statements across three specs and one script header, one
+undocumented mechanism (the conflict queue-hold, `wait_for_reconciled_candidate`)
+and one unwritten invariant (`merge-watch.sh` must not strip
+`STORYHOOK_MACHINE_LOCKS`). The corrections here are the lock count in "Central
+verification and machine locks" and the superseded-in-part note under
+"Decisions of record"; the historical D4/D5/D14 rows are untouched, because a
+decisions-of-record table is an audit trail. The verifying handoff section
+above stays the authority on what the *engine* does with a story in
+`verifying`; the new spec is the authority on what the *verifier* does with it.
+The children SH-647..SH-653 record their As built entries there, not here.
