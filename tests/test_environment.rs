@@ -448,6 +448,90 @@ fn the_printed_environment_is_the_one_the_function_applies() {
     }
 }
 
+/// `--uninstalled-build` re-arms exactly one parameter, after the table has
+/// cleared it, in both the function and the printer (SH-630).
+///
+/// Behavioural, like everything above: the child's environment with the
+/// option is the child's environment without it plus one variable, and the
+/// variable is the migration guard's own override rather than a spelling this
+/// test invents. The poisoned parent proves the ordering — the table clears the
+/// parent's decoy value first, and what survives is the re-armed `1`, not the
+/// decoy.
+#[test]
+fn the_uninstalled_build_option_re_arms_only_the_migration_override() {
+    let override_var = storyhook::migration_guard::OVERRIDE_VAR;
+    assert!(
+        TEST_ENVIRONMENT.iter().any(|p| p.name == override_var),
+        "the option re-arms a parameter the table clears; if the table no longer \
+         carries it, the option has nothing to undo"
+    );
+
+    let fixture = scratch_dir();
+    let root = fixture.path();
+    let (plain, _) = isolate_in_bash(root, &[]);
+    let (armed, _) = isolate_in_bash(root, &["--uninstalled-build"]);
+
+    assert_eq!(
+        armed.get(override_var).map(String::as_str),
+        Some("1"),
+        "the option must export the override as `1`, not the parent's decoy"
+    );
+    // Two shells, two pids: the parent-pid parameter is the shell's own and
+    // differs between the runs by construction, so it is the one key left out.
+    let mut expected = plain.clone();
+    expected.insert(override_var.to_string(), "1".to_string());
+    let without_pid = |env: &BTreeMap<String, String>| -> Vec<(String, String)> {
+        env.iter()
+            .filter(|(name, _)| name.as_str() != "STORYHOOK_PARENT_PID")
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    };
+    let changed: Vec<String> = without_pid(&armed)
+        .iter()
+        .filter(|entry| !without_pid(&expected).contains(entry))
+        .map(|(name, _)| name.clone())
+        .chain(
+            without_pid(&expected)
+                .iter()
+                .filter(|entry| !without_pid(&armed).contains(entry))
+                .map(|(name, _)| name.clone()),
+        )
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "the option must change exactly one variable and nothing else; it also changed \
+         {changed:?}"
+    );
+
+    // The printer says the same thing, in the same order: evaluated, not read.
+    let script = format!(
+        ". \"{}/scripts/test-env.sh\"\neval \"$(storyhook_isolate_print --uninstalled-build \"{}\")\"\nexec /usr/bin/env\n",
+        repo_root().display(),
+        root.display(),
+    );
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .envs(poison())
+        .output()
+        .expect("running bash");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: BTreeMap<String, String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    assert_eq!(
+        printed.get(override_var).map(String::as_str),
+        Some("1"),
+        "the printed form must re-arm the override after clearing it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Nothing builds a storyhook environment by hand
 // ---------------------------------------------------------------------------

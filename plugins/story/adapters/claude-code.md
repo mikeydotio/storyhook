@@ -51,12 +51,14 @@ unchanged.
 
 ## Capture (`capture <id>`)
 
-Run `STORY_AGENT=claude bash "<story-helper>" capture <id>`, show `display`, and stop.
-This is read-only.
+Run `bash "<story-helper>" capture <id>`, show `display`, and stop. This is read-only.
+Claude is the helper's default agent, so no `STORY_AGENT` prefix is needed — and the
+installed-artifact guard admits the helper only as a bare command, never behind an
+environment assignment.
 
 ## Doctor (`doctor`)
 
-Run `STORY_AGENT=claude bash "<story-helper>" doctor` and show `display`. This checks
+Run `bash "<story-helper>" doctor` and show `display`. This checks
 project integrity plus the Claude launch, readiness, and prompt-submission contract.
 
 ## Release (`unclaim <id>`, `reset <id>`)
