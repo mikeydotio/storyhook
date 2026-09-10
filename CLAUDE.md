@@ -1354,6 +1354,14 @@ Standing rules for every wave:
   `retries: 0`/`workers: 1` as the council's decision. Quiesce the machine before the release
   tier, and read `story list --label flake` for the population before calling a red "the
   usual one". Design of record: `docs/spec/test-tiers.md`'s third "As built" reading.
+- **A hygiene gate asks git whether an artifact is tracked or ignored, never the
+  filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
+  was absent from disk; the file is gitignored precisely so an agent can write it locally
+  between sessions, and the operator's standing rule says to — so following that rule
+  turned every battery red after a full compile. The gate now asks `git ls-files
+  --error-unmatch` (must fail) and `git check-ignore -q` (must succeed) and never reads
+  the file. An ignored file's purpose is to exist locally; the repository's is to never
+  commit it, and only the second is the tree's business.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
