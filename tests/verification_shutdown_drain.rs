@@ -8,8 +8,8 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    TickResult, VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator,
-    VerificationOutcome, tick_with_activity, wait_for_reconciled_candidate,
+    SubmissionFailure, TickResult, VERIFICATION_IDLE_TIMEOUT, VerificationActivity,
+    VerificationActuator, VerificationOutcome, tick_with_activity, wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
 use storyhook::error::AppError;
@@ -47,6 +47,18 @@ struct BlockingActuator {
 }
 
 impl VerificationActuator for BlockingActuator {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<storyhook::domain::SubmittedPullRequest, SubmissionFailure> {
+        // Every fixture here is submitted without a lease, so the daemon never
+        // asks; a call is a fixture change this file has not caught up with.
+        panic!(
+            "BlockingActuator never submits; {} arrived with a lease",
+            candidate.story_id
+        )
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
