@@ -489,6 +489,75 @@ pub fn story_binary() -> &'static Path {
 }
 
 // ---------------------------------------------------------------------------
+// The binary under test, installed (SH-630, SH-634)
+// ---------------------------------------------------------------------------
+
+/// The test binary, copied out of its build directory — what `make install`
+/// does, and the only thing it does.
+///
+/// One copy per test process, kept for the process's whole life: the debug
+/// binary is large and every permit-side test wants the same file. Copied from
+/// [`story_binary`]'s lease rather than from the Cargo artifact, so the copy is
+/// the same bytes the rest of the process runs (SH-532).
+///
+/// **Both halves of the positive control live here.** The source must be
+/// *inside* the stamped build directory or a refusal row tests nothing; the
+/// copy must be *outside* it or the control is the incident again. Either
+/// failing is a fixture defect, and it panics rather than letting a row pass
+/// for the wrong reason (SH-364). Every guard that refuses on
+/// `path_identity::build_dir` — the migration guard, the install guard, the
+/// daemon seat guard — proves its permit side through this one door.
+pub fn installed_copy() -> &'static Path {
+    static COPY: OnceLock<PathBuf> = OnceLock::new();
+    COPY.get_or_init(|| {
+        let build_dir = storyhook::path_identity::build_dir().expect(
+            "this test binary carries no STORYHOOK_BUILD_DIR stamp — build.rs did not run with \
+             OUT_DIR, so nothing can tell an installed binary from an uninstalled one",
+        );
+        let source = std::fs::canonicalize(story_binary()).expect("canonicalizing the test binary");
+        assert!(
+            source.starts_with(&build_dir),
+            "positive control: the binary under test ({}) must sit inside the directory \
+             build.rs stamped ({}), or a refusal row tests nothing",
+            source.display(),
+            build_dir.display()
+        );
+
+        let dir = scratch_dir_named("installed-story");
+        let copy = dir.path().join("story");
+        std::fs::copy(&source, &copy).expect("copying the test binary out of its build directory");
+        let copy = std::fs::canonicalize(&copy).expect("canonicalizing the installed copy");
+        assert!(
+            !copy.starts_with(&build_dir),
+            "positive control: the installed copy ({}) must sit outside the stamped build \
+             directory ({}), or the control is the incident",
+            copy.display(),
+            build_dir.display()
+        );
+        // Leaked deliberately: the copy has to outlive every test in this
+        // process, and it is scratch output, not project state.
+        std::mem::forget(dir);
+        copy
+    })
+}
+
+impl TestEnv {
+    /// A plain [`std::process::Command`] on [`installed_copy`], running in
+    /// `cwd`, with this environment applied — [`Self::raw_story`] for the
+    /// installed shape.
+    ///
+    /// `PATH` is left as [`Self::apply`] sets it (the lease binary's directory
+    /// first); a test that wants the copy's own directory first, or a decoy,
+    /// overrides it afterwards, the way `tests/migration_guard.rs` does.
+    pub fn raw_installed_story(&self, cwd: impl AsRef<Path>) -> std::process::Command {
+        let mut cmd = std::process::Command::new(installed_copy());
+        cmd.current_dir(cwd.as_ref());
+        self.apply(&mut cmd);
+        cmd
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Can the binary under test actually fire a fault? (SH-528)
 // ---------------------------------------------------------------------------
 

@@ -250,6 +250,13 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  advancing the default store's schema",
     },
     Parameter {
+        name: "STORYHOOK_ALLOW_UNINSTALLED_DAEMON",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the same, for the guard that stops an uninstalled build \
+                 replacing the default store's daemon with itself",
+    },
+    Parameter {
         name: "STORYHOOK_VERIFIER_MIRROR",
         disposition: Disposition::Literal("0"),
         scope: Scope::Anywhere,
@@ -462,7 +469,7 @@ sees nothing wrong.
   export STORYHOOK_PARENT_START_TIME=
   unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
   unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION
+  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION STORYHOOK_ALLOW_UNINSTALLED_DAEMON
   mkdir -p "$STORYHOOK_DATA_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
   story project new --prefix TST     # in the throwaway store, not yours

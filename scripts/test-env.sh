@@ -42,18 +42,23 @@
 # (`scripts/coverage-map.sh` kills a sentinel between test binaries). The
 # default is `$$`, which is the ordinary case: the daemon dies with the run.
 #
-# `--uninstalled-build` RE-ARMS ONE PARAMETER THE TABLE CLEARS, AFTER CLEARING
-# IT: `STORYHOOK_ALLOW_UNINSTALLED_MIGRATION=1`. The table clears it so a
-# fixture never inherits a developer's exported one and silently disarms the
-# SH-630 guard, which refuses a binary still in its build directory from
-# advancing a default-shaped store's schema. A checkout binary never leaves
-# its build directory, and a root under this function IS default-shaped, so
-# a store that outlives one schema bump would be refused every command in
-# here. Pass it only where the store under the root belongs to the build
-# being run, on purpose — `make scratch` is the case, and the only one so
-# far. A test harness never needs it: a fresh store has no schema for the
-# guard to protect, and a Rust fixture that plants an old one sets the
-# variable on that one child (`storyhook_test_support::crash`).
+# `--uninstalled-build` RE-ARMS TWO PARAMETERS THE TABLE CLEARS, AFTER CLEARING
+# THEM: `STORYHOOK_ALLOW_UNINSTALLED_MIGRATION=1` and
+# `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1`. The table clears both so a fixture
+# never inherits a developer's exported one and silently disarms a guard: the
+# SH-630 migration guard refuses a binary still in its build directory from
+# advancing a default-shaped store's schema, and the SH-634 seat guard refuses
+# the same binary from replacing a default-shaped store's daemon with itself.
+# A checkout binary never leaves its build directory, and a root under this
+# function IS default-shaped, so a store that outlives one schema bump would
+# be refused every command in here — and so would the first command after a
+# `cargo build` in the same shell, which changes the binary's mtime and makes
+# the daemon still serving the root "another build". Pass it only where the
+# store under the root belongs to the build being run, on purpose —
+# `make scratch` is the case, and the only one so far. A test harness never
+# needs it: a fresh store has no schema for the migration guard to protect, one
+# binary serves it for the seat guard, and a Rust fixture that plants an old
+# schema sets the variable on that one child (`storyhook_test_support::crash`).
 #
 # A FAILED ISOLATION EXITS RATHER THAN RETURNS. A caller that could carry on
 # past a refusal would carry on unisolated, which is the exact outcome the
@@ -93,6 +98,7 @@ STORYHOOK_ACTOR any clear -
 STORYHOOK_ALLOW_TEMP_PROJECT any clear -
 STORYHOOK_ALLOW_PROJECT_BURST any clear -
 STORYHOOK_ALLOW_UNINSTALLED_MIGRATION any clear -
+STORYHOOK_ALLOW_UNINSTALLED_DAEMON any clear -
 STORYHOOK_VERIFIER_MIRROR any literal 0
 TABLE
 }
@@ -245,6 +251,7 @@ EOF
     # After the table, never before it: the table's `clear` would undo this.
     if [ "$_sti_uninstalled" -eq 1 ]; then
         export STORYHOOK_ALLOW_UNINSTALLED_MIGRATION=1
+        export STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1
     fi
 
     # The directories a `story` process expects to find. Derived from the table
@@ -288,6 +295,7 @@ EOF
 
     if [ "$_sti_uninstalled" -eq 1 ]; then
         printf "export STORYHOOK_ALLOW_UNINSTALLED_MIGRATION='1'\n"
+        printf "export STORYHOOK_ALLOW_UNINSTALLED_DAEMON='1'\n"
     fi
 
     unset _name _scope _kind _arg _value

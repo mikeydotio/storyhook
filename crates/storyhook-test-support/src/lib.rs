@@ -60,7 +60,7 @@ pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daem
 pub use engine::{DispatcherCall, DispatcherStep, FakeDispatcher};
 pub use env::{
     BINARY_SNAPSHOT_DIR, TestEnv, assert_the_binary_can_fire_faults, daemon_containment,
-    story_binary,
+    installed_copy, story_binary,
 };
 pub use git_identity::approve_fixture_identity;
 pub use github::{FakeGithubApiFactory, RecordedCall};

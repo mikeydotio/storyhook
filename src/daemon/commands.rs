@@ -127,6 +127,17 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
         Some(info) => {
             let staleness = if info.is_this_binary() {
                 String::new()
+            } else if super::seat_guard::would_refuse(env, &info) {
+                // The promise below would be a lie from an uninstalled build:
+                // the seat guard refuses it the replacement (SH-634), and the
+                // person reading this is about to type that next command.
+                format!(
+                    "\n  serving storyhook {}, which is not the build you are running — \
+                     and the next command from this binary will be refused rather than \
+                     restart it: this binary is still where cargo built it. {}",
+                    info.version,
+                    super::seat_guard::remedies()
+                )
             } else {
                 // Worth saying out loud rather than leaving to be discovered:
                 // the next command will restart it, and a user watching the pid

@@ -41,16 +41,17 @@
 //! | planted v1 store, the test binary, nothing named `story` on `$PATH` | refused — the launchd shape SH-411 met, closed on this side too |
 //!
 //! Every case that runs the installed copy first checks that the copy is
-//! *outside* the stamped build directory and the test binary is *inside* it.
-//! A build with no stamp would otherwise pass every row above vacuously.
+//! *outside* the stamped build directory and the test binary is *inside* it
+//! (`storyhook_test_support::installed_copy`, shared with the seat guard's
+//! tests since SH-634). A build with no stamp would otherwise pass every row
+//! above vacuously.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use rusqlite::Connection;
 use storyhook::migration_guard::OVERRIDE_VAR;
-use storyhook_test_support::{TestEnv, scratch_dir, scratch_dir_named, story_binary};
+use storyhook_test_support::{TestEnv, installed_copy, scratch_dir, story_binary};
 
 /// A store at schema v1, planted where `story` will find it.
 ///
@@ -128,53 +129,10 @@ fn stamped_build_dir() -> PathBuf {
     )
 }
 
-/// The test binary, copied out of its build directory — what `make install`
-/// does, and the only thing it does. One copy per test process, kept for the
-/// process's whole life: the debug binary is large and every permit-side test
-/// wants the same file.
-///
-/// **Both halves of the positive control live here.** The source must be
-/// *inside* the stamped directory or the incident tests are not testing the
-/// incident; the copy must be *outside* it or the control is the incident
-/// again. Either failing is a fixture defect, and it panics rather than
-/// letting a row pass for the wrong reason (SH-364).
-fn installed_copy() -> &'static Path {
-    static COPY: LazyLock<PathBuf> = LazyLock::new(|| {
-        let build_dir = stamped_build_dir();
-        let source = std::fs::canonicalize(story_binary()).expect("canonicalizing the test binary");
-        assert!(
-            source.starts_with(&build_dir),
-            "positive control: the binary under test ({}) must sit inside the directory \
-             build.rs stamped ({}), or the refusal rows below test nothing",
-            source.display(),
-            build_dir.display()
-        );
-
-        let dir = scratch_dir_named("installed-story");
-        let copy = dir.path().join("story");
-        std::fs::copy(&source, &copy).expect("copying the test binary out of its build directory");
-        let copy = std::fs::canonicalize(&copy).expect("canonicalizing the installed copy");
-        assert!(
-            !copy.starts_with(&build_dir),
-            "positive control: the installed copy ({}) must sit outside the stamped build \
-             directory ({}), or the control is the incident",
-            copy.display(),
-            build_dir.display()
-        );
-        // Leaked deliberately: the copy has to outlive every test in this
-        // process, and it is scratch output, not project state.
-        std::mem::forget(dir);
-        copy
-    });
-    &COPY
-}
-
 /// Runs the installed copy the way `TestEnv::raw_story` runs the test binary —
 /// same isolation, same working directory — with `$PATH` set to `path`.
 fn installed_story(env: &TestEnv, cwd: &Path, path: &OsString) -> std::process::Command {
-    let mut cmd = std::process::Command::new(installed_copy());
-    cmd.current_dir(cwd);
-    env.apply(&mut cmd);
+    let mut cmd = env.raw_installed_story(cwd);
     cmd.env("PATH", path);
     cmd
 }
