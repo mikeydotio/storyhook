@@ -848,6 +848,133 @@ impl MergeRepo {
         );
     }
 
+    /// Installs a fake `gh` at `<repo>/bin/gh` for the public path (SH-637).
+    ///
+    /// It answers `pr view <pr> --json <fields>` from `$FAKE_GH_STATE/pr.json`,
+    /// selecting exactly the fields the script asked for — a field the file
+    /// lacks is an error, as the real `gh` errors on an unknown field — and it
+    /// counts calls in `$FAKE_GH_STATE/calls`, running
+    /// `$FAKE_GH_STATE/before-call-<N>.sh` first when one exists. That hook is
+    /// the "head moves between fetch and verdict" instrument: with
+    /// `refresh_submission_refs` passing the entry read through, call 1 is the
+    /// entry read and call 2 is the verdict recheck. This is not a GitHub
+    /// model: it returns the same wire shape the private seams take as an
+    /// argument, one door over, because the defect under test lives in the
+    /// public path above every seam and its WIRING is the property.
+    fn fake_gh(&self) -> PathBuf {
+        let bin = self.path().join("bin");
+        fs::create_dir_all(&bin).expect("fixture: bin directory");
+        let state = self.path().join("fake-gh-state");
+        fs::create_dir_all(&state).expect("fixture: fake gh state");
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            r##"#!/usr/bin/env bash
+set -uo pipefail
+state="${FAKE_GH_STATE:?fake gh: FAKE_GH_STATE names the state directory}"
+calls=$(( $(cat "$state/calls" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$calls" > "$state/calls"
+printf '%s\n' "$*" >> "$state/argv"
+if [ -x "$state/before-call-$calls.sh" ]; then
+    "$state/before-call-$calls.sh" || { echo "fake gh: before-call-$calls hook failed" >&2; exit 70; }
+fi
+if [ "${1:-}" != pr ] || [ "${2:-}" != view ] || [ "${4:-}" != --json ] || [ -z "${5:-}" ]; then
+    echo "fake gh: unsupported invocation: $*" >&2
+    exit 64
+fi
+jq -e --arg fields "$5" '
+  . as $pr
+  | ($fields | split(",")) as $names
+  | ($names | map(select(. as $n | ($pr | has($n)) | not))) as $missing
+  | if ($missing | length) > 0
+    then error("fake gh: pr.json lacks " + ($missing | join(",")))
+    else reduce $names[] as $n ({}; . + {($n): $pr[$n]})
+    end
+' "$state/pr.json"
+"##,
+        )
+        .expect("fixture: writing the fake gh");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake gh executable");
+        state
+    }
+
+    /// Writes what the fake `gh` answers for the PR from now on.
+    fn fake_gh_answers(&self, metadata: &str) {
+        fs::write(self.path().join("fake-gh-state/pr.json"), metadata)
+            .expect("fixture: fake gh answer");
+    }
+
+    /// Runs `body` (bash) before the fake `gh`'s Nth call answers.
+    fn fake_gh_before_call(&self, call: u32, body: &str) {
+        let hook = self
+            .path()
+            .join(format!("fake-gh-state/before-call-{call}.sh"));
+        fs::write(
+            &hook,
+            format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+        )
+        .expect("fixture: fake gh hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake gh hook executable");
+    }
+
+    /// How many times the public path asked the fake `gh` about the PR.
+    fn fake_gh_calls(&self) -> u32 {
+        fs::read_to_string(self.path().join("fake-gh-state/calls"))
+            .map(|calls| calls.trim().parse().expect("a call count"))
+            .unwrap_or(0)
+    }
+
+    /// Installs a fake `make` at `<repo>/bin/make` — the release gate the
+    /// public path runs is `make test`, and it resolves through `PATH` inside
+    /// the poller worktree (`merge-watch.sh --speculative-run`). The body
+    /// must not touch tracked files there, or the poller restore turns the run
+    /// into an infrastructure failure rather than a red.
+    fn fake_make(&self, body: &str) {
+        let bin = self.path().join("bin");
+        fs::create_dir_all(&bin).expect("fixture: bin directory");
+        let script = bin.join("make");
+        fs::write(
+            &script,
+            format!("#!/usr/bin/env bash\nset -uo pipefail\n{body}\n"),
+        )
+        .expect("fixture: writing the fake make");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake make executable");
+    }
+
+    /// Runs the PUBLIC path — `verify-pr.sh <pr-url>` — against this fixture's
+    /// local origin, with the fake `gh`/`make` first on `PATH` and the same
+    /// containment `verification_gate` applies.
+    fn verify_public(&self) -> Output {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut path = std::ffi::OsString::from(self.path().join("bin"));
+        path.push(":");
+        path.push(inherited);
+        Command::new("bash")
+            .arg(checkout().join("scripts/verify-pr.sh"))
+            .arg("https://github.com/acme/widgets/pull/42")
+            .current_dir(self.path())
+            .env("PATH", path)
+            .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
+            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .env(
+                "STORYHOOK_GATE_PROGRESS",
+                self.path().join("gate-progress.ndjson"),
+            )
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .expect("running the public verification path")
+    }
+
     /// Runs the head-convergence seam (SH-636) with GitHub's wire shape for
     /// the submitted PR; the fetch, the branch-tip read and the comparison are
     /// all real Git against the local origin.
@@ -2631,4 +2758,230 @@ fn missing_arguments_are_refused_with_a_usage_message() {
 
     assert!(!out.status.success());
     assert!(stderr(&out).contains("usage"), "got: {}", stderr(&out));
+}
+
+/// A head that `refresh_submission_refs` converged on (SH-636), left on
+/// `feature`, `refs/pull/42/head` and the fake `gh` alike, so the public path
+/// reaches preflight. Returns the metadata the fake answers with.
+fn converge_public_head(repo: &MergeRepo, head: &str) {
+    assert_ok(
+        &repo.git(&["update-ref", "refs/heads/feature", head]),
+        "the branch on origin",
+    );
+    assert_ok(
+        &repo.git(&["update-ref", "refs/pull/42/head", head]),
+        "GitHub's pull ref converged",
+    );
+    repo.fake_gh_answers(&open_pr_metadata(42, head));
+}
+
+/// Bash that moves the branch, the pull ref and the fake `gh`'s answer to
+/// `head` — a push GitHub has fully propagated — from wherever the hook runs
+/// (the fake `make` runs inside the private-gitdir poller worktree, so `-C`
+/// names the fixture explicitly).
+fn move_public_head(repo: &MergeRepo, head: &str) -> String {
+    let fixture = repo.path().display();
+    let state = repo.path().join("fake-gh-state");
+    let state = state.display();
+    let metadata = open_pr_metadata(42, head);
+    format!(
+        "git -C '{fixture}' update-ref refs/heads/feature {head}\n\
+         git -C '{fixture}' update-ref refs/pull/42/head {head}\n\
+         printf '%s' '{metadata}' > '{state}/pr.json'\n"
+    )
+}
+
+fn public_payload(out: &Output) -> serde_json::Value {
+    assert_ok(out, "the public verification path emits classified JSON");
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("public path JSON: {e}: {}", stdout(out)))
+}
+
+/// SH-637's own shape, reconstructed: the head was current when the attempt
+/// began and GitHub had converged on it, so preflight ran and found the real
+/// conflict at OLD — then the reconcile push landed before the verdict was
+/// posted. The verdict is about a head nobody can act on any more, so it is
+/// discarded as RETRYABLE, naming both heads; it is never posted as the
+/// conflict it would have been two seconds earlier.
+#[test]
+fn a_conflict_verdict_is_discarded_when_the_head_moves_before_it_is_posted() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    // Call 1 is the entry read; call 2 is the recheck the verdict waits for.
+    repo.fake_gh_before_call(2, &move_public_head(&repo, &new));
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("head moved"), "{detail}");
+    assert!(
+        detail.contains(&old) && detail.contains(&new),
+        "both the judged and the current head are named: {detail}"
+    );
+    assert!(detail.contains("conflict verdict"), "{detail}");
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// The recheck reads the branch, not only GitHub's projections: a push that
+/// has reached `refs/heads/feature` but neither projection yet is still a
+/// head in flux, and SH-636's convergence rule answers for it — retryable,
+/// never the stale head's conflict.
+#[test]
+fn a_conflict_verdict_is_discarded_when_only_the_branch_has_moved() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    repo.fake_gh_before_call(
+        2,
+        &format!(
+            "git -C '{}' update-ref refs/heads/feature {new}\n",
+            repo.path().display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("not converged"), "{detail}");
+    assert!(detail.contains(&new), "the branch tip is named: {detail}");
+}
+
+/// The positive control: a head that is still the head when the verdict is
+/// ready gets its conflict, exactly as before, and the recheck is what asked
+/// — two reads of GitHub, not one.
+#[test]
+fn a_conflict_on_a_head_that_stayed_put_is_still_reported_as_a_conflict() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "conflict", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+    assert!(
+        detail.contains(&old),
+        "SH-636's oid line names the head: {detail}"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        2,
+        "the verdict was confirmed against a fresh read, not the entry read"
+    );
+}
+
+/// The same rule at the other verdict site, with the window that actually
+/// matters: the release gate runs for minutes, and a push during it is the
+/// case a verdict-time check exists for. The gate goes red on NEW, the push
+/// moves the PR to NEWER before the verdict is posted, and the red for NEW is
+/// discarded as retryable — carrying the log so the evidence is not lost —
+/// never posted as `tests-failed`.
+#[test]
+fn a_red_verdict_is_discarded_when_the_head_moves_during_the_gate() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    assert_ok(&repo.git(&["checkout", "-q", "feature"]), "onto feature");
+    repo.write("g", "a later push\n");
+    repo.git(&["add", "g"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "later push"]),
+        "the push during the gate",
+    );
+    let newer = repo.rev_parse("HEAD");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    // The gate itself is where the push lands: the fake `make` moves the
+    // head, then fails, the way a real suite would fail on the old head.
+    repo.fake_make(&format!("{}exit 1\n", move_public_head(&repo, &newer)));
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("head moved"), "{detail}");
+    assert!(detail.contains(&new) && detail.contains(&newer), "{detail}");
+    assert!(detail.contains("red verdict"), "{detail}");
+    assert!(
+        detail.contains("Gate log of the superseded attempt"),
+        "the red evidence is kept in the retry detail: {detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// The red positive control, through the public path: a completed red on a
+/// head that stayed put is `tests-failed` with the tree and the log, which is
+/// also what proves `run_verification_gate`'s status split preserved the
+/// verdict's shape where it is actually posted.
+#[test]
+fn a_red_on_a_head_that_stayed_put_is_still_reported_as_tests_failed() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    repo.fake_make("exit 3\n");
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let expected_tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    assert_eq!(payload["tree"], expected_tree, "{payload}");
+    let log = payload["log"].as_str().unwrap();
+    assert!(Path::new(log).is_file(), "the attempt log exists: {log}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("failed with exit status 3"),
+        "the gate's own status is reported: {detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// What the recheck refuses to reason past: a re-read that names a different
+/// PR or base is an identity change (invalid, as `reconcile_land_refusal`
+/// rules), and a PR no longer OPEN belongs to the next attempt's entry path
+/// (retryable). Neither posts the conflict that was computed.
+#[test]
+fn a_recheck_that_finds_a_different_pr_or_a_closed_one_posts_no_verdict() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    let state = repo.path().join("fake-gh-state").display().to_string();
+
+    let other_pr = open_pr_metadata(43, &old);
+    repo.fake_gh_before_call(
+        2,
+        &format!("printf '%s' '{other_pr}' > '{state}/pr.json'\n"),
+    );
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    assert!(
+        payload["detail"].as_str().unwrap().contains("PR #43"),
+        "{payload}"
+    );
+
+    // A second attempt on the same fixture: the entry read sees PR #42 again,
+    // and this time the recheck finds it CLOSED.
+    fs::remove_file(repo.path().join("fake-gh-state/calls")).unwrap();
+    repo.fake_gh_answers(&open_pr_metadata(42, &old));
+    let closed = open_pr_metadata(42, &old).replace("\"OPEN\"", "\"CLOSED\"");
+    repo.fake_gh_before_call(2, &format!("printf '%s' '{closed}' > '{state}/pr.json'\n"));
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    assert!(
+        payload["detail"].as_str().unwrap().contains("CLOSED"),
+        "{payload}"
+    );
 }
