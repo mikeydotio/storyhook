@@ -47,6 +47,14 @@
 //! * `lock_root` changed to read `$XDG_STATE_HOME` — the plausible, wrong
 //!   implementation — → **1 red**:
 //!   `the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it`.
+//! * [`ProgressFeeder`] made to write nothing (SH-643) → **1 red**:
+//!   `a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject`, and
+//!   nothing else at idle — the right blast radius, since every other holder
+//!   starts in milliseconds on a quiet machine and only the constructed
+//!   straddle needs the feeder there. Under load the four cases the story
+//!   was filed on are what it protects. `RUNNING_SLACK_POLLS` set to 0 turns
+//!   nothing red at idle and is not a pin: it is a stated margin, which is
+//!   exactly what a mutation check cannot judge (SH-394).
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
 //! script as shipped, every test passes.
@@ -55,6 +63,8 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -219,7 +229,7 @@ fn started_of(pid: u32) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The `--max-wait` a reclamation case gives the script.
+/// The `--max-wait` a holder-identity case gives the script.
 ///
 /// Not a speed assertion and not a bare literal (SH-394): reclaiming is decided
 /// on the **first** observation of a lock, so any positive multiple of the
@@ -230,6 +240,11 @@ fn started_of(pid: u32) -> String {
 /// forever, and an unbounded case would hang the whole suite instead of
 /// reporting the mutation. Measured: without this, deleting the start-time
 /// comparison hung `cargo test` indefinitely rather than turning one test red.
+///
+/// The live-holder control shares it rather than carrying its own: there a
+/// correct implementation waits the whole budget and a wrong one exits at
+/// once, so the number bounds only the case's own wall clock, and one
+/// derivation for all three identity cases is one fewer number to disagree.
 fn reclaim_deadline() -> String {
     (lock_poll_secs() * 2).to_string()
 }
@@ -299,6 +314,196 @@ const WAIT_POLLS_ALLOWED: u64 = 30;
 /// later. Raising `WAIT_POLLS_ALLOWED` past 60 would quietly cost that.
 fn poll_ceiling() -> std::time::Duration {
     std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED)
+}
+
+/// `--max-wait 0`: observe the lock exactly once and refuse if it is held. A
+/// semantic value, not a ceiling — named so the fence in
+/// `tests/timing_assertions.rs` needs no exemption for its spelling.
+const NO_WAIT: &str = "0";
+
+/// The journal path every holder in this file reports under. One name, so a
+/// holder's line can be told from anything else in the journal by path alone.
+const HOLDER_PATH: &str = "release gate/rust-suite";
+
+/// How many watchdog observations a one-poll progress cadence needs before
+/// it is provably observable as a reset. At 1 the watchdog fires on the first
+/// non-growth sample, and a writer on the same period can miss a sample by
+/// phase alone; at 2 one missed sample is tolerated.
+const OBSERVABLE_POLLS: u64 = 2;
+
+/// One poll of scheduling slack for a **running** holder between its progress
+/// writes — a `sleep 1` in a running `sh` is still a fork+exec. A stated
+/// margin (SH-394), not a claim about speed.
+///
+/// It does not cover the holder's *startup*, and no margin could: SH-643
+/// measured spawn-to-first-line at 8ms on this machine at a load ratio of
+/// 0.92 and at more than 2000ms at 2.5–6.4 — 250x the latency for 5x the
+/// contention, so neither a load multiplier nor an earlier sample bounds it.
+/// Startup is [`ProgressFeeder`]'s job. If a running holder's own `sleep`
+/// ever exceeds this slack, the fix is a spawn-free holder (`time.sleep`
+/// in-process), never a wider slack.
+const RUNNING_SLACK_POLLS: u64 = 1;
+
+/// The `--max-idle` a case gives the script when the watchdog **is** the
+/// subject: the smallest ceiling at which a one-poll cadence is observable as
+/// a reset, plus the running holder's stated slack.
+fn idle_ceiling() -> String {
+    (lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS)).to_string()
+}
+
+/// The `--max-idle` a case gives the script when the watchdog is **not** the
+/// subject: harness patience, the same observation cycles [`poll_ceiling`]
+/// spends, so a wedged fixture holder fails in seconds rather than after the
+/// gate default's twenty-nine minutes (SH-528). Proof of nothing about the
+/// watchdog, and no feeder covers it — the holder simply has that long.
+fn patience_ceiling() -> String {
+    poll_ceiling().as_secs().to_string()
+}
+
+/// Feeder writes per watchdog observation. Two, so every observation interval
+/// contains at least one write whatever the phase between the two clocks —
+/// one write per poll can straddle a sample and be read as silence.
+const FEEDS_PER_POLL: u64 = 2;
+
+/// The line [`ProgressFeeder`] appends: a legal `item` record in
+/// `scripts/gate-progress.sh`'s documented shape, under a path no holder in
+/// this file uses. Never `"kind":"activity"`, which one case counts exactly.
+const FEEDER_LINE: &str = "{\"kind\":\"item\",\"path\":\"release gate/fixture-feeder\",\"status\":\"running\",\"at\":\"fixture-feeder\"}\n";
+
+/// Why a [`ProgressFeeder`] stopped. Every case asserts the reason it expects,
+/// because a feeder that stopped for the wrong reason is a case whose subject
+/// never happened.
+#[derive(Debug, PartialEq, Eq)]
+enum FeederStop {
+    /// The holder reached its sentinel while the feeder was covering it.
+    SentinelReached,
+    /// The journal was removed under the feeder — the subject of exactly one
+    /// case, and never resurrected by it.
+    JournalGone,
+    /// [`ProgressFeeder::finish`] or `Drop` stopped it: the run ended first.
+    RunEnded,
+    /// [`poll_ceiling`] elapsed with no sentinel: the holder never got there.
+    Patience,
+}
+
+/// Keeps the gate journal growing until the holder has provably finished its
+/// setup, so the script's silence clock — which starts at **fork** — only ever
+/// measures a *running* holder (SH-643).
+///
+/// What it models: the production journal genuinely has many writers (every
+/// test case appends; `activity-run.py` appends), so a line from something
+/// other than the holder is an honest shape, not a fixture lying to the gate
+/// (SH-364). What it buys: the holder's startup, which the incident measured
+/// at more than a whole ceiling under load, is never under the clock. What it
+/// does not change: every case's subject, which was always a holder that is
+/// running and then silent, or running and then progressing.
+///
+/// Self-bounding on purpose (SH-528): a sentinel that never comes — a holder
+/// that died early, a wrong needle, a future edit — stops the feeder after
+/// [`poll_ceiling`] with [`FeederStop::Patience`], so the watchdog fires and
+/// the case fails with a reason instead of hanging the suite behind an
+/// unbounded `.output()`.
+struct ProgressFeeder {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<FeederStop>>,
+}
+
+impl ProgressFeeder {
+    /// Starts feeding `journal` until `sentinel` holds. Declare it **after**
+    /// the fixture at every site, so it drops — and joins — before the
+    /// `TempDir` it writes into is deleted.
+    fn start(journal: &Path, sentinel: impl Fn() -> bool + Send + 'static) -> Self {
+        // The script's own `: >> "$journal"` runs only after it has taken the
+        // lock, so the file does not exist yet. Created exactly once here;
+        // every later open refuses to create, so a journal the holder removed
+        // is never resurrected by its own fixture.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(journal)
+            .unwrap_or_else(|e| panic!("feeder: preparing {}: {e}", journal.display()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let journal = journal.to_path_buf();
+        let pause = std::time::Duration::from_millis(lock_poll_secs() * 1000 / FEEDS_PER_POLL);
+        let thread = std::thread::spawn(move || {
+            let give_up_at = std::time::Instant::now() + poll_ceiling();
+            loop {
+                if flag.load(Ordering::SeqCst) {
+                    return FeederStop::RunEnded;
+                }
+                if sentinel() {
+                    return FeederStop::SentinelReached;
+                }
+                if std::time::Instant::now() >= give_up_at {
+                    return FeederStop::Patience;
+                }
+                match std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(false)
+                    .open(&journal)
+                {
+                    Ok(mut file) => file
+                        .write_all(FEEDER_LINE.as_bytes())
+                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}")),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return FeederStop::JournalGone;
+                    }
+                    Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
+                }
+                std::thread::sleep(pause);
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stops the feeder and reports why it stopped. Called once the script has
+    /// returned; asserting the reason is what proves the holder reached the
+    /// state the case is about.
+    fn finish(mut self) -> FeederStop {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread
+            .take()
+            .expect("a feeder is finished at most once")
+            .join()
+            .expect("the feeder thread panicked")
+    }
+}
+
+impl Drop for ProgressFeeder {
+    /// A case that panics before `finish` must not leave a thread appending
+    /// into a directory being deleted. Bounded: the thread sleeps at most half
+    /// a poll between checks of the flag.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A sentinel: `journal` holds a line naming `needle`.
+fn journal_names(journal: &Path, needle: &'static str) -> impl Fn() -> bool + Send + 'static {
+    file_contains(journal, needle)
+}
+
+/// A sentinel: `path` exists.
+fn file_exists(path: &Path) -> impl Fn() -> bool + Send + 'static {
+    let path = path.to_path_buf();
+    move || path.exists()
+}
+
+/// A sentinel: `path` exists and contains `needle`.
+fn file_contains(path: &Path, needle: &'static str) -> impl Fn() -> bool + Send + 'static {
+    let path = path.to_path_buf();
+    move || {
+        std::fs::read_to_string(&path)
+            .map(|text| text.contains(needle))
+            .unwrap_or(false)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,15 +604,23 @@ fn the_lock_is_released_on_both_a_zero_and_a_nonzero_exit() {
 fn journal_progress_resets_the_idle_ceiling() {
     let fixture = Fixture::new();
     let journal = fixture.path().join("progress.ndjson");
+    let ceiling = idle_ceiling();
+    // One step per poll, and one more step than the ceiling has polls, so the
+    // holder's total wall clock outlives the ceiling however the slack moves.
+    let steps = OBSERVABLE_POLLS + RUNNING_SLACK_POLLS + 1;
     let helper = fixture.helper(
         "progressing.sh",
-        "#!/bin/sh\nfor step in 1 2 3 4; do\n  printf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\",\"step\":%s}\\n' \"$step\" >> \"$STORYHOOK_GATE_PROGRESS\"\n  sleep 1\ndone\n",
+        &format!(
+            "#!/bin/sh\nstep=0\nwhile [ \"$step\" -lt {steps} ]; do\n  step=$((step + 1))\n  printf '{{\"kind\":\"case\",\"path\":\"{HOLDER_PATH}\",\"outcome\":\"pass\",\"step\":%s}}\\n' \"$step\" >> \"$STORYHOOK_GATE_PROGRESS\"\n  sleep {poll}\ndone\n",
+            poll = lock_poll_secs()
+        ),
     );
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &ceiling,
             "gate",
             "--",
             &helper.display().to_string(),
@@ -417,9 +630,14 @@ fn journal_progress_resets_the_idle_ceiling() {
         .expect("running a progressing holder");
 
     assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never wrote its first step, so this case never happened: {out:?}"
+    );
+    assert_eq!(
         code(&out),
         0,
-        "four seconds of progress must outlive a two-second silence ceiling: {out:?}"
+        "{steps} polls of progress must outlive a {ceiling}-second silence ceiling: {out:?}"
     );
     assert!(
         !stderr(&out).contains("made no progress"),
@@ -438,11 +656,14 @@ fn recognized_build_progress_renews_the_idle_ceiling() {
         "building.sh",
         "#!/bin/sh\nfor crate in one two three four; do\n  printf '   Compiling %s v0.0.0\\n' \"$crate\"\n  sleep 1\ndone\n",
     );
+    // activity-run.py turns the first `Compiling` line into a journal record
+    // under the holder's path; that record is the sentinel.
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &idle_ceiling(),
             "gate",
             "--",
             "python3",
@@ -459,6 +680,11 @@ fn recognized_build_progress_renews_the_idle_ceiling() {
         .output()
         .expect("running a progressing build");
 
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the build never reported its first milestone, so this case never happened: {out:?}"
+    );
     assert_eq!(
         code(&out),
         0,
@@ -478,11 +704,14 @@ fn arbitrary_output_does_not_renew_the_idle_ceiling() {
         "chattering.sh",
         "#!/bin/sh\nwhile :; do printf 'still waiting\\n'; sleep 1; done\n",
     );
+    // The chatter reaches the raw capture, never the journal; the first line
+    // there is what proves the chatterer actually ran.
+    let feeder = ProgressFeeder::start(&journal, file_contains(&capture, "still waiting"));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &idle_ceiling(),
             "gate",
             "--",
             "python3",
@@ -499,6 +728,19 @@ fn arbitrary_output_does_not_renew_the_idle_ceiling() {
         .output()
         .expect("running an untrusted chatterer");
 
+    // Without this the case is vacuous: a chatterer never scheduled inside
+    // the ceiling also times out, having proved nothing about chatter.
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the chatterer must have RUN for its chatter to have been ignored: {out:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&capture)
+            .expect("reading the raw capture")
+            .contains("still waiting"),
+        "the chatter must be in the raw capture even though it never renewed the watchdog"
+    );
     assert_eq!(
         code(&out),
         124,
@@ -519,15 +761,22 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
     let fixture = Fixture::new();
     let journal = fixture.path().join("progress.ndjson");
     let descendant = fixture.path().join("descendant.pid");
+    let ceiling = idle_ceiling();
+    // Setup first, the journal line last: that line is the sentinel, so
+    // everything before it is under the feeder and only the silence is under
+    // the clock.
     let helper = fixture.helper(
         "stubborn-holder.sh",
-        "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"fixture-time\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsh -c 'trap \"\" TERM; while :; do sleep 1; done' &\nprintf '%s\\n' \"$!\" > \"$1\"\ntrap '' TERM\nwhile :; do sleep 1; done\n",
+        &format!(
+            "#!/bin/sh\nsh -c 'trap \"\" TERM; while :; do sleep 1; done' &\nprintf '%s\\n' \"$!\" > \"$1\"\ntrap '' TERM\nprintf '{{\"kind\":\"item\",\"path\":\"{HOLDER_PATH}\",\"status\":\"running\",\"at\":\"fixture-time\"}}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n"
+        ),
     );
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &ceiling,
             "gate",
             "--",
             &helper.display().to_string(),
@@ -538,15 +787,25 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         .expect("running a silent holder");
 
     assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never finished its setup, so this case never happened: {out:?}"
+    );
+    assert_eq!(
         code(&out),
         124,
         "a watchdog expiry has a distinct status: {out:?}"
     );
     let err = stderr(&out);
+    let journal_text = std::fs::read_to_string(&journal).expect("reading the journal");
+    assert!(
+        journal_text.contains(HOLDER_PATH),
+        "the holder's own line must have reached the journal: {journal_text}"
+    );
+    assert_last_progress_was_reported(&err, &journal_text);
     for expected in [
-        "made no progress for 2s",
+        format!("made no progress for {ceiling}s (ceiling {ceiling}s)").as_str(),
         "last gate progress",
-        "rust-suite",
         "active descendant tree",
         "stubborn-holder.sh",
         "SIGTERM",
@@ -568,7 +827,7 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         "the lock must be released only after the stubborn group is gone"
     );
     assert_eq!(
-        code(&fixture.run(&["--max-idle", "2", "gate", "--", "true"])),
+        code(&fixture.run(&["--max-idle", &patience_ceiling(), "gate", "--", "true"])),
         0,
         "the next holder must be able to enter after cleanup"
     );
@@ -592,11 +851,12 @@ fn stall_diagnostics_include_descendants_in_another_process_group() {
         "other-group.py",
         "#!/usr/bin/env python3\nimport os, subprocess, sys, time\nchild = subprocess.Popen(['sleep', '30'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nwith open(sys.argv[1], 'w') as output:\n    output.write(str(child.pid))\nwhile True:\n    time.sleep(1)\n",
     );
+    let feeder = ProgressFeeder::start(&journal, file_exists(&escaped));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &idle_ceiling(),
             "gate",
             "--",
             &helper.display().to_string(),
@@ -605,6 +865,11 @@ fn stall_diagnostics_include_descendants_in_another_process_group() {
         .env("STORYHOOK_GATE_PROGRESS", &journal)
         .output()
         .expect("running a holder with an escaped descendant");
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never recorded its escaped descendant, so this case never happened: {out:?}"
+    );
     let escaped_pid: u32 = std::fs::read_to_string(escaped).unwrap().parse().unwrap();
     let _cleanup = EscapedProcess(escaped_pid);
 
@@ -628,9 +893,11 @@ fn a_gate_without_an_external_journal_exports_a_private_one() {
         "#!/bin/sh\nprintf '%s\\n' \"$STORYHOOK_GATE_PROGRESS\" > \"$1\"\nprintf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\n",
     );
 
+    // The journal is the lock's own and its path is only known afterwards, so
+    // no feeder can reach it: the watchdog is a failsafe here, not the subject.
     let out = fixture.run(&[
         "--max-idle",
-        "2",
+        &patience_ceiling(),
         "gate",
         "--",
         &helper.display().to_string(),
@@ -664,11 +931,14 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
         "remove-journal.sh",
         "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep 1\nrm \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n",
     );
+    // Fed until the removal itself: nothing the holder does before the `rm`
+    // is under the clock, so the only expiry reachable is the journal's loss.
+    let feeder = ProgressFeeder::start(&journal, || false);
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "5",
+            &idle_ceiling(),
             "gate",
             "--",
             &helper.display().to_string(),
@@ -677,6 +947,11 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
         .output()
         .expect("running a holder that removes its journal");
 
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::JournalGone,
+        "the holder never removed the journal, so this case never happened: {out:?}"
+    );
     assert_eq!(
         code(&out),
         124,
@@ -691,6 +966,91 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
     assert!(
         !fixture.lock("gate").exists(),
         "journal loss must still reap and release the holder"
+    );
+}
+
+/// SH-643, the constructed straddle (SH-420's posture): a holder whose
+/// **startup** outlasts the silence ceiling. On 2026-09-10, at load 25–64 on
+/// 10 cores, four cases in this file failed because their holder was never
+/// scheduled inside a bare `--max-idle 2` — `ps` showed ELAPSED 00:02, TIME
+/// 0:00.00, journal empty — so the fixture's own spawn latency, not the
+/// mechanism, decided the verdict. Here the starvation is a `sleep` one poll
+/// longer than the ceiling, deterministic on any machine. What the case is
+/// about is unchanged: a holder that is **running** and then silent is
+/// diagnosed with its own last line and reaped.
+#[test]
+fn a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let ceiling = idle_ceiling();
+    let starved_for = lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS + 1);
+    let helper = fixture.helper(
+        "late-starter.sh",
+        &format!(
+            "#!/bin/sh\nsleep {starved_for}\nprintf '{{\"kind\":\"item\",\"path\":\"{HOLDER_PATH}\",\"status\":\"running\",\"at\":\"fixture-time\"}}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n"
+        ),
+    );
+
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &ceiling,
+            "gate",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a late-starting holder");
+
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never started, so this case never happened: {out:?}"
+    );
+    assert_eq!(
+        code(&out),
+        124,
+        "a running-then-silent holder expires: {out:?}"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!(
+            "made no progress for {ceiling}s (ceiling {ceiling}s)"
+        )),
+        "stderr: {err}"
+    );
+    let text = std::fs::read_to_string(&journal).expect("reading the journal");
+    assert!(
+        text.contains(HOLDER_PATH),
+        "the holder's own line must have reached the journal before the silence was judged — \
+         a verdict reached during its startup is a verdict about the machine, not the holder\n\
+         journal: {text}"
+    );
+    assert_last_progress_was_reported(&err, &text);
+}
+
+/// The watchdog prints the journal's last record verbatim before it appends
+/// its own `failed` item (`machine-lock.sh`'s expiry path). Pinned against the
+/// journal actually written rather than a substring, so whichever writer's
+/// line happens to be last is the line the diagnosis must name.
+fn assert_last_progress_was_reported(err: &str, journal_text: &str) {
+    let lines: Vec<&str> = journal_text.lines().collect();
+    let (failed, before) = lines
+        .split_last()
+        .expect("the watchdog appends its own failed item to the journal");
+    assert!(
+        failed.contains(r#""path":"release gate","status":"failed""#),
+        "the journal's last line must be the watchdog's own failed item: {failed}"
+    );
+    let last_seen = before
+        .last()
+        .expect("something must have progressed before the stall");
+    assert!(
+        err.contains(&format!("last gate progress: {last_seen}")),
+        "the diagnosis must name the journal's true last record verbatim\nexpected: {last_seen}\nstderr: {err}"
     );
 }
 
@@ -910,7 +1270,14 @@ fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
     let victim = ChildGuard::spawn(&mut command).expect("spawning a live holder");
     fixture.plant("gate", &victim.pid().to_string(), &started_of(victim.pid()));
 
-    let out = fixture.run(&["--max-wait", "1", "gate", "--", "echo", "MUST-NOT-RUN"]);
+    let out = fixture.run(&[
+        "--max-wait",
+        &reclaim_deadline(),
+        "gate",
+        "--",
+        "echo",
+        "MUST-NOT-RUN",
+    ]);
 
     assert_eq!(
         code(&out),
@@ -945,7 +1312,7 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
     wait_for(&fixture.lock("gate").join("pid"));
 
     let second = fixture
-        .command(&["--max-wait", "0", "gate", "--", "echo", "MUST-NOT-RUN"])
+        .command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"])
         .env("STORYHOOK_GATE_PROGRESS", &journal)
         .env("STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH", "release gate")
         .output()
@@ -1380,7 +1747,7 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
         std::fs::write(&journal, "").unwrap();
         fixture.plant("merge", &pid.to_string(), &started);
         let output = fixture
-            .command(&["--max-wait", "0", "merge", "--", "true"])
+            .command(&["--max-wait", NO_WAIT, "merge", "--", "true"])
             .env("STORYHOOK_GATE_PROGRESS", &journal)
             .output()
             .unwrap();

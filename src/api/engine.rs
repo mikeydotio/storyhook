@@ -538,7 +538,8 @@ struct HttpLaneView {
     worktree: Option<String>,
     dispatched_at: Option<String>,
     last_observed_at: String,
-    /// When the lane's story was last seen to move — seeded by the first
+    /// When the lane last showed observed activity — its story moving, or
+    /// its pane writing to the terminal (SH-657) — seeded by the first
     /// steady pass that finds the lane alive, `null` until then. This is the
     /// only positive evidence that a reconcile pass observed a lane and left
     /// it working: `last_observed_at` says only that the reconciler looked,

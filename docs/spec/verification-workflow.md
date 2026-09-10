@@ -48,7 +48,7 @@ What each step does today, and which child closes the gap:
 | 2 | one verifier per project; suites serialize per project | **one global worker** (`VerificationActivity`, a single slot) over a queue spanning every project (`ordered_candidates`); the `gate` and `merge` locks are keyed by **name only**, so two clones and two unrelated repositories serialize together | SH-648 (D-B) |
 | 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
 | 2 | not mergeable → instruct the agent and hold the queue | as stated, **but only while the dispatched pane is alive**; a dead pane releases the hold and parks the story with `awaiting` — see "The conflict queue-hold" | SH-650 (D-E) |
-| 3 | gate configurable per project | `make test` is a literal in `scripts/verify-pr.sh` and in the daemon's GREEN/RED comment text; no `[verify]` table in `.storyhook.toml`, no settings key | SH-649 (D-D) |
+| 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
 | 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the literal state `done` while `reap-leased` requires the project's **first CLOSED state** — the two agree only in a project whose first CLOSED state is spelled `done` | SH-652 (D-G) |
 | 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is a second reaper with no story-state gate and wider authority (it deletes the remote branch) | SH-653 (D-H) |
@@ -65,7 +65,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-A | **The verifier submits.** For a candidate with no linked open close-on-merge PR, the verifier's first step is submission from the cleanup lease's worktree and branch: refuse a dirty worktree (return the story naming the files), push over HTTPS, create the PR against the project's integration branch or **adopt** the one already open for that head, `link-pr`, comment the URL. `MissingPullRequest` becomes a submit step; `MultiplePullRequests` still returns. | Matches the stated order. Submission is derived from store facts (lease + no linked PR), so a daemon restart or a skipped verb cannot lose it; resubmission after remediation needs no extra agent step; and it removes `git push` from the agent's toolchain entirely, which dissolves the push-hook contradiction (D-C) structurally rather than by exemption. Rejected: an agent-invoked submit verb. | SH-647 | open |
 | D-B | **Per-project queue and locks; cross-project suites may overlap.** Lock key = the canonical git common dir, hashed into the lock name, so every worktree of one clone still serializes with that clone's verifier and a different repository does not. One verifier worker per project, each with its own ordering, incident halt and conflict hold. | User determination: "project-wide (not machine-wide)". Trade-off stated, not hidden: two projects' suites now contend for CPU on one machine; SH-627's quiesce rule still governs the release tier; no machine-wide cap (YAGNI — D14's lane budget bounds agents). | SH-648 | open |
 | D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected: other projects have no gate of their own. | done, **outside this repository** — the hook lives in no tracked file, its verdict token is `delegated`, and nothing in this suite fences it. Proven both ways on the day: this repository → delegated, exit 0; a plain repository with a red `make test` → blocked. | done |
-| D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | open |
+| D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | done — see "SH-649" under As built for the receipt contract this put on the value |
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | open |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | open |
@@ -91,7 +91,7 @@ not, and each row names one.
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | SH-648 |
 | Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | SH-651 |
 | The conflict hold is released when the paste fails | `wait_for_reconciled_candidate`, `return_for_repair`; `tests/verification_queue.rs::a_failed_conflict_notification_releases_the_reservation` | 1246, 1190-1213; 1439 | SH-650 |
-| `make test` is a literal in the gate invocation and in the comment text | `run_verification_gate` call (`scripts/verify-pr.sh`); GREEN and RED format strings (`src/daemon/verification.rs`) | 673; 896, 996 | SH-649 |
+| `make test` is a literal in the gate invocation and in the comment text | `run_verification_gate` call (`scripts/verify-pr.sh`); GREEN and RED format strings (`src/daemon/verification.rs`) | 673; 896, 996 | done (SH-649): `gate_command_for` (`src/service/gate_command.rs`), `verify-pr.sh <pr-url> -- <gate…>`, `{gate}` in both strings |
 | `scripts/verify-pr.sh` is a repo-relative literal in the daemon | `ShellVerificationActuator::verify` | 521 | SH-654 |
 | RED pastes into the dispatched pane; a dead pane parks the story | `cmd_notify` (`story.sh`); `set_generation_awaiting` fallback in `return_for_repair` | 3182-3215; 1204-1210 | SH-650 |
 | The verifier writes the literal `done`; reap requires the first CLOSED state | `record_generation_merged`, `record_merged`; `story_closed_state`, `cmd_reap_leased` (`story.sh`); `{done_state}` in `src/service/templates.rs` | 195, 523; 3435-3441, 4072-4078; 48 | SH-652 |
@@ -142,7 +142,7 @@ tell an interrupted verification from a fresh one (SH-547, SH-555).
 
 ### Mergeability, and the conflict queue-hold
 
-`scripts/verify-pr.sh <pr-url>` establishes the persistent verifier worktree,
+`scripts/verify-pr.sh <pr-url> -- <gate…>` establishes the persistent verifier worktree,
 refreshes the submission's refs (`refresh_submission_refs`: the PR head from
 `gh`, `refs/pull/N/head`, and `refs/heads/<branch>` on origin, required to
 agree three ways before anything is judged — SH-636), and runs
@@ -182,25 +182,53 @@ whether or not the first paste landed.
 
 ### The gate
 
+The gate is the project's own (SH-649, D-D): the daemon reads `[verify] gate`
+from the registered checkout's committed `.storyhook.toml`
+(`service::gate_command::gate_command_for`), `make test` when the file, the
+table or the key is absent, and hands it to `verify-pr.sh` as
+`<pr-url> -- <gate…>`. The script carries no default of its own —
+`GateCommand::DEFAULT` is the one place it lives — and refuses by name to run
+without one. The value is a **plain argv**: space-separated words of ASCII
+alphanumerics and `_.:/=@+,-`, the first not a flag, because every hop from
+the daemon to `merge-watch.sh --speculative-run … -- "$@"` execs it word for
+word with no shell, so `make test && echo ok` would reach `make` as three
+literal arguments. Anything else — and an unknown key under `[verify]`, which
+would otherwise land nowhere and silently run the default — is refused naming
+`[verify].gate`, the file, the value and the offending character; an
+unreadable pointer surfaces `read_pointer`'s own error rather than failing
+open. A refused gate is a **permanent infrastructure failure**: local
+configuration needing a person, taken before any journal or process exists,
+which halts the queue with a comment and is never returned to the implementor
+as a red. The gate named in the GREEN and RED comments is the one the verdict
+carries (`VerificationOutcome::{Merged, TestsFailed}.gate`), derived from the
+same parsed value the argv was.
+
 A tree with no `gate`/`full` receipt runs `run_verification_gate`, which
 takes `machine-lock.sh gate` around the whole run (SH-589) and executes
-`merge-watch.sh --speculative-run <tree> <base> <head> <worktree> -- make test`.
+`merge-watch.sh --speculative-run <tree> <base> <head> <worktree> -- <gate…>`.
 `merge-watch.sh` checks the speculative merge out privately (lease-local
 per-worktree administration, SH-552/SH-559) and execs the gate command in it
 with a scrubbed environment. `make test` is the **gate** tier: the whole Rust
 suite over `/api/v1/invoke` and the plugin shell leg, with the browser leg
-deferred by design (SH-394); `make test-full` is the release tier and is not
-what the verifier runs. A green run mints an ordinary `gate` receipt through
-`gate-receipt.sh postlude`, so the tree the verifier just certified needs no
-second run anywhere else (`selective-testing.md`, `test-tiers.md`).
+deferred by design (SH-394); `make test-full` is the release tier, and a
+project that wants it names it as its gate. A green run mints an ordinary
+`gate` (or `full`) receipt through `gate-receipt.sh postlude`, so the tree the
+verifier just certified needs no second run anywhere else
+(`selective-testing.md`, `test-tiers.md`).
 
-Both the command and its name in the GREEN/RED comment text are literals
-today. SH-649 reads `[verify] gate` from the candidate checkout's
-`.storyhook.toml`, passes it to `verify-pr.sh`, and derives the comment text
-from it. What is **not** configurable, and stays that way: the receipt tier a
-merge accepts (`gate` or `full`, never `changed` — a council decision on
-SH-429), and the verification allowlist of environment names the daemon lets
-through to the gate.
+**A gate must certify the tree it ran on.** Landing asks `merge-preflight.sh`
+for a `gate`/`full` receipt before it merges, and the receipt is minted by the
+suite itself, so a configured gate that does not end in `gate-receipt.sh
+postlude` (`make test-changed`, a bare test runner) exits 0 having certified
+nothing. `verify-pr.sh` re-asks `merge-preflight.sh` — the same reader, never
+a second parser of the receipt file — immediately after a green gate and
+refuses by name (`require_certified_by_gate`), rather than letting the refusal
+surface downstream from `reconcile_land_refusal` as "no longer has a
+qualifying release-gate receipt" after GitHub had been asked again. What is
+**not** configurable, and stays that way: the receipt tier a merge accepts
+(`gate` or `full`, never `changed` — a council decision on SH-429), and the
+verification allowlist of environment names the daemon lets through to the
+gate.
 
 ### Red
 
@@ -302,9 +330,47 @@ not parse it — the SH-136 rule); the invariant here is only that it
 ## As built
 
 Deviations from this document are recorded here, one entry per child, rather
-than in a second file. SH-647..SH-653 are open, and each lands with its own
-`### SH-N — <what changed>` entry and a status update in the decisions table
-above.
+than in a second file. Each child lands with its own `### SH-N — <what
+changed>` entry and a status update in the decisions table above.
+
+### SH-649 — `[verify] gate`, and the receipt contract it put on the value
+
+Built as D-D states, with one addition the decision did not name and three
+limits stated rather than glossed.
+
+**The addition: a gate that exits 0 but mints no receipt is refused by
+name.** D-D said the receipt tier stays non-configurable and left the
+consequence implicit — that a gate other than `make test`/`make test-full`
+certifies nothing and lands nothing. The story found the failure surfaced two
+steps downstream with a diagnosis about the wrong layer (the SH-576/SH-578
+shape), so `verify-pr.sh` now asks `merge-preflight.sh` again right after the
+gate ("The gate", above). Wrapping an arbitrary gate in
+`gate-receipt.sh preflight`/`postlude` ourselves was rejected: it nests when
+the gate is `make test`, whose own preflight discards the outer one.
+
+**Limits.**
+
+- The pointer is read from the **registered checkout's working tree**, not
+  from the merge tree being verified. The merge tree is only computed inside
+  `verify-pr.sh`, and a shell-side TOML parse would be a second reader
+  (SH-136). A PR that changes `[verify] gate` is therefore verified under the
+  checkout's current value, and takes effect once merged and checked out.
+- No project-identity check on the pointer, unlike `[github]`'s reader
+  (`pr_link.rs`): the actuator has no store handle, and the checkout is
+  already trusted for `scripts/verify-pr.sh` itself — a registered top level,
+  read root-only, never climbing.
+- A gate that emits no `gate-progress.sh` journal lines runs under
+  `VERIFICATION_IDLE_TIMEOUT`'s silence cap alone (derived from the default
+  gate's measured contended runtime); `make test` renews it per leg.
+- Until SH-654 ships the verifier scripts with storyhook, only a storyhook
+  checkout can be verified at all, so the receipt contract is the honest
+  boundary of "configurable" rather than a regression.
+
+Tests: `tests/gate_command.rs` (the rule, the reader, the pointer round
+trip), `tests/verification_queue.rs` (the shell actuator's argv, the refusal
+that spawns nothing, the derived comment text), `tests/merge_gate.rs` (the
+public path with a named gate, without one, and the certifies-nothing refusal
+with its positive control through the production receipt writer).
 
 ### SH-655 — D-B's "D14's lane budget bounds agents" was not true
 

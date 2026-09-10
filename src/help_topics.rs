@@ -247,13 +247,26 @@ other two:
   story set <id> ...     — per STORY. Sets a story's fields (title,
                            state, priority, assignee). Nothing to do
                            with a project.
-  .storyhook.toml        — per REPOSITORY. Its [plugin], [hooks], and
-                           [github] tables are decisions about this
-                           checkout, versioned with the branch and
-                           carried by a clone. Edit the file; storyhook
-                           does not write those for you.
+  .storyhook.toml        — per REPOSITORY. Its [plugin], [hooks],
+                           [github] and [verify] tables are decisions
+                           about this checkout, versioned with the
+                           branch and carried by a clone. Edit the
+                           file; storyhook does not write those for you.
 
 Repository configuration:
+  [verify]
+  gate = "make test"
+
+    The merge gate the verifier runs on a story's speculative merge
+    tree before landing its pull request; "make test" when absent. A
+    plain command line, run directly and never through a shell: words
+    separated by spaces, made of letters, digits and _ . : / = @ + , -
+    only. Anything else — quotes, $, &&, |, >, * — is refused by name.
+    The gate must certify the tree it ran on by ending in
+    scripts/gate-receipt.sh postlude at tier gate or full, as make test
+    and make test-full do; a gate that exits 0 without one is refused
+    before landing.
+
   [github]
   api_url = "https://github.example.com/api/v3"
 
