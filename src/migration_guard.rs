@@ -20,7 +20,10 @@
 //! The lookups live in [`crate::path_identity`], which SH-411 extracted when a
 //! second guard needed the same question asked — and reached the opposite
 //! conclusion from a *missing* answer, which is why the two share the facts
-//! and not the judgement.
+//! and not the judgement. A third guard, [`crate::daemon::seat_guard`]
+//! (SH-634), reads only the build-directory fact: it refuses the same
+//! uninstalled binary the daemon *seat* on the default store, which is the
+//! path the SH-630 incident travelled before this guard ever ran.
 //!
 //! **Has this binary left the directory cargo wrote it into?** `build.rs`
 //! stamps that directory ([`crate::path_identity::build_dir`]), and a binary
