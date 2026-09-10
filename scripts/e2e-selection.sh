@@ -102,3 +102,30 @@ e2e_list_selection() {
     fi
     printf '%s\n' "$listing"
 }
+
+# Prints the sum of the per-project test counts recorded as one file per
+# project under DIR (run-e2e.sh writes each project's `Total:` count there
+# before its real run). An absent or empty directory sums to 0 -- which is
+# the answer a caller refuses on: a run in which no project selected a test
+# executed nothing, and nothing executed is not a pass (SH-625).
+e2e_selection_tests_run() {
+    local dir file count sum
+    dir="$1"
+    sum=0
+    [ -d "$dir" ] || {
+        printf '0\n'
+        return 0
+    }
+    for file in "$dir"/*; do
+        [ -f "$file" ] || continue
+        count="$(head -n1 "$file")"
+        case "$count" in
+            '' | *[!0-9]*)
+                printf 'e2e-selection: %s holds "%s", not a test count\n' "$file" "$count" >&2
+                return 1
+                ;;
+        esac
+        sum=$((sum + count))
+    done
+    printf '%s\n' "$sum"
+}
