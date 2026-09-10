@@ -51,7 +51,7 @@ What each step does today, and which child closes the gap:
 | 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
 | 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the literal state `done` while `reap-leased` requires the project's **first CLOSED state** — the two agree only in a project whose first CLOSED state is spelled `done` | SH-652 (D-G) |
-| 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is a second reaper with no story-state gate and wider authority (it deletes the remote branch) | SH-653 (D-H) |
+| 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is the reap's retry path: it touches only a CLOSED story whose latest verification carries the verifier's CLEANUP COMPLETE/REQUIRED marker, and never the remote branch | done, SH-653 (D-H) |
 | — | (unstated) the verifier serves any project | `scripts/verify-pr.sh` is a repo-relative literal in the shipped daemon, so only a storyhook checkout can be verified | SH-654, filed beside the epic, not in it |
 
 ## Decisions of record
@@ -69,7 +69,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | open |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | open |
-| D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | open |
+| D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | done — see "SH-653" under As built for the generation the marker is read from, and for the remote branch leaving cleanup's scope entirely |
 
 A child that lands updates its row's status and adds an entry under "As
 built" below. A child that deviates from its row records the deviation there
@@ -259,12 +259,19 @@ retried by `next_cleanup`, queried separately from active verification so a
 cleanup fault cannot starve the gate. In a project whose first CLOSED state
 is not `done`, every retry fails the same way (SH-652).
 
-`story cleanup` (`workspace-cleanup.md`) is a second path to the same
-resources: daily from the daemon when `cleanup.auto` allows (a missing stamp
-counts as due), over every story with a lease, gated on git facts (clean,
-unlocked, tips reachable from the default branch, window closed) and on **no
-story state**, and deleting the remote branch as well as the local one. SH-653
-makes it the verifier's retry path and nothing more.
+`story cleanup` (`workspace-cleanup.md`) is the same reap's retry path by
+hand, and on the daemon's daily cadence when `cleanup.auto` allows (a missing
+stamp counts as due) — never an independent reaper (SH-653). Before any git
+work on a candidate it reads the store: the lease must name a story of this
+project, the story must be CLOSED, and the story's **latest verification
+generation** must carry the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED
+comment, read through the same `latest_generation` the verifier's own retry
+uses. Only then do the git gates run (clean, unlocked, window closed, worktree
+and local-branch tips reachable from the freshly fetched default branch), and
+what it removes is what `reap-leased` removes: the worktree and the local
+branch. It neither reads nor writes the remote branch, which `land-pr.sh`
+deleted at merge time. Every refusal is a skip with a reason, which is what
+`--dry-run` prints.
 
 ### The locks, and the one invariant every verification depends on
 
@@ -323,7 +330,7 @@ not parse it — the SH-136 rule); the invariant here is only that it
 | `test-tiers.md` | the tiers, receipts, `merge-preflight.sh`, the verifier worktree and its private objects, the gate lock's idle ceiling |
 | `selective-testing.md` | the `changed` tier and why a merge never accepts it |
 | `development-branch.md` | `dev` integrates, `main` releases; what a PR targets |
-| `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — subordinated by SH-653 |
+| `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — the reap's retry path since SH-653 |
 | `release-observer.md` | the third lock name and the observer that takes it |
 | `activity-log.md` | the verifier's tmux mirror and the daemon journal a stalled verification is diagnosed from |
 
@@ -371,3 +378,83 @@ trip), `tests/verification_queue.rs` (the shell actuator's argv, the refusal
 that spawns nothing, the derived comment text), `tests/merge_gate.rs` (the
 public path with a named gate, without one, and the certifies-nothing refusal
 with its positive control through the production receipt writer).
+
+### SH-653 — `story cleanup` is the reap's retry path, and the marker it reads is generation-scoped
+
+Built as D-H states, with two decisions the row left open, two siblings
+adopted on the way, and three limits stated rather than glossed.
+
+**The marker is read from the story's latest verification generation, never
+from "any comment on the story".** A story that was landed, reaped and marked
+COMPLETE, then reopened, re-verified and landed again, still carries the first
+generation's COMPLETE; a gate that read comments flat would have released
+cleanup to reap the second generation's worktree in the window before the
+verifier's own reap ran, concurrently with it. `latest_generation`
+(`src/service/verification.rs`) is now the one reader of a generation's lease,
+its GREEN and its reap marker — ordered by event position, never by timestamp
+(SH-336), `Complete` outranking `Required`, a retracted comment counting as
+none — and `next_cleanup` reads the same struct, which is the adopted sibling:
+under the flat scan the daemon's own retry read the stale COMPLETE as this
+generation's and never retried a failed second reap. Cleanup's history-derived
+lease comes from that generation too, where it used to be the last lease
+anywhere in history; the on-disk marker dispatch wrote stays a second source,
+and is load-bearing — the verifier's `reap_leased` fails outright when a
+generation has no history lease and writes CLEANUP REQUIRED, and the marker
+is then the only lease anything can reap from.
+
+**The remote branch leaves cleanup's scope entirely.** D-H said "never a
+remote branch `land-pr.sh` has not already removed"; the first draft refused a
+candidate whose remote branch still existed. Rejected on the mechanism:
+`reap-leased` never consults the remote, so cleanup would have answered
+differently from the verifier's own retry for the same workspace — the D-H
+complaint itself — and the refusal would have been permanent, since nothing
+else ever deletes that branch. Cleanup now neither reads nor writes the
+remote: no `ls-remote`, no remote-branch fetch, no `push --delete`, no
+`removed_remote_branch` on the report. Reachability from the freshly fetched
+default branch is still required of what cleanup *does* delete, the worktree
+HEAD and the local branch tip, so work committed after `done` is still refused
+as `unmerged-work`; a divergent remote-only commit no longer blocks the local
+reap, because nothing on the remote can be lost by a tool that never touches
+it.
+
+**CLOSED, not the completion state.** `reap-leased` also refuses
+`not-completion-state`. D-H says CLOSED, the marker already proves the
+verifier moved the story to `done`, a story later moved to another CLOSED
+state still has a disposable workspace, and SH-652 owns the resolver — so
+cleanup deliberately reads only `superstate`, and this is a stated deviation
+from `reap-leased`, not an oversight.
+
+**Adopted: an already-reaped lease is not a removal.** A candidate whose
+worktree and local branch were already gone was reported as a removal with
+every flag false, after paying the fetch — which, gated on the verifier's
+markers, would have listed every story ever reaped on every pass. Decided from
+local facts before the fetch: after a COMPLETE the absence is what the verifier
+verified and earns no line (a worktree recreated on the leased branch still
+does, which is why COMPLETE stays in scope); after a REQUIRED it is reported as
+`already-clean`, since a retry with nothing left to retry is worth saying.
+
+**Limits.**
+
+- A marker is a comment, and `StoryComment` carries no author: anyone can
+  write `CENTRAL VERIFICATION CLEANUP REQUIRED —` on a closed story and
+  release its workspace to cleanup. `next_cleanup` has the identical exposure
+  and always did; the gate is against a *state-blind* reaper, not a forged one.
+- A lease whose story the verifier never marked — every legacy lease from
+  before the verifier existed — is preserved forever and reported as
+  `not-verifier-released` on every pass. That is the decision, stated: the
+  verifier owns the first reap, and there is no second door.
+- A story whose latest generation carries no history lease is reachable only
+  through the on-disk marker; if that marker is gone too, nothing reaps it and
+  `story cleanup --dry-run` does not name it, because it has no lease to name.
+
+Tests: `tests/story_cleanup.rs` (the first end-to-end drive of
+`CleanupService::run` through the store — the gate precedes all git work, each
+refusal reason, the stale-generation case, the already-clean and
+verified-absent cases, and the daemon's `tick` running the one service),
+`src/service/cleanup.rs` (the `verifier_release` table; the remote branch
+surviving a local reap, as a positive control), `src/service/verification.rs`
+(`latest_generation`: adjacency, generation scoping, prefix-not-substring,
+precedence, retraction, `landed`), `tests/verification_queue.rs` (the
+reopen-and-land sequence `next_cleanup` used to misread). Mutation-checked:
+dropping the superstate clause, dropping the marker clause, and widening the
+generation scan to the whole log each fail their test.
