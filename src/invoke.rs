@@ -920,6 +920,7 @@ pub fn dispatch<S: Store>(
         | Invocation::Daemon { .. }
         | Invocation::Token { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Store { .. }
@@ -2287,6 +2288,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorInstall
+            | Invocation::LaneBudget
             | Invocation::DoctorAbandoned { .. }
             | Invocation::DoctorCrashes { .. }
             | Invocation::Store {
@@ -2355,6 +2357,16 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // it. Store-free, because "the store will not open" is the single most
         // important thing it can report.
         Invocation::DoctorInstall => Ok(Response::Message(crate::install_status::report()?)),
+        // SH-655: the machine lane budget against the caller's own tmux
+        // server. Answered here, client-side, because the census must come
+        // from the server the caller's `$TMUX` names — a daemon may sit on
+        // another socket — and must never start a daemon to ask. The RPC
+        // route can still reach this arm, like `DoctorInstall`; a daemon
+        // answering it reports its own socket's census, which is the engine's
+        // view rather than the operator's.
+        Invocation::LaneBudget => Ok(Response::LaneBudget(Box::new(
+            crate::lane_budget::LaneBudgetView::measure(),
+        ))),
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // The same shape as `DoctorAbandoned` immediately above, and for the
         // same reason (SH-287).
@@ -2701,6 +2713,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
@@ -2949,6 +2962,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Daemon { .. } => "daemon",
         Invocation::Token { .. } => "token",
         Invocation::DoctorInstall => "doctor-install",
+        Invocation::LaneBudget => "lane-budget",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::DoctorCrashes { .. } => "doctor-crashes",
         Invocation::Store { .. } => "store",
@@ -4032,6 +4046,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
