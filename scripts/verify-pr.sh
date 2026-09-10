@@ -278,12 +278,21 @@ run_verification_gate() {
             '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
-    if [ "$gate_status" -ne 0 ]; then
-        detail="$(verification_failure_detail "$gate_status" "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-            '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
-        exit 0
-    fi
+    # A completed red is reported through the return status rather than
+    # posted here, so the caller can confirm the head it judged is still the
+    # PR's head before anything is written (SH-637): `$gate_status`,
+    # `$gate_tree` and `$log` stay set for `emit_tests_failed`.
+    [ "$gate_status" -eq 0 ]
+}
+
+# Posts the red verdict for the gate `run_verification_gate` just reported as
+# failed. The wire shape is exactly the one it used to emit itself; only the
+# moment moved, to after the caller's head confirmation.
+emit_tests_failed() {
+    detail="$(verification_failure_detail "$gate_status" "$log")"
+    jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
+        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
+    exit 0
 }
 
 classify_land() {
@@ -425,6 +434,47 @@ refresh_submission_refs() {
     fi
 }
 
+# Confirms, immediately before a verdict is posted, that the head it judged is
+# still the PR's head (SH-637).
+#
+# `refresh_submission_refs` makes the head current at the START of an attempt;
+# nothing made it current at the END, and a verdict is a statement about a
+# head. Preflight is quick, but the release gate runs for minutes, and a push
+# that lands inside either window turns a true CONFLICT or RED into a verdict
+# about a commit nobody can act on — the same stale-report shape SH-636 fixed
+# at entry, arriving through the other door. Measured on SH-622 / PR #741 and
+# SH-625 / PR #740: three such verdicts in one session, each costing a full
+# implementer turn to prove that nothing was wrong.
+#
+# Re-reads GitHub, requires the same PR and base (anything else is an
+# identity change, as `reconcile_land_refusal` already rules), requires OPEN
+# (a PR that merged or closed meanwhile is the next attempt's entry path to
+# classify, so that is a retry), then asks `refresh_submission_refs` for the
+# converged head and requires it to be the one that was judged. A moved head
+# is RETRYABLE, never a verdict: the daemon's own cadence re-verifies the new
+# head, which is the only head a verdict could be about.
+#
+#   confirm_judged_head <pr> <base-name> <judged-head> <verdict> [<extra>]
+confirm_judged_head() {
+    judged_pr="$1"
+    judged_base="$2"
+    judged_head="$3"
+    judged_verdict="$4"
+    judged_extra="${5:-}"
+    current_metadata="$(gh pr view "$judged_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)" \
+        || retry_json "could not re-read PR #$judged_pr from GitHub before posting its $judged_verdict verdict; the verdict was not posted and the next attempt re-verifies.${judged_extra:+ $judged_extra}"
+    validate_metadata "$current_metadata"
+    [ "$pr" = "$judged_pr" ] \
+        || invalid_json "PR #$judged_pr was re-read as PR #$pr before its $judged_verdict verdict"
+    [ "$base" = "$judged_base" ] \
+        || invalid_json "PR #$pr changed base branch from $judged_base to $base while it was being verified"
+    [ "$state" = OPEN ] \
+        || retry_json "PR #$pr is $state, not OPEN, now that its $judged_verdict verdict is ready; the verdict was not posted and the next attempt classifies the $state pull request from the start.${judged_extra:+ $judged_extra}"
+    refresh_submission_refs "$pr" "$base" "$head_branch" "$reported_head"
+    [ "$head" = "$judged_head" ] \
+        || retry_json "PR #$pr head moved from $judged_head to $head while it was being verified; the $judged_verdict verdict for the superseded head was not posted, and the next attempt verifies the new head.${judged_extra:+ $judged_extra}"
+}
+
 reconcile_land_refusal() {
     refresh_status="$1"
     refreshed_metadata="$2"
@@ -501,7 +551,7 @@ if [ "${1:-}" = --run-gate ]; then
     shift
     gate_args=("$1" "$2" "$3" "$4" "$5")
     shift 6
-    run_verification_gate "${gate_args[@]}" "$@"
+    run_verification_gate "${gate_args[@]}" "$@" || emit_tests_failed
     jq -n '{result:"gate-passed"}'
     exit 0
 fi
@@ -602,13 +652,14 @@ gate_progress_emit_item "pull request refs" passed "seconds=$(( $(date +%s) - _r
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
-preflight="$(activity_run "merge-preflight.sh" bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
+preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "$base_ref" "$head_ref" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
 case "$preflight_status" in
 (2)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
+    confirm_judged_head "$pr" "$base" "$head" conflict
     jq -n --arg detail "$preflight" '{result:"conflict", detail:$detail}'
     exit 0
     ;;
@@ -619,7 +670,10 @@ case "$preflight_status" in
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
-    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" make test
+    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" make test || {
+        confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
+        emit_tests_failed
+    }
     ;;
 (*)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
@@ -630,7 +684,7 @@ esac
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running
 _land_start=$(date +%s)
-land_output="$(activity_run "land-pr.sh" bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
+land_output="$(activity_run "land-pr.sh" bash "$script_dir/land-pr.sh" "$submitted_pr" 2>&1)"
 land_status=$?
 gate_progress_emit_item "land pull request" \
     "$([ "$land_status" = 0 ] && echo passed || echo failed)" \
