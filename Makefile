@@ -374,9 +374,12 @@ release-build:
 # `./target/debug/story list`, typed here, resolves the REAL store and the real
 # daemon on 3456 -- `is_test_build` does not stop a `cargo build` binary, and
 # this repository's committed `.storyhook.toml` names the project storyhook
-# tracks itself with. Before this target the only way to exercise a change by
-# hand was `make install`, which replaces the binary everything else on the
-# machine runs.
+# tracks itself with. Since SH-634 that command is refused a daemon there (a
+# build still in its build directory may neither replace the installed daemon
+# nor start one for the default store), which is a loud stop rather than a
+# place to work. Before this target the only way to exercise a change by hand
+# was `make install`, which replaces the binary everything else on the machine
+# runs.
 #
 # The isolation is the test suite's own (`scripts/test-env.sh`, documented by
 # `story help test-environment`), so exercising a change by hand runs under the

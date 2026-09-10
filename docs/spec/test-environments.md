@@ -17,6 +17,7 @@ The defences existed, and each was added where its incident happened:
 | `TestEnv` | `crates/storyhook-test-support/src/env.rs` | the test files that use it |
 | `is_test_build()`'s refusal | `src/env/mod.rs` | a bare `cargo test` with **nothing** naming a store |
 | `migration_guard`, `install_guard` | `src/migration_guard.rs`, `src/daemon/install_guard.rs` | a schema advance, a launchd enthronement |
+| `seat_guard` (SH-634, later) | `src/daemon/seat_guard.rs` | the default store's daemon seat — replacing its daemon, or starting one at all |
 | derived scans | `tests/store_isolation.rs` | drift in three named variables |
 
 What did **not** exist was a statement, anywhere, of what a storyhook test
@@ -315,6 +316,41 @@ unchanged. The wedge itself — a daemon that answered its shutdown and never
 released the pidfile lock, under two concurrent plugin suites and a night of
 daemon churn — did not reproduce and is deliberately not claimed fixed; what is
 fixed is its blast radius, and any recurrence now names one test.
+
+## As built — the seat guard (SH-634)
+
+The hazard this document opens with — `./target/debug/story list`, typed in a
+worktree, resolves the real store and the real daemon — was still true after
+`make scratch` gave a person somewhere else to type it. On 2026-09-09 it was
+observed rather than described: a `PATH=target/debug:$PATH story list` from a
+checkout stood down the installed daemon on the production store and seated a
+worktree debug build in its place; the next installed `story` seated the
+installed build back; four custodians in one hour. SH-630 stopped the migration
+that build then ran. `src/daemon/seat_guard.rs` stops the seating.
+
+The rule: **an uninstalled build never becomes the default store's daemon.** A
+binary whose canonical executable sits inside the directory `build.rs` stamped
+is refused, before the shutdown request, from replacing a live daemon of
+another build on the default store (`StoreLocation::is_default`), and is refused
+a daemon at all when nothing named the store (`StoreOrigin::XdgDefault`). Both
+clauses permit under `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1`; the parameter table
+above clears it beside the migration override, and `--uninstalled-build`
+re-arms both. Why the two clauses key on different facts, where the guard sits
+in `spawn_locked` and why that ordering is a contract, and what it deliberately
+does not cover are on the module. The alternative the story offered — refuse the
+stand-down but let the uninstalled client talk to the incumbent — was rejected:
+since SH-114 the service runs inside the daemon, so a worktree build talking to
+the installed daemon would exercise none of the worktree's changes while looking
+exactly as though it had.
+
+What this changes for the scratch environment: the re-arm of the seat override
+is load-bearing, not tidy. A `cargo build` inside a scratch shell changes the
+binary's mtime, so the daemon still serving the root reads as "another build"
+and the next command would meet the first clause. Proven end to end in
+`tests/seat_guard.rs` with the same installed-copy fixture
+`tests/migration_guard.rs` uses (`storyhook_test_support::installed_copy`, shared
+now rather than copied): the control for "an installed binary replaces a stale
+daemon" is what `make install` produces, never the incident.
 
 ## Deliberately out of scope
 
