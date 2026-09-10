@@ -1433,7 +1433,32 @@ Standing rules for every wave:
   behaviourally by `test-daemon-containment.sh`, mutation-checked. Design of record:
   `docs/spec/test-environments.md`. Sibling found and filed separately: the e2e harness's
   daemons write pidfiles, backups and journals into the developer's **real**
-  `~/.local/state/storyhook/daemons/` (40 of them on the filing day).
+  `~/.local/state/storyhook/daemons/` (40 of them on the filing day) — SH-633, next.
+- **A child told the store but not the state home starts a second daemon for that store**
+  (SH-633). Filed as an e2e-harness leak of 40 runtime directories; measured at 1,199 —
+  every browser-tier run since August *and* the Rust suite's own real-helper reap test —
+  and the harness was never the cause: `run-e2e.sh` and `TestEnv` both export
+  `XDG_STATE_HOME`, and `spawn_child` inherits everything. The drop was
+  `src/env/spawn_env.rs`'s dispatch allowlist, which cleared a `story.sh` child's
+  environment and restored `HOME` and every `STORYHOOK_*` name but no `XDG_*` one — so
+  `story` inside that child kept the fixture store, resolved its state home from the
+  developer's real `HOME`, found no portfile there for that store, and started a second
+  daemon publishing under `~/.local/state/storyhook/daemons/<key>`. SH-113's one-daemon-
+  per-store invariant holds only while parent and child agree about **both** halves of
+  that path. Two mechanisms, because each covers a case the other cannot: the three XDG
+  base directories travel with `HOME` on `COMMON_MAY_SEE` (a state home the parent
+  *process* had), and `Environment::child_vars` is the one door through which the four
+  sites that spawn from an `Environment` publish its store **and** its state home (a state
+  home the parent *environment* has — for an in-process `Environment::at` fixture, never in
+  any process environment at all). Both fences are derived: every `TEST_ENVIRONMENT`
+  parameter must satisfy `dispatch_permits`, and no `src/` file but the door's may
+  `.env("STORYHOOK_STORE_PATH", …)`. The real-binary test asks `story daemon status`
+  inside the child where it believes the daemon lives — under the mutation it answered
+  with the developer's own home, which is the leak stated as an assertion message.
+  **Not** added: the story's proposed refusal of a temp store under a durable state home —
+  SH-426's own refusal text sanctions exactly that for a session, and the defect was never
+  temp-versus-durable, it was parent-versus-child. Runtime directories for stores that no
+  longer exist are still never reaped; that sweeper is filed separately.
 - **A hygiene gate asks git whether an artifact is tracked or ignored, never the
   filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
   was absent from disk; the file is gitignored precisely so an agent can write it locally
