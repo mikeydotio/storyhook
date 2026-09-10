@@ -97,7 +97,11 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # exercises the REAL `story` binary this build just produced (never a
 # possibly-stale globally-installed one, and never a fake -- a fake can't
 # catch a genuine CAS race or a real is_ready() interaction), so `cargo
-# build` runs first and target/debug is prepended to PATH for that one step.
+# build` runs first. Nothing is prepended to PATH here: `plugins/story/tests/
+# lib.sh` resolves the artifact from the checkout itself and puts a hard-link
+# LEASE of it on PATH (SH-639), so the gate and a hand-typed `bash test-foo.sh`
+# are one code path, and a `cargo` landing mid-leg cannot swap a test's binary
+# -- and its daemon's identity -- out from under it.
 #
 # The orphan check brackets the run: before, because a survivor of an earlier
 # run makes this one lie (SH-51), and after, because a run that leaks one has
@@ -203,7 +207,7 @@ _test-body:
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
+	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 
 # The selective tier (SH-429). Identical to `test` except the rust-suite leg
@@ -237,7 +241,7 @@ _test-changed-body:
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
+	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts

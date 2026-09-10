@@ -21,6 +21,13 @@
 #
 # Asserted by resolving the name the way the suite itself does, rather than by
 # reading `$PATH`: `command -v` is the question every fixture actually asks.
+#
+# "This checkout's own build" is a claim about an INODE, not a path (SH-639):
+# what lib.sh puts on `$PATH` is a hard-link lease of the artifact under
+# `.storyhook-test-binaries/` beside it, so a rebuild mid-test cannot change
+# the binary this test is running. `-ef` is device-and-inode equality, the
+# same question `scripts/e2e-daemon-check.sh` asks of the browser runner's
+# daemon; a string compare would be wrong in both directions.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -36,8 +43,12 @@ expected="${CARGO_TARGET_DIR:-$repo_root/target}/debug/story"
 resolved_phys="$(cd "$(dirname "$resolved")" && pwd -P)/$(basename "$resolved")"
 expected_phys="$(cd "$(dirname "$expected")" && pwd -P)/$(basename "$expected")"
 
-assert_eq "$resolved_phys" "$expected_phys" \
-  "\`story\` must resolve to this checkout's own build"
+[ "$resolved" -ef "$expected" ] \
+  || fail_test "\`story\` must be this checkout's own build (same inode as $expected_phys), got $resolved_phys"
+case "$resolved_phys" in
+  "$(dirname "$expected_phys")/$STORYHOOK_BINARY_LEASE_DIR"/*/story) : ;;
+  *) fail_test "\`story\` must resolve through a lease beside the artifact, not the artifact itself: $resolved_phys" ;;
+esac
 
 # …and it must be the build, not a stale artifact of some other checkout that
 # happens to sit at the same path. `--version` carries a build id derived from

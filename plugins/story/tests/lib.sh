@@ -199,11 +199,39 @@ fi
 # which names a state, a project and a store -- and not the one thing that was
 # actually wrong.
 #
-# `make test` has always supplied this (`Makefile`'s plugin leg prepends
-# `target/debug`), which is exactly why it went unnoticed: the gate was right
-# and the standalone path was silently testing something else. This is the
-# SH-226 shape one layer over -- what a process IS, rather than what a `$PATH`
-# happens to resolve.
+# `make test` used to supply this too (`Makefile`'s plugin leg prepended
+# `target/debug` until SH-639), which is exactly why it went unnoticed: the
+# gate was right and the standalone path was silently testing something else.
+# This is the SH-226 shape one layer over -- what a process IS, rather than
+# what a `$PATH` happens to resolve. The artifact is resolved HERE, from the
+# checkout, and never read off `$PATH`; `make test` and a hand-typed
+# `bash test-foo.sh` are one code path (SH-631).
+#
+# WHAT GOES ON `$PATH` IS A LEASE OF THE ARTIFACT, NEVER THE ARTIFACT (SH-639).
+# Cargo replaces `target/debug/story` by writing a new inode and renaming it
+# over the entry, and a daemon's identity is `(version, exe, exe_mtime)`
+# (`DaemonInfo::is_this_binary`) -- so with the bare artifact on `$PATH`, any
+# `cargo build|test|check` in the checkout landing mid-test changed the
+# identity of the test's own daemon, and the next `story` call stood it down
+# and restarted it on a fresh port, silently. `scripts/binary-lease.sh` (the
+# shell rendering of SH-532's `story_binary()`, given to the browser runner by
+# SH-635) hard-links the artifact into `<artifact dir>/.storyhook-test-binaries/
+# <pid>-<nonce>/story`, so the inode this test started with stays alive and
+# unchanged for as long as the link does. The owner is `$$` -- this test --
+# for the reason its daemon is (SH-631): the lease dies with the test, and the
+# sweeper reclaims one whose owner is provably gone.
+#
+# ONLY THE INSTANCE THAT OWNS THE HOME LEASES. A nested `bash -c 'source
+# lib.sh'` (test-temp-cleanup.sh) shares its caller's store AND daemon, and
+# identity is a PATH compare: a second lease of the same inode at a second
+# path would make the nested instance's first `story` call stand the shared
+# daemon down -- the very restart this block exists to prevent. The nested
+# instance inherits the outer lease through the exported `$PATH` and refuses
+# by name if that is not what it finds.
+#
+# The lease directory is registered for `_cleanup`, which removes it AFTER
+# `story daemon stop --force`: the stop needs `story` on `$PATH`, so the lease
+# must outlive the daemon, never the other way round.
 #
 # Prepended rather than replacing `$PATH`: the suite needs `git`, `jq` and the
 # fake tmux, and a test file's own `PATH="$TESTS_DIR/fakes:$PATH"` still wins
@@ -217,7 +245,29 @@ if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "  first, or \`make test\`, which does." >&2
   exit 1
 fi
-export PATH="$_STORY_TARGET_DIR/debug:$PATH"
+# shellcheck source=../../../scripts/binary-lease.sh
+. "$TESTS_DIR/../../../scripts/binary-lease.sh"
+if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
+  _STORY_LEASE="$(storyhook_lease_binary "$_STORY_TARGET_DIR/debug/story")" || exit 1
+  _STORY_LEASE_DIR="$(dirname "$_STORY_LEASE")"
+  _TMP_REPOS+=("$_STORY_LEASE_DIR")
+  export PATH="$_STORY_LEASE_DIR:$PATH"
+  unset _STORY_LEASE _STORY_LEASE_DIR
+else
+  _STORY_INHERITED="$(command -v story || true)"
+  case "$_STORY_INHERITED" in
+    "$_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR"/*/story) : ;;
+    *)
+      echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
+      echo "  so it shares its caller's daemon, but \`story\` resolves to" >&2
+      echo "  [${_STORY_INHERITED:-nothing}] rather than the caller's lease under" >&2
+      echo "  $_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR/. A second" >&2
+      echo "  binary path would restart the shared daemon (SH-639)." >&2
+      exit 1
+      ;;
+  esac
+  unset _STORY_INHERITED
+fi
 unset _STORY_TARGET_DIR
 
 # --- fake-tmux state isolation ---------------------------------------------
