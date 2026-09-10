@@ -376,6 +376,22 @@ export function requiredEnv(name: string): string {
 }
 
 /**
+ * The `story` binary a spec may run: the LEASED hard link `scripts/run-e2e.sh`
+ * made of `target/debug/story` after building it, exported as
+ * `DASHBOARD_STORY_BIN` (SH-635). Never `resolve("../target/debug/story")`:
+ * that is Cargo's mutable artifact, and any `cargo build|test|check` in the
+ * checkout while the suite is live replaces it -- after which a spec calling
+ * it would be the very client that finds the running daemon's identity is not
+ * its own and replaces the daemon on a new port, failing every later test.
+ * The runner, the daemon it started and every spec must run one inode; this
+ * is the specs' single door to it, and `tests/e2e_browser_coverage.rs` fails
+ * the build on any spec that names the artifact path itself.
+ */
+export function storyBinary(): string {
+  return requiredEnv("DASHBOARD_STORY_BIN");
+}
+
+/**
  * Whether `scripts/run-e2e.sh` measured this machine as having WebKit's Tab
  * order include buttons and links (macOS's `AppleKeyboardUIMode >= 2`,
  * "Full Keyboard Access"), rather than its default of "text boxes and lists

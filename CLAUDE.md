@@ -1434,6 +1434,24 @@ Standing rules for every wave:
   `docs/spec/test-environments.md`. Sibling found and filed separately: the e2e harness's
   daemons write pidfiles, backups and journals into the developer's **real**
   `~/.local/state/storyhook/daemons/` (40 of them on the filing day).
+- **A shell harness runs a lease of the binary, never Cargo's own path** (SH-635).
+  `scripts/run-e2e.sh` ran `target/debug/story` directly — for its daemon, its seeding,
+  and, through five specs, every CLI call the suite made — and one `cargo test` beside a
+  live chromium run rewrote that path: the daemon's `(exe, exe_mtime)` identity no longer
+  matched, the next client replaced it on a new port, and 167 tests failed in 25 minutes
+  with nothing naming why (the SH-627 shape). `scripts/binary-lease.sh` is SH-532's
+  hard-link lease one language over — same root, same `<pid>-<nonce>` shape, so either
+  sweeper reclaims the other's dead leases — taken right after `cargo build` and handed to
+  the specs as `DASHBOARD_STORY_BIN` through `support.ts`'s `storyBinary()`, the one door
+  `tests/e2e_browser_coverage.rs` enforces over every tracked file under `e2e/`. It lives
+  beside the artifact because a hard link cannot cross to `/private/tmp`. After each
+  Playwright run `scripts/e2e-daemon-check.sh` asks whether the daemon that answered is
+  the one the runner started — port, exe **inode**, liveness; **never pid**, since
+  `untrusted-origin-cookie.spec.ts` restarts it on purpose — and reports a failure as one
+  dead daemon, not N tree failures, failing the project even on a green verdict. Adopted
+  on the way: `check-no-orphan-servers.sh`'s own-tree pattern was anchored on the bare
+  `target/debug/story` and had been blind to every leased daemon since SH-532. Design of
+  record: `docs/spec/test-tiers.md`'s "The browser runner gets the same lease".
 - **A hygiene gate asks git whether an artifact is tracked or ignored, never the
   filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
   was absent from disk; the file is gitignored precisely so an agent can write it locally
