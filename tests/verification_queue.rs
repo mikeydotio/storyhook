@@ -1135,7 +1135,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
         assert!(
             fixture
                 .store()
-                .read(|tx| tx.verification_incident())
+                .read(|tx| tx.verification_incident(fixture.project()))
                 .unwrap()
                 .is_none()
         );
@@ -1270,7 +1270,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
         assert!(
             fixture
                 .store()
-                .read(|tx| tx.verification_incident())
+                .read(|tx| tx.verification_incident(fixture.project()))
                 .unwrap()
                 .is_none()
         );
@@ -2316,7 +2316,7 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
     assert!(row.snapshot.comments[0].text.contains("HALTED"));
     let incident = fixture
         .store()
-        .read(|tx| tx.verification_incident())
+        .read(|tx| tx.verification_incident(fixture.project()))
         .unwrap()
         .unwrap();
     assert!(incident.halted);
@@ -2344,7 +2344,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     );
     let incident = fixture
         .store()
-        .read(|tx| tx.verification_incident())
+        .read(|tx| tx.verification_incident(fixture.project()))
         .unwrap()
         .unwrap();
     assert_eq!(incident.attempts, 1);
@@ -2352,7 +2352,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     let reopened = SqliteStore::open(fixture.store().path()).unwrap();
     assert_eq!(
         reopened
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .as_ref(),
         Some(&incident),
@@ -2405,7 +2405,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     assert_eq!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .as_ref()
             .map(|current| current.incident_id.as_str()),
@@ -2431,7 +2431,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );
@@ -2525,7 +2525,7 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );
@@ -2574,7 +2574,7 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );

@@ -240,9 +240,9 @@ pub(super) fn put_verification_incident(
     incident: &VerificationIncident,
 ) -> Result<(), StoreError> {
     sql(conn.execute(
-        "INSERT INTO verification_incident (singleton, incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
-         ON CONFLICT(singleton) DO UPDATE SET incident_id=excluded.incident_id, project_id=excluded.project_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
+        "INSERT INTO verification_incident (incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT(project_id) DO UPDATE SET incident_id=excluded.incident_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
         params![incident.incident_id, incident.project.get(), incident.story.get(), incident.generation.get(),
             incident.disposition.as_str(), if incident.halted { "halted" } else { "retrying" },
             incident.attempts, incident.detail, incident.first_failed_at, incident.last_failed_at],
@@ -256,7 +256,7 @@ pub(super) fn clear_verification_incident(
 ) -> Result<bool, StoreError> {
     Ok(sql(
         conn.execute(
-            "DELETE FROM verification_incident WHERE singleton = 1 AND incident_id = ?1",
+            "DELETE FROM verification_incident WHERE incident_id = ?1",
             params![incident_id],
         ),
         "clearing the verification incident",

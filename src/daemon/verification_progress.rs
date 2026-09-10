@@ -345,9 +345,26 @@ pub fn publish_once(
     now: &str,
     activity: &VerificationActivity,
 ) -> Result<bool, AppError> {
-    let ordered = VerificationQueue::new(store).ordered()?;
+    // Per project, so a queued story's position and blocker are its own
+    // project's (SH-648) — the same slices its worker and its dashboard read.
+    let projects = store.read(|tx| tx.projects())?;
+    let mut moved = false;
+    for project in projects {
+        moved |= publish_project(store, env, now, activity, project.id)?;
+    }
+    Ok(moved)
+}
+
+fn publish_project(
+    store: &impl Store,
+    env: &Environment,
+    now: &str,
+    activity: &VerificationActivity,
+    project: crate::store::ProjectId,
+) -> Result<bool, AppError> {
+    let ordered = VerificationQueue::new(store).ordered_for(project)?;
     let active = activity.active();
-    let incident = store.read(|tx| tx.verification_incident())?;
+    let incident = store.read(|tx| tx.verification_incident(project))?;
     let statuses =
         status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
     let mut moved = false;
