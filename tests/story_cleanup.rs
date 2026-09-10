@@ -213,6 +213,68 @@ fn a_cleanup_required_marker_releases_the_workspace_and_dry_run_previews_it() {
 }
 
 #[test]
+fn a_retry_that_finds_nothing_left_is_reported_as_already_clean_never_as_a_removal() {
+    let leased = Leased::new();
+    leased.move_to("done");
+    leased.comment(&format!(
+        "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} reap failed: x"
+    ));
+    let first = leased.run(false);
+    assert_eq!(first.removed.len(), 1, "{first:?}");
+
+    let second = leased.run(false);
+
+    assert_eq!(second.candidates, 1);
+    assert!(second.removed.is_empty(), "{second:?}");
+    assert_eq!(
+        skip_reasons(&second),
+        vec![(leased.id.clone(), "already-clean".to_string())]
+    );
+}
+
+#[test]
+fn a_verified_absent_workspace_is_not_a_candidate_unless_something_came_back() {
+    let leased = Leased::new();
+    leased.move_to("done");
+    leased.comment(&format!(
+        "{VERIFICATION_CLEANUP_COMPLETE_PREFIX} exact leased worktree, branch, and agent window were verified absent."
+    ));
+    // The verifier's own reap has already run; nothing is on disk.
+    let reaped = leased.run(false);
+    assert_eq!(reaped.removed.len(), 1, "{reaped:?}");
+
+    let quiet = leased.run(true);
+    assert!(quiet.removed.is_empty(), "{quiet:?}");
+    assert!(
+        quiet.skipped.is_empty(),
+        "a story the verifier verified absent must not be listed on every pass: {:?}",
+        quiet.skipped
+    );
+
+    // A worktree recreated on the same branch after the reap is the case
+    // COMPLETE stays in scope for.
+    let output = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            &leased.workspace.worktree.to_string_lossy(),
+            "-b",
+            &leased.workspace.branch,
+            "dev",
+        ])
+        .current_dir(&leased.workspace.checkout)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let back = leased.run(true);
+    assert_eq!(back.removed.len(), 1, "{back:?}");
+}
+
+#[test]
 fn a_stale_complete_marker_from_an_earlier_generation_does_not_release_the_next() {
     let leased = Leased::new();
     leased.move_to("done");
