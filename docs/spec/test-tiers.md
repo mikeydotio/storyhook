@@ -622,6 +622,65 @@ config names, rather than the selected project's, would have refused Chromium's
 `tests/e2e_launch_probe.rs` pins the council's two settings and the probe's wiring,
 in SH-360's sense: a call site exists, never that it reaches the right pixel.
 
+### As built, fourth reading: an empty selection is an answer, a failed listing is not (SH-625)
+
+Found while verifying SH-622/SH-623 on the release branch: `scripts/run-e2e.sh`
+printed "selects no tests under this filter — skipping" for a four-spec triage
+run, executed nothing, and exited 0. The wrapper asked Playwright `--list` whether
+the project selected anything, then discarded stderr and the exit status and read
+the answer as text — and Playwright's text is the same for an empty selection and
+for a listing that never happened. Measured on the pinned 1.63.0, this repository's
+config, no browser, no daemon:
+
+| `--list --reporter=list` | stdout | exit | stderr |
+|---|---|---|---|
+| filter matches nothing | `Total: 0 tests in 0 files` | 1 | `Error: No tests found.` |
+| one selected spec fails to load | `Total: 0 tests in 0 files` | 1 | the load error |
+| unknown flag / unknown project | nothing | 1 | Playwright's own message |
+
+A load failure in **any** selected file zeroes the whole listing. The story's
+suspicion — that four positional filters select nothing where one selects — was
+refuted before anything was changed: Playwright ORs plain regexes
+(`createFiltersFromArguments`), and the story's exact command lists 34 tests in 4
+files on this tree and on both commits of the branch it was found on. The only
+mechanism producing that output is a selected spec that would not load, which is
+consistent with an uncommitted mid-repair edit at the moment of the sighting.
+
+**The discriminator is structural.** Under `--pass-with-no-tests` Playwright's own
+exit status tells the two apart — no error-message text is matched:
+
+| `… --pass-with-no-tests` | stdout | exit |
+|---|---|---|
+| no match / nonexistent file / `-g` matching nothing | `Total: 0 tests in 0 files` | **0** |
+| a selected spec fails to load | `Total: 0 tests in 0 files` | 1, error on stderr |
+| unknown flag / unknown project | no `Total:` line | 1 |
+
+`scripts/e2e-selection.sh` is the decision, sourced by the runner: a nonzero
+listing is **refused** with Playwright's stderr replayed verbatim, so the spec that
+would not load is named; a successful listing with no readable `Total:` line is
+refused rather than read as zero; only a listing that happened and selected nothing
+skips. The library exists because `run-e2e.sh` cannot be sourced by a test (a
+`cargo build`, seeding, a daemon at top level), and `tests/e2e_selection.rs` drives
+the tracked file through a symlink with a fake `playwright` whose stdout, stderr and
+exit are chosen per case — the flag that makes the exit status mean what the
+library says it means is asserted in the fake's recorded argv, because deleting it
+is the one-token edit that reopens the defect. The measured Playwright version is
+recorded in the library and compared to `e2e/package.json`'s pin, since the drift
+the harness cannot see at run time is a future Playwright exiting 0 on a load error.
+
+**The rule that outlives the fix:** a run in which no project selected a test exits
+1, whatever each project's own verdict was. Each project records its `Total:` count
+under `e2e/test-results/current/selected/` before its real run and the runner sums
+them after the loop. The per-project skip stays — the SH-335 loop legitimately gives
+`chromium`/`webkit` nothing under a `.mobile.spec.ts` filter while the mobile pair
+runs — and only the sum can tell that from a filter typo, or from an explicit
+`--project=` given a filter it cannot match. Every gate-tier caller passes no
+filter, so this fires only on interactive and triage runs: precisely the moment
+someone is deciding whether a fix works. Weighed and rejected: `--reporter=json`,
+whose `errors[]` is structured but still identifies "No tests found" by message
+text, and whose suite tree would have replaced the list-reporter line shape that
+`known_total`, `real_dispatch_selected` and `tests/e2e_browser_coverage.rs` parse.
+
 ## The timing-ceiling rule
 
 A wall-clock ceiling states that some deadline *D* was not spent. It is only
