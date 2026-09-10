@@ -197,6 +197,29 @@ Standing rules for every wave:
   baseline it is compared against. `tests/timing_assertions.rs` fences the bare-literal shape
   mechanically, in either comparison direction and whether or not the type is qualified;
   it cannot judge whether a margin is wide enough, only that the question was asked by name.
+- **A bare seconds argument to a script is the same claim as a bare `Duration`, and a
+  fixture's startup is never under the clock it is testing** (SH-643). `tests/machine_lock.rs`
+  handed `scripts/machine-lock.sh` a bare `--max-idle 2` at eight sites, each with a holder
+  whose first statement wrote the journal; the script's silence clock starts at **fork**, and
+  under load 25–64 on 10 cores four holders were never scheduled inside the ceiling (ELAPSED
+  00:02, TIME 0:00.00, `<journal is empty>`), so the fixture's own spawn latency decided the
+  verdict. **Measured before it was fixed, because the obvious repair was wrong**:
+  spawn-to-first-line is 8ms on this machine at a load ratio of 0.92 and exceeded 2000ms at
+  2.5–6.4 — 250x for 5x — so spawn starvation is not proportional to `loadavg / cores`, and
+  a Rust twin of `e2e/load-grace.ts` would have granted 5–13s against an unbounded quantity.
+  The fix removes the dependence rather than estimating it: `ProgressFeeder`, in the fixture
+  and never the script, keeps the journal growing until a per-case sentinel says the holder
+  has finished its setup, so the clock only ever measures a *running* holder — which is what
+  every case was always about. It is self-bounding (a missing sentinel is a named failure,
+  never a hang — SH-528), never recreates a journal the holder removed, and reports why it
+  stopped, which every case asserts; that assertion is what turned
+  `arbitrary_output_does_not_renew_the_idle_ceiling` from vacuous into load-bearing. Every
+  ceiling derives from the script's own `LOCK_POLL_SECS`, and the regression test constructs
+  the straddle (SH-420) with a holder that sleeps past the ceiling before its first line.
+  `tests/timing_assertions.rs` fences the class one process boundary over: a flag the
+  script's own usage line declares with `<seconds>` may never be followed by a bare digit
+  literal in a tracked test file — vocabulary derived from the artifact, controls assembled
+  with `format!`. Design of record: `docs/spec/test-tiers.md`'s SH-643 "As built" reading.
 - **The browser suite's budgets bend to contention; its base budgets do not** (SH-347). A
   binding user determination, 2026-08-17: "relax the timeouts when machine is under load. If
   timeout fires, examine load, and if high contention, reset timeout timer (up to a maximum of
