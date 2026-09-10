@@ -450,6 +450,9 @@ pub enum ConfirmationPlan {
     /// A bulk "Archive" of every story in a CLOSED-superstate column
     /// (SH-43).
     HideState(HideStatePlan),
+    /// `story daemon gc` — the runtime directories of stores that no longer
+    /// exist, and everything inside them (SH-638).
+    RuntimeGc(crate::daemon::gc::RuntimeGcPlan),
 }
 
 impl ConfirmationPlan {
@@ -464,6 +467,9 @@ impl ConfirmationPlan {
             Self::DeleteStory(plan) => &plan.id,
             Self::SetPrefix(plan) => &plan.new_prefix,
             Self::HideState(plan) => &plan.state,
+            // Never typed: `RuntimeGc` confirms with one keystroke, and the
+            // refusal names `--force` rather than a token.
+            Self::RuntimeGc(_) => "reclaim",
         }
     }
 
@@ -491,6 +497,15 @@ impl ConfirmationPlan {
                 if plan.ids.len() == 1 { "y" } else { "ies" },
                 plan.state
             ),
+            Self::RuntimeGc(plan) => format!(
+                "this would remove {} runtime director{} for stores that no longer exist",
+                plan.candidates.len(),
+                if plan.candidates.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+            ),
         }
     }
 
@@ -500,10 +515,13 @@ impl ConfirmationPlan {
     /// [`Self::Delete`], [`Self::DeleteStory`] and [`Self::SetPrefix`] are each a
     /// one-way door, so the gate matches: prove the token was read by typing
     /// it. [`Self::HideState`] is reversible with `story unhide`, story by
-    /// story, so one keystroke is the right weight.
+    /// story, so one keystroke is the right weight. So is
+    /// [`Self::RuntimeGc`]: what it removes was throwaway by construction — a
+    /// store under a temp root, already gone — and the plan has named every
+    /// directory and every backup snapshot inside it.
     #[must_use]
     pub fn requires_typed_confirmation(&self) -> bool {
-        !matches!(self, Self::HideState(_))
+        !matches!(self, Self::HideState(_) | Self::RuntimeGc(_))
     }
 
     /// The yes/no prompt for a reversible plan. Kept with the plan so a new
@@ -512,6 +530,7 @@ impl ConfirmationPlan {
     pub fn confirmation_question(&self) -> &str {
         match self {
             Self::HideState(_) => "Archive these stories? [y/N] ",
+            Self::RuntimeGc(_) => "Reclaim these directories? [y/N] ",
             Self::Delete(_) | Self::DeleteStory(_) | Self::SetPrefix(_) => {
                 "Confirm this operation? [y/N] "
             }
@@ -1668,6 +1687,9 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
         ConfirmationPlan::DeleteStory(plan) => render_story_delete_plan(plan),
         ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
         ConfirmationPlan::HideState(plan) => render_hide_state_plan(plan),
+        // The plan renders itself: the same body `story daemon gc` prints
+        // when there is nothing to confirm, so a reader sees one shape.
+        ConfirmationPlan::RuntimeGc(plan) => plan.render(),
     }
 }
 

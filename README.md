@@ -460,6 +460,7 @@ story daemon status
 story daemon install [--this-binary]
 story daemon uninstall
 story daemon token
+story daemon gc [--force]
 story store new <path>
 story store backup [--label <text>]
 story tui
@@ -700,7 +701,15 @@ $XDG_DATA_HOME/storyhook/store.db      # ~/.local/share/storyhook/store.db
 $XDG_STATE_HOME/storyhook/             # ~/.local/state/storyhook/
   daemon.json  daemon.pid  daemon.log
   backups/
+  daemons/<key>/                       # one per store this machine has served
 ```
+
+A store named with `--store-path` keeps its daemon's runtime files under
+`daemons/<key>/`. Those directories are never removed on their own: `story daemon gc`
+lists the ones whose store was under a temp root and no longer exists, and removes
+them once you confirm (or with `--force`). Anything it cannot prove throwaway — a
+store that still exists, one outside a temp root, one a daemon or login agent still
+holds — stays, and is named with the reason.
 
 What a repository carries is one committed file:
 
