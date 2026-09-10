@@ -227,7 +227,7 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
         std::fs::write(
             result_path,
             serde_json::json!({
-                "alive": probe == WindowProbe::Alive,
+                "alive": matches!(probe, WindowProbe::Alive { .. }),
                 "probe": format!("{probe:?}"),
                 "stop_error": stopped.err().map(|error| error.to_string()),
             })
