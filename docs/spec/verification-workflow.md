@@ -47,9 +47,9 @@ What each step does today, and which child closes the gap:
 | 1 | storyhook pushes and opens the PR | the **agent** pushes, runs `gh pr create`, `story link-pr`, then `story move <n> verifying` (both charters in `story.sh`, the scaffolded `AGENTS.md`); `VerificationProblem::{MissingPullRequest, MultiplePullRequests, UnregisteredPullRequest}` catch a partial submission **after** the fact and return the story | SH-647 (D-A) |
 | 2 | one verifier per project; suites serialize per project | **one global worker** (`VerificationActivity`, a single slot) over a queue spanning every project (`ordered_candidates`); the `gate` and `merge` locks are keyed by **name only**, so two clones and two unrelated repositories serialize together | SH-648 (D-B) |
 | 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
-| 2 | not mergeable → instruct the agent and hold the queue | as stated, **but only while the dispatched pane is alive**; a dead pane releases the hold and parks the story with `awaiting` — see "The conflict queue-hold" | SH-650 (D-E) |
+| 2 | not mergeable → instruct the agent and hold the queue | as stated; a dead pane is re-dispatched in place and the hold continues (SH-650) — see "The conflict queue-hold" | done (SH-650, D-E) |
 | 3 | gate configurable per project | `make test` is a literal in `scripts/verify-pr.sh` and in the daemon's GREEN/RED comment text; no `[verify]` table in `.storyhook.toml`, no settings key | SH-649 (D-D) |
-| 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
+| 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; a dead pane or a missing window is re-dispatched in place (`dispatch --resume --auto`, same pane id or same window name, same worktree) and the diagnosis pasted after; `awaiting` only if the re-dispatch is refused | done (SH-650, D-E) |
 | 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the literal state `done` while `reap-leased` requires the project's **first CLOSED state** — the two agree only in a project whose first CLOSED state is spelled `done` | SH-652 (D-G) |
 | 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is a second reaper with no story-state gate and wider authority (it deletes the remote branch) | SH-653 (D-H) |
 | — | (unstated) the verifier serves any project | `scripts/verify-pr.sh` is a repo-relative literal in the shipped daemon, so only a storyhook checkout can be verified | SH-654, filed beside the epic, not in it |
@@ -66,7 +66,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-B | **Per-project queue and locks; cross-project suites may overlap.** Lock key = the canonical git common dir, hashed into the lock name, so every worktree of one clone still serializes with that clone's verifier and a different repository does not. One verifier worker per project, each with its own ordering, incident halt and conflict hold. | User determination: "project-wide (not machine-wide)". Trade-off stated, not hidden: two projects' suites now contend for CPU on one machine; SH-627's quiesce rule still governs the release tier; no machine-wide cap (YAGNI — D14's lane budget bounds agents). | SH-648 | open |
 | D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected: other projects have no gate of their own. | done, **outside this repository** — the hook lives in no tracked file, its verdict token is `delegated`, and nothing in this suite fences it. Proven both ways on the day: this repository → delegated, exit 0; a plain repository with a red `make test` → blocked. | done |
 | D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | open |
-| D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | open |
+| D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | open |
 | D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | open |
@@ -90,10 +90,10 @@ not, and each row names one.
 | One global worker; a queue spanning every project | `VerificationActivity::acquire` (`src/daemon/verification.rs`); `ordered_candidates` (`src/service/verification.rs`) | 88-110; 650 | SH-648 |
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | SH-648 |
 | Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | SH-651 |
-| The conflict hold is released when the paste fails | `wait_for_reconciled_candidate`, `return_for_repair`; `tests/verification_queue.rs::a_failed_conflict_notification_releases_the_reservation` | 1246, 1190-1213; 1439 | SH-650 |
+| The conflict hold is released when the paste fails | `wait_for_reconciled_candidate`, `return_for_repair`; `tests/verification_queue.rs::a_failed_conflict_notification_releases_the_reservation` | 1246, 1190-1213; 1439 | done (SH-650) — the test is now `a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue` |
 | `make test` is a literal in the gate invocation and in the comment text | `run_verification_gate` call (`scripts/verify-pr.sh`); GREEN and RED format strings (`src/daemon/verification.rs`) | 673; 896, 996 | SH-649 |
 | `scripts/verify-pr.sh` is a repo-relative literal in the daemon | `ShellVerificationActuator::verify` | 521 | SH-654 |
-| RED pastes into the dispatched pane; a dead pane parks the story | `cmd_notify` (`story.sh`); `set_generation_awaiting` fallback in `return_for_repair` | 3182-3215; 1204-1210 | SH-650 |
+| RED pastes into the dispatched pane; a dead pane parks the story | `cmd_notify` (`story.sh`); `set_generation_awaiting` fallback in `return_for_repair` | 3182-3215; 1204-1210 | done (SH-650) |
 | The verifier writes the literal `done`; reap requires the first CLOSED state | `record_generation_merged`, `record_merged`; `story_closed_state`, `cmd_reap_leased` (`story.sh`); `{done_state}` in `src/service/templates.rs` | 195, 523; 3435-3441, 4072-4078; 48 | SH-652 |
 | `story cleanup` reads every story, gates on no state, and deletes the remote branch | `CleanupService::run` (`src/service/cleanup.rs`); daily trigger in `src/daemon/cleanup.rs` | 97, 482-487; 64-70 | SH-653 |
 | `machine-lock.sh`'s header said its callers did not exist; specs counted two lock names; `merge-watch.sh`'s strip list silently depended on not stripping `STORYHOOK_MACHINE_LOCKS` | the header; `full-auto-engine.md` "Central verification and machine locks"; the `env -u` list | 9-12; 574; 283-289 | this document |
@@ -151,11 +151,18 @@ produce with `git merge-tree --write-tree` and checks it against the receipt
 store (SH-396). A conflict is `VerificationOutcome::Conflict`.
 
 On `Conflict` the worker calls `return_for_repair`: it records the generation
-as returned, moves the story back to `in-progress`, comments the diagnosis, and
-asks the actuator to `notify` — `story.sh notify`, which finds the story's
-tmux window, refuses with `pane-unavailable`, `pane-changed` or
-`pane-provider-unknown` when the window is gone or no longer runs the
-dispatched agent, and otherwise pastes the diagnosis and presses submit.
+as returned, moves the story back to `in-progress` (`RETURNED_STATE`),
+comments the diagnosis, and asks the actuator to `notify` — `story.sh notify`,
+which finds the story's tmux window and either pastes the diagnosis and presses
+submit, or refuses by name: `pane-unavailable` (no window), `pane-dead` (the
+pane's process has exited under `remain-on-exit`), `pane-changed` (something
+else runs there), `pane-provider-unknown` (the window carries no Storyhook
+provider tag), `pane-query-failed` (tmux could not be asked) or
+`delivery-failed` (a live pane refused the paste). The daemon classifies those
+slugs through one exhaustive table, `NOTIFY_REFUSALS`, into **absent** (the
+first three) and **not absent** (the last three); `tests/notify_reasons.rs`
+derives the helper's slugs from `cmd_notify`'s own literals and demands
+set-equality with the table.
 
 **If the paste succeeded, the verifier holds.** `wait_for_reconciled_candidate`
 keeps the (today: global) worker reserved for that story and re-observes the
@@ -167,18 +174,31 @@ is step 2's "wait, holding the queue", and it is pinned by
 `tests/verification_queue.rs` (the reservation, the generation check, and that
 a wrong candidate is an error rather than a transfer).
 
-**If the paste failed, the verifier does not hold.** `return_for_repair` falls
-back to `set_generation_awaiting`, the reservation and the activity slot are
-both released, and the story sits in `in-progress` with an `awaiting` reason
-until a person re-dispatches it
-(`a_failed_conflict_notification_releases_the_reservation`). Under Full Auto
-that `awaiting` classifies as `AgentBlocked`, the lane is quarantined and the
-breaker takes a strike (`full-auto-engine.md`, "The verifying handoff"). A
-dispatched pane is **normally already dead** at the handoff — the launch
-command is exec'd into the pane and exits with the agent — so this is the
-common path, not the exception, which is what SH-650 changes: a refused paste
-becomes a resume re-dispatch into the same window, and the hold applies
-whether or not the first paste landed.
+**If the agent is absent, the verifier re-dispatches and still holds**
+(SH-650). A dispatched pane is **normally already dead** at the handoff — the
+launch command is exec'd into the pane and exits with the agent — so this is
+the common path. `return_for_repair` comments what it is about to do
+(`CENTRAL VERIFICATION RESUME — …`), asks the helper for
+`dispatch <id> --resume --auto` through the one argv composer the dashboard and
+the engine use (`run_shell_dispatch`, with `STORY_TARGET_SESSION` and
+`STORY_CREATE_SESSION` as the engine sets them), and pastes the diagnosis
+afterwards. `--resume` respawns a dead pane in place under the same pane id,
+recreates a missing window under the same name, reuses the `in-progress`
+claim, rewrites the lease marker and appends the resume clause to the charter;
+the helper relaunches the provider the abandoned dispatch recorded. A story a
+live Full Auto lane holds is re-dispatched as that lane (the run's provider
+options and `--full-auto`); see `resume_plan`. Remediation then counts as
+started, so the reservation is kept exactly as after a delivered paste
+(`a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue`).
+
+**Only a refusal that is not absence, or a refused re-dispatch, parks.**
+`return_for_repair` then falls back to `set_generation_awaiting` naming the
+refusal, the reservation and the activity slot are both released, and the
+story sits in `in-progress` with an `awaiting` reason until a person acts
+(`a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation`,
+`a_notify_failure_that_is_not_absence_parks_without_redispatching`). Under
+Full Auto that `awaiting` classifies as `AgentBlocked` (`full-auto-engine.md`,
+"The verifying handoff") — now for a story a person genuinely has to look at.
 
 ### The gate
 
@@ -209,10 +229,10 @@ under `<common-dir>/storyhook/verification-logs/`, and a detail excerpt. The
 verdict is confirmed against the PR's **current** head immediately before it
 is posted (`confirm_judged_head`, SH-637); a head that moved during the run is
 retryable, never a verdict about a commit nobody can act on. The worker then
-calls `return_for_repair` exactly as for a conflict — comment, pane paste,
-`in-progress` — but without the hold: a red story re-enters the queue on
-resubmission and waits its turn (step 4a). The dead-pane fallback is the same
-as above and is closed by the same child.
+calls `return_for_repair` exactly as for a conflict — comment, pane paste or
+resume re-dispatch, `in-progress` — but without the hold: a red story
+re-enters the queue on resubmission and waits its turn (step 4a;
+`a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue`).
 
 ### Green: merge, done, reap
 
@@ -302,6 +322,56 @@ not parse it — the SH-136 rule); the invariant here is only that it
 ## As built
 
 Deviations from this document are recorded here, one entry per child, rather
-than in a second file. None yet: SH-647..SH-653 are open, and each lands with
-its own `### SH-N — <what changed>` entry and a status update in the decisions
-table above.
+than in a second file. Each child lands with its own `### SH-N — <what
+changed>` entry and a status update in the decisions table above.
+
+### SH-650 — a dead pane is re-dispatched in place, never parked
+
+Two facts measured before the design, both of which the row above got wrong:
+
+1. **The dead pane did not reach the verifier as `pane-changed`.** tmux 3.7c
+   keeps `#{pane_pid}` and `#{pane_current_command}` frozen at their last live
+   values once the process exits under `remain-on-exit`, so `pane_runs`
+   answered yes for a corpse; the paste then failed inside tmux ("target pane
+   has exited") and the verifier received `delivery-failed` — the one refusal
+   that means the agent **is** live. `cmd_notify` now asks `#{pane_dead}` first,
+   through the same composite probe the reconciler asks (`PANE_PROBE_FORMAT` =
+   `WINDOW_PROBE_FORMAT`, pinned equal), and refuses `pane-dead`. The fake tmux
+   refuses a paste into a dead pane the way the real server does.
+2. **The engine raced the re-dispatch.** The return transition wakes the
+   reconciler, the pane is normally already dead, and the respawned pane comes
+   alive only after a readiness wait bounded by `DISPATCH_TIMEOUT`; a steady
+   pass in that window read `WindowGone` and struck the breaker anyway. The
+   store-derived fact that closes it, and its limits, are in
+   `full-auto-engine.md`'s "As built — SH-650".
+
+What "a notify refusal" means: absence, by name. `NOTIFY_REFUSALS` classifies
+`pane-unavailable`, `pane-dead` and `pane-changed` as absent and
+`pane-query-failed`, `pane-provider-unknown` and `delivery-failed` as not —
+`pane-provider-unknown` deliberately, because an untagged window is one the
+verifier cannot prove is its own, and SH-226's rule against typing into an
+unverified pane applies with more force to respawning over one. An unknown or
+missing slug never respawns.
+
+What "unconditionally" means: the hold applies whether or not the **first**
+paste landed. A story parked with `awaiting` (the re-dispatch refused, or a
+non-absence refusal) still releases the reservation — a hold for a
+resubmission nobody will make would stall the queue for ever.
+
+What "delivers the diagnosis as the first turn" became: a second `notify`
+after the respawn. The RED/CONFLICT text carries backticks and newlines, which
+CHARTER-INERT bans from every prompt override, so it cannot ride the charter;
+the charter is the first turn, the paste is the next queued input, and the
+diagnosis is already the story's latest comment, which the resume charter
+reads first. A paste that fails **after** a successful re-dispatch is
+therefore commented, not parked.
+
+Two things adopted on the way, each its own commit: `dispatch --resume`
+relaunches the provider the abandoned dispatch recorded (the window's
+`@storyhook-agent`, or the worktree container when the window is gone —
+the container is provider-derived, so a resume under the wrong provider
+could not even find the worktree), with precedence explicit flag > record >
+`STORY_AGENT` > `claude`; and `run_captured_with_registration` no longer
+discards a child that exited before its process group could be read (macOS
+`getpgid` answers ESRCH for a zombie), which had reported every quick helper
+refusal as "could not run story helper".
