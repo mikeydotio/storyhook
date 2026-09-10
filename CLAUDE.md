@@ -1495,6 +1495,25 @@ Standing rules for every wave:
   reads (`textContent()`, `allTextContents()`, `node.textContent` in `evaluate`) and
   `hasText` filters. Design of record: `docs/spec/responsive-dashboard.md`'s "A text
   assertion never rides an aria-hidden glyph".
+- **Two answers from one lagging pipeline are one answer; a projection is checked against
+  the source it mirrors** (SH-636). The verifier returned SH-630 a second time with a
+  CONFLICT byte-identical to the first, against a head that was no longer the PR head.
+  `verify-pr.sh` already force-fetched `refs/pull/N/head` fresh per attempt and required it
+  to equal `gh pr view`'s `headRefOid` — and that guard passed, because both are projections
+  GitHub writes asynchronously after a push and they lag together. Measured from the
+  daemon's activity journal and the registered checkout's reflog on the pull ref: the
+  verifier asked ~1s after the push and got the pre-push head from both; the pull ref caught
+  up 16s later; `origin/dev` never moved. Mechanism (b) as filed — a cached local ref — was
+  refuted the same way: every fetch is `+`-forced and per-attempt. `refs/heads/<branch>` on
+  origin is the source, updated synchronously by the push, so `refresh_submission_refs`
+  reads it (`ls-remote`, writing no remote-tracking ref) and requires three-way agreement
+  before preflight; a disagreement is a **retryable** infrastructure result naming all three
+  oids, never a conflict and never permanent — the daemon's existing D15 cadence re-asks and
+  a lag past it halts loudly. No in-script poll: GitHub publishes no propagation bound to
+  derive a deadline from (SH-394), and the daemon already owns a derived budget for exactly
+  "not ready yet". `merge-preflight.sh`'s CONFLICT line names the oid each ref resolved to,
+  so a stale reading is visible in the report rather than inferred from blob ids. Design of
+  record: `docs/spec/full-auto-engine.md`'s SH-636 "As built" section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
