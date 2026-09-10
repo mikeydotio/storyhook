@@ -1773,6 +1773,69 @@ Standing rules for every wave:
   inside, and reentrancy travels only in that variable, so stripping it deadlocks every
   verification against its own outer holder for ever. Nothing fences that invariant;
   the comment above the list and the spec are what say so.
+- **A stall clock reads every channel a live agent writes on, and its ceiling derives from
+  the deadline the clock actually measures — never from a test leg** (SH-657). Full Auto's
+  stall detector read one signal, the story's change-feed position, under a 288 s ceiling
+  derived as `lane budget × make-test median × margin`: a bound on a test leg, which the
+  clock never measured. It measured time between story events, and an autonomous agent
+  writes nothing to the store between its dispatch comment and its plan comment (267–616 s
+  on this tracker's own history), let alone during implementation. **Eight of the first
+  eight stall verdicts the engine ever wrote were false**, each on an agent alive and
+  working, each blocking a story nobody had blocked and re-filling the lane with a fifth
+  agent; two runs halted by breaker. Latent for nine days because engine fills only
+  started working with SH-609 — nine days of green runs were nine days of no lane
+  observed, and a detector that has never fired has never been proved. The pane is the
+  second channel: tmux's `#{window_activity}` (its own last-pty-write stamp, sub-second on
+  every working lane, hours old on every idle prompt) rides the probe as a fourth field,
+  and `classify()` declares `Stalled` only when **both** channels are silent past the
+  ceiling — an unknown pty channel is no evidence (SH-372), so SH-626's backstop stands.
+  Not SH-226's screen-scrape: the process is confirmed by pid and identity first, and the
+  stamp is a fact about bytes it wrote. The ceiling now disproves the one deadline in
+  evidence — one foreground tool call, `HOST_TOOL_CALL_CEILING_SECS = 600` × margin 2 —
+  and the engine makes that bound its own by pinning `BASH_MAX_TIMEOUT_MS` on every lane's
+  window from the same constant (`STORY_LANE_TOOL_CEILING_MS`, story.sh). Quiet time is
+  shown on `story engine status` and the lane strip **before** it is a verdict (SH-418),
+  and a stall reason names both measurements. Council on the story (three seats,
+  unanimous): keep the hard stop and widen its evidence; advisory-only trades a bounded
+  false positive for an unbounded livelock. **Stated limit**: a turn that ended waiting on
+  a background task is silent on both channels; a process-tree signal is filed separately,
+  gated on measuring that such a wait exceeds the ceiling in a lane. RCA:
+  `docs/rca/full-auto-stalls-working-lanes.md`.
+- **A budget is enforced at every door that consumes the resource, and the resource that
+  saturates a build box is compilation** (SH-655). The harness capped the two quantities it
+  had once measured — `--test-threads=4` (daemons) and `workers: 1` (browsers) — and left
+  compilation uncapped: no `.cargo/config.toml`, no `--jobs`, cargo sized to `hw.ncpu` (10) on
+  8 performance cores, and every worktree its own cold build. D14's "machine-wide lane
+  budget" counted `engine_lanes` rows only, so a `/story do` typed by hand — the same
+  `cmd_dispatch`, worktree, window and build — counted for nothing: seven of them measured at
+  load 33, and SH-643's four `tests/machine_lock.rs` failures under load 25–64 with one
+  project active. Two mechanisms, one per resource. **Compilation:** a tracked
+  `.cargo/config.toml` names `scripts/rustc-slot.py` as `build.rustc-wrapper`; a real
+  compile takes one of K `flock` slots (K = `hw.perflevel0.logicalcpu`, derived, never
+  `hw.ncpu`) and **execs rustc in place** holding the lock on an inherited fd, so the kernel
+  releases it the instant rustc dies — no pid file, no reaper (SH-528 at the primitive). The
+  config is the only door a bare `cargo test --test foo` in an agent pane walks through,
+  which is why a semaphore around *harness* invocations lost the council 3-0
+  (`story show SH-655`), and why a `MAKEFLAGS` jobserver FIFO lost too: its tokens die with a
+  crashed holder and a starved FIFO blocks every cargo silently. A wait is reported on stderr
+  (cargo forwards it — measured) and, in a gate-held run, to the SH-524 journal so the gate's
+  silence watchdog reads a queued compile as progress rather than reaping it; an unusable
+  slot root fails open loudly. Measured, two concurrent cold builds: wall clock unchanged,
+  machine load peak 153 → 90, 729 waits none over 30s, wrapper overhead 1.3% CPU — and the
+  feared fingerprint rebuild did not exist (cargo's fingerprint omits the wrapper). Stated
+  limit: it bounds rustc *processes*, not codegen threads inside one. **Sessions:** one
+  census — live tmux windows with `@storyhook-agent` set and `pane_dead` clear, since
+  `remain-on-exit` keeps finished sessions' windows — read by every door: `story lane-budget`
+  (store-free, daemon-free, the caller's own `$TMUX`), `cmd_dispatch` refusing ahead of any
+  claim (`--over-budget` says you meant it; the plugin hook admits it by name), and the
+  engine's fill counting it beside its own lanes. Unanswered is no evidence (SH-626): the
+  verb omits `live`/`available`, the dispatch proceeds loudly — including on an older binary
+  without the verb — and the daemon journals the outage on its edge. **The suite that tests
+  the gate manufactured the gate's own failure:** fourteen plugin tests dispatched against the
+  developer's real tmux server and went red the day the gate landed on a machine at its
+  budget; `plugins/story/tests/lib.sh` now puts the fake on `PATH` for every test, the
+  SH-263 rule for its state. Design of record: `docs/spec/test-tiers.md` "The compile bound";
+  `docs/spec/full-auto-engine.md`'s SH-655 As-built.
 - **`gate` and `merge` are project-scoped locks; the verifier is one worker per project**
   (SH-648, D-B of SH-645: "project-wide, not machine-wide"). `scripts/machine-lock.sh`
   declares the scope of each name itself (a caller flag would let a forgotten flag

@@ -53,6 +53,7 @@ const VERBS: &[&[&str]] = &[
     &["list"],
     &["next"],
     &["summary"],
+    &["lane-budget"],
     &["report"],
     &["export"],
     &["context"],

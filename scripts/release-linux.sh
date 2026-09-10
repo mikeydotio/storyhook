@@ -56,6 +56,11 @@ guest_check() {
 
   guest_cache_root="$(guest_absolute_cache_root "$guest_cache_root")"
 
+  # The guest compiles the checkout's own `.cargo/config.toml`, whose
+  # rustc-wrapper is `scripts/rustc-slot.py` (SH-655): without python3 the
+  # build dies inside cargo, blaming the wrong layer (SH-576).
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required in the guest: .cargo/config.toml runs every rustc through scripts/rustc-slot.py"
   toolchain="$(ensure_release_toolchain "$host_target" "$guest_cache_root" "$lock_file" "${targets[@]}")" \
     || exit 1
   probe_dir="$(mktemp -d /tmp/storyhook-release-probe.XXXXXX)"

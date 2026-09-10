@@ -242,6 +242,11 @@ pub enum DispatchReason {
     /// CHARTER-INERT (SH-232's runtime-enforcement rider). See
     /// [`prompt_override_violation`].
     UnsafePromptOverride,
+    /// The machine lane budget is full (SH-655): `story lane-budget`
+    /// counted as many live agent windows as the budget allows, and the
+    /// dispatch was refused before any claim rather than opening one more
+    /// session. The payload's `lane_budget` object carries the census.
+    LaneBudget,
     /// A reason string this binary does not recognize, carried verbatim
     /// rather than dropped.
     Other(String),
@@ -260,6 +265,7 @@ impl DispatchReason {
             Self::ResumeAvailable => "resume-available",
             Self::ResumeUnsafe => "resume-unsafe",
             Self::UnsafePromptOverride => "unsafe-prompt-override",
+            Self::LaneBudget => "lane-budget",
             Self::Other(raw) => raw,
         }
     }
@@ -278,6 +284,7 @@ impl DispatchReason {
             "resume-available" => Self::ResumeAvailable,
             "resume-unsafe" => Self::ResumeUnsafe,
             "unsafe-prompt-override" => Self::UnsafePromptOverride,
+            "lane-budget" => Self::LaneBudget,
             other => Self::Other(other.to_string()),
         }
     }
@@ -2752,6 +2759,7 @@ mod tests {
             ("handoff-unconfirmed", DispatchReason::HandoffUnconfirmed),
             ("resume-available", DispatchReason::ResumeAvailable),
             ("resume-unsafe", DispatchReason::ResumeUnsafe),
+            ("lane-budget", DispatchReason::LaneBudget),
         ];
         for (raw, expected) in cases {
             let (_state, _payload, _error, reason) = classify(

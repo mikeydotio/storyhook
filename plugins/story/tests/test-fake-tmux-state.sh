@@ -48,7 +48,7 @@ occupant() { "$FAKE_TMUX" display-message -p '#{pane_current_command}'; }
 pane_pid() { "$FAKE_TMUX" display-message -p '#{pane_pid}'; }
 engine_probe() {
   "$FAKE_TMUX" display-message -p -t %1 \
-    '#{pane_pid}\t#{pane_current_command}\t#{pane_dead}'
+    '#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}'
 }
 
 # --- the field failure, reproduced ----------------------------------------
@@ -62,9 +62,17 @@ engine_probe() {
 assert_eq "$(occupant)" "claude" "the launch's own occupant is claude"
 launched_pid="$(pane_pid)"
 [ -n "$launched_pid" ] || fail_test "the launch recorded no pane pid"
-expected_engine_probe="$(printf '%s\tclaude\t0' "$launched_pid")"
+# The fourth field is the window's last-output stamp (SH-657): a freshly
+# opened window answers "now" unless a test planted an older time.
+printf '1789066115' > "$FAKE_TMUX_STATE/window_activity"
+expected_engine_probe="$(printf '%s\tclaude\t0\t1789066115' "$launched_pid")"
 assert_eq "$(engine_probe)" "$expected_engine_probe" \
   "the engine liveness probe receives every requested pane field"
+rm -f "$FAKE_TMUX_STATE/window_activity"
+case "$(engine_probe)" in
+  *$'\t'0$'\t'[0-9]*) ;;
+  *) fail_test "without a planted stamp the fourth field is the current unix time: $(engine_probe)" ;;
+esac
 
 env -u FAKE_TMUX_STATE "$FAKE_TMUX" new-window -d -P -F '#{pane_id}' \
   -n probe -c "$pane_cwd" >/dev/null 2>&1

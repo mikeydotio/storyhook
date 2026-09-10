@@ -395,6 +395,25 @@ that spawns nothing, the derived comment text), `tests/merge_gate.rs` (the
 public path with a named gate, without one, and the certifies-nothing refusal
 with its positive control through the production receipt writer).
 
+### SH-655 — D-B's "D14's lane budget bounds agents" was not true
+
+D-B declined a machine-wide CPU cap as YAGNI on the grounds that D14's lane
+budget bounds agents. It bounded *engine* agents: the budget was enforced over
+`engine_lanes` rows alone, and a `/story do` typed by hand — the same worktree,
+window and cold workspace build — counted for nothing (seven were measured at
+load 33 on ten cores, one project active). D-B's row stays as written, per
+this document's own rule. What changed: every door that opens an agent session
+now measures one census of live agent windows against `ENGINE_LANE_BUDGET`
+(`story lane-budget`; `cmd_dispatch` refuses past it, `--over-budget`
+overrides; the engine's fill counts it), and compilation itself is bounded
+machine-wide by `scripts/rustc-slot.py` through the tracked `.cargo/config.toml`
+— so when a second project does appear and its suite overlaps this one's, the
+overlap is at most K concurrent rustc processes plus test execution, not
+N × 10 compile jobs. D-B's trade-off sentence deserves re-reading against
+that: the cap it declined now exists one layer down, on the resource that was
+actually saturating. Design of record: `docs/spec/full-auto-engine.md`'s
+SH-655 As-built entry and `docs/spec/test-tiers.md`, "The compile bound".
+
 ### SH-648 — per-project verifier and locks
 
 Built as D-B states, with five choices the decision did not name and two
