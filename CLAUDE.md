@@ -1476,7 +1476,29 @@ Standing rules for every wave:
   **Not** added: the story's proposed refusal of a temp store under a durable state home —
   SH-426's own refusal text sanctions exactly that for a session, and the defect was never
   temp-versus-durable, it was parent-versus-child. Runtime directories for stores that no
-  longer exist are still never reaped; that sweeper is filed separately.
+  longer exist are reaped by SH-638, below.
+- **A sweeper of keyed state proves the key from the directory's own contents, takes
+  the locks its owner would hold, and reclaims nothing outside a temp root** (SH-638).
+  `story daemon gc` is the filesystem twin of SH-493's abandoned-daemon class: 1,207
+  runtime directories under `daemons/` on the filing machine, 442 MB, three with a live
+  store. The key is one-way, so the store is read from the portfile or the daemon's own
+  `holding` log line (read to the end of the line, SH-493's rule; not always line 1) and
+  then **hashed back to the directory's name** — a mis-parse keeps rather than reaps,
+  and 1,203 of 1,203 round-tripped. The offline-volume objection that stopped SH-426 and
+  SH-633 from reaping is answered by a gate, not a heuristic: only a store under a temp
+  root is ever reclaimed, checked before the store is even stat-ed, and the plan names
+  the `rm -rf` for everything else. **A named store's backups live inside the directory
+  being removed** — the story did not say so; the plan does, per candidate. Liveness is
+  probed with `create(false)`, because `lifecycle::is_live` creates the pidfile and its
+  directory on the way to asking and would resurrect what was just removed on a foreign
+  key; the age floor is `SPAWN_LOCK_DEADLINE`, checked before any lock is touched, and
+  re-checked with the store's absence under both locks at removal. It reports before it
+  removes through the same `ConfirmationPlan` door `project delete` uses — which the
+  store-free dispatch path did not have until now — and `daemon status` names the
+  count (SH-418). Adopted on the way: `story archive-state` at a terminal was never
+  forced on its confirmation re-run, because `forced()` kept the top-level wildcard its
+  own doc warned about; `Invocation::forced` is now exhaustive at every level. Design of
+  record: `docs/spec/store-isolation.md`'s SH-638 amendment.
 - **A hygiene gate asks git whether an artifact is tracked or ignored, never the
   filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
   was absent from disk; the file is gitignored precisely so an agent can write it locally
