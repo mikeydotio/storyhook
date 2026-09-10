@@ -1580,6 +1580,34 @@ Standing rules for every wave:
   controls count the second read, so deleting a recheck fails them too. Design of record:
   `docs/spec/full-auto-engine.md`'s SH-637 section; the verdict trail is on the story
   (`story show SH-637`, SH-363).
+- **A fixture bridged across one process boundary is bridged across every boundary the
+  same daemon crosses, and a probe that could not run is not a probe that answered no**
+  (SH-626). The browser harness had bridged the fake tmux's `FAKE_TMUX_*` knobs across the
+  daemon's cleared, allowlisted environment since SH-263 — for the dispatch child only,
+  through the generated dispatch wrapper. The Full Auto reconciler's liveness probe never
+  passes through story.sh; it reached a `tmux` double that died on an unset variable, and
+  exit 1 read as "window gone" on every steady pass, one change-poll interval after dispatch
+  returned. The spec stayed green only when its stop-now beat that pass, and lost one run in
+  five under load — filed as a race between dispatch and window creation, which it never was:
+  dispatch already gates on `wait_ready_sentinel`, so a grace keyed on `dispatched_at` would
+  only have delayed the same wrong verdict while hiding this fixture class. The harness now
+  generates its doubles from `scripts/e2e-provider-doubles.sh`, whose `tmux` double reads the
+  same knob snapshot the dispatch wrapper does; `tests/e2e_provider_doubles.rs` asks the
+  exact probe question through the **real** allowlist, with a negative control proving the
+  environment is really stripped, and `engine.spec.ts` waits for the daemon's own pass to
+  observe its lane (`working` with `last_progress_at` set — a fact, where a one-second
+  `last_observed_at` cannot be ordered against `dispatched_at`, SH-336). The reason nobody
+  could see it was that `window_alive` was a bool: "tmux says dead" and "tmux could not be
+  asked" were one verdict named `window-gone`, the SH-312/SH-576 shape. `Dispatcher::
+  probe_window` now answers `Alive`/`Gone`/`Unanswered` with the probe's own words carried
+  into the block reason, and a council (verdict on the story) ruled an unanswered probe
+  contributes **no evidence** to the pass: the lane is judged by the stall clock a dead agent
+  cannot advance, loud on the journal's *edge* (never per pass — a live run reconciles about
+  once a second) and on every status surface through `engine_lanes.probe_detail`. Two facts
+  about real tmux were measured, not assumed, and decide the `Gone` side: `display-message
+  -t` is `CMD_FIND_CANFAIL`, so a missing target answers three empty fields at exit 0, and
+  "error connecting to" is printed for `EACCES` too, so only ENOENT/ECONNREFUSED read as a
+  server that is gone. Design of record: `docs/spec/full-auto-engine.md`'s SH-626 section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
