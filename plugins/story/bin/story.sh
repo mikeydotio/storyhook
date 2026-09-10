@@ -4206,6 +4206,157 @@ cmd_reap_leased() {
   [ "$ok" = true ]
 }
 
+# submit_refuse <class> <reason> <message> [<extra-json>] — a submission
+# refusal, classified for the daemon: `repair` is the agent's to fix (the
+# story is returned to it with <message>), `infrastructure` is the verifier's
+# (recorded as a retryable incident; the story stays in verifying and the next
+# tick re-runs the same idempotent steps). The class travels in the receipt
+# because the helper is the only party that saw WHY — git's or gh's own words
+# — and a daemon that guessed from the reason token would be SH-312's
+# "ambiguous reported as definite" one layer over.
+submit_refuse() {
+  local class="$1" reason="$2" message="$3" extra="${4:-}"
+  [ -n "$extra" ] || extra='{}'
+  refuse_with "$reason" "$message" "$(jq -n --arg c "$class" --argjson e "$extra" '{class:$c} + $e')"
+}
+
+# leased_submit_receipt <lease-json> <pushed> <pull-request-json> <display> —
+# the typed receipt the daemon verifies field for field (CLEANUP_LEASE_VERSION
+# is the wire version of every leased receipt, submission included).
+leased_submit_receipt() {
+  local lease="$1" pushed="$2" pull_request="$3" display="$4"
+  jq -n --argjson version "$CLEANUP_LEASE_VERSION" \
+    --arg story "$(printf '%s' "$lease" | jq -r '.story_id')" \
+    --argjson lease "$lease" --argjson pushed "$pushed" \
+    --argjson pr "$pull_request" --arg display "$display" \
+    '{ok:true, receipt_version:$version, story_id:$story, lease:$lease,
+      pushed:$pushed, pull_request:$pr, display:$display}'
+}
+
+# cmd_submit_leased <typed-story-id> <lease-json> — the verifier's submission
+# step (SH-647): push the leased branch to origin, then open the pull request
+# against the repository's default branch or adopt the one already open for
+# that head, and hand back a receipt. Every step is idempotent on purpose:
+# `git push` of an already-pushed tip is a no-op, and adoption finds what a
+# crashed earlier run created, so a daemon restart at any point re-runs the
+# whole verb and converges. Runs on EVERY generation a leased story enters
+# verifying, linked PR or not — after a RED return the agent only commits, so
+# this is the one place the fix reaches the remote.
+#
+# The base is `default_branch()` (origin/HEAD), the same fact dispatch based
+# the worktree on; a PR against anything else is not this lane's. There is no
+# --force: a rewritten branch is refused as `push-rejected` and returned to
+# the agent, whose charter forbids rewriting published history.
+#
+# Like reap, this verb records nothing on the story. The receipt is the only
+# record; the daemon writes the link and the comment under its generation
+# guard, so a submission recorded against a story that has since moved on is
+# a write that never happens rather than one that has to be retracted.
+cmd_submit_leased() {
+  local typed_id="$1" lease="$2"
+  validate_cleanup_lease submit "$typed_id" "$lease"
+  local canonical_id="$LEASE_CANONICAL_ID" worktree="$LEASED_WORKTREE" branch="$LEASED_BRANCH"
+  [ "$LEASE_STATE" = verifying ] \
+    || submit_refuse repair "not-verifying" "story.sh submit: $canonical_id is in state \`$LEASE_STATE\`, not \`verifying\`; only a story submitted for verification is pushed."
+  registered_worktree_branch "$worktree" >/dev/null 2>&1 \
+    || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
+  ! is_protected_branch "$branch" \
+    || submit_refuse repair "protected-branch" "story.sh submit: leased branch \`$branch\` is protected; a story lane never submits the default branch itself."
+
+  local dirty dirty_json
+  dirty=$(git -C "$worktree" status --porcelain 2>/dev/null) \
+    || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: git status failed in \`$worktree\`."
+  if [ -n "$dirty" ]; then
+    dirty_json=$(printf '%s\n' "$dirty" | sed 's/^...//' | jq -R . | jq -s .)
+    submit_refuse repair "dirty-worktree" \
+      "story.sh submit: $canonical_id's worktree ($worktree) has uncommitted changes; commit or discard them, then run \`story move $canonical_id verifying\` again. Dirty: $(printf '%s' "$dirty_json" | jq -r 'join(", ")')." \
+      "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
+  fi
+
+  local default head_oid
+  default=$(default_branch)
+  freshen_base_ref "$default"
+  head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+    || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
+  if git -C "$worktree" merge-base --is-ancestor "$head_oid" "refs/remotes/origin/$default" 2>/dev/null; then
+    submit_refuse repair "nothing-to-submit" "story.sh submit: $canonical_id's branch \`$branch\` has no commits beyond origin/$default; commit the work, then run \`story move $canonical_id verifying\` again."
+  fi
+
+  local remote_before remote_after push_out push_rc=0 pushed=false
+  remote_before=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  if [ "$remote_before" != "$head_oid" ]; then
+    # HTTPS on purpose: an SSH remote needs an agent or a 1Password approval
+    # the daemon cannot give. GIT_TERMINAL_PROMPT=0 comes from the daemon, so a
+    # missing credential fails here rather than hanging for the daemon's life.
+    push_out=$(git -C "$worktree" -c 'url.https://github.com/.insteadOf=git@github.com:' \
+      push origin "refs/heads/$branch:refs/heads/$branch" 2>&1) || push_rc=$?
+    if [ "$push_rc" -ne 0 ]; then
+      case "$push_out" in
+        *rejected*|*non-fast-forward*|*"fetch first"*|*"stale info"*|*"hook declined"*|*"pre-push hook"*)
+          submit_refuse repair "push-rejected" "story.sh submit: origin refused \`$branch\` — the remote branch has history this worktree does not (published history was rewritten, or someone else pushed). Reconcile without rewriting, commit, then run \`story move $canonical_id verifying\` again. git said: $push_out" ;;
+        *)
+          submit_refuse infrastructure "push-failed" "story.sh submit: pushing \`$branch\` to origin failed: $push_out" ;;
+      esac
+    fi
+    pushed=true
+  fi
+  remote_after=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  [ "$remote_after" = "$head_oid" ] \
+    || submit_refuse infrastructure "push-unverified" "story.sh submit: origin/$branch is at \`${remote_after:-<absent>}\` after the push, not the worktree HEAD \`$head_oid\`."
+
+  # Adopt-or-create is a 0-or-1 decision: GitHub permits one open pull request
+  # per (head, base), and a fork's PR for the same head name is not ours
+  # (verify-pr.sh refuses cross-repository PRs for the same reason).
+  local fields=number,url,baseRefName,headRefOid,isCrossRepository
+  local listed open count pr adopted title body url view_out
+  listed=$(cd "$worktree" && gh pr list --head "$branch" --base "$default" --state open \
+    --json "$fields" --limit 20 2>&1) \
+    || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
+  open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
+    || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr list returned something other than JSON: $listed"
+  count=$(printf '%s' "$open" | jq 'length')
+  case "$count" in
+    0)
+      title="$canonical_id: $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')"
+      body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
+
+Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge and cleanup are the verifier's; see \`story show $canonical_id\`."
+      url=$(cd "$worktree" && gh pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
+        || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create failed for \`$branch\`; if the pull request was created, the next attempt adopts it. gh said: $url"
+      url=$(printf '%s\n' "$url" | grep -E '^https?://' | tail -n 1)
+      [ -n "$url" ] || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create printed no URL."
+      view_out=$(cd "$worktree" && gh pr view "$url" --json "$fields" 2>&1) \
+        || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not read back \`$url\`: $view_out"
+      pr=$(printf '%s' "$view_out" | jq -c . 2>/dev/null) \
+        || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr view returned something other than JSON: $view_out"
+      adopted=false ;;
+    1) pr=$(printf '%s' "$open" | jq -c '.[0]'); adopted=true ;;
+    *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
+  esac
+  local pull_request display
+  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" \
+    '{url:.url, number:.number, base:.baseRefName, head_oid:.headRefOid, adopted:$adopted}')
+  if [ "$adopted" = true ]; then
+    display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; adopted open pull request $(printf '%s' "$pr" | jq -r .url)."
+  else
+    display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; opened pull request $(printf '%s' "$pr" | jq -r .url) against $default."
+  fi
+  leased_submit_receipt "$lease" "$pushed" "$pull_request" "$display"
+}
+
+# cmd_submit <story-id> — the router door to cmd_submit_leased. The lease is
+# REQUIRED: an agent has no business here (its last action is `story move <n>
+# verifying`, from inside its worktree, and the verifier does the rest), so a
+# call without one is refused by name rather than guessed at from cwd.
+cmd_submit() {
+  local id="${1:-}"
+  [ -n "$id" ] && [ "$#" -eq 1 ] || fail "usage: story.sh submit <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+  [ -n "${STORYHOOK_REAP_LEASE_V1:-}" ] \
+    || submit_refuse repair "submit-requires-lease" "story.sh submit: this verb is the centralized verifier's and carries the dispatch lease in STORYHOOK_REAP_LEASE_V1. An agent commits its work and runs \`story move $id verifying\` from inside its worktree; the verifier pushes the branch and opens the pull request."
+  cmd_submit_leased "$id" "$STORYHOOK_REAP_LEASE_V1"
+}
+
 # cmd_reap <story-id> — reclaim a CLOSED story's worktree and branch, then
 # close its tmux window (SH-208). The autonomous charter's own last act:
 # unlike `story.sh complete`, which is a QUESTION a human answers (plan
@@ -4864,6 +5015,7 @@ case "${1:-}" in
   capabilities)  shift; cmd_capabilities "$@" ;;
   complete)   shift; cmd_complete "$@" ;;
   reap)       shift; cmd_reap "$@" ;;
+  submit)     shift; cmd_submit "$@" ;;
   unclaim)    shift; cmd_unclaim "$@" ;;
   reset)      shift; cmd_reset "$@" ;;
   view)       shift; cmd_view "$@" ;;
@@ -4879,5 +5031,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

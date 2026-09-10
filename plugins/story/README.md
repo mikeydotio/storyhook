@@ -80,6 +80,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
+| `submit <id>` | not routed by any skill (SH-647) — the centralized verifier's submission step: from the dispatch lease in `STORYHOOK_REAP_LEASE_V1`, push the leased branch and open or adopt the pull request against the default branch, answering with a typed receipt; agents never push |
 | `unclaim <id> [--comment <t> \| --no-comment]` | `/story unclaim` (SH-484) — the inverse of `claim`: release the claim through `story unclaim`, then close the story's tmux window. Nothing on disk is touched |
 | `reset <id> [--force] [--comment <t> \| --no-comment]` | `/story reset` (SH-484) — everything `unclaim` does, then deletes the worktree and the branch, for a story abandoned by a crash where restarting beats inheriting |
 | `capture <id>` | `/story capture` |
