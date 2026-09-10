@@ -10,11 +10,9 @@ use storyhook::daemon::verification::{
     tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
-use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
     CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -26,8 +24,8 @@ use storyhook::service::{
     VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
-    VerificationFailureDisposition, VerificationIncident, WriteOps, partition_known,
+    GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoryNo, VerificationFailureDisposition,
+    VerificationIncident, WriteOps,
 };
 use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
@@ -1731,30 +1729,6 @@ fn cleanup_candidate(
     }
 }
 
-fn append_cleanup_lease(fixture: &ServiceFixture, story_id: &str, lease: StoryCleanupLease) {
-    let story = StoryNo::parse_id("SH", story_id).unwrap();
-    fixture
-        .store()
-        .write(|tx| {
-            let head = tx.append_events(
-                fixture.project(),
-                story,
-                ExpectedSeq::Any,
-                &[StoryEvent::StoryCleanupLeaseRecorded {
-                    at: FIXTURE_NOW.into(),
-                    lease: Box::new(lease),
-                }],
-                &Provenance::unrecorded(),
-            )?;
-            let stored = tx.events_for(fixture.project(), story)?;
-            let (known, _) = partition_known(story, &stored);
-            let states = tx.state_map(fixture.project())?;
-            let snapshot = fold_story(story_id, &known, &states).map_err(StoreError::from)?;
-            tx.put_story(fixture.project(), &snapshot, head)
-        })
-        .unwrap();
-}
-
 #[test]
 fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_change() {
     let fixture = ServiceFixture::new();
@@ -1764,7 +1738,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     let first = cleanup_candidate(&fixture, first_root.path())
         .cleanup_lease
         .unwrap();
-    append_cleanup_lease(&fixture, &id, first.clone());
+    fixture.append_cleanup_lease(&id, first.clone());
     assert_eq!(
         VerificationQueue::new(fixture.store())
             .next()
@@ -1794,7 +1768,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     let second = cleanup_candidate(&fixture, second_root.path())
         .cleanup_lease
         .unwrap();
-    append_cleanup_lease(&fixture, &id, second.clone());
+    fixture.append_cleanup_lease(&id, second.clone());
     let replacement = scratch_dir();
     fixture
         .store()
