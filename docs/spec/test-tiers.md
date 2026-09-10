@@ -249,12 +249,15 @@ or legacy `master` with no receipt — defence in depth behind the GitHub
 rulesets that already block direct pushes there by policy. Every feature ref
 is *reported*, never refused: which tier's receipt the tree
 carries, or that it carries none, and that `scripts/merge-preflight.sh` is
-what actually decides whether this content may land. The autonomous dispatch
-charter (`plugins/story/bin/story.sh`'s `PROMPT_TPL`/`AUTO_PROMPT_TAIL`)
-changed to match: commit, push, and open the PR *before* running the test
-suite, so work is preserved on the remote even if testing turns something up
-— then run `make test` and merge only once it passes, since the merge gate
-still requires it.
+what actually decides whether this content may land. Since SH-647 the
+autonomous dispatch charter (`plugins/story/bin/story.sh`'s
+`PROMPT_TPL`/`AUTO_PROMPT_TAIL`) no longer pushes at all: the agent commits and
+moves the story to `verifying` from inside its worktree, and the verifier
+pushes the leased branch and opens the PR as its first step, then runs the gate
+on the speculative merge tree and merges only once it passes. The push gate's
+narrowing still governs any branch a human pushes by hand; a dispatched agent
+no longer pushes, so it no longer meets the gate at all. Design of record for
+the dispatched path: `docs/spec/verification-workflow.md`.
 
 **Why this is sound and not merely convenient.** Nothing about `main`'s actual
 protection moved: `merge-preflight.sh` still refuses a merge tree with no

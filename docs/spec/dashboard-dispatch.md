@@ -218,9 +218,10 @@ unilaterally.
 > mode remains: the child must still produce and persist a plan before implementation,
 > but Storyhook's provider-native posture approves it without a person. The surviving
 > controls are the named dashboard token, the fixed autonomous charter, isolation in a
-> disposable worktree, the explicit version/release/deploy prohibition, a pushed PR,
-> the required full-suite green receipt before merge, and `reap`'s destructive-safety
-> guards. Attended dispatch retains human plan approval unchanged.
+> disposable worktree, the explicit version/release/deploy prohibition, a PR the
+> verifier pushes and opens from the dispatched commit (SH-647, so the branch on
+> origin is exactly what a human reviews before merge), the required full-suite green
+> receipt before merge, and `reap`'s destructive-safety guards. Attended dispatch retains human plan approval unchanged.
 
 **F4 — the token's scope and limits, stated plainly.** Minted once per daemon lifetime
 (`lifecycle::mint_token`), not per-user, not rotated except by restart. Its
