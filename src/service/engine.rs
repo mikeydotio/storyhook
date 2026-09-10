@@ -329,8 +329,9 @@ pub struct ReconcileReport {
 /// persistent shell (`plugins/story/bin/story.sh`'s own `remain-on-exit`
 /// rationale) — so the pane is normally already dead the instant a story
 /// reaches this handoff, exactly like an ordinary completion. Reading the
-/// window next would report every successful lane as `WindowGone`, and D4's
-/// serial, machine-wide verification queue can legitimately outrun any one
+/// window next would report every successful lane as `WindowGone`, and the
+/// project's serial verification queue (D4 as narrowed by SH-648: one worker
+/// per project) can legitimately outrun any one
 /// lane's own [`STALL_CEILING_SECS`] besides, so reading the clock next would
 /// eventually report the same success as `Stalled` instead. Neither is a
 /// failure; the story is exactly where it is supposed to be.

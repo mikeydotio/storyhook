@@ -433,62 +433,91 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
-    /// Returns a completed story whose post-merge resources still need reap.
-    ///
-    /// Active verification is intentionally queried separately and first by
-    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    /// Returns a completed story, in any project, whose post-merge resources
+    /// still need reap. Each project's worker asks [`Self::next_cleanup_for`];
+    /// this is the cross-project view.
     pub fn next_cleanup(&self) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = Vec::new();
             for project in tx.projects()? {
-                let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
-                let links = tx.pr_links(project.id)?;
-                let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
-                for row in rows {
-                    let passed = row
-                        .snapshot
-                        .comments
-                        .iter()
-                        .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-                    let reaped = row.snapshot.comments.iter().any(|comment| {
-                        comment
-                            .text
-                            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-                    });
-                    if !passed || reaped {
-                        continue;
-                    }
-                    let pull_request = links
-                        .iter()
-                        .find(|(story_no, link)| {
-                            *story_no == row.story_no
-                                && link.close_on_merge
-                                && link.status == "merged"
-                        })
-                        .map(|(_, link)| link.clone())
-                        .ok_or(VerificationProblem::MissingPullRequest);
-                    candidates.push(VerificationCandidate {
-                        project: project.id,
-                        project_slug: project.slug.clone(),
-                        story_id: row.story_no.to_id(&project.prefix),
-                        title: row.title,
-                        priority: row.priority,
-                        created_at: row.created_at,
-                        // The cleanup pass runs over stories already `done` —
-                        // there is no queue wait left to report.
-                        verifying_since: None,
-                        verifying_generation: None,
-                        checkout: checkout.clone(),
-                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
-                        pull_request,
-                    });
-                }
+                candidates.extend(cleanup_candidates_for(tx, project.id)?);
             }
             sort_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
 
+    /// Returns one project's completed story whose post-merge resources still
+    /// need reap.
+    ///
+    /// Active verification is intentionally queried separately and first by
+    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    pub fn next_cleanup_for(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| {
+            let mut candidates = cleanup_candidates_for(tx, project)?;
+            sort_candidates(&mut candidates);
+            Ok(candidates.into_iter().next())
+        })?)
+    }
+}
+
+/// One project's `done` stories that passed central verification and have
+/// not yet been reaped (SH-648: the cleanup pass is per project, like the
+/// queue it follows).
+fn cleanup_candidates_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, StoreError> {
+    let mut candidates = Vec::new();
+    if let Some(project) = tx.project(project)? {
+        let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
+        let links = tx.pr_links(project.id)?;
+        let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
+        for row in rows {
+            let passed = row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
+            let reaped = row.snapshot.comments.iter().any(|comment| {
+                comment
+                    .text
+                    .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
+            });
+            if !passed || reaped {
+                continue;
+            }
+            let pull_request = links
+                .iter()
+                .find(|(story_no, link)| {
+                    *story_no == row.story_no && link.close_on_merge && link.status == "merged"
+                })
+                .map(|(_, link)| link.clone())
+                .ok_or(VerificationProblem::MissingPullRequest);
+            candidates.push(VerificationCandidate {
+                project: project.id,
+                project_slug: project.slug.clone(),
+                story_id: row.story_no.to_id(&project.prefix),
+                title: row.title,
+                priority: row.priority,
+                created_at: row.created_at,
+                // The cleanup pass runs over stories already `done` —
+                // there is no queue wait left to report.
+                verifying_since: None,
+                verifying_generation: None,
+                checkout: checkout.clone(),
+                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                pull_request,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+impl<S: Store> VerificationQueue<'_, S> {
     /// Records the verifier-observed merge and closes the submitted story.
     ///
     /// The exact PR URL is checked inside the write transaction. A stale
