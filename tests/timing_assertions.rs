@@ -47,6 +47,26 @@
 //! calibrated_quantity`] pins that distinction directly against the real
 //! line so a future edit to the scanner cannot re-widen it by accident.
 //!
+//! # The same rule, one process boundary over (SH-643)
+//!
+//! A ceiling can leave a test file without ever being a `Duration`: a bare
+//! `2` handed to `scripts/machine-lock.sh` as the seconds after `--max-idle`
+//! is the identical claim — "this is how fast that should look on this
+//! machine, today" — and eight of them sat in `tests/machine_lock.rs`
+//! invisible to the scan above, until a holder under load 25–64 was not
+//! scheduled inside one of them and four cases failed together. The second
+//! scan here reads the script's own usage line for every flag it declares
+//! as `<seconds>`, and flags a string literal of that flag immediately
+//! followed by a string literal of bare digits, across the whitespace and
+//! commas rustfmt puts between array elements. Adjacency is the whole
+//! predicate: `"--max-wait", &reclaim_deadline()` and
+//! `contains("--max-idle")` are not the shape. Comments are stripped first
+//! (`storyhook_test_support::source_scan::without_rust_comments`), so prose
+//! about the shape is never a finding. Not covered, and said so: the
+//! builder form `.arg("--max-idle").arg("2")`, which no site in this corpus
+//! uses; a site that adopts it should route the value through a name for the
+//! same reason as everything else here.
+//!
 //! # Derived, not hand-listed, and its own positive control
 //!
 //! Every tracked `tests/*.rs` file is read via `git ls-files`, the same
@@ -64,6 +84,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+
+use storyhook_test_support::without_rust_comments;
 
 /// The `Duration` constructors this scan recognizes.
 const DURATION_CTORS: [&str; 4] = [
@@ -340,5 +362,219 @@ fn the_analyzer_does_not_flag_a_margin_added_to_a_named_or_calibrated_quantity()
         vec![],
         "a literal folded into a larger expression by +, *, or similar is a margin on an \
          already-calibrated quantity, not the ceiling itself, and must not be flagged"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A seconds-taking script flag never takes a bare literal (SH-643)
+// ---------------------------------------------------------------------------
+
+/// The tracked script whose usage line is the vocabulary of seconds-taking
+/// flags. Derived from the artifact rather than listed here (SH-357's
+/// parser-vocabulary shape), so a flag the script gains is fenced without an
+/// edit to this file.
+const SECONDS_FLAG_SOURCE: &str = "scripts/machine-lock.sh";
+
+/// Every `--flag` the script's `USAGE` string declares with a `<seconds>`
+/// operand.
+fn seconds_taking_flags(script: &str) -> Vec<String> {
+    let usage = script
+        .split("readonly USAGE=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("{SECONDS_FLAG_SOURCE} must declare `readonly USAGE=\"...\"`"));
+    usage
+        .split('[')
+        .skip(1)
+        .filter_map(|group| {
+            let group = group.split(']').next()?;
+            let mut words = group.split_whitespace();
+            let flag = words.next()?;
+            (words.next() == Some("<seconds>") && flag.starts_with("--")).then(|| flag.to_string())
+        })
+        .collect()
+}
+
+/// One bare-literal seconds argument: the flag it followed, where it was found,
+/// and the line it came from.
+#[derive(Debug, PartialEq, Eq)]
+struct BareFlagSeconds {
+    flag: String,
+    line: usize,
+    text: String,
+}
+
+/// Every string literal of a seconds-taking `flag` that is immediately
+/// followed — across whitespace and commas only — by a string literal of bare
+/// ASCII digits, in `source` with its comments already stripped.
+fn bare_flag_seconds(source: &str, flags: &[String]) -> Vec<BareFlagSeconds> {
+    let mut found = Vec::new();
+    for flag in flags {
+        let token = format!("\"{flag}\"");
+        let mut search_from = 0;
+        while let Some(offset) = source[search_from..].find(&token) {
+            let token_start = search_from + offset;
+            let after_token = token_start + token.len();
+            search_from = after_token;
+
+            let rest = &source[after_token..];
+            let gap = rest
+                .chars()
+                .take_while(|c| c.is_whitespace() || *c == ',')
+                .map(char::len_utf8)
+                .sum::<usize>();
+            let Some(literal) = rest[gap..].strip_prefix('"') else {
+                continue;
+            };
+            let digits = literal
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .map(char::len_utf8)
+                .sum::<usize>();
+            if digits == 0 || !literal[digits..].starts_with('"') {
+                continue;
+            }
+            let line = source[..token_start].matches('\n').count() + 1;
+            let line_start = source[..token_start].rfind('\n').map_or(0, |at| at + 1);
+            let line_end = source[token_start..]
+                .find('\n')
+                .map_or(source.len(), |at| token_start + at);
+            found.push(BareFlagSeconds {
+                flag: flag.clone(),
+                line,
+                text: source[line_start..line_end].trim().to_string(),
+            });
+        }
+    }
+    found
+}
+
+#[test]
+fn no_test_file_hands_a_seconds_taking_script_flag_a_bare_literal() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = std::fs::read_to_string(root.join(SECONDS_FLAG_SOURCE))
+        .unwrap_or_else(|e| panic!("reading {SECONDS_FLAG_SOURCE}: {e}"));
+    let flags = seconds_taking_flags(&script);
+    // Positive control on the vocabulary, assembled so this file never holds
+    // the token as a contiguous literal: a parser that stopped reading the
+    // usage line would otherwise report a clean tree over an empty list.
+    assert!(
+        flags.contains(&format!("--max-{}", "idle")),
+        "the usage line must still declare the idle ceiling flag; parsed: {flags:?}"
+    );
+
+    let corpus = tracked_test_files(root);
+    assert!(
+        corpus.len() > 100,
+        "only {} tracked test files were read; this scan proved nothing",
+        corpus.len()
+    );
+    assert!(
+        corpus.contains_key("tests/machine_lock.rs"),
+        "tests/machine_lock.rs was not in the corpus; this scan proved nothing"
+    );
+
+    let findings: Vec<String> = corpus
+        .iter()
+        .flat_map(|(path, text)| {
+            bare_flag_seconds(&without_rust_comments(text), &flags)
+                .into_iter()
+                .map(move |f| format!("{path}:{}: {} ({})", f.line, f.text, f.flag))
+        })
+        .collect();
+
+    assert!(
+        findings.is_empty(),
+        "a seconds-taking script flag is handed a bare digit literal — the same claim as a \
+         bare Duration ceiling, one process boundary over: how fast this should look on \
+         this machine, today. Derive it from what it disproves (the script's own poll \
+         period, a patience the file already names) or name the semantic value (SH-643):\n{}",
+        findings.join("\n")
+    );
+}
+
+#[test]
+fn the_flag_scanner_recognizes_a_bare_literal_across_rustfmts_line_break() {
+    let flag = format!("--max-{}", "idle");
+    let flags = vec![flag.clone()];
+
+    let one_per_line = format!("        \"{flag}\",\n        \"2\",\n        \"gate\",\n");
+    assert_eq!(
+        bare_flag_seconds(&one_per_line, &flags),
+        vec![BareFlagSeconds {
+            flag: flag.clone(),
+            line: 1,
+            text: format!("\"{flag}\","),
+        }],
+        "rustfmt puts one array element per line; the literal on the next line is still adjacent"
+    );
+
+    let same_line = format!("fixture.run(&[\"{flag}\", \"5\", \"gate\", \"--\", \"true\"])\n");
+    assert_eq!(
+        bare_flag_seconds(&same_line, &flags).len(),
+        1,
+        "the single-line array form must be caught too"
+    );
+
+    let zero = format!("\"{flag}\", \"0\"");
+    assert_eq!(
+        bare_flag_seconds(&zero, &flags).len(),
+        1,
+        "zero is a digit: a semantic value is named, never exempted by its spelling"
+    );
+}
+
+#[test]
+fn the_flag_scanner_does_not_flag_a_named_or_non_adjacent_value() {
+    let flag = format!("--max-{}", "wait");
+    let flags = vec![flag.clone()];
+
+    let named = format!("        \"{flag}\",\n        &reclaim_deadline(),\n");
+    assert_eq!(
+        bare_flag_seconds(&named, &flags),
+        vec![],
+        "a derived argument is the fix, not a finding"
+    );
+
+    let constant = format!("&[\"{flag}\", NO_WAIT, \"gate\"]");
+    assert_eq!(
+        bare_flag_seconds(&constant, &flags),
+        vec![],
+        "a named constant is the fix, not a finding"
+    );
+
+    let mention = format!("assert!(stderr(&out).contains(\"{flag}\"), \"2\");");
+    assert_eq!(
+        bare_flag_seconds(&mention, &flags),
+        vec![],
+        "a closing paren between the flag and the digits breaks adjacency: the flag is being \
+         mentioned, not passed"
+    );
+
+    let prose = format!("    // the bad shape is \"{flag}\", \"2\" -- never write it\n");
+    assert_eq!(
+        bare_flag_seconds(&without_rust_comments(&prose), &flags),
+        vec![],
+        "a comment is prose about the shape, not the shape"
+    );
+
+    let other_flag = format!("&[\"--{}\", \"2\"]", "plan");
+    assert_eq!(
+        bare_flag_seconds(&other_flag, &flags),
+        vec![],
+        "only flags the script declares with <seconds> are in scope"
+    );
+}
+
+#[test]
+fn the_usage_vocabulary_is_read_from_the_shape_the_script_uses() {
+    let usage = format!(
+        "readonly USAGE=\"usage: x [--plan] [--max-{} <seconds>] [--{} <seconds>] <name>\"\n",
+        "idle", "other"
+    );
+    assert_eq!(
+        seconds_taking_flags(&usage),
+        vec![format!("--max-{}", "idle"), format!("--{}", "other")],
+        "every bracketed `--flag <seconds>` group is a flag; `--plan` has no operand and is not"
     );
 }

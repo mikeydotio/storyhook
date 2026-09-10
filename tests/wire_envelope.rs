@@ -380,6 +380,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
                     elapsed_seconds: Some(61),
+                    quiet_seconds: Some(7),
                     probe_detail: Some("tmux exited 1: unbound variable".to_string()),
                     outcome: None,
                     outcome_detail: None,
@@ -937,11 +938,16 @@ fn engine_run_renders_elapsed_as_human_time_and_json_data() {
         .expect("engine run corpus row");
     let human = render_response(&response, false, false);
     assert!(human.contains("1m 1s"), "{human}");
+    assert!(
+        human.contains("quiet") && human.contains("1m 1s       7s"),
+        "the lane's quiet time is shown beside its elapsed time (SH-657): {human}"
+    );
     assert!(human.contains("needs a human (no-auto)"), "{human}");
 
     let json: serde_json::Value =
         serde_json::from_str(&render_response(&response, true, false)).unwrap();
     assert_eq!(json["run"]["lanes"][0]["elapsed_seconds"], 61);
+    assert_eq!(json["run"]["lanes"][0]["quiet_seconds"], 7);
     assert_eq!(json["run"]["needs_human"][0]["id"], "SH-11");
 }
 

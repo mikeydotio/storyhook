@@ -31,7 +31,7 @@ use crate::store::{EngineRunRecord, ReadOps, Store, StoreError};
 /// Overridable so a test can shrink it — the same shape `heartbeat_interval`,
 /// `change_poll_interval` and `github_poll_interval` (`daemon::serve`,
 /// `daemon::github_poll`) already use. The production default,
-/// [`RECONCILE_TICK_SECS`], is 72 real seconds; no suite can wait that out.
+/// [`RECONCILE_TICK_SECS`], is five real minutes; no suite can wait that out.
 fn reconcile_tick_interval() -> Duration {
     std::env::var("STORYHOOK_RECONCILE_TICK_MS")
         .ok()
@@ -214,7 +214,7 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
 /// [`crate::daemon::verification::poll_verification`]'s idle arm waits on
 /// `subscription.recv(RECOVERY_WAKE)` in a loop that restarts its own budget
 /// on every [`Change::Ping`] — fine for its bare 30-second constant, wrong
-/// here: a 72-second tick riding a 20-second heartbeat would almost never
+/// here: a tick of minutes riding a 20-second heartbeat would almost never
 /// fire on schedule under that shape. This loop computes one deadline before
 /// waiting and re-derives the remaining wait from it on every wake instead —
 /// the shape `daemon::serve`'s own chopped-sleep helpers already use — so a
