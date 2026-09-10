@@ -70,8 +70,9 @@ pub const HARD_STOP_BREAKER: u32 = 3;
 /// subprocess, and this machine already bounds those:
 /// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
 /// literal would be a second opinion about one machine, which this project has
-/// paid for repeatedly (SH-136). `engine_lane_budget_matches_dispatch_capacity`
-/// fails if the two ever drift.
+/// paid for repeatedly (SH-136).
+/// `the_lane_budget_is_spelled_as_the_dispatch_capacity_not_a_copy_of_its_digits`
+/// (`tests/engine_reconcile.rs`) fails if the two ever drift.
 pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
 
 /// `make test`'s measured warm median, in seconds, from
