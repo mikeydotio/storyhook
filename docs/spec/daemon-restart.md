@@ -39,9 +39,12 @@ remain valid because their registry is durable daemon state.
 ## Failure and version policy
 
 A parseable older portfile is enough to authenticate graceful shutdown; the
-successor always runs the current client binary and wire version. A live daemon
-with an unreadable portfile is refused because only a force-stop could replace
-it, and force can lose work.
+successor always runs the current client binary and wire version. That is also
+why an *uninstalled* client — one still inside the directory cargo wrote it to —
+is refused a restart of the default store's daemon before anything is stopped:
+the successor would be that build (`src/daemon/seat_guard.rs`, SH-634). A live
+daemon with an unreadable portfile is refused because only a force-stop could
+replace it, and force can lose work.
 
 If the old daemon drains but the successor cannot open the store, reconcile,
 bind, or become healthy, restart returns the successor's startup diagnostic.

@@ -1018,6 +1018,10 @@ pub struct RestartedDaemon {
 /// other's work. The lock remains held through drain, spawn, and health
 /// confirmation; the lifetime pidfile lock still prevents overlap at the
 /// process boundary.
+///
+/// An uninstalled build is refused on the default store before the incumbent
+/// is touched (`super::seat_guard`, SH-634): the successor would be that
+/// build, which is the incident this guard exists for.
 pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
     if !is_live(env) {
         return Err(AppError::Usage(
@@ -1037,6 +1041,13 @@ pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
     std::fs::create_dir_all(env.daemon_state_dir())?;
     let arrived = std::time::SystemTime::now();
     let lock = acquire_spawn_lock(&env.daemon_spawn_lock(), SPAWN_LOCK_DEADLINE)?;
+    // The other seat: a restart stops the incumbent and spawns *this* binary on
+    // its port. An uninstalled build is refused here, before the closure whose
+    // failure `publish_attempt_failure` hands to every waiter (SH-634).
+    if let Err(refused) = super::seat_guard::check(env) {
+        let _ = FileExt::unlock(&lock);
+        return Err(refused);
+    }
 
     let outcome = (|| -> Result<RestartedDaemon, AppError> {
         if let Some(current) = read_info(env)
@@ -1340,6 +1351,17 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
     if let Some(adopted) = attempt_verdict(env, arrived) {
         let _ = FileExt::unlock(&lock);
         return Err(adopted);
+    }
+    // An uninstalled build is refused the seat before anything below can act
+    // on its behalf (SH-634): ahead of the shutdown request, so the installed
+    // daemon keeps serving, and outside the closure `publish_attempt` records,
+    // so an installed client waiting behind this lock never adopts a refusal
+    // that was about this client's own build. After the lock rather than
+    // before it — `seat_guard`'s module doc says why that ordering is a
+    // contract.
+    if let Err(refused) = super::seat_guard::check(env) {
+        let _ = FileExt::unlock(&lock);
+        return Err(refused);
     }
 
     note_stale_login_agent(env);

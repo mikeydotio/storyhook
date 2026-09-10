@@ -31,6 +31,10 @@ fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; then
   [ "$mode" = "marketplace-fail" ] && { echo 'marketplace exploded' >&2; exit 17; }
+  if [ "$mode" = "marketplace-fail-once" ] && [ ! -f "$HOME/codex-marketplace-add-failed" ]; then
+    : > "$HOME/codex-marketplace-add-failed"
+    echo 'marketplace exploded' >&2; exit 17
+  fi
   already=false
   if [ -f "$HOME/codex-marketplace-version" ]; then
     already=true
@@ -39,12 +43,20 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; th
     printf '%s\n' "$4" > "$HOME/codex-marketplace-source"
   fi
   IFS= read -r root < "$HOME/codex-marketplace-source"
+  # The registration in Codex's own config shape, which the installer reads
+  # back to learn what it is about to replace.
+  mkdir -p "$HOME/.codex"
+  printf '[marketplaces.storyhook]\nsource_type = "local"\nsource = "%s"\n' "$root" > "$HOME/.codex/config.toml"
   printf '{"marketplaceName":"storyhook","installedRoot":"%s","alreadyAdded":%s}\n' "$root" "$already"
   exit 0
 fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = add ]; then
   [ "$mode" = "plugin-fail" ] && { echo 'plugin exploded' >&2; exit 18; }
+  if [ "$mode" = "plugin-fail-once" ] && [ ! -f "$HOME/codex-plugin-add-failed" ]; then
+    : > "$HOME/codex-plugin-add-failed"
+    echo 'plugin exploded' >&2; exit 18
+  fi
   IFS= read -r version < "$HOME/codex-marketplace-version"
   printf '%s\n' "$version" > "$HOME/codex-installed-version"
   IFS= read -r source < "$HOME/codex-marketplace-source"
@@ -93,7 +105,7 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ];
     echo 'Error: marketplace `storyhook` is not configured or installed' >&2
     exit 1
   fi
-  rm -f "$HOME/codex-marketplace-version" "$HOME/codex-marketplace-source"
+  rm -f "$HOME/codex-marketplace-version" "$HOME/codex-marketplace-source" "$HOME/.codex/config.toml"
   printf '{"marketplaceName":"storyhook","installedRoot":null}\n'
   exit 0
 fi
@@ -114,6 +126,34 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = uninstall ]; then
     exit 1
   fi
   [ "$mode" = "uninstall-fail" ] && { echo 'unrelated uninstall failure' >&2; exit 19; }
+  rm -f "$HOME/claude-installed"
+  exit 0
+fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; then
+  [ "$mode" = "marketplace-add-fail" ] && { echo 'marketplace add exploded' >&2; exit 17; }
+  if [ "$mode" = "marketplace-add-fail-once" ] && [ ! -f "$HOME/claude-marketplace-add-failed" ]; then
+    : > "$HOME/claude-marketplace-add-failed"
+    echo 'marketplace add exploded' >&2; exit 17
+  fi
+  # The registration in Claude Code's own config shape (the one this
+  # machine's real known_marketplaces.json uses for a directory source),
+  # which the installer reads back to learn what it is about to replace.
+  mkdir -p "$HOME/.claude/plugins"
+  printf '{"storyhook":{"source":{"source":"directory","path":"%s"},"installLocation":"%s"}}\n' "$4" "$HOME/.claude/plugins/marketplaces/storyhook" > "$HOME/.claude/plugins/known_marketplaces.json"
+  exit 0
+fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ]; then
+  mkdir -p "$HOME/.claude/plugins"
+  printf '{}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
+  exit 0
+fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = install ]; then
+  [ "$mode" = "plugin-install-fail" ] && { echo 'plugin install exploded' >&2; exit 18; }
+  if [ "$mode" = "plugin-install-fail-once" ] && [ ! -f "$HOME/claude-plugin-install-failed" ]; then
+    : > "$HOME/claude-plugin-install-failed"
+    echo 'plugin install exploded' >&2; exit 18
+  fi
+  : > "$HOME/claude-installed"
   exit 0
 fi
 if [ "${1:-}" = plugin ]; then exit 0; fi
@@ -289,12 +329,26 @@ impl Harness {
         root
     }
 
-    fn install_story_on_path(&self) {
+    /// Puts `story` on the fixture's `PATH`, and from then on runs it from
+    /// there.
+    ///
+    /// The launcher this fixture installs execs the `story` on its `PATH`,
+    /// so after this call the fixture models an installed machine — and on
+    /// an installed machine the `story` a person types and the one the
+    /// launcher resolves are one file. This used to leave [`Harness::run`]
+    /// on the original binary, so a test that alternated the two ran two
+    /// copies of one build against one store, each call standing the
+    /// other's daemon down and seating its own: the SH-634 ping-pong, paid
+    /// silently per call. The seat guard now refuses that from the
+    /// uninstalled side (`Harness::new(false)`'s `target/debug/story`), which
+    /// is how the fixture was found to be doing it.
+    fn install_story_on_path(&mut self) {
         let path = self.fake_bin.join("story");
         fs::copy(&self.story, &path).expect("copying story onto fixture PATH");
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
+        fs::set_permissions(&path, permissions).unwrap();
+        self.story = path;
     }
 
     /// The installed launcher, run the way Codex runs it.
@@ -315,6 +369,140 @@ impl Harness {
             .env("TMPDIR", self._temp.path())
             .envs(daemon_containment());
         command.output().expect("running the stable Codex launcher")
+    }
+
+    /// A marketplace registered before this install ran, at a source that is
+    /// not this binary's release: a real directory, because the fake Codex
+    /// `plugin add` copies the payload out of whatever source it was handed.
+    fn seed_previous_registration(&self, provider: &str) -> PathBuf {
+        let previous = self.home.join("previous/1.0.0");
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for relative in [
+            ".agents/plugins/marketplace.json",
+            ".claude-plugin/marketplace.json",
+        ] {
+            let target = previous.join(relative);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(repository.join(relative), target).unwrap();
+        }
+        copy_tree(
+            &repository.join("plugins/story"),
+            &previous.join("plugins/story"),
+        );
+        let source = previous.display().to_string();
+        match provider {
+            "claude" => {
+                let plugins = self.home.join(".claude/plugins");
+                fs::create_dir_all(&plugins).unwrap();
+                fs::write(
+                    plugins.join("known_marketplaces.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "storyhook": {
+                            "source": { "source": "directory", "path": source },
+                            "installLocation": plugins.join("marketplaces/storyhook"),
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                fs::write(self.home.join("claude-installed"), "").unwrap();
+            }
+            "codex" => {
+                self.seed_codex_install("1.0.0", &source);
+                fs::create_dir_all(self.home.join(".codex")).unwrap();
+                fs::write(
+                    self.home.join(".codex/config.toml"),
+                    format!(
+                        "[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"
+                    ),
+                )
+                .unwrap();
+            }
+            other => panic!("unknown provider {other}"),
+        }
+        previous
+    }
+
+    /// The storyhook marketplace source a provider's config names now, read
+    /// the way the installer and `story doctor install` read it.
+    fn registered_source(&self, provider: &str) -> Option<String> {
+        match provider {
+            "claude" => {
+                let path = self.home.join(".claude/plugins/known_marketplaces.json");
+                let body = fs::read(&path).ok()?;
+                let value: serde_json::Value = serde_json::from_slice(&body)
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                value
+                    .get("storyhook")?
+                    .get("source")?
+                    .get("path")?
+                    .as_str()
+                    .map(str::to_string)
+            }
+            "codex" => {
+                let body = fs::read_to_string(self.home.join(".codex/config.toml")).ok()?;
+                body.lines()
+                    .find_map(|line| line.strip_prefix("source = \""))
+                    .map(|rest| rest.trim_end_matches('"').to_string())
+            }
+            other => panic!("unknown provider {other}"),
+        }
+    }
+
+    fn provider_log(&self, provider: &str) -> String {
+        match provider {
+            "claude" => self.claude_log(),
+            "codex" => self.codex_log(),
+            other => panic!("unknown provider {other}"),
+        }
+    }
+
+    fn set_mode(&self, provider: &str, mode: &str) {
+        match provider {
+            "claude" => self.set_claude_mode(mode),
+            "codex" => self.set_codex_mode(mode),
+            other => panic!("unknown provider {other}"),
+        }
+    }
+
+    /// A provider fixture ready to install: the fake CLI on PATH and, for
+    /// Claude, the `~/.claude` its preflight requires.
+    fn for_provider(provider: &str) -> Self {
+        let harness = Harness::new(provider == "codex");
+        match provider {
+            "claude" => {
+                harness.install_fake("claude", FAKE_CLAUDE);
+                fs::create_dir_all(harness.home.join(".claude")).unwrap();
+            }
+            "codex" => harness.install_fake("codex", FAKE_CODEX),
+            other => panic!("unknown provider {other}"),
+        }
+        harness
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    for (relative, (bytes, executable)) in regular_files(from) {
+        let target = to.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(
+            &target,
+            fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
+    }
+}
+
+/// Byte offsets of each expected provider invocation, in the order the log
+/// records them; panics naming the first one missing or out of order.
+fn assert_log_order(log: &str, expected: &[String]) {
+    let mut cursor = 0;
+    for line in expected {
+        let Some(at) = log[cursor..].find(line.as_str()) else {
+            panic!("expected `{line}` after byte {cursor} of the provider log:\n{log}");
+        };
+        cursor += at + line.len();
     }
 }
 
@@ -376,6 +564,298 @@ fn expected_marketplace() -> BTreeMap<PathBuf, (Vec<u8>, bool)> {
         expected.insert(Path::new("plugins/story").join(relative), value);
     }
     expected
+}
+
+/// The provider's own spelling of each registration verb, as the fakes log it.
+fn verb(provider: &str, step: &str, source: &Path) -> String {
+    let source = source.display();
+    match (provider, step) {
+        ("claude", "remove-plugin") => "plugin uninstall story@storyhook".into(),
+        ("claude", "remove-marketplace") => "plugin marketplace remove storyhook".into(),
+        ("claude", "add-marketplace") => format!("plugin marketplace add {source} --scope user"),
+        ("claude", "add-plugin") => "plugin install story@storyhook --scope user".into(),
+        ("codex", "remove-plugin") => "plugin remove story@storyhook --json".into(),
+        ("codex", "remove-marketplace") => "plugin marketplace remove storyhook --json".into(),
+        ("codex", "add-marketplace") => format!("plugin marketplace add {source} --json"),
+        ("codex", "add-plugin") => "plugin add story@storyhook --json".into(),
+        other => panic!("unknown verb {other:?}"),
+    }
+}
+
+/// The failure modes that break one step AFTER the removes, once, for each
+/// provider, paired with the text the fake prints when it does.
+fn failures_after_the_removes(provider: &str) -> Vec<(&'static str, &'static str)> {
+    match provider {
+        "claude" => vec![
+            ("marketplace-add-fail-once", "marketplace add exploded"),
+            ("plugin-install-fail-once", "plugin install exploded"),
+        ],
+        "codex" => vec![
+            ("marketplace-fail-once", "marketplace exploded"),
+            ("plugin-fail-once", "plugin exploded"),
+            ("payload-stale", "verify"),
+            ("execpolicy-fail", "rule verification exploded"),
+        ],
+        other => panic!("unknown provider {other}"),
+    }
+}
+
+#[test]
+fn a_failure_after_the_removes_re_registers_the_previous_marketplace() {
+    for provider in ["claude", "codex"] {
+        for (mode, error) in failures_after_the_removes(provider) {
+            let harness = Harness::for_provider(provider);
+            let previous = harness.seed_previous_registration(provider);
+            harness.set_mode(provider, mode);
+
+            let output = harness.run(&["plugin", "install", provider]);
+            let message = combined(&output);
+            assert!(!output.status.success(), "{provider}/{mode}: {message}");
+            assert!(message.contains(error), "{provider}/{mode}: {message}");
+            assert!(
+                message.contains(&format!(
+                    "re-registered the previous marketplace at {}",
+                    previous.display()
+                )),
+                "{provider}/{mode}: {message}"
+            );
+            assert!(
+                !message.contains("not verified"),
+                "{provider}/{mode}: a different source was put back, not the same one: {message}"
+            );
+            assert_eq!(
+                harness.registered_source(provider).as_deref(),
+                Some(previous.display().to_string().as_str()),
+                "{provider}/{mode}: the provider must be registered at the previous source again"
+            );
+
+            let release = harness.release_marketplace();
+            let mut expected = vec![
+                verb(provider, "remove-plugin", &release),
+                verb(provider, "remove-marketplace", &release),
+                verb(provider, "add-marketplace", &release),
+            ];
+            if !mode.starts_with("marketplace") {
+                expected.push(verb(provider, "add-plugin", &release));
+            }
+            expected.extend([
+                verb(provider, "remove-plugin", &previous),
+                verb(provider, "remove-marketplace", &previous),
+                verb(provider, "add-marketplace", &previous),
+                verb(provider, "add-plugin", &previous),
+            ]);
+            assert_log_order(&harness.provider_log(provider), &expected);
+            if provider == "codex" {
+                assert!(!harness.codex_launcher().exists(), "{mode}");
+                assert!(!harness.codex_rule().exists(), "{mode}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fresh_install_that_fails_removes_its_partial_registration() {
+    for (provider, mode, error) in [
+        ("claude", "plugin-install-fail", "plugin install exploded"),
+        ("codex", "plugin-fail", "plugin exploded"),
+    ] {
+        let harness = Harness::for_provider(provider);
+        harness.set_mode(provider, mode);
+        assert_eq!(harness.registered_source(provider), None);
+
+        let output = harness.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{provider}: {message}");
+        assert!(message.contains(error), "{provider}: {message}");
+        assert!(
+            message.contains("removed the partial registration"),
+            "{provider}: {message}"
+        );
+        assert!(!message.contains("re-registered"), "{provider}: {message}");
+        assert_eq!(
+            harness.registered_source(provider),
+            None,
+            "{provider}: a marketplace the failed install added must not survive it"
+        );
+        let release = harness.release_marketplace();
+        assert_log_order(
+            &harness.provider_log(provider),
+            &[
+                verb(provider, "add-marketplace", &release),
+                verb(provider, "add-plugin", &release),
+                verb(provider, "remove-plugin", &release),
+                verb(provider, "remove-marketplace", &release),
+            ],
+        );
+        let adds = harness
+            .provider_log(provider)
+            .matches("marketplace add")
+            .count();
+        assert_eq!(
+            adds, 1,
+            "{provider}: nothing to re-register, so no second add"
+        );
+    }
+}
+
+#[test]
+fn a_failed_restore_reports_both_errors_and_names_the_previous_source() {
+    for (provider, mode, error) in [
+        ("claude", "marketplace-add-fail", "marketplace add exploded"),
+        ("codex", "marketplace-fail", "marketplace exploded"),
+    ] {
+        let harness = Harness::for_provider(provider);
+        let previous = harness.seed_previous_registration(provider);
+        harness.set_mode(provider, mode);
+
+        let output = harness.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{provider}: {message}");
+        assert_eq!(
+            message.matches(error).count(),
+            2,
+            "{provider}: the original failure and the restore's own must both be reported: {message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "AND failed to re-register the previous marketplace at {}",
+                previous.display()
+            )),
+            "{provider}: {message}"
+        );
+        assert!(
+            !message.contains("re-registered the previous"),
+            "{provider}: a failed restore must not read as a successful one: {message}"
+        );
+        assert_eq!(
+            harness.registered_source(provider),
+            None,
+            "{provider}: the fake's marketplace add never succeeded"
+        );
+    }
+}
+
+#[test]
+fn a_same_source_reinstall_failure_says_what_it_put_back_is_unverified() {
+    for (provider, mode) in [
+        ("claude", "plugin-install-fail-once"),
+        ("codex", "plugin-fail-once"),
+    ] {
+        let harness = Harness::for_provider(provider);
+        let first = harness.run(&["plugin", "install", provider]);
+        assert!(first.status.success(), "{provider}: {}", combined(&first));
+        let release = harness.release_marketplace();
+        assert_eq!(
+            harness.registered_source(provider).as_deref(),
+            Some(release.display().to_string().as_str())
+        );
+
+        harness.set_mode(provider, mode);
+        let output = harness.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{provider}: {message}");
+        assert!(
+            message.contains(&format!(
+                "re-registered the same release source {}",
+                release.display()
+            )),
+            "{provider}: {message}"
+        );
+        assert!(message.contains("not verified"), "{provider}: {message}");
+        assert!(
+            message.contains(&format!("story plugin install {provider}")),
+            "{provider}: {message}"
+        );
+        assert_eq!(
+            harness.registered_source(provider).as_deref(),
+            Some(release.display().to_string().as_str()),
+            "{provider}: the registration is back even though this run failed"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_provider_config_never_blocks_the_install_and_is_named_on_failure() {
+    for (provider, config, body, mode, reason) in [
+        (
+            "claude",
+            ".claude/plugins/known_marketplaces.json",
+            "{ not json",
+            "plugin-install-fail",
+            "nothing restored: its configuration is invalid JSON",
+        ),
+        (
+            "codex",
+            ".codex/config.toml",
+            "[marketplaces.storyhook\nsource = 1",
+            "plugin-fail",
+            "nothing restored: its configuration is invalid TOML",
+        ),
+    ] {
+        let unblocked = Harness::for_provider(provider);
+        let path = unblocked.home.join(config);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        let output = unblocked.run(&["plugin", "install", provider]);
+        assert!(
+            output.status.success(),
+            "{provider}: a config the parser cannot read must not make install a dead end: {}",
+            combined(&output)
+        );
+
+        let failed = Harness::for_provider(provider);
+        let path = failed.home.join(config);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        failed.set_mode(provider, mode);
+        let output = failed.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{provider}: {message}");
+        assert!(message.contains(reason), "{provider}: {message}");
+        assert!(!message.contains("re-registered"), "{provider}: {message}");
+        // The partial registration is still undone: there was something to
+        // remove even though there was nothing to put back.
+        let log = failed.provider_log(provider);
+        let release = failed.release_marketplace();
+        assert_log_order(
+            &log,
+            &[
+                verb(provider, "add-plugin", &release),
+                verb(provider, "remove-plugin", &release),
+                verb(provider, "remove-marketplace", &release),
+            ],
+        );
+    }
+}
+
+#[test]
+fn a_successful_reinstall_over_a_previous_registration_runs_no_restore() {
+    for provider in ["claude", "codex"] {
+        let harness = Harness::for_provider(provider);
+        harness.seed_previous_registration(provider);
+        let output = harness.run(&["plugin", "install", provider]);
+        assert!(output.status.success(), "{provider}: {}", combined(&output));
+        let release = harness.release_marketplace();
+        assert_eq!(
+            harness.registered_source(provider).as_deref(),
+            Some(release.display().to_string().as_str())
+        );
+        let log = harness.provider_log(provider);
+        for step in [
+            "remove-plugin",
+            "remove-marketplace",
+            "add-marketplace",
+            "add-plugin",
+        ] {
+            let line = verb(provider, step, &release);
+            assert_eq!(
+                log.lines().filter(|l| *l == line).count(),
+                1,
+                "{provider}: `{line}` must run exactly once on success:\n{log}"
+            );
+        }
+        assert!(!combined(&output).contains("re-registered"));
+    }
 }
 
 #[test]
@@ -454,6 +934,11 @@ fn marketplace_and_plugin_failures_stop_at_the_exact_failed_step() {
     assert!(!output.status.success());
     assert!(combined(&output).contains("marketplace exploded"));
     assert!(!marketplace.codex_log().contains("plugin add"));
+    assert!(
+        combined(&output).contains("removed the partial registration"),
+        "{}",
+        combined(&output)
+    );
 
     let plugin = Harness::new(true);
     plugin.install_fake("codex", FAKE_CODEX);
@@ -565,6 +1050,17 @@ fn failed_codex_upgrade_restores_the_previous_managed_files() {
     assert!(!failed.status.success());
     assert_eq!(fs::read(harness.codex_launcher()).unwrap(), launcher);
     assert_eq!(fs::read(harness.codex_rule()).unwrap(), rule);
+    // The registration is part of the same transaction as the files: it was
+    // at this release before, and it is again, unverified.
+    let message = combined(&failed);
+    assert!(
+        message.contains("re-registered the same release source"),
+        "{message}"
+    );
+    assert_eq!(
+        harness.registered_source("codex").as_deref(),
+        Some(harness.release_marketplace().display().to_string().as_str())
+    );
 }
 
 #[test]
@@ -613,7 +1109,7 @@ fn stable_codex_bridge_keeps_a_callers_explicit_agent() {
 
 #[test]
 fn stable_launcher_follows_codex_plugin_version_changes_without_rule_edits() {
-    let harness = Harness::new(true);
+    let mut harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
     harness.install_story_on_path();
     let installed = harness.run(&["plugin", "install", "codex"]);
@@ -988,4 +1484,85 @@ fn legacy_claude_code_uninstall_target_still_works_and_warns() {
     assert!(message.contains("use `claude`"), "{message}");
     let log = fs::read_to_string(harness.home.join("claude-invocations")).unwrap();
     assert!(log.contains("plugin uninstall story@storyhook"), "{log}");
+}
+
+/// A Claude Code uninstall leaves the plugin cache behind — the provider's own
+/// `plugin uninstall` does not clear it — and `story doctor install` reads
+/// that cache as a lost registration (SH-640). A deliberate uninstall must
+/// therefore sweep every directory the install owns, or every uninstalled
+/// machine reads DEREGISTERED for ever and the flag stops meaning anything.
+#[test]
+fn claude_uninstall_sweeps_the_installed_copies_the_doctor_reads_as_residue() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    let plugins = harness.home.join(".claude/plugins");
+    let cache = plugins.join("cache/storyhook/story/2.4.2");
+    let marketplace = plugins.join("marketplaces/storyhook");
+    let legacy = plugins.join("storyhook");
+    for dir in [&cache, &marketplace, &legacy] {
+        fs::create_dir_all(dir).unwrap();
+    }
+
+    let before = harness.run(&["doctor", "install"]);
+    assert!(
+        combined(&before).contains("DEREGISTERED"),
+        "positive control: the seeded copies with no registration are a finding:\n{}",
+        combined(&before)
+    );
+
+    let output = harness.run(&["plugin", "uninstall", "claude"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let text = combined(&output);
+    for dir in [plugins.join("cache/storyhook"), marketplace, legacy] {
+        assert!(!dir.exists(), "`{}` must be swept:\n{text}", dir.display());
+        assert!(
+            text.contains(&dir.display().to_string()),
+            "the sweep must name `{}`:\n{text}",
+            dir.display()
+        );
+    }
+
+    let after = harness.run(&["doctor", "install"]);
+    assert!(
+        !combined(&after).contains("DEREGISTERED"),
+        "a deliberate uninstall leaves the doctor quiet:\n{}",
+        combined(&after)
+    );
+}
+
+/// The Codex twin: the fake `codex plugin add` writes the versioned cache the
+/// real one does, and neither's `plugin remove` clears it.
+#[test]
+fn codex_uninstall_sweeps_the_plugin_cache_the_doctor_reads_as_residue() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let installed = harness.run(&["plugin", "install", "codex"]);
+    assert!(installed.status.success(), "{}", combined(&installed));
+    let cache = harness.home.join(".codex/plugins/cache/storyhook");
+    assert!(
+        cache.is_dir(),
+        "positive control: the install populated the cache"
+    );
+
+    let output = harness.run(&["plugin", "uninstall", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert!(
+        !cache.exists(),
+        "the cache must be swept:\n{}",
+        combined(&output)
+    );
+    assert!(
+        combined(&output).contains(&cache.display().to_string()),
+        "the sweep must be named:\n{}",
+        combined(&output)
+    );
+    assert!(!harness.codex_launcher().exists());
+    assert!(!harness.codex_rule().exists());
+
+    let after = harness.run(&["doctor", "install"]);
+    assert!(
+        !combined(&after).contains("DEREGISTERED"),
+        "a deliberate uninstall leaves the doctor quiet:\n{}",
+        combined(&after)
+    );
 }

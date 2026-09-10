@@ -1365,6 +1365,23 @@ Standing rules for every wave:
   helper by realpath, never a byte compare of 4,000 lines and never a host record —
   `installed_plugins.json` names the user-scope cache while a dispatched session runs from the
   Codex cache. Design of record: `docs/spec/release-lockstep.md`'s SH-632 section.
+- **An absent registration is resolved against the disk, never read as "never installed"**
+  (SH-640). `story doctor install` — the check `protect-install.sh` calls authoritative —
+  answered `not registered` as an unflagged row at both exits of `provider_row` and
+  concluded `every component agrees.` over a Claude Code registration that a host
+  marketplace refresh had destroyed (mtime evidence in `docs/spec/release-lockstep.md`);
+  a new session of that provider gets no `/story` at all, and it went unnoticed for two
+  hours across eight sessions. The evidence is the provider's own plugin cache, which
+  survives the loss — `plugin::install_residue`, storyhook-owned artifacts present under
+  the provider's home, files counted only by their marker. **Not** the managed-path
+  manifest the story proposed: `managed_paths()` names both providers on every install,
+  so that rule would have flagged every Codex-only machine — the same manifest now derives
+  its provider directories from the doctor's own list, so neither can drift alone.
+  Residue with no registration is a flagged `DEREGISTERED` row; residue absent stays the
+  quiet `not registered` a Claude-only or Codex-only machine depends on. The corollary that
+  keeps the flag meaningful: `story plugin uninstall` sweeps that residue, because the
+  provider's own uninstall leaves its cache behind and a deliberate uninstall must leave
+  the doctor quiet. Design of record: `docs/spec/release-lockstep.md`'s SH-640 section.
 - **`$PATH` is the caller's claim about itself, never evidence of installation** (SH-630).
   The SH-404 migration guard refused a binary that was not the `story` `$PATH` resolves,
   and on 2026-09-09 a `PATH="$PWD/target/debug:$PATH" story project list` from the main
@@ -1407,7 +1424,48 @@ Standing rules for every wave:
   `src/daemon/install_guard.rs` and `src/path_identity.rs`, and `build.rs`'s "Where the
   artifact was written". The daemon ping-pong the journal also shows — an uninstalled client
   of a different build stands down the default store's custodian and seats itself, every
-  alternate call — is filed separately as SH-634, not fixed here.
+  alternate call — was filed separately as SH-634, and is the bullet below.
+- **An uninstalled build never becomes the default store's daemon** (SH-634). The
+  SH-630 incident had a first act SH-630 did not touch: `lifecycle::spawn_locked` treats
+  any live daemon that is not this exact build as "not ours", asks it to stand down, and
+  spawns the **client's own binary** as the replacement — so the worktree's
+  `PATH=target/debug:$PATH story list` seated itself as the production store's custodian
+  before its migration was ever refused, the next installed `story` seated the installed
+  build back, and the journal shows four custodians in one hour. With the migration refused
+  no data is at risk, but the daemon runs the dispatch engine and the centralized verifier
+  and hands `STORY_BIN=current_exe` to every child, so a worktree build in that seat runs
+  production automation on whatever the worktree holds next, and the next `cargo build`
+  rewrites the binary underneath it — SH-531's hazard observed rather than described.
+  `src/daemon/seat_guard.rs` is the third guard on `path_identity::build_dir`, sharing the
+  facts and not the judgement (SH-411's rule): an uninstalled binary is refused, **before
+  the shutdown request**, from replacing a live daemon of another build on the default
+  store (`is_default()`, as the migration guard, narrowed by the *incumbent* so a
+  one-build-per-store harness never meets it), and refused a daemon at all when nothing
+  named the store (`StoreOrigin::XdgDefault`, as `TEST_BUILD_REFUSAL`, because a bare
+  invocation that worked only while the installed daemon happened to be down is a worse
+  contract than a consistent refusal). `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1` says you
+  meant it; the parameter table clears it and `--uninstalled-build` re-arms it, which is
+  **load-bearing for `make scratch`**: a `cargo build` in a scratch shell changes the mtime
+  and the daemon still serving the root reads as another build. Rejected, on the
+  mechanism: letting the uninstalled client *talk* to the incumbent when the protocol
+  matches — since SH-114 the service runs inside the daemon and the client only parses and
+  renders, so `./target/debug/story list` would exercise none of the worktree's changes
+  while looking exactly as though it had, the SH-411 shape. Three things about the
+  placement are contracts, fenced by source order in `tests/daemon_lifecycle.rs`: after
+  the spawn lock (`tests/daemon_timeouts.rs` holds that lock from an uninstalled binary on
+  an `XdgDefault` origin and must fail *at the lock*), after the adopt-a-verdict return,
+  and outside the closure `publish_attempt` records — a refusal about *this* client's build
+  must never be handed to the installed client waiting behind it. The proof is the SH-630
+  fixture promoted: `storyhook_test_support::installed_copy` is the test binary copied out
+  of its build directory, and the control for "an installed binary replaces a stale daemon"
+  is that copy, never the incident — which is what the two skew-restart tests in
+  `tests/daemon_lifecycle.rs` used to be. The bare-invocation clause is reachable from no
+  subprocess (`TEST_BUILD_REFUSAL` fires first) and is proven by driving the real
+  `spawn_locked` in-process through `Environment::at`, the fixture constructor that builds
+  exactly that origin. `stop()` stays unguarded on purpose: every `DaemonGuard` and
+  `TestEnv::stop_daemon` rely on an uninstalled test process stopping an installed copy's
+  daemon. Design of record: the module doc on `src/daemon/seat_guard.rs` and
+  `docs/spec/test-environments.md`'s SH-634 "As built" section.
 - **A shell test owns its daemon, and stands it down before deleting its home** (SH-631).
   Filed as "the plugin suite fails deterministically on dev, masked by leg-reuse" — 33 of
   74 tests, every one `a storyhook daemon is already running`. Measured before anything
@@ -1504,6 +1562,23 @@ Standing rules for every wave:
   selected a test exits 1** — the per-project skip stays for the SH-335 loop, and only the
   sum across projects can tell that case from a filter typo. Design of record:
   `docs/spec/test-tiers.md`'s fourth "As built" reading.
+- **A wait settles the box the test measures, never an ancestor of it — a proxy claim can be
+  true before the motion starts** (SH-623). `notice-dock-geometry.spec.ts` waited on `#drawer`'s
+  own right edge being inside the viewport and then hit-tested `#drawer-close`; chromium reported
+  the button's centre as `nothing`, `elementFromPoint`'s null for a point 113px off-screen. The
+  mechanism is sharper than "the parent finished first": the closed drawer is `width: 0;
+  transform: translateX(100%)`, and 100% of a 0-wide box is 0px, so its right edge reads exactly
+  `1280.00` at **t=0**, before the transition has moved at all, while the header lays its `nowrap`
+  items out past that 0-wide box and the close button sits at x≈1377. The retired predicate was
+  true before the motion started. `support.ts`'s `awaitSettled(root, surface)` is now the one
+  settle instrument — it had lived twice, in `settledBoundingBox` and the tap-target sweep, the
+  SH-136 shape — and `tests/tap_target_comparison.rs` pins both callers to it. The witness
+  (`settle-the-measured-box.spec.ts`) constructs the straddle in SH-420's posture, pausing the
+  drawer's own transitions and seeking across them, so it costs no wall clock and wins on no
+  engine by luck. Two siblings found by arithmetic rather than sighting were fixed alongside
+  (`responsive.mobile.spec.ts`, `detail-panel.spec.ts`: a width poll, then transform-derived
+  edges with exact equality). Design of record: `docs/spec/responsive-dashboard.md`'s SH-623
+  "As built" note under "Tap targets (D3)".
 - **A text assertion never rides an aria-hidden glyph, and the fence that keeps it runs
   where the subject is known** (SH-622). `toHaveText`/`toContainText` compare
   `textContent`, which includes an `aria-hidden` subtree; the accessible name excludes
@@ -1580,6 +1655,27 @@ Standing rules for every wave:
   controls count the second read, so deleting a recheck fails them too. Design of record:
   `docs/spec/full-auto-engine.md`'s SH-637 section; the verdict trail is on the story
   (`story show SH-637`, SH-363).
+- **A remove-then-add against a provider records what it removed and puts it back on
+  any later failure, reporting both errors** (SH-641). `story plugin install` removes the
+  plugin and marketplace before registering the release projection (neither provider
+  promises that re-adding a name changes its source), and until SH-641 a failure after
+  the removes left the provider with nothing — the state SH-640 taught `story doctor
+  install` to name as DEREGISTERED, which named it without fixing it.
+  `plugin::registration` snapshots the registered source from the provider's own config
+  *before* the removes, runs everything after them as one closure (for Codex, through
+  payload verification and the sandbox step, whose own file rollback composes with this
+  one), and on failure removes what the run added, re-registers the previous source and
+  appends which of four outcomes happened; a restore that fails reports **both** errors
+  (SH-578). Two choices worth keeping: an unreadable config never blocks the install (a
+  parser narrower than the provider's format must not be the SH-404/405 dead end; it
+  proceeds and says "nothing restored: why"), and the note says "re-registered", never
+  "restored" — the source goes back, not the bytes, and a same-source put-back is called
+  unverified because the commands that just failed are what put it back. Signals are not
+  deferred across the window, and the module doc says why. Fakes in
+  `tests/plugin_install.rs` write the providers' real config shapes so the snapshot is
+  proven against what production reads (SH-364), with fail-once modes so a successful
+  restore is observable. Design of record: `docs/spec/release-lockstep.md`'s SH-641
+  section.
 - **A fixture bridged across one process boundary is bridged across every boundary the
   same daemon crosses, and a probe that could not run is not a probe that answered no**
   (SH-626). The browser harness had bridged the fake tmux's `FAKE_TMUX_*` knobs across the

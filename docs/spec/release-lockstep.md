@@ -163,6 +163,82 @@ release, unpinned Git source, or checkout.
   make the store's own advice a dead end — the trap SH-404's module doc
   documented and SH-405 was filed for.
 
+## As built: a failed registration is rolled back (SH-641)
+
+Both provider installs are remove-then-add, for the reason the section above
+gives: neither provider promises that adding an existing marketplace name
+changes its source. Until SH-641 nothing stood between the two removes and a
+later failure — `add marketplace`, `add plugin`, Codex's payload verification
+or its sandbox rule — so the provider was left with no storyhook marketplace
+and no plugin. SH-640's `story doctor install` names that state
+(DEREGISTERED), but naming it still cost the operator a session with no
+`/story` until they reinstalled by hand. The two siblings in `src/plugin.rs`
+already rolled back (`materialize_release_marketplace` renames the previous
+projection aside and restores it on a failed publish; the Codex sandbox step
+snapshots and restores its two files); the registration was the odd one out.
+
+`plugin::registration` (`src/plugin/registration.rs`) is the fix, and the one
+parser `story doctor install` already used moved there with it:
+
+- **Snapshot before the removes**, from the provider's own config file
+  (`known_marketplaces.json`, `config.toml`), never by invoking the provider.
+  Three named states: `Registered(source)`, `Unregistered` (no file, or no
+  storyhook key — a fresh install), `Unreadable(reason)`.
+- **Everything after the removes is one closure.** On failure, `undo` removes
+  whatever the failed run added (the same tolerant `remove_*` verbs the
+  install uses, prefixed "while restoring the previous registration" so the
+  install-phase wording cannot contradict the message), then re-registers the
+  previous source and re-adds the plugin from it. For Codex the closure
+  includes payload verification **and** the sandbox step: a plugin whose
+  skills exec a launcher that was just rolled back is half-installed, and
+  because that step restores its own files the two rollbacks compose — files
+  first, then registration — into exactly the previous state.
+- **The error says which happened**, appended to the original failure, never
+  in place of it: *re-registered the previous marketplace at `<source>`*;
+  *re-registered the same release source … not verified* when the previous
+  source is the release this run just failed to install (the same commands
+  that failed are what put it back, and verification is a claim about this
+  release's payload, so it is not re-run); *removed the partial registration*
+  when nothing was registered before; *nothing restored: `<reason>`* when the
+  config could not be read. A restore that fails reports **both** errors
+  (SH-578: a diagnosis downstream of an unchecked failure names the wrong
+  layer).
+- **A failing remove still stops before anything is destroyed**, with no
+  restore — the pre-existing behaviour, still pinned.
+
+Two decisions taken on the way, and the reasoning kept:
+
+- **An unreadable config never blocks the install.** A parser narrower than
+  the provider's own format must not turn `story plugin install` into a dead
+  end — the SH-404/SH-405 trap. `Unreadable` proceeds with nothing to put back
+  and says why in any failure message (SH-372: absence states nothing and is
+  never promoted to "there was nothing").
+- **"Re-registered", never "restored".** Restore puts back the *source*; a
+  git or checkout source may serve a different version now than the
+  provider's cache held before. The note says what was actually done.
+
+**Stated limit:** signals are not deferred across the window. SIGKILL between
+the removes and the add is unrecoverable in-process, and SIGINT/SIGTERM are
+not masked: doing so needs the provider children reset to default dispositions
+so a hung provider stays interruptible, and its only test is a process-group
+signal race that is load-sensitive (SH-347, SH-394). The window is sub-second
+against a local directory source, SH-640's detector names the state it
+leaves, and the next `story plugin install` *is* the restore.
+
+**How it is proven** (`tests/plugin_install.rs`): the fake `claude` and
+`codex` CLIs record a registration in the provider's real config shape on
+`marketplace add` and clear it on `marketplace remove`, so the installer's
+read of the previous registration is exercised against what it reads in
+production (SH-364). Fail-once modes, backed by a marker file, break one step
+after the removes exactly once, which is what makes a successful restore
+observable; the pre-existing global fail modes double as the restore-also-
+failed case. The matrix runs both providers over every step after the removes
+with a previous registration seeded at a real directory, and the invocation
+log is asserted in order: removes, add(new), removes, add(previous), plugin.
+The success-path control counts each verb exactly once, so a restore that ran
+on success would be caught. The note phrasings and the `undo` sequencing are
+unit-tested over substituted verbs without a provider.
+
 ## As built: launcher dispatch preserves the installation (SH-588)
 
 The installed-artifact guard distinguishes edits to the installation from
@@ -247,3 +323,61 @@ same helper even with identical bytes. The argv vocabularies are shared items
 so both doors are tested against one grammar. Mutation-checked in both
 directions: removing the own-root comparison fails two tests, removing the
 redirect check fails one, removing `-delete` from `find`'s refusals fails one.
+
+## As built: a lost registration is not "never installed" (SH-640)
+
+`story doctor install` — the check `protect-install.sh`'s own header calls
+authoritative — printed `claude plugin  not registered` and then `every
+component agrees.` Both exits of `provider_row` that found no `storyhook`
+marketplace (the provider's configuration file absent, or present without the
+key) returned an unflagged row, so a provider whose registration had been
+destroyed read identically to a machine that never had that provider. On
+2026-09-09 that hid a lost Claude Code registration for about two hours across
+eight autonomous sessions: a new session of that provider gets no `/story` at
+all, and the one check built to say so said the opposite — SH-306's shape, a
+gate's silence read as an all-clear.
+
+**The evidence is what the install left on disk, not the manifest.** The story
+proposed reading the managed-path manifest, whose Claude entries would prove a
+Claude install had happened. They would not: `managed_paths()` names *both*
+providers' prefixes and `record_managed_paths()` runs before the target is
+dispatched, so a Codex-only machine's manifest names the Claude prefixes too,
+and that rule would have flagged every such machine. What actually survived
+the incident was the provider's own plugin cache —
+`~/.claude/plugins/cache/storyhook/story/<six versions>` — while
+`known_marketplaces.json`, `installed_plugins.json` and
+`marketplaces/storyhook` all lost their storyhook entries.
+`plugin::install_residue(target)` lists the storyhook-owned artifacts present
+under that provider's home: for Claude the cache, the marketplace install
+directory and the legacy layout, by existence; for Codex the cache by
+existence, and the launcher and rule only while they carry the marker
+storyhook wrote them with — an unmarked file at the same path is the user's,
+exactly as `remove_managed_file` already reads it. Residue present is a
+flagged `DEREGISTERED` row naming the copies and `story plugin install
+<target>`; residue absent stays the quiet `not registered` the row exists for.
+This is SH-372's rule for absence, one subsystem over: an absent key states
+nothing on its own and is resolved against what the reader already holds.
+
+**One definition, both ways.** `managed_paths()` now derives its provider
+directories from the same per-provider list the doctor probes, so the hook
+cannot protect a prefix the doctor is blind to; a unit test pins the file half
+and any prefix added by hand.
+
+**A deliberate uninstall must leave the doctor quiet**, or every machine that
+ever uninstalled reads `DEREGISTERED` for ever and the flag stops meaning
+anything. Claude Code's own `plugin uninstall` leaves its cache behind (six
+versions had accumulated on the filing machine), and the fake Codex `plugin
+remove` mirrors the real one. `story plugin uninstall` for either provider
+now sweeps the residue *directories* the doctor reads; the Codex launcher and
+rule keep their own marker-checked removal that preserves a user's file.
+
+**What caused the loss is recorded as evidence, not settled.** The candidate
+the story named — `install_claude`'s remove-then-add with no rollback — did
+not run: `~/.claude/plugins/marketplaces/` and its `claude-plugins-official`
+entry share the exact mtime `18:04:04`, twenty seconds before the first
+`/story do` in that session's history; `installed_plugins.json` and the
+`2.4.2` cache entry share `18:22:12`; the release root the registration
+pointed at never went away; and the plugin helper makes no marketplace call.
+That is a Claude Code marketplace refresh pruning the entry — a fact about the
+host, which makes the detector the whole of the fix. The no-rollback shape
+remains a real gap and is filed separately.

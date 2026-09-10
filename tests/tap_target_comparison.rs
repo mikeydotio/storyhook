@@ -17,24 +17,50 @@
 //! replacing it with `- 0.05`, which is a bare literal ~800x wider than the
 //! error it must absorb and would start hiding real shortfalls in
 //! [43.95, 44). That substitution passes every browser test in the suite.
+//!
+//! Since SH-623 the settle wait lives in `support.ts` as `awaitSettled`, the
+//! one instrument both the tap-target sweep and `settledBoundingBox` (the
+//! coordinate-press preparer) go through. It was two byte-similar copies
+//! before — the SH-136 shape — so the fence on its scoping reads the shared
+//! body, and a wiring test pins that both callers still reach it rather than
+//! quietly growing a copy of their own.
 
 use std::path::PathBuf;
 
 const SPEC: &str = "e2e/specs/responsive.mobile.spec.ts";
+const SUPPORT: &str = "e2e/specs/support.ts";
 
-fn read_spec() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SPEC);
+/// The settle instrument's own name, and the callers that must go through it
+/// (SH-623). A caller is `(file, declaration signature)`.
+const SETTLE_INSTRUMENT: &str = "async function awaitSettled(";
+const SETTLE_CALLERS: &[(&str, &str)] = &[
+    (SPEC, "async function settleAndReadTapMin("),
+    (SUPPORT, "async function settledBoundingBox("),
+];
+
+fn read_tracked(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()))
+}
+
+fn read_spec() -> String {
+    read_tracked(SPEC)
 }
 
 /// The body of the first function in `source` whose declaration contains
 /// `signature`, brace-matched from its opening `{`. Returns `None` when the
 /// signature is absent, so a rename fails the test that asked rather than
 /// silently scanning an empty string.
+///
+/// The body's brace is the first one that ENDS a line: a return type can
+/// carry braces of its own (`settledBoundingBox` returns
+/// `Promise<{ x: number; ... }>`), and taking the first `{` there extracts
+/// the type literal as the "body" and reports every wiring assertion against
+/// four field names.
 fn function_body(source: &str, signature: &str) -> Option<String> {
     let start = source.find(signature)?;
-    let open = start + source[start..].find('{')?;
+    let open = start + source[start..].find("{\n")?;
     let mut depth = 0usize;
     for (offset, ch) in source[open..].char_indices() {
         match ch {
@@ -58,6 +84,13 @@ fn comparison_body() -> String {
 }
 
 fn settle_body() -> String {
+    let support = read_tracked(SUPPORT);
+    function_body(&support, SETTLE_INSTRUMENT)
+        .unwrap_or_else(|| panic!("{SUPPORT} must still declare `{SETTLE_INSTRUMENT}`"))
+}
+
+/// The sweep's own preparation: settle, then read the threshold.
+fn sweep_body() -> String {
     let spec = read_spec();
     function_body(&spec, "async function settleAndReadTapMin(")
         .unwrap_or_else(|| panic!("{SPEC} must still declare `settleAndReadTapMin`"))
@@ -85,6 +118,15 @@ fn the_body_extractor_finds_a_real_function_and_ends_at_its_brace() {
         "an absent signature must be None, never an empty body that reads as compliant"
     );
 
+    // A return type carrying its own braces must not be mistaken for the body.
+    let typed =
+        "async function typed(): Promise<{ x: number; y: number }> {\n  return real();\n}\n";
+    let body = function_body(typed, "async function typed(").expect("the fixture declares it");
+    assert!(
+        body.contains("return real();") && !body.contains("x: number"),
+        "the extractor took the return type's brace as the body's: {body}"
+    );
+
     assert!(
         comparison_body().len() > 200,
         "the real comparison body is implausibly short -- the extractor has drifted"
@@ -92,6 +134,10 @@ fn the_body_extractor_finds_a_real_function_and_ends_at_its_brace() {
     assert!(
         settle_body().len() > 200,
         "the real settle body is implausibly short -- the extractor has drifted"
+    );
+    assert!(
+        sweep_body().len() > 200,
+        "the real sweep body is implausibly short -- the extractor has drifted"
     );
 }
 
@@ -154,6 +200,32 @@ fn the_tolerance_is_derived_from_float32s_significand_never_a_bare_literal() {
     }
 }
 
+/// Every settle wait goes through the one instrument (SH-623). Two copies of
+/// this poll existed for as long as `settledBoundingBox` did, and a copy is
+/// exactly what the scoping fence below cannot see: it reads one body, so a
+/// caller that re-inlined its own wait would be outside it. Pinned as the
+/// CALL rather than an import: an import with no call is `unused` under
+/// `noUnusedLocals`, and a call with no import does not compile, so neither
+/// half of the wiring can be deleted alone.
+#[test]
+fn every_settle_wait_goes_through_await_settled() {
+    let instrument_call = "awaitSettled(";
+    for (file, signature) in SETTLE_CALLERS {
+        let body = function_body(&read_tracked(file), signature)
+            .unwrap_or_else(|| panic!("{file} must still declare `{signature}`"));
+        assert!(
+            body.contains(instrument_call),
+            "`{signature}` in {file} must settle through `awaitSettled` rather \
+             than carrying its own copy of the poll (SH-623, the SH-136 rule).\n\n{body}"
+        );
+        assert!(
+            !body.contains("getAnimations("),
+            "`{signature}` in {file} reads animations itself -- that is the copy \
+             `awaitSettled` exists to replace.\n\n{body}"
+        );
+    }
+}
+
 /// A document-wide settle wait would block a sweep of one surface on a toast
 /// animating somewhere else -- trading SH-420's false red for a false hang.
 #[test]
@@ -182,7 +254,7 @@ fn the_threshold_is_read_from_the_page_and_pinned_to_the_coarse_value() {
         spec.contains("const COARSE_TAP_MIN = 44;"),
         "{SPEC} must still pin the coarse-pointer minimum it holds targets to"
     );
-    let body = settle_body();
+    let body = sweep_body();
     assert!(
         body.contains("getPropertyValue(\"--tap-min\")"),
         "the sweep must read what --tap-min actually computes to, which the \
