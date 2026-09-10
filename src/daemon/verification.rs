@@ -13,9 +13,14 @@ use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
 use crate::domain::github_remote::parse_github_url;
 use crate::domain::pr_url::parse_pr_url;
-use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
+use crate::domain::{
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
+    SubmissionRefusalClass, SubmittedPullRequest,
+};
 use crate::env::Environment;
-use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
+use crate::env::spawn_env::{
+    apply_dispatch_allowlist, apply_submission_allowlist, apply_verification_allowlist,
+};
 use crate::error::AppError;
 use crate::process::{
     CaptureError, Captured, TerminationPolicy, TimeoutTermination,
@@ -202,8 +207,36 @@ pub enum VerificationOutcome {
     },
 }
 
+/// Why a leased submission did not leave one open pull request (SH-647).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmissionFailure {
+    /// The helper refused by name with something the agent has to fix — a
+    /// dirty worktree, a branch with nothing to submit, a rejected push. The
+    /// story is returned to the agent carrying `display`.
+    Refused {
+        /// The helper's refusal token, such as `dirty-worktree`.
+        reason: String,
+        /// The helper's own words, naming what to fix.
+        display: String,
+    },
+    /// GitHub, git, the helper process or its receipt failed independently
+    /// of the submitted code; retried unchanged, with the story still in
+    /// `verifying`.
+    Infrastructure {
+        /// Latest diagnosis.
+        detail: String,
+    },
+}
+
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
+    /// Pushes the candidate's leased branch and leaves exactly one open pull
+    /// request for it, opened or adopted (SH-647). Idempotent: the daemon
+    /// calls it on every leased generation, linked pull request or not.
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure>;
     /// Verifies and, on green, lands one submitted PR.
     fn verify(
         &self,
@@ -468,6 +501,123 @@ impl ShellVerificationActuator {
         }
         Ok(())
     }
+
+    /// Runs `story.sh submit` from the lease and validates its receipt.
+    ///
+    /// Spawned like [`Self::reap_leased`] — cwd is the leased repository, the
+    /// lease rides [`CLEANUP_LEASE_ENV`], `STORY_BIN` names this daemon's own
+    /// binary — but under the **submission** allowlist, because this child is
+    /// the one helper that must reach GitHub. `GH_PROMPT_DISABLED`/
+    /// `GIT_TERMINAL_PROMPT` make a missing credential fail now rather than
+    /// block for the daemon's life.
+    ///
+    /// A receipt the daemon cannot trust is never a refusal: invalid JSON, an
+    /// `ok` that disagrees with the exit status, a lease or story that is not
+    /// the one asked about, a URL that does not parse as a pull request — all
+    /// are [`SubmissionFailure::Infrastructure`], since none of them is
+    /// anything an agent could repair.
+    fn submit_leased(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
+        let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
+            infrastructure(format!(
+                "story {} has no cleanup lease for its latest verification generation",
+                candidate.story_id
+            ))
+        })?;
+        let encoded = serde_json::to_string(lease)
+            .map_err(|error| infrastructure(format!("could not encode cleanup lease: {error}")))?;
+        let mut command = Command::new("bash");
+        apply_submission_allowlist(&mut command);
+        command
+            .arg(
+                self.helper_path()
+                    .map_err(|error| infrastructure(error.to_string()))?,
+            )
+            .arg("--project")
+            .arg(&candidate.project_slug)
+            .arg("submit")
+            .arg(&candidate.story_id)
+            .current_dir(&lease.repository_path)
+            .env_remove("STORY_AGENT")
+            .env("STORY_BIN", self.story_binary())
+            .envs(self.env.child_vars())
+            .env(CLEANUP_LEASE_ENV, encoded)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GH_PROMPT_DISABLED", "1")
+            .stdin(Stdio::null());
+        let output = self
+            .run_control_command(
+                command,
+                "verifier-submit",
+                &verification_request_id(candidate),
+                "leased story helper `submit`",
+            )
+            .map_err(|error| infrastructure(error.to_string()))?;
+
+        let receipt: SubmissionReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
+            infrastructure(format!(
+                "leased story helper `submit` returned invalid receipt: {}{}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+                if output.stdout.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; stdout: {}",
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    )
+                }
+            ))
+        })?;
+        if !receipt.ok {
+            return Err(match (receipt.class, receipt.reason) {
+                (Some(SubmissionRefusalClass::Repair), Some(reason)) => {
+                    SubmissionFailure::Refused {
+                        reason,
+                        display: receipt.display,
+                    }
+                }
+                _ => infrastructure(receipt.display),
+            });
+        }
+        if !output.status.success() {
+            return Err(infrastructure(format!(
+                "leased story helper `submit` claimed success but exited {}: {}",
+                output.status, receipt.display
+            )));
+        }
+        if receipt.receipt_version != CLEANUP_LEASE_VERSION {
+            return Err(infrastructure(format!(
+                "leased submit receipt uses unsupported version {}",
+                receipt.receipt_version
+            )));
+        }
+        if receipt.story_id != candidate.story_id || receipt.lease.as_ref() != Some(lease) {
+            return Err(infrastructure(
+                "leased submit receipt does not echo the requested story and lease".to_string(),
+            ));
+        }
+        let pull_request = receipt.pull_request.ok_or_else(|| {
+            infrastructure(format!(
+                "leased submit receipt claims success without a pull request: {}",
+                receipt.display
+            ))
+        })?;
+        let reference = parse_pr_url(&pull_request.url).map_err(|error| {
+            infrastructure(format!(
+                "leased submit receipt names an unusable URL: {error}"
+            ))
+        })?;
+        if reference.number != pull_request.number {
+            return Err(infrastructure(format!(
+                "leased submit receipt's URL `{}` and number {} disagree",
+                pull_request.url, pull_request.number
+            )));
+        }
+        Ok(pull_request)
+    }
 }
 
 impl VerificationActuator for ShellVerificationActuator {
@@ -609,6 +759,13 @@ impl VerificationActuator for ShellVerificationActuator {
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         self.reap_leased(candidate)
+    }
+
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        self.submit_leased(candidate)
     }
 }
 
@@ -1053,7 +1210,10 @@ fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCan
 }
 
 enum CandidateAuthority {
-    Current,
+    /// The same generation, re-derived from the store — its derived fields
+    /// (the linked pull request above all, SH-647) may have moved even
+    /// though its authority has not.
+    Current(Box<VerificationCandidate>),
     Superseded(Option<Box<VerificationCandidate>>),
 }
 
@@ -1068,13 +1228,11 @@ fn candidate_authority(
     candidate: &VerificationCandidate,
 ) -> Result<CandidateAuthority, AppError> {
     let current = queue.current_for(candidate)?;
-    if current
-        .as_ref()
-        .is_some_and(|current| current.verifying_generation == candidate.verifying_generation)
-    {
-        Ok(CandidateAuthority::Current)
-    } else {
-        Ok(CandidateAuthority::Superseded(current.map(Box::new)))
+    match current {
+        Some(current) if current.verifying_generation == candidate.verifying_generation => {
+            Ok(CandidateAuthority::Current(Box::new(current)))
+        }
+        other => Ok(CandidateAuthority::Superseded(other.map(Box::new))),
     }
 }
 
@@ -1086,7 +1244,12 @@ fn refresh_authority<S: Store>(
     candidate: &mut VerificationCandidate,
 ) -> Result<AuthorityRefresh, AppError> {
     match candidate_authority(queue, candidate)? {
-        CandidateAuthority::Current => Ok(AuthorityRefresh::Current),
+        CandidateAuthority::Current(current) => {
+            // Same generation, fresh derived facts: a submission recorded a
+            // moment ago is visible as the linked pull request from here on.
+            *candidate = *current;
+            Ok(AuthorityRefresh::Current)
+        }
         CandidateAuthority::Superseded(Some(resubmitted)) => {
             super::activity::emit(
                 "INFO",

@@ -5,16 +5,16 @@ use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
-    VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
-    tick_with_reconciliation,
+    ShellVerificationActuator, SubmissionFailure, TickResult, VerificationActivity,
+    VerificationActuator, VerificationGuard, VerificationOutcome, journal_path, tick_with,
+    tick_with_activity, tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
+    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SubmittedPullRequest,
+    SuperState, TmuxCleanupTarget, fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -441,6 +441,29 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
     ));
 }
 
+/// What a fake answers when asked to submit a candidate it has no scripted
+/// answer for: adopt the pull request already linked, which is the steady
+/// state of every resubmission (SH-647). A candidate with nothing linked and
+/// nothing scripted is a fixture that did not expect to be submitted at all,
+/// and says so loudly rather than inventing a pull request.
+fn adopt_linked(
+    candidate: &VerificationCandidate,
+) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    match &candidate.pull_request {
+        Ok(link) => Ok(SubmittedPullRequest {
+            url: link.url.clone(),
+            number: link.number,
+            base: "dev".into(),
+            head_oid: "fixture-head".into(),
+            adopted: true,
+        }),
+        Err(problem) => panic!(
+            "fixture asked to submit {} with no scripted answer and no linked pull request: {problem:?}",
+            candidate.story_id
+        ),
+    }
+}
+
 struct ActivityObservingActuator {
     activity: VerificationActivity,
     env: Environment,
@@ -469,6 +492,13 @@ impl ActivityObservingActuator {
 }
 
 impl VerificationActuator for ActivityObservingActuator {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -745,6 +775,8 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -884,9 +916,27 @@ struct FakeActuator {
     notification_error: Option<String>,
     notified: Mutex<Vec<String>>,
     reaped: Mutex<Vec<String>>,
+    /// Scripted submission answer; `None` adopts the linked pull request.
+    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+    /// Every story this fake was asked to submit, in order.
+    submitted: Mutex<Vec<String>>,
 }
 
 impl VerificationActuator for FakeActuator {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        self.submitted
+            .lock()
+            .unwrap()
+            .push(candidate.story_id.clone());
+        match &self.submission {
+            Some(scripted) => scripted.clone(),
+            None => adopt_linked(candidate),
+        }
+    }
+
     fn verify(
         &self,
         _candidate: &VerificationCandidate,
@@ -951,6 +1001,8 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -980,6 +1032,13 @@ struct ResubmittingActuator<'a> {
 }
 
 impl VerificationActuator for ResubmittingActuator<'_> {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1161,6 +1220,13 @@ impl WebMutationActuator<'_> {
 }
 
 impl VerificationActuator for WebMutationActuator<'_> {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1281,6 +1347,8 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -1310,6 +1378,13 @@ struct SequencedActuator {
 }
 
 impl VerificationActuator for SequencedActuator {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1456,6 +1531,8 @@ fn a_failed_conflict_notification_releases_the_reservation() {
         notification_error: Some("pane unavailable".into()),
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -1494,6 +1571,8 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2068,6 +2147,208 @@ fn shell_notification_timeout_terminates_the_helper_process_group() {
     assert_recorded_process_stopped(&root.path().join("notify-child-pid"));
 }
 
+const FIXTURE_SUBMIT_URL: &str = "https://github.com/acme/widgets/pull/7";
+
+/// A `story.sh submit` stand-in that answers the receipt a real run would for
+/// the lease it was handed, mutated by a jq expression, and exits as told.
+fn write_submit_receipt_helper(
+    root: &std::path::Path,
+    mutation: &str,
+    exit_status: i32,
+) -> PathBuf {
+    let helper = root.join("submit-receipt-helper.sh");
+    std::fs::write(
+        &helper,
+        format!(
+            r#"#!/bin/bash
+[ "$3" = submit ] || {{ printf 'expected the submit verb, got %s\n' "$3" >&2; exit 64; }}
+lease="$STORYHOOK_REAP_LEASE_V1"
+story=$(printf '%s' "$lease" | jq -r .story_id)
+jq -n --argjson lease "$lease" --arg story "$story" --arg url "{FIXTURE_SUBMIT_URL}" \
+  '{{ok:true,receipt_version:1,story_id:$story,lease:$lease,pushed:true,
+     pull_request:{{url:$url,number:7,base:"dev",head_oid:"0123abcd",adopted:false}},
+     display:"fixture submission"}} | {mutation}'
+exit {exit_status}
+"#
+        ),
+    )
+    .unwrap();
+    helper
+}
+
+/// A `story.sh submit` stand-in that refuses with exactly `body`.
+fn write_refusing_submit_helper(root: &std::path::Path, body: &str) -> PathBuf {
+    let helper = root.join("submit-refusing-helper.sh");
+    std::fs::write(
+        &helper,
+        format!("#!/bin/bash\nprintf '%s\\n' '{body}'\nexit 1\n"),
+    )
+    .unwrap();
+    helper
+}
+
+fn submit_actuator(root: &std::path::Path, helper: PathBuf) -> ShellVerificationActuator {
+    ShellVerificationActuator::with_paths(
+        Environment::at(root),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    )
+}
+
+#[test]
+fn shell_submission_requires_a_latest_generation_lease_before_spawning() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let mut candidate = cleanup_candidate(&fixture, root.path());
+    candidate.cleanup_lease = None;
+    let actuator = submit_actuator(root.path(), root.path().join("must-not-run"));
+
+    let failure = actuator.submit(&candidate).unwrap_err();
+    match failure {
+        SubmissionFailure::Infrastructure { detail } => {
+            assert!(detail.contains("no cleanup lease"), "{detail}");
+        }
+        other => panic!("a missing lease is the verifier's problem, not the agent's: {other:?}"),
+    }
+}
+
+#[test]
+fn shell_submission_accepts_an_exact_typed_receipt() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = submit_actuator(
+        root.path(),
+        write_submit_receipt_helper(root.path(), ".", 0),
+    );
+
+    let pull_request = actuator.submit(&candidate).unwrap();
+
+    assert_eq!(
+        pull_request,
+        SubmittedPullRequest {
+            url: FIXTURE_SUBMIT_URL.into(),
+            number: 7,
+            base: "dev".into(),
+            head_oid: "0123abcd".into(),
+            adopted: false,
+        }
+    );
+}
+
+/// The helper's `class` decides whose problem a refusal is; a refusal that
+/// carries none is the verifier's, never the agent's — an agent told to fix
+/// "usage: story.sh submit <story-id>" could do nothing with it.
+#[test]
+fn shell_submission_classifies_refusals_by_the_helpers_class() {
+    let fixture = ServiceFixture::new();
+    let repair = r#"{"ok":false,"reason":"dirty-worktree","class":"repair","display":"Dirty: a.rs, b.rs.","dirty_files":["a.rs","b.rs"]}"#;
+    let infrastructure = r#"{"ok":false,"reason":"push-failed","class":"infrastructure","display":"origin unreachable"}"#;
+    let bare = r#"{"ok":false,"display":"usage: story.sh submit <story-id>"}"#;
+    for (body, expected) in [
+        (
+            repair,
+            SubmissionFailure::Refused {
+                reason: "dirty-worktree".into(),
+                display: "Dirty: a.rs, b.rs.".into(),
+            },
+        ),
+        (
+            infrastructure,
+            SubmissionFailure::Infrastructure {
+                detail: "origin unreachable".into(),
+            },
+        ),
+        (
+            bare,
+            SubmissionFailure::Infrastructure {
+                detail: "usage: story.sh submit <story-id>".into(),
+            },
+        ),
+    ] {
+        let root = scratch_dir();
+        let candidate = cleanup_candidate(&fixture, root.path());
+        let actuator =
+            submit_actuator(root.path(), write_refusing_submit_helper(root.path(), body));
+
+        assert_eq!(actuator.submit(&candidate).unwrap_err(), expected, "{body}");
+    }
+}
+
+/// A receipt the daemon cannot trust is infrastructure, never a refusal: none
+/// of these is anything an agent could repair.
+#[test]
+fn shell_submission_rejects_untrustworthy_receipts_as_infrastructure() {
+    let fixture = ServiceFixture::new();
+    for (mutation, status, expected) in [
+        (".", 7, "exited"),
+        (".story_id = \"SH-999\"", 0, "does not echo"),
+        (".lease.branch = \"worktree-elsewhere\"", 0, "does not echo"),
+        (".receipt_version = 2", 0, "unsupported version"),
+        ("del(.pull_request)", 0, "without a pull request"),
+        (
+            ".pull_request.url = \"not a pull request\"",
+            0,
+            "unusable URL",
+        ),
+        (".pull_request.number = 9", 0, "disagree"),
+    ] {
+        let root = scratch_dir();
+        let candidate = cleanup_candidate(&fixture, root.path());
+        let actuator = submit_actuator(
+            root.path(),
+            write_submit_receipt_helper(root.path(), mutation, status),
+        );
+
+        match actuator.submit(&candidate).unwrap_err() {
+            SubmissionFailure::Infrastructure { detail } => {
+                assert!(detail.contains(expected), "{mutation}: {detail}");
+            }
+            other => {
+                panic!("{mutation}: an untrustworthy receipt was returned to the agent: {other:?}")
+            }
+        }
+    }
+
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("garbage-helper.sh");
+    std::fs::write(&helper, "#!/bin/bash\nprintf 'pushed!\\n'\nexit 0\n").unwrap();
+    match submit_actuator(root.path(), helper)
+        .submit(&candidate)
+        .unwrap_err()
+    {
+        SubmissionFailure::Infrastructure { detail } => {
+            assert!(detail.contains("invalid receipt"), "{detail}");
+        }
+        other => panic!("non-JSON output was returned to the agent: {other:?}"),
+    }
+}
+
+#[test]
+fn shell_submission_timeout_terminates_the_helper_process_group() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        Environment::at(root.path()),
+        write_hanging_helper(root.path()),
+        PathBuf::from("/usr/bin/true"),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let failure = actuator.submit(&candidate).unwrap_err();
+
+    let SubmissionFailure::Infrastructure { detail } = failure else {
+        panic!("a timeout is the verifier's problem: {failure:?}");
+    };
+    assert!(detail.contains("`submit`"), "{detail}");
+    assert!(detail.contains("100ms"), "{detail}");
+    assert_recorded_process_stopped(&root.path().join("submit-child-pid"));
+}
+
 #[test]
 fn shell_cleanup_timeout_terminates_the_helper_process_group() {
     let fixture = ServiceFixture::new();
@@ -2248,6 +2529,8 @@ fn an_unreachable_agent_is_marked_awaiting_instead_of_silently_retried() {
         notification_error: Some("pane unavailable".into()),
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap();
@@ -2274,6 +2557,8 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
     let env = Environment::at(root.path());
 
@@ -2324,6 +2609,8 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2450,6 +2737,8 @@ fn a_halt_fires_one_post_commit_verification_hook() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2504,6 +2793,8 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2553,6 +2844,8 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2583,6 +2876,8 @@ fn a_green_attempt_closes_then_reaps_the_story() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2631,6 +2926,8 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
 
     assert_eq!(
@@ -2963,6 +3260,8 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
         notification_error: None,
         notified: Mutex::new(Vec::new()),
         reaped: Mutex::new(Vec::new()),
+        submission: None,
+        submitted: Mutex::new(Vec::new()),
     };
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),

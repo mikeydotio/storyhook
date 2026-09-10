@@ -575,6 +575,83 @@ pub struct CleanupReceipt {
     pub display: String,
 }
 
+/// Whose problem a refused submission is (SH-647).
+///
+/// The helper decides, because only it saw git's or gh's own words: a dirty
+/// worktree or a rejected push is the agent's to repair and the story is
+/// returned to it with the message; an unreachable GitHub or a failed push is
+/// the verifier's, recorded as a retryable incident while the story stays in
+/// `verifying`. A daemon that guessed the class from the reason token would be
+/// SH-312's "ambiguous reported as definite" one layer over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubmissionRefusalClass {
+    /// The agent's to fix; the story is returned to it.
+    Repair,
+    /// The verifier's; retried unchanged, the story stays submitted.
+    Infrastructure,
+}
+
+/// The pull request a leased submission left open for its branch (SH-647).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmittedPullRequest {
+    /// The pull request's URL, as GitHub reports it.
+    pub url: String,
+    /// The pull request number.
+    pub number: u64,
+    /// The base branch the pull request targets — the repository's default.
+    pub base: String,
+    /// The head commit GitHub reports for the pull request after the push.
+    pub head_oid: String,
+    /// Whether the helper adopted an already-open pull request rather than
+    /// creating one. `true` is the steady state: every resubmission after the
+    /// first adopts.
+    pub adopted: bool,
+}
+
+/// Machine-verifiable receipt returned by `story.sh submit` (SH-647).
+///
+/// One shape for both answers, so the daemon can read a refusal's `class`
+/// and a success's `pull_request` from the same document: a refusal carries
+/// `reason`, `class` and `display` (plus `dirty_files` when that is what was
+/// refused) and none of the success fields, which is why every success field
+/// defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmissionReceipt {
+    /// Whether the branch is on origin and exactly one pull request is open.
+    pub ok: bool,
+    /// Receipt wire-format version; currently [`CLEANUP_LEASE_VERSION`].
+    #[serde(default)]
+    pub receipt_version: u32,
+    /// Canonical story id echoed independently for defensive validation.
+    #[serde(default)]
+    pub story_id: String,
+    /// Exact lease the helper consumed.
+    #[serde(default)]
+    pub lease: Option<StoryCleanupLease>,
+    /// Whether this invocation moved the remote branch (`false` on the no-op
+    /// push of an unchanged tip — not failure).
+    #[serde(default)]
+    pub pushed: bool,
+    /// The open pull request, present exactly when `ok`.
+    #[serde(default)]
+    pub pull_request: Option<SubmittedPullRequest>,
+    /// Refusal token, present exactly when `!ok` and the helper refused by
+    /// name rather than failing outright.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Whose problem the refusal is; absent on a bare failure (usage, a
+    /// missing tool), which the daemon treats as its own.
+    #[serde(default)]
+    pub class: Option<SubmissionRefusalClass>,
+    /// Paths `git status --porcelain` reported when the refusal is
+    /// `dirty-worktree`.
+    #[serde(default)]
+    pub dirty_files: Vec<String>,
+    /// Human-readable helper result for diagnostics and the returned story.
+    pub display: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StoryEvent {
