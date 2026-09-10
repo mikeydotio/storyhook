@@ -1173,3 +1173,73 @@ fn the_runner_asks_whether_its_daemon_survived_after_every_playwright_run() {
          restarts the daemon on purpose and keeps its port (SH-321)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 12. The placeholder pane outlives the run, and the run is what ends it
+// ---------------------------------------------------------------------------
+//
+// SH-626: the fake tmux's `new-window` spawns a real `sleep` to stand in for
+// the pane's occupant, self-expiring after `FAKE_TMUX_PANE_LIFETIME` seconds
+// (30 by default -- a self-heal for shell tests that forget to kill it). Once
+// the daemon's liveness probe actually reaches the fake, that expiry reads as
+// a genuinely dead window, and a lane alive longer than the default would be
+// quarantined `window-gone` for a reason no browser spec controls. The runner
+// therefore states a lifetime derived from the longest measured browser leg,
+// BEFORE the snapshot that forwards knobs to dispatch children (the same
+// position rule `tests/store_isolation.rs` pins), and its cleanup reaps the
+// recorded placeholder so nothing outlives the run.
+
+#[test]
+fn the_placeholder_pane_lifetime_is_stated_before_the_snapshot_and_reaped_at_cleanup() {
+    let runner = read("scripts/run-e2e.sh");
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("scripts/run-e2e.sh must define run_one_project")
+        .1
+        .split_once("\n# --- Decide:")
+        .expect("scripts/run-e2e.sh must end run_one_project before its outer project selection")
+        .0;
+    let lifetime = body
+        .find("export FAKE_TMUX_PANE_LIFETIME=")
+        .expect("run_one_project must state the placeholder pane's lifetime");
+    let seconds: u64 = body[lifetime + "export FAKE_TMUX_PANE_LIFETIME=".len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse().ok())
+        .expect("the lifetime is a literal number of seconds the fake's `sleep` accepts");
+    // The longest browser leg measured in this repository, 6538s under
+    // contention (docs/spec/test-tiers.md, SH-627): a placeholder that
+    // expired inside a leg would turn its expiry into a lane's verdict.
+    const LONGEST_MEASURED_LEG_SECS: u64 = 6538;
+    assert!(
+        seconds > LONGEST_MEASURED_LEG_SECS,
+        "the placeholder must outlive the longest measured browser leg ({LONGEST_MEASURED_LEG_SECS}s), got {seconds}s"
+    );
+    let snapshot = body
+        .find("compgen -e")
+        .expect("run_one_project snapshots its FAKE_TMUX_* knobs");
+    assert!(
+        lifetime < snapshot,
+        "the lifetime must be exported before the snapshot that forwards it to dispatch children"
+    );
+    let cleanup = body
+        .split_once("cleanup() {")
+        .expect("run_one_project defines cleanup")
+        .1
+        .split_once("\n  }\n")
+        .expect("cleanup closes")
+        .0;
+    assert!(
+        cleanup.contains("$data_root/faketmux/pane_pid")
+            && cleanup.contains("kill -9 \"$placeholder\""),
+        "cleanup must reap the placeholder the fake recorded, since no later new-window will"
+    );
+    let reap = cleanup.find("kill -9 \"$placeholder\"").unwrap();
+    let removal = cleanup
+        .find("rm -rf \"$data_root\"")
+        .expect("cleanup removes the data root");
+    assert!(
+        reap < removal,
+        "the pid must be read and the placeholder killed before the file naming it is deleted"
+    );
+}
