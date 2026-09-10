@@ -53,6 +53,12 @@ esac
 for tool in tar shasum file xcrun; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required for local release assembly"
 done
+# `.cargo/config.toml` runs every rustc through `scripts/rustc-slot.py`
+# (SH-655), so a host without python3 cannot compile this checkout at all --
+# refused here by name, rather than as cargo's "could not execute process"
+# two steps later (the SH-576 rule: a preflight names the layer that fails).
+command -v python3 >/dev/null 2>&1 \
+  || die "python3 is required: .cargo/config.toml runs every rustc through scripts/rustc-slot.py"
 xcrun --find clang >/dev/null 2>&1 \
   || die "Xcode command-line tools are required for the Darwin targets"
 [ -x "$linux_runner" ] || die "Linux release runner is not executable: $linux_runner"

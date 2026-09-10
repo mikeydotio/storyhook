@@ -597,6 +597,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .engine-lane-index { font-family: var(--mono); color: var(--fg-faint); }
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
+.engine-lane-quiet { color: var(--fg-muted); white-space: nowrap; }
 /* SH-626: the daemon could not ask tmux whether this lane's pane is alive;
  * the lane is judged by its stall clock until it can. Loud on the status
  * surface, not only in the daemon journal. */
@@ -5276,15 +5277,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     syncEngineControl(mount.firstChild);
   }
 
+  /** One spelling for a lane's hover text, shared by the first paint and
+   * every clock tick so the two can never drift apart. */
+  function engineLaneTitle(index, subject, elapsed, quiet, probe) {
+    return "Lane " + (index + 1) + ": " + subject
+      + (elapsed ? " · " + elapsed : "")
+      + (quiet ? " · quiet " + quiet : "")
+      + (probe ? " · liveness unanswered: " + probe : "");
+  }
+
   function updateEngineElapsedLabels() {
     document.querySelectorAll(".engine-lane-elapsed[data-started-at]").forEach(function(node) {
       node.textContent = formatEngineElapsed(node.dataset.startedAt);
       var lane = node.parentNode;
       var story = lane.querySelector(".engine-lane-story");
       var probe = lane.querySelector(".engine-lane-probe");
-      lane.title = lane.querySelector(".engine-lane-index").textContent.replace("L", "Lane ")
-        + ": " + (story ? story.textContent : "") + " · " + node.textContent
-        + (probe && probe.dataset.detail ? " · liveness unanswered: " + probe.dataset.detail : "");
+      var quietNode = lane.querySelector(".engine-lane-quiet[data-quiet-since]");
+      var quiet = quietNode ? formatEngineElapsed(quietNode.dataset.quietSince) : "";
+      if (quietNode) quietNode.textContent = "quiet " + quiet;
+      var index = parseInt(lane.querySelector(".engine-lane-index").textContent.replace("L", ""), 10) - 1;
+      lane.title = engineLaneTitle(index, story ? story.textContent : "", node.textContent, quiet,
+        probe && probe.dataset.detail ? probe.dataset.detail : null);
     });
   }
 
@@ -5937,20 +5950,28 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     (run.lanes || []).forEach(function(lane) {
       var subject = lane.story || lane.state;
       var elapsed = formatEngineElapsed(lane.dispatched_at);
+      // SH-657: how long since the lane last showed activity on either stall
+      // channel (its story moving, its pane writing). The stall verdict is
+      // made on this number, so it is shown BEFORE it is a verdict — a
+      // quarantine whose evidence nobody could watch approach is the SH-418
+      // shape, and 8 of the first 8 were wrong.
+      var quiet = lane.last_progress_at ? formatEngineElapsed(lane.last_progress_at) : "";
       // SH-626: what tmux last said when it did not say "alive", carried by
       // the daemon on the lane. Shown on the strip because a journal line
       // nobody reads is the SH-306 shape; the full reason is the title.
       var probe = typeof lane.probe_detail === "string" && lane.probe_detail ? lane.probe_detail : null;
       strip.appendChild(el("div", {
         class: "engine-lane",
-        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
-          + (probe ? " · liveness unanswered: " + probe : "")
+        title: engineLaneTitle(lane.index, subject, elapsed, quiet, probe)
       }, [
         el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
         el("span", { class: "engine-lane-story" }, [subject]),
         elapsed ? el("span", {
           class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
         }, [elapsed]) : null,
+        quiet ? el("span", {
+          class: "engine-lane-quiet", dataset: { quietSince: lane.last_progress_at }
+        }, ["quiet " + quiet]) : null,
         probe ? el("span", { class: "engine-lane-probe", dataset: { detail: probe } }, ["liveness unanswered"]) : null
       ]));
     });

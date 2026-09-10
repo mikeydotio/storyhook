@@ -126,13 +126,14 @@ pub(super) const ADMITTED_TERMINAL_ARGS: [&str; 3] = ["capture TST-1", "capture 
 
 /// Dispatch forms the argv contract admits (SH-588): one target, the helper's
 /// own provider/model/effort/speed/mode flags, no managed-file operand.
-pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 8] = [
+pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 9] = [
     "dispatch TST-1",
     "dispatch TST-1 --agent=codex",
     "dispatch --agent=claude TST-1",
     "dispatch TST-1 --auto --resume",
     "dispatch --next --auto --agent=codex",
     "dispatch TST-1 --force",
+    "dispatch TST-1 --over-budget",
     "dispatch TST-1 --auto --full-auto",
     "dispatch TST-1 --agent=codex --model=gpt-6-astra --effort=high --speed=fast",
 ];

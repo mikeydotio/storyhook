@@ -380,6 +380,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
                     elapsed_seconds: Some(61),
+                    quiet_seconds: Some(7),
                     probe_detail: Some("tmux exited 1: unbound variable".to_string()),
                     outcome: None,
                     outcome_detail: None,
@@ -560,6 +561,26 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "raw_json",
             Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
+        ),
+        (
+            "lane_budget_counted",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Counted {
+                        windows: vec!["storyhook:SH-655".to_string()],
+                    },
+                ),
+            )),
+        ),
+        (
+            "lane_budget_unanswered",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Unanswered {
+                        detail: "no server running — ünïcödé".to_string(),
+                    },
+                ),
+            )),
         ),
         (
             "project_snapshot_empty",
@@ -857,6 +878,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::ProjectSettings(_) => "project_settings",
             Response::RawJson(_) => "raw_json",
             Response::ProjectSnapshot(_) => "project_snapshot",
+            Response::LaneBudget(_) => "lane_budget",
             Response::StoryHistory(_) => "story_history",
             Response::StoryLog { .. } => "story_log",
             Response::ConfirmationRequired(_) => "confirmation_required",
@@ -864,7 +886,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 19] = [
+    const EVERY_VARIANT: [&str; 20] = [
         "message",
         "message_with_warnings",
         "story",
@@ -880,6 +902,7 @@ fn the_response_corpus_covers_every_variant() {
         "project_settings",
         "raw_json",
         "project_snapshot",
+        "lane_budget",
         "story_history",
         "story_log",
         "confirmation_required",
@@ -915,11 +938,16 @@ fn engine_run_renders_elapsed_as_human_time_and_json_data() {
         .expect("engine run corpus row");
     let human = render_response(&response, false, false);
     assert!(human.contains("1m 1s"), "{human}");
+    assert!(
+        human.contains("quiet") && human.contains("1m 1s       7s"),
+        "the lane's quiet time is shown beside its elapsed time (SH-657): {human}"
+    );
     assert!(human.contains("needs a human (no-auto)"), "{human}");
 
     let json: serde_json::Value =
         serde_json::from_str(&render_response(&response, true, false)).unwrap();
     assert_eq!(json["run"]["lanes"][0]["elapsed_seconds"], 61);
+    assert_eq!(json["run"]["lanes"][0]["quiet_seconds"], 7);
     assert_eq!(json["run"]["needs_human"][0]["id"], "SH-11");
 }
 
@@ -1619,6 +1647,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Version,
         Invocation::ProjectSnapshot,
+        Invocation::LaneBudget,
         Invocation::History {
             action: HistoryAction::Read {
                 id: "SH-7".to_string(),
@@ -1880,6 +1909,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
         Invocation::ProjectSnapshot => "ProjectSnapshot",
+        Invocation::LaneBudget => "LaneBudget",
         Invocation::History { .. } => "History",
         Invocation::Migrate { .. } => "Migrate",
         Invocation::Attachment { .. } => "Attachment",
@@ -1896,7 +1926,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        68,
+        69,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -18,6 +18,7 @@ pub mod help_topics;
 pub mod hooks;
 pub mod install_status;
 pub mod invoke;
+pub mod lane_budget;
 pub mod legacy;
 pub mod mcp;
 pub mod migration_guard;

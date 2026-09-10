@@ -1437,8 +1437,8 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
-  local id="" auto="" full_auto="" want_next="" force="" resume="" requested_agent=""
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--over-budget] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1454,6 +1454,9 @@ cmd_dispatch() {
       --resume)
         [ -z "$resume" ] || fail "--resume may be specified only once — usage: $usage"
         resume=1; shift ;;
+      --over-budget)
+        [ -z "$over_budget" ] || fail "--over-budget may be specified only once — usage: $usage"
+        over_budget=1; shift ;;
       --agent=*)
         [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         requested_agent="${1#--agent=}"
@@ -1581,6 +1584,8 @@ cmd_dispatch() {
     if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
       [ -z "$resume" ] \
         || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
+      [ -z "$over_budget" ] \
+        || fail "--over-budget applies only to a dispatch that opens a session — $id is an epic, whose engine run fills its own lanes under the budget."
       # An epic dispatch never reaches LAUNCH_TPL -- SH-468's engine run
       # payload carries only agent/lanes, the same "engine lanes keep
       # today's behavior" boundary SH-517 already draws for --full-auto.
@@ -1718,6 +1723,48 @@ cmd_dispatch() {
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
+  fi
+
+  # THE LANE BUDGET (SH-655). D14 promises a machine-wide lane budget, and
+  # until this gate only the engine consulted it, over its own lanes; a
+  # dispatch typed by hand opened the same worktree, the same window and the
+  # same cold workspace build and counted for nothing — seven of them were
+  # measured at load 33 on ten cores. The gate sits here, ahead of BOTH modes'
+  # claim writes and every other side effect, the same place the ready gate
+  # stands: a refusal leaves no claim, no worktree and no window behind.
+  #
+  # It applies exactly when this dispatch would ADD a live session: a new
+  # window is about to open (a `--resume` that found its pane reuses one, so
+  # it adds nothing; a `--resume` whose window is gone, and every `--force`,
+  # open one), and the engine is not the caller — `--full-auto` lanes are
+  # already counted and refused inside the engine's own transaction, and a
+  # second refusal here would read to the engine as a dispatch failure.
+  #
+  # `story lane-budget` takes the census from THIS shell's tmux server, which
+  # is why it is store-free and never starts a daemon. Its three-valued
+  # answer is honoured as written (SH-626): an unanswered census is no
+  # evidence, so the dispatch proceeds and says so on stderr, rather than
+  # refusing over a server nobody could ask or — worse — reading silence as
+  # room. An older `story` that lacks the verb answers the same way. What a
+  # live session IS, and why a dead pane is not one, is the verb's own doc.
+  if [ -z "$existing_pane" ] && [ -z "$full_auto" ]; then
+    local census_json census_probe census_live census_budget
+    census_json=$(story_cli lane-budget --json 2>/dev/null) || census_json=""
+    census_probe=$(printf '%s' "$census_json" | jq -r '.probe // empty' 2>/dev/null || printf '')
+    if [ "$census_probe" = counted ]; then
+      census_live=$(printf '%s' "$census_json" | jq -r '.live')
+      census_budget=$(printf '%s' "$census_json" | jq -r '.budget')
+      if [ "$census_live" -ge "$census_budget" ] && [ -z "$over_budget" ]; then
+        refuse_with "lane-budget" \
+          "$census_live agent sessions are live on this machine ($(printf '%s' "$census_json" | jq -r '.windows | join(", ")')) against a lane budget of $census_budget; end one, or pass --over-budget to dispatch past it." \
+          "$(printf '%s' "$census_json" | jq '{lane_budget: .}')"
+      fi
+      [ -z "$over_budget" ] || [ "$census_live" -lt "$census_budget" ] \
+        || printf 'story.sh: dispatching past the lane budget on --over-budget (%s live against %s)\n' "$census_live" "$census_budget" >&2
+    else
+      printf 'story.sh: the lane budget could not be measured (%s); dispatching without it\n' \
+        "$(printf '%s' "$census_json" | jq -r '.detail // "story lane-budget gave no answer"' 2>/dev/null || printf 'story lane-budget gave no answer')" >&2
+    fi
   fi
 
   # Steps 4-6: story identified, verified ready, and claimed. Two mutually
@@ -1962,6 +2009,25 @@ cmd_dispatch() {
   # assert the exact contiguous substring "-e STORYHOOK_AUTO=… -e
   # STORYHOOK_FULL_AUTO=…", and appending here keeps that substring intact.
   marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker -e STORYHOOK_DISPATCH=1 "
+  # An engine lane runs under the tool-call ceiling its own stall clock is
+  # derived from (SH-657): the daemon hands its HOST_TOOL_CALL_CEILING_SECS
+  # down as STORY_LANE_TOOL_CEILING_MS, and the lane's Claude Code reads it
+  # back as BASH_MAX_TIMEOUT_MS, so one constant bounds both the longest
+  # foreground tool call the agent can make and the silence the engine will
+  # tolerate before calling the lane stalled. Only an engine lane carries
+  # it — an ordinary --auto dispatch has no stall clock over it — and only
+  # when the daemon actually said a number: a value the launcher computed
+  # and got nothing must not pin anything (SH-460's inert-marker rule),
+  # while a value that is not a number is refused by name rather than
+  # passed to the agent as a setting it will silently ignore (SH-357).
+  local lane_ceiling_tmux_args=""
+  if [ -n "$full_auto" ] && [ -n "${STORY_LANE_TOOL_CEILING_MS:-}" ]; then
+    case "$STORY_LANE_TOOL_CEILING_MS" in
+      ''|*[!0-9]*) fail "STORY_LANE_TOOL_CEILING_MS must be a positive integer of milliseconds, got \`$STORY_LANE_TOOL_CEILING_MS\`" ;;
+    esac
+    lane_ceiling_tmux_args="-e BASH_MAX_TIMEOUT_MS=$STORY_LANE_TOOL_CEILING_MS "
+    marker_tmux_args="$marker_tmux_args$lane_ceiling_tmux_args"
+  fi
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
@@ -2238,9 +2304,10 @@ cmd_dispatch() {
     # This file is a generated SessionStart witness, not project work. A
     # replacement process must publish its own witness before handoff.
     rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
     if ! tmux respawn-pane -k -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
-         -e "STORYHOOK_DISPATCH=1" \
+         -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
@@ -2252,7 +2319,8 @@ cmd_dispatch() {
     window_reused=true
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" "${new_window_args[@]}")
+    # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
