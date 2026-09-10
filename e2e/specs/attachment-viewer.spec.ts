@@ -1,17 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { Page } from "@playwright/test";
 import {
   test, expect, seedToken, openProject, createStory, cleanUpCreatedStories,
-  requiredEnv, latch, fullKeyboardAccess,
+  requiredEnv, latch, fullKeyboardAccess, storyBinary,
 } from "./support";
 
 cleanUpCreatedStories("Alpha Project");
 
 /** Mutates only this harness's isolated store, through the real CLI. */
 function command(args: string[]): string {
-  return execFileSync(resolve("../target/debug/story"), args, {
+  return execFileSync(storyBinary(), args, {
     cwd: requiredEnv("DASHBOARD_ALPHA_CHECKOUT"), encoding: "utf8",
     timeout: test.info().timeout,
   });

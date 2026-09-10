@@ -4,6 +4,7 @@
 activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 backup_restore	:(glob)**/*
+binary_lease	scripts/binary-lease.sh
 block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
@@ -35,6 +36,7 @@ dispatch_ready_budget	:(glob)**/*
 dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
 e2e_browser_coverage	:(glob)**/*
+e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
@@ -98,6 +100,7 @@ service_git	:(glob)**/*
 session_start_hook	:(glob)**/*
 shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
+spawned_child_environment	:(glob)src/**/*.rs
 state_set_funnel	:(glob)**/*
 store_isolation	:(glob)**/*
 store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs

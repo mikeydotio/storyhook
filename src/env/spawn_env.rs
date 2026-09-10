@@ -97,11 +97,32 @@ use std::process::Command;
 
 /// Names both trusted spawns below may see unconditionally: how to find and
 /// run the child ([`PATH`](Self)), where its own configuration and credential
-/// store live (`HOME`), where to stage scratch files (`TMPDIR`), and the
-/// locale/terminal identity that changes only *how* it behaves, never which
-/// data it can reach (`USER`, `SHELL`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`).
-const COMMON_MAY_SEE: [&str; 9] = [
-    "PATH", "HOME", "TMPDIR", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM",
+/// store live (`HOME`, and the XDG base directories that refine it), where to
+/// stage scratch files (`TMPDIR`), and the locale/terminal identity that
+/// changes only *how* it behaves, never which data it can reach (`USER`,
+/// `SHELL`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`).
+///
+/// The three `XDG_*` names travel with `HOME` because they are not separable
+/// from it (SH-633): a child handed `HOME` but not `XDG_STATE_HOME` resolves a
+/// *different* state home than its parent did, and a `story` run inside a
+/// dispatch child then looks for the store's daemon under the developer's
+/// real `~/.local/state/storyhook`, finds nothing, and starts a second one
+/// there. None of the three is a credential — they say where a program's
+/// files live, which is exactly what `HOME` already says — so admitting them
+/// narrows nothing this allowlist exists to protect.
+const COMMON_MAY_SEE: [&str; 12] = [
+    "PATH",
+    "HOME",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "TMPDIR",
+    "USER",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
 ];
 
 /// Prefixes of `story.sh`'s own designed configuration surface — every
@@ -116,8 +137,7 @@ const DISPATCH_MAY_SEE_PREFIXES: [&str; 2] = ["STORY_", "STORYHOOK_"];
 /// Configuration the centralized verifier needs in addition to the common
 /// executable/user environment. GitHub tokens stop at its orchestration
 /// process; the shell boundary removes them before the repository test runs.
-const VERIFICATION_EXTRA_MAY_SEE: [&str; 5] = [
-    "XDG_CONFIG_HOME",
+const VERIFICATION_EXTRA_MAY_SEE: [&str; 4] = [
     "GH_CONFIG_DIR",
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -281,6 +301,34 @@ mod tests {
                 "plugin management inherited {name}"
             );
         }
+    }
+
+    /// Every isolation parameter reaches a dispatch child (SH-633).
+    ///
+    /// `story.sh` runs `story`, so a dispatch child resolves its own
+    /// [`crate::env::Environment`] from the environment this allowlist hands
+    /// it. `TEST_ENVIRONMENT` is the one statement of which variables decide
+    /// *what that resolution reaches* — the store, the daemon, credentials —
+    /// so any parameter the allowlist drops is a fact the child gets from the
+    /// developer's real environment instead of its parent's. That is how a
+    /// child handed `STORYHOOK_STORE_PATH` but not `XDG_STATE_HOME` found no
+    /// daemon under the real state home and started a second one for a
+    /// fixture store, 1,199 times on one machine. Derived from the table, so
+    /// a parameter added there and forgotten here fails the build; behavioural
+    /// completeness (the allowlist IS the child's whole environment) is the
+    /// probe test above.
+    #[test]
+    fn every_test_environment_parameter_survives_the_dispatch_allowlist() {
+        let dropped: Vec<&str> = crate::env::test_environment::TEST_ENVIRONMENT
+            .iter()
+            .map(|parameter| parameter.name)
+            .filter(|name| !dispatch_permits(name))
+            .collect();
+        assert!(
+            dropped.is_empty(),
+            "the dispatch allowlist drops {dropped:?}; a `story` run inside the child \
+             resolves those from the developer's real environment rather than its parent's"
+        );
     }
 
     /// The narrower plugin-CLI list must reject what the dispatch list allows,

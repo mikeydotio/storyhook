@@ -1474,7 +1474,50 @@ Standing rules for every wave:
   behaviourally by `test-daemon-containment.sh`, mutation-checked. Design of record:
   `docs/spec/test-environments.md`. Sibling found and filed separately: the e2e harness's
   daemons write pidfiles, backups and journals into the developer's **real**
-  `~/.local/state/storyhook/daemons/` (40 of them on the filing day).
+  `~/.local/state/storyhook/daemons/` (40 of them on the filing day) — SH-633, below.
+- **A shell harness runs a lease of the binary, never Cargo's own path** (SH-635).
+  `scripts/run-e2e.sh` ran `target/debug/story` directly — for its daemon, its seeding,
+  and, through five specs, every CLI call the suite made — and one `cargo test` beside a
+  live chromium run rewrote that path: the daemon's `(exe, exe_mtime)` identity no longer
+  matched, the next client replaced it on a new port, and 167 tests failed in 25 minutes
+  with nothing naming why (the SH-627 shape). `scripts/binary-lease.sh` is SH-532's
+  hard-link lease one language over — same root, same `<pid>-<nonce>` shape, so either
+  sweeper reclaims the other's dead leases — taken right after `cargo build` and handed to
+  the specs as `DASHBOARD_STORY_BIN` through `support.ts`'s `storyBinary()`, the one door
+  `tests/e2e_browser_coverage.rs` enforces over every tracked file under `e2e/`. It lives
+  beside the artifact because a hard link cannot cross to `/private/tmp`. After each
+  Playwright run `scripts/e2e-daemon-check.sh` asks whether the daemon that answered is
+  the one the runner started — port, exe **inode**, liveness; **never pid**, since
+  `untrusted-origin-cookie.spec.ts` restarts it on purpose — and reports a failure as one
+  dead daemon, not N tree failures, failing the project even on a green verdict. Adopted
+  on the way: `check-no-orphan-servers.sh`'s own-tree pattern was anchored on the bare
+  `target/debug/story` and had been blind to every leased daemon since SH-532. Design of
+  record: `docs/spec/test-tiers.md`'s "The browser runner gets the same lease".
+- **A child told the store but not the state home starts a second daemon for that store**
+  (SH-633). Filed as an e2e-harness leak of 40 runtime directories; measured at 1,199 —
+  every browser-tier run since August *and* the Rust suite's own real-helper reap test —
+  and the harness was never the cause: `run-e2e.sh` and `TestEnv` both export
+  `XDG_STATE_HOME`, and `spawn_child` inherits everything. The drop was
+  `src/env/spawn_env.rs`'s dispatch allowlist, which cleared a `story.sh` child's
+  environment and restored `HOME` and every `STORYHOOK_*` name but no `XDG_*` one — so
+  `story` inside that child kept the fixture store, resolved its state home from the
+  developer's real `HOME`, found no portfile there for that store, and started a second
+  daemon publishing under `~/.local/state/storyhook/daemons/<key>`. SH-113's one-daemon-
+  per-store invariant holds only while parent and child agree about **both** halves of
+  that path. Two mechanisms, because each covers a case the other cannot: the three XDG
+  base directories travel with `HOME` on `COMMON_MAY_SEE` (a state home the parent
+  *process* had), and `Environment::child_vars` is the one door through which the four
+  sites that spawn from an `Environment` publish its store **and** its state home (a state
+  home the parent *environment* has — for an in-process `Environment::at` fixture, never in
+  any process environment at all). Both fences are derived: every `TEST_ENVIRONMENT`
+  parameter must satisfy `dispatch_permits`, and no `src/` file but the door's may
+  `.env("STORYHOOK_STORE_PATH", …)`. The real-binary test asks `story daemon status`
+  inside the child where it believes the daemon lives — under the mutation it answered
+  with the developer's own home, which is the leak stated as an assertion message.
+  **Not** added: the story's proposed refusal of a temp store under a durable state home —
+  SH-426's own refusal text sanctions exactly that for a session, and the defect was never
+  temp-versus-durable, it was parent-versus-child. Runtime directories for stores that no
+  longer exist are still never reaped; that sweeper is filed separately.
 - **A hygiene gate asks git whether an artifact is tracked or ignored, never the
   filesystem whether it exists** (SH-621). `tests/handoff_notes.rs` asserted `HANDOFF.md`
   was absent from disk; the file is gitignored precisely so an agent can write it locally
@@ -1536,6 +1579,48 @@ Standing rules for every wave:
   reads (`textContent()`, `allTextContents()`, `node.textContent` in `evaluate`) and
   `hasText` filters. Design of record: `docs/spec/responsive-dashboard.md`'s "A text
   assertion never rides an aria-hidden glyph".
+- **Two answers from one lagging pipeline are one answer; a projection is checked against
+  the source it mirrors** (SH-636). The verifier returned SH-630 a second time with a
+  CONFLICT byte-identical to the first, against a head that was no longer the PR head.
+  `verify-pr.sh` already force-fetched `refs/pull/N/head` fresh per attempt and required it
+  to equal `gh pr view`'s `headRefOid` — and that guard passed, because both are projections
+  GitHub writes asynchronously after a push and they lag together. Measured from the
+  daemon's activity journal and the registered checkout's reflog on the pull ref: the
+  verifier asked ~1s after the push and got the pre-push head from both; the pull ref caught
+  up 16s later; `origin/dev` never moved. Mechanism (b) as filed — a cached local ref — was
+  refuted the same way: every fetch is `+`-forced and per-attempt. `refs/heads/<branch>` on
+  origin is the source, updated synchronously by the push, so `refresh_submission_refs`
+  reads it (`ls-remote`, writing no remote-tracking ref) and requires three-way agreement
+  before preflight; a disagreement is a **retryable** infrastructure result naming all three
+  oids, never a conflict and never permanent — the daemon's existing D15 cadence re-asks and
+  a lag past it halts loudly, stalling the serialized verifier queue until the incident is
+  acknowledged or the story's generation changes (SH-637 measured three lags in one session,
+  2-27s; a minute is a GitHub incident an operator should see). SH-637 owns the sibling
+  half: re-checking the head *after* a verdict is computed and before it is posted. No in-script poll: GitHub publishes no propagation bound to
+  derive a deadline from (SH-394), and the daemon already owns a derived budget for exactly
+  "not ready yet". `merge-preflight.sh`'s CONFLICT line names the oid each ref resolved to,
+  so a stale reading is visible in the report rather than inferred from blob ids. Design of
+  record: `docs/spec/full-auto-engine.md`'s SH-636 "As built" section.
+- **A verdict is a statement about a head, so it is confirmed against that head immediately
+  before it is posted, never only at the start of the attempt** (SH-637). SH-636 made the PR
+  head current when verification began; preflight is quick but the release gate runs for
+  minutes, and a push inside either window turned a true CONFLICT or RED into a verdict about a
+  commit nobody could act on — three times in one session (SH-622 twice, SH-625 once), each
+  from an attempt the daemon journal shows STARTED after the resubmission, so the story's own
+  "queued attempt posting late" hypothesis was refuted by the journal before anything was
+  changed. `confirm_judged_head` (`scripts/verify-pr.sh`) re-reads GitHub, requires the same
+  PR and base, requires OPEN, takes SH-636's converged head and requires it to be the one that
+  was judged; a moved head is **retryable** and names both heads and the verdict withheld,
+  never posted as the verdict it would have been a second earlier. `land-pr.sh` reads the
+  branch tip under the merge lock for the same reason — the GREEN direction, where two stale
+  projections plus `--match-head-commit` would either lose the new commit at branch deletion
+  or hard-fail an already-merged PR. The public path was untested above every seam and the
+  defect lived there, so `tests/merge_gate.rs` drives `verify-pr.sh <url>` end to end with a
+  call-counting fake `gh` and a fake `make` on `PATH` — not a GitHub model, the seams' own
+  wire shape one door over, because the property is the wiring (SH-360); the steady-head
+  controls count the second read, so deleting a recheck fails them too. Design of record:
+  `docs/spec/full-auto-engine.md`'s SH-637 section; the verdict trail is on the story
+  (`story show SH-637`, SH-363).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
