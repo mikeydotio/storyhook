@@ -1460,6 +1460,59 @@ Standing rules for every wave:
   --error-unmatch` (must fail) and `git check-ignore -q` (must succeed) and never reads
   the file. An ignored file's purpose is to exist locally; the repository's is to never
   commit it, and only the second is the tree's business.
+- **A listing that did not happen is not an empty selection** (SH-625). `scripts/run-e2e.sh`
+  asked Playwright `--list` whether a project selects anything under the caller's filter,
+  then discarded stderr and the exit status and read the answer as text — and Playwright
+  prints the identical `Total: 0 tests in 0 files` for a filter that matches nothing and
+  for a selected spec that fails to load, so a load error, an unknown flag or a config that
+  would not evaluate reported as "selects no tests — skipping" and the run exited 0 having
+  executed nothing (SH-306 in the browser harness; SH-224 was this same script's first
+  green-for-nothing). The story's own suspicion — four positional filters — was refuted
+  by listing its exact command on the branch it was found on (34 tests) before anything
+  changed. Under `--pass-with-no-tests` Playwright's **own exit status** separates the two
+  (empty selection 0; load error, bad flag, bad project nonzero), so no error text is
+  matched; `scripts/e2e-selection.sh` holds that decision as a sourced library because the
+  runner cannot be sourced by a test, `tests/e2e_selection.rs` drives the tracked file with
+  a fake `playwright` and asserts the discriminating flag in its recorded argv, and the
+  measured Playwright version is pinned against `e2e/package.json` so an upgrade re-asks
+  the question by name. The rule that outlives the fix: **a run in which no project
+  selected a test exits 1** — the per-project skip stays for the SH-335 loop, and only the
+  sum across projects can tell that case from a filter typo. Design of record:
+  `docs/spec/test-tiers.md`'s fourth "As built" reading.
+- **A text assertion never rides an aria-hidden glyph, and the fence that keeps it runs
+  where the subject is known** (SH-622). `toHaveText`/`toContainText` compare
+  `textContent`, which includes an `aria-hidden` subtree; the accessible name excludes
+  one by specification. SH-620 put a decorative emoji inside every control that has
+  one, and four specs asserting a control's own words through `toHaveText` read the
+  decoration too (`"Columns (1)"` received `"Columns (1)🔽"`); SH-620's own sweep
+  updated every spec whose subject *is* an icon and could not see one whose subject is
+  a control, and `make test` excludes the browser suite, so it merged green — SH-418's
+  thesis, SH-416 the precedent, paid twice. The rule: assert a control's own words with
+  `toHaveAccessibleName()`; assert the words on the element that holds only the words;
+  only a spec whose SUBJECT is the glyph asserts its text. **Nothing static can enforce
+  it**, measured rather than assumed: a third of the suite's 523 text assertions target
+  a bare local variable, and the dashboard attaches glyphs to buttons it finds by
+  `querySelector` as often as to ones it builds — so the selector-to-glyph mapping the
+  story first proposed is the hand-kept-list shape with a blind third. The fence is
+  therefore hung on the door every spec already walks through: `support.ts`'s exported
+  `expect` is `baseExpect.extend({ toHaveText, toContainText })`, delegating to
+  Playwright's own matcher first (in the caller's direction, `.not` included, so a
+  negated assertion polls the right way) and then judging the elements the locator
+  resolved to. `toHaveText` is refused whenever the subject holds an
+  `[aria-hidden="true"]` descendant with text, pass or fail — a passing one has encoded
+  decoration; `toContainText` only when the expectation *names* hidden text, since a
+  substring claim that never mentions the glyph does not ride it and anything finer
+  re-implements Playwright's matching (SH-136). Keyed on `aria-hidden`, not
+  `.emoji-icon`: `.engine-lane-chip` is already a second producer. Shadowing a built-in
+  matcher is sound by Playwright 1.63's own `extend()`, read not assumed: user matchers
+  layer over built-ins for `expect(x).<name>` and the base `expect` is never mutated, so
+  delegation cannot recurse. `tests/e2e_text_assertion_door.rs` is the wiring fence in
+  SH-360's sense — the door is the only door (SH-531's `story_binary()` shape), never
+  that it refuses; `text-assertion-door.spec.ts` proves the refusal, including the case
+  where Playwright's own comparison would have passed. Outside the door, stated: direct
+  reads (`textContent()`, `allTextContents()`, `node.textContent` in `evaluate`) and
+  `hasText` filters. Design of record: `docs/spec/responsive-dashboard.md`'s "A text
+  assertion never rides an aria-hidden glyph".
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).

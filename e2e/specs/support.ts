@@ -1,8 +1,10 @@
-import { expect, test as base } from "@playwright/test";
+import { expect as baseExpect, test as base } from "@playwright/test";
 import type {
   APIRequestContext,
   APIResponse,
+  ExpectMatcherState,
   Locator,
+  MatcherReturnType,
   Page,
   Request,
   Route,
@@ -14,7 +16,226 @@ import {
   resetTestBudget,
 } from "../load-grace";
 
-export { expect };
+/** The expectation shapes Playwright's own text matchers accept. */
+type TextExpectation = string | RegExp | (string | RegExp)[];
+
+/** The two matchers the door shadows. Both read rendered text; neither is
+ * defined in terms of what a user is told. */
+type TextMatcher = "toHaveText" | "toContainText";
+
+/** The options both matchers accept, passed through untouched. */
+interface TextMatcherOptions {
+  ignoreCase?: boolean;
+  timeout?: number;
+  useInnerText?: boolean;
+}
+
+/** One `aria-hidden` descendant, with text, found under an assertion's
+ * subject: enough of its identity to name it in a refusal. */
+interface HiddenText {
+  node: string;
+  text: string;
+}
+
+/**
+ * Every spec's `expect`, and the door SH-622's fence is hung on.
+ *
+ * `toHaveText` and `toContainText` compare `textContent` (or `innerText`),
+ * and both include an `aria-hidden` subtree; the accessible name excludes
+ * one by specification. SH-620 put a decorative `aria-hidden` emoji inside
+ * every dashboard control that has one, and six assertions that read a
+ * control's own words through `toHaveText` started reading the decoration
+ * too -- `"Columns (1)"` received `"Columns (1)🔽"` -- while the sweep that
+ * updated the specs whose subject IS an icon could not see them. Nothing
+ * static can: a third of this suite's text assertions target a bare local
+ * variable, and the dashboard attaches glyphs to buttons it finds by
+ * `querySelector` as often as to ones it builds. The subject is only known
+ * once the locator has resolved, so the rule is applied there.
+ *
+ * The rule: **a text assertion never rides an `aria-hidden` glyph.**
+ *
+ *   - `toHaveText` is refused whenever its subject holds an `aria-hidden`
+ *     descendant with text, whether or not the comparison would have
+ *     passed: a passing one has encoded decoration, a failing one is the
+ *     SH-622 symptom. Assert a control's own words with
+ *     `toHaveAccessibleName()`; assert the words on the element that holds
+ *     only the words; only a spec whose SUBJECT is the glyph asserts its
+ *     text, and the glyph has no hidden descendants of its own.
+ *   - `toContainText` is refused only when the expectation *names* hidden
+ *     text -- a string that contains a hidden descendant's text, or a
+ *     pattern that matches one. A substring claim that never mentions the
+ *     glyph does not ride it (`#projsel-btn` `toContainText("Alpha
+ *     Project")`) and stays legal; deciding anything finer would mean
+ *     re-implementing Playwright's own matching here (SH-136).
+ *
+ * Keyed on `[aria-hidden="true"]`, not on `.emoji-icon`: the class is
+ * "hidden decoration inside rendered text", and `.engine-lane-chip` is
+ * already a second producer of it.
+ *
+ * Mechanism, read from Playwright 1.63's `lib/matchers/expect.js` rather
+ * than assumed: `expect.extend()` layers user matchers over the built-ins
+ * for `expect(x).<name>` (only the asymmetric-matcher registration skips a
+ * built-in name) and returns a new `expect` without touching the base one,
+ * so a shadowing matcher can delegate to `baseExpect` with no recursion --
+ * the documented custom-matcher idiom, `e.matcherResult` and all. Every
+ * assertion is delegated FIRST, in the direction the caller asked for
+ * (`.not` included, so the poll runs the right way and a negated assertion
+ * does not spend its whole deadline waiting for a match it never wanted),
+ * and judged only afterwards, on the elements the assertion actually
+ * resolved to.
+ *
+ * Outside the door, stated rather than glossed: a direct read --
+ * `textContent()`, `allTextContents()`, `node.textContent` inside
+ * `evaluate` -- and the `hasText` filter, none of which pass through an
+ * `expect` matcher. `tests/e2e_text_assertion_door.rs` fences that every
+ * spec's `expect` is this one; `text-assertion-door.spec.ts` is what proves
+ * the door refuses.
+ */
+export const expect = baseExpect.extend({
+  async toHaveText(
+    this: ExpectMatcherState,
+    locator: Locator,
+    expected: TextExpectation,
+    options?: TextMatcherOptions,
+  ): Promise<MatcherReturnType> {
+    return guardedTextAssertion.call(this, "toHaveText", locator, expected, options);
+  },
+  async toContainText(
+    this: ExpectMatcherState,
+    locator: Locator,
+    expected: TextExpectation,
+    options?: TextMatcherOptions,
+  ): Promise<MatcherReturnType> {
+    return guardedTextAssertion.call(this, "toContainText", locator, expected, options);
+  },
+});
+
+/** The shared body of both shadowing matchers. See `expect` above. */
+async function guardedTextAssertion(
+  this: ExpectMatcherState,
+  name: TextMatcher,
+  locator: Locator,
+  expected: TextExpectation,
+  options?: TextMatcherOptions,
+): Promise<MatcherReturnType> {
+  const isNot = this.isNot;
+  // Delegate in the caller's own direction. Playwright raises when
+  // `pass === isNot`, so a delegated success returns `!isNot` and a
+  // delegated failure returns `isNot`: the base verdict, reproduced.
+  const delegate = isNot ? baseExpect(locator).not : baseExpect(locator);
+  let delegatedFailure: { message?: string } | undefined;
+  try {
+    await delegate[name](expected, options);
+  } catch (error) {
+    delegatedFailure = matcherResultOf(error);
+  }
+
+  // Judge the subject only when there is one to judge. A value that is not
+  // a locator (a string, a promise) is the base matcher's own business.
+  const hidden =
+    typeof (locator as Partial<Locator>)?.evaluateAll === "function"
+      ? await hiddenTextUnder(locator)
+      : [];
+  const riding =
+    name === "toHaveText" ? hidden : hidden.filter((h) => expectationNames(expected, h.text));
+
+  if (riding.length > 0) {
+    const message = refusalMessage(name, locator, expected, riding, delegatedFailure);
+    return { name, pass: isNot, message: () => message };
+  }
+  if (delegatedFailure) {
+    const message = delegatedFailure.message ?? `${name} failed`;
+    return { name, pass: isNot, message: () => message };
+  }
+  return { name, pass: !isNot, message: () => "" };
+}
+
+/** Playwright attaches the matcher's own result to the error it throws, and
+ * that result's `message` is the text a spec author would have read. Anything
+ * else (a thrown string, a foreign error) is carried as its own message. */
+function matcherResultOf(error: unknown): { message?: string } {
+  if (error && typeof error === "object") {
+    const withResult = error as { matcherResult?: { message?: string }; message?: string };
+    if (withResult.matcherResult) return withResult.matcherResult;
+    return { message: withResult.message };
+  }
+  return { message: String(error) };
+}
+
+/** Every `aria-hidden` descendant with non-blank text under each element the
+ * locator resolves to. Computed in the page, after the delegated assertion
+ * has already waited for the subject, so it reflects the same elements. */
+function hiddenTextUnder(locator: Locator): Promise<HiddenText[]> {
+  return locator.evaluateAll((elements) =>
+    elements.flatMap((element) =>
+      Array.from(element.querySelectorAll('[aria-hidden="true"]'))
+        .map((node) => ({
+          node:
+            node.tagName.toLowerCase() +
+            (node.id ? "#" + node.id : "") +
+            Array.from(node.classList)
+              .map((c) => "." + c)
+              .join("") +
+            Object.entries((node as HTMLElement).dataset ?? {})
+              .map(([k, v]) => `[data-${k}=${JSON.stringify(v ?? "")}]`)
+              .join(""),
+          text: (node.textContent ?? "").trim(),
+        }))
+        .filter((found) => found.text.length > 0),
+    ),
+  );
+}
+
+/** Whether a `toContainText` expectation names the hidden text at all: a
+ * string that contains it, or a pattern that matches it. */
+function expectationNames(expected: TextExpectation, hiddenText: string): boolean {
+  const each = Array.isArray(expected) ? expected : [expected];
+  return each.some((item) =>
+    typeof item === "string"
+      ? item.includes(hiddenText)
+      : new RegExp(item.source, item.flags.replace("g", "")).test(hiddenText),
+  );
+}
+
+/** The refusal a spec author reads. Names what was found, where, what the
+ * base matcher would have said, and the remedy. */
+function refusalMessage(
+  name: TextMatcher,
+  locator: Locator,
+  expected: TextExpectation,
+  riding: HiddenText[],
+  delegatedFailure: { message?: string } | undefined,
+): string {
+  const found = riding.map((h) => `    ${h.node} ${JSON.stringify(h.text)}`).join("\n");
+  const verdict = delegatedFailure
+    ? "Playwright's own comparison had also failed:\n" + indent(delegatedFailure.message ?? "")
+    : "Playwright's own comparison would have PASSED -- the expectation has encoded the decoration.";
+  return [
+    `expect(locator).${name}() refused: the subject carries aria-hidden text that textContent includes and the accessible name excludes (SH-622).`,
+    ``,
+    `Locator: ${String(locator)}`,
+    `Expected: ${describeExpectation(expected)}`,
+    `Hidden text under the subject:`,
+    found,
+    ``,
+    verdict,
+    ``,
+    `Assert a control's own words with toHaveAccessibleName(); assert the words on the element that holds only the words; only a spec whose SUBJECT is the glyph asserts its text.`,
+  ].join("\n");
+}
+
+function describeExpectation(expected: TextExpectation): string {
+  const each = Array.isArray(expected) ? expected : [expected];
+  const parts = each.map((item) => (typeof item === "string" ? JSON.stringify(item) : String(item)));
+  return Array.isArray(expected) ? `[${parts.join(", ")}]` : parts[0];
+}
+
+function indent(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => "    " + line)
+    .join("\n");
+}
 
 /** How often the load-grace watchdog (below) re-samples contention during a
  * running test. Sub-second so a burst that begins mid-test is caught with
