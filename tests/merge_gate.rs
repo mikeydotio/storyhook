@@ -3086,17 +3086,17 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     assert_eq!(payload["disposition"], "permanent", "{payload}");
     let detail = payload["detail"].as_str().unwrap();
     assert!(detail.contains("certified nothing"), "{detail}");
-    assert!(detail.contains("`gate-bin --ci`"), "names the gate: {detail}");
+    assert!(
+        detail.contains("`gate-bin --ci`"),
+        "names the gate: {detail}"
+    );
     assert!(
         detail.contains("gate-receipt.sh postlude"),
         "names the remedy: {detail}"
     );
     let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
     assert!(detail.contains(&tree), "names the tree: {detail}");
-    assert_eq!(
-        fs::read_to_string(&record).expect("the gate ran"),
-        "--ci\n"
-    );
+    assert_eq!(fs::read_to_string(&record).expect("the gate ran"), "--ci\n");
     assert!(
         !repo
             .common_dir()
@@ -3139,7 +3139,10 @@ fn a_configured_gate_that_certifies_through_the_production_writer_proceeds_to_la
 
     let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
     let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
-    let receipt = repo.common_dir().join("storyhook/gate-receipts").join(&tree);
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
     assert!(
         fs::read_to_string(&receipt)
             .unwrap_or_else(|e| panic!("the gate certified the tree: {e}"))
