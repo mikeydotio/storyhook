@@ -543,6 +543,85 @@ first reading pointed at name individual sightings, where SH-501 names the class
 The distance `browser-status.sh` reports will keep growing until SH-501 lands,
 and that reading is still correct.
 
+### As built, third reading: the flake population was the machine (SH-627)
+
+The v2.5.0 release, 2026-09-09, ran the tier five times on one tree and read three
+single, non-repeating failures in three specs across two engines — a *population*,
+which the priority rubric prices as its own defect because a backlog of known
+flakes is how a genuine red gets waved off as the usual one. With `retries: 0`,
+`workers: 1` and no escape from `make test-full` on `scripts/release.sh`'s public
+path, one flake anywhere across five projects failed the tier and cost a ~38-minute
+re-run, and "run it again" was not a bounded strategy.
+
+**The verdict** (a three-seat council on the story; `story show SH-627` carries it
+inline, per SH-363): **no laundering.** `retries: 0` stays, no blind re-run, no
+numeric retry cap (a bare literal, SH-394), no receipt over a known-unfixed defect.
+The release path *is* the acceptance procedure — one `make test-full` on the frozen
+tree, on a quiesced machine, accepted only if every failure it shows is a named
+quarantine carrying a story (`every_webkit_quarantine_names_a_story`). Every
+mechanism finding was demoted from root cause to filed hypothesis carrying a
+pre-registered discriminating observation, because each had been derived by
+reading code rather than reproduced by toggle. The skeptic seat voted against its
+own proposal on that ground, and reading further into its own claim found its
+proposed fix aimed at the wrong function — it would have shipped, been reviewed as
+complete, and covered nothing.
+
+**What measurement then found**, in the order it arrived:
+
+| run | condition | webkit | mobile-webkit | what it was |
+|---|---|---|---|---|
+| gate 2 | quiesced, before 01:31 | clean | clean | the tree |
+| gate 3 | **concurrent with the council** (9 subagents); e2e leg 6538 s vs gate 2's 1864 s, 111 load-grace resets vs 47 | 1 fail | 27 fail | contention, then the crash |
+| gate 4 | quiesced, after 01:31 | 0 pass / 45 fail | — | `webkit.launch()` hung, every test |
+| gate 5 | quiesced, WebKit restored | clean | clean | **first `tier full` receipt in this repo** |
+
+`/Library/Logs/DiagnosticReports/WindowServer-2026-09-09-013128.ips`: WindowServer
+crashed at 01:31:28. Headless WebKit depends on the WindowServer/GPU XPC service
+graph, and from that moment until a re-login every `webkit.launch()` hung. Gate 3's
+mobile-webkit project started at ~01:30 — straight into the restart — and its
+four-in-one-file tap-target cluster was read as an SH-620 regression before the
+crash log was found. Gate 5 refuted that, and refuted H1 (a swallowed click on the
+settings screen, `window.__storyhookPressGate.swallows` empty on the healthy run).
+Of the three filed members, SH-624 closed on its own criterion (it named the next
+green full run as the experiment), the webkit `status-destination-prompt` failure
+was gate 3's contamination, and SH-626 is the population: one occurrence in the
+chromium project across gate 2, 3, 4, 5 and an isolated re-run. `story list --label
+flake` enumerates it; a ledger script was declined as machinery for one data point.
+
+**The detection gap, and what closes it.** Playwright's `browser` fixture is
+worker-scoped with `timeout: 0`, so a launch is bounded only by
+`DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT` — `3 * 60 * 1000` in playwright-core 1.63,
+read from `coreBundle.js` rather than assumed. Under `workers: 1` a worker that
+cannot launch fails its test at that bound and Playwright starts a fresh worker for
+the next, which pays it again: 45 desktop-webkit tests × 180 s is gate 4's two and a
+quarter hours, and the tier's verdict on a dead browser is *45 tree failures*. That
+is SH-306's shape — a gate whose verdict depends on state it never checked — and
+it is why this was misread twice. `e2e/launch-probe.ts`, the config's
+`globalSetup`, launches the selected project's own engine once before any worker
+starts and closes it: one line naming what launched, or a refusal that says NO TEST
+RAN, names the machine rather than the tree, and points at the remedy. The engine
+is resolved as Playwright's own `browserName` fixture resolves it
+(`use.browserName ?? use.defaultBrowserType`), never from a project map (SH-136);
+the launch options mirror the fixture's; no `timeout:` is passed, so the ceiling
+derives from Playwright's own default (SH-394). `scripts/run-e2e.sh` exports
+`E2E_PROJECT` after its `--list` probe — listing runs no global setup — and before
+the real run. Measured by toggle in the worktree that shipped it, never mocked
+(SH-263, SH-345): `PLAYWRIGHT_BROWSERS_PATH=/nonexistent --project=webkit` refused
+in 11 ms with zero tests attempted; healthy webkit, chromium, mobile-webkit and
+untrusted-origin-chromium launched in 409/226/179/107 ms and ran.
+
+Two alternatives were declined on the loop's own shape rather than on taste. A
+Playwright setup project with `dependencies` would appear in `run-e2e.sh`'s derived
+project loop as a standalone project with its own daemon and seed, and need
+exclusions there and in `tests/e2e_browser_coverage.rs`'s project-block parsers.
+`maxFailures` would end a run with real failures early, destroying exactly the
+enumeration the council said had never been done. And probing every engine the
+config names, rather than the selected project's, would have refused Chromium's
+463/463 runs on the crash night — real evidence about the tree — along with WebKit's.
+
+`tests/e2e_launch_probe.rs` pins the council's two settings and the probe's wiring,
+in SH-360's sense: a call site exists, never that it reaches the right pixel.
+
 ## The timing-ceiling rule
 
 A wall-clock ceiling states that some deadline *D* was not spent. It is only
