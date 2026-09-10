@@ -134,15 +134,18 @@ const COMMON_MAY_SEE: [&str; 12] = [
 /// under either prefix, and both prefixes are unique to it.
 const DISPATCH_MAY_SEE_PREFIXES: [&str; 2] = ["STORY_", "STORYHOOK_"];
 
+/// The names through which `gh` and an HTTPS `git push` find the operator's
+/// GitHub credentials, stated once so every spawn that is permitted to reach
+/// GitHub admits exactly the same three (SH-136: a second hand-copied list is a
+/// list that drifts). `GH_CONFIG_DIR` relocates `gh`'s own config and token
+/// store; `GH_TOKEN`/`GITHUB_TOKEN` are the token itself.
+const GITHUB_CREDENTIAL_MAY_SEE: [&str; 3] = ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"];
+
 /// Configuration the centralized verifier needs in addition to the common
-/// executable/user environment. GitHub tokens stop at its orchestration
-/// process; the shell boundary removes them before the repository test runs.
-const VERIFICATION_EXTRA_MAY_SEE: [&str; 4] = [
-    "GH_CONFIG_DIR",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "STORYHOOK_LOCK_DIR",
-];
+/// executable/user environment and the GitHub credentials. The tokens stop at
+/// its orchestration process; the shell boundary removes them before the
+/// repository test runs.
+const VERIFICATION_EXTRA_MAY_SEE: [&str; 1] = ["STORYHOOK_LOCK_DIR"];
 
 /// True if `name` is one `story.sh`'s dispatch child is allowed to see.
 fn dispatch_permits(name: &str) -> bool {
@@ -161,7 +164,9 @@ fn plugin_cli_permits(name: &str) -> bool {
 
 /// True if `name` is needed by the centralized GitHub/gate subprocess.
 fn verification_permits(name: &str) -> bool {
-    COMMON_MAY_SEE.contains(&name) || VERIFICATION_EXTRA_MAY_SEE.contains(&name)
+    COMMON_MAY_SEE.contains(&name)
+        || GITHUB_CREDENTIAL_MAY_SEE.contains(&name)
+        || VERIFICATION_EXTRA_MAY_SEE.contains(&name)
 }
 
 /// Clears `command`'s environment, then restores every currently-set variable
