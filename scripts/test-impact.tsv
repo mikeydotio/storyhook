@@ -40,6 +40,9 @@ e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
+e2e_provider_doubles	plugins/story/tests/fakes/tmux
+e2e_provider_doubles	scripts/e2e-provider-doubles.sh
+e2e_provider_doubles	scripts/run-e2e.sh
 e2e_selection	:(glob)**/*
 e2e_text_assertion_door	:(glob)e2e/**/*.ts
 engine_reconcile	:(glob)**/*
