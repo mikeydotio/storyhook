@@ -5,7 +5,7 @@ use std::io::Write;
 use std::process::Stdio;
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, run_bounded};
 
-fn fixture() -> Harness {
+pub(super) fn fixture() -> Harness {
     let mut harness = Harness::new(false);
     harness.home = harness._temp.path().join("home with spaces");
     fs::create_dir_all(&harness.home).unwrap();
@@ -16,11 +16,11 @@ fn fixture() -> Harness {
     harness
 }
 
-fn quoted(path: &Path) -> String {
+pub(super) fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
-fn shell(harness: &Harness) -> Command {
+pub(super) fn shell(harness: &Harness) -> Command {
     let mut command = Command::new("bash");
     command
         .current_dir(&harness.root)
@@ -39,7 +39,27 @@ fn shell(harness: &Harness) -> Command {
     command
 }
 
+/// The tracked hook, never a copy.
+pub(super) fn tracked_hook() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/plugins/story/hooks/protect-install.sh"
+    ))
+}
+
 fn ask(harness: &Harness, text: &str, codex: bool) -> serde_json::Value {
+    ask_hook(harness, &tracked_hook(), text, codex)
+}
+
+/// One hook decision, from the hook at `hook` — the tracked one for the
+/// launcher door, an installed copy for the helper door, whose identity IS
+/// where the hook was loaded from (SH-632).
+pub(super) fn ask_hook(
+    harness: &Harness,
+    hook: &Path,
+    text: &str,
+    codex: bool,
+) -> serde_json::Value {
     // Both hosts normalize shell calls to Bash/command. Codex also supplies
     // permission_mode; it must not alter this hook's classification.
     let mut payload = serde_json::json!({
@@ -52,10 +72,7 @@ fn ask(harness: &Harness, text: &str, codex: bool) -> serde_json::Value {
     }
     let mut command = shell(harness);
     command
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/plugins/story/hooks/protect-install.sh"
-        ))
+        .arg(hook)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -68,13 +85,160 @@ fn ask(harness: &Harness, text: &str, codex: bool) -> serde_json::Value {
 }
 
 fn assert_denied(harness: &Harness, text: &str) {
+    assert_denied_by(harness, &tracked_hook(), text);
+}
+
+pub(super) fn assert_denied_by(harness: &Harness, hook: &Path, text: &str) {
     for codex in [false, true] {
-        let response = ask(harness, text, codex);
+        let response = ask_hook(harness, hook, text, codex);
         assert_eq!(
             response["hookSpecificOutput"]["permissionDecision"], "deny",
             "{text}: {response}"
         );
     }
+}
+
+/// Every spelling of the interpreter the router may put in front of an entry
+/// point, including none: an installed helper is executable in its own right.
+pub(super) const INTERPRETER_PREFIXES: [&str; 4] = ["", "bash ", "/bin/bash ", "/usr/bin/bash "];
+
+/// The project selector forms the helper accepts ahead of its verb.
+pub(super) const PROJECT_SELECTORS: [&str; 3] = ["", "--project test ", "--project=test "];
+
+/// Reader verbs: nothing after them touches a story, a worktree, or a file.
+pub(super) const ADMITTED_READER_ARGS: [&str; 9] = [
+    "context",
+    "context --full",
+    "view TST-1",
+    "view 1",
+    "list",
+    "capabilities",
+    "capabilities --agent=claude",
+    "capabilities --agent=codex",
+    "ensure-cli",
+];
+
+/// Dispatch forms the argv contract admits (SH-588): one target, the helper's
+/// own provider/model/effort/speed/mode flags, no managed-file operand.
+pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 8] = [
+    "dispatch TST-1",
+    "dispatch TST-1 --agent=codex",
+    "dispatch --agent=claude TST-1",
+    "dispatch TST-1 --auto --resume",
+    "dispatch --next --auto --agent=codex",
+    "dispatch TST-1 --force",
+    "dispatch TST-1 --auto --full-auto",
+    "dispatch TST-1 --agent=codex --model=gpt-6-astra --effort=high --speed=fast",
+];
+
+/// Argument lists no entry point may be admitted with: mutating verbs, unknown
+/// verbs, and malformed selectors or reader options.
+pub(super) const REJECTED_ARGS: [&str; 30] = [
+    "",
+    "create --title x",
+    "sync",
+    "handoff",
+    "triage",
+    "doctor",
+    "capture TST-1",
+    "reset TST-1",
+    "reap TST-1",
+    "notify TST-1 x",
+    "complete execute TST-1",
+    "unclaim TST-1",
+    "scaffold-agents-md",
+    "unknown",
+    "context --unknown",
+    "context --full --full",
+    "context extra",
+    "view",
+    "view --help",
+    "view TST-1 extra",
+    "view ../TST-1",
+    "list --ready",
+    "capabilities --agent=other",
+    "capabilities --agent=codex --agent=claude",
+    "capabilities --agent codex",
+    "ensure-cli --install",
+    "--project",
+    "--project= context",
+    "--project a --project b context",
+    "context --project a",
+];
+
+/// Dispatch argument lists outside the contract.
+pub(super) const REJECTED_DISPATCH_ARGS: [&str; 20] = [
+    "dispatch",
+    "dispatch --help",
+    "dispatch ../TST-1",
+    "dispatch TST-1 TST-2",
+    "dispatch TST-1 --unknown",
+    "dispatch TST-1 --agent other",
+    "dispatch TST-1 --agent=other",
+    "dispatch TST-1 --agent=codex --agent=claude",
+    "dispatch TST-1 --model=",
+    "dispatch TST-1 --effort=",
+    "dispatch TST-1 --speed=slow",
+    "dispatch TST-1 --auto --auto",
+    "dispatch TST-1 --force --resume",
+    "dispatch TST-1 --full-auto",
+    "dispatch TST-1 --next",
+    "dispatch --next --next",
+    "dispatch --next --force",
+    "dispatch --next --resume",
+    "dispatch --next --auto --full-auto",
+    "dispatch TST-1 --project other",
+];
+
+/// Shell compositions around an otherwise-admitted reader call on `entry`:
+/// chaining, redirection, substitution, a second interpreter, an environment
+/// prefix, a lookalike path. None may be admitted, whichever door `entry` is.
+pub(super) fn rejected_compositions(entry: &Path) -> Vec<String> {
+    let e = quoted(entry);
+    vec![
+        format!("bash {e} context; rm {e}"),
+        format!("bash {e} context && story new x"),
+        format!("story new x && bash {e} context"),
+        format!("bash {e} context | cat"),
+        format!("bash {e} context > /tmp/output"),
+        format!("bash {e} context 2>&1"),
+        format!("bash {e} context < /dev/null"),
+        format!("bash {e} context\nrm {e}"),
+        format!("bash {e} context\r\n"),
+        format!("bash {e} context # ignored"),
+        format!("bash {e} context $(touch /tmp/unwanted)"),
+        format!("bash {e} context `touch /tmp/unwanted`"),
+        format!("bash {e} context <(cat /dev/null)"),
+        format!("bash -c {e} context"),
+        format!("bash -- {e} context"),
+        format!("env bash {e} context"),
+        format!("STORY_BIN=bad bash {e} context"),
+        format!("python3 {e} context"),
+        format!("source {e} context"),
+        format!("bash {e} --project '$PROJECT' context"),
+        format!("bash {e} --project '*' context"),
+        format!("bash {e} --project '{{a,b}}' context"),
+        format!("bash {e} --project '~' context"),
+        format!("bash '{}.bak' context", entry.display()),
+    ]
+}
+
+/// The same for a dispatch call: composition, a managed path smuggled in as an
+/// operand, a second interpreter, an environment prefix.
+pub(super) fn rejected_dispatch_compositions(entry: &Path) -> Vec<String> {
+    let e = quoted(entry);
+    vec![
+        format!("bash {e} dispatch TST-1; rm {e}"),
+        format!("bash {e} dispatch TST-1 && story new x"),
+        format!("bash {e} dispatch TST-1\nrm {e}"),
+        format!("bash {e} dispatch TST-1 > {e}"),
+        format!("bash {e} dispatch TST-1 | cat"),
+        format!("bash {e} dispatch '$(touch /tmp/unwanted)'"),
+        format!("bash {e} --project {e} dispatch TST-1"),
+        format!("bash {e} dispatch TST-1 --model={e}"),
+        format!("bash -c {e} dispatch TST-1"),
+        format!("STORY_LAUNCH_CMD=bad bash {e} dispatch TST-1"),
+    ]
 }
 
 #[test]
@@ -86,19 +250,9 @@ fn installed_launcher_reader_grammar() {
         "story",
         "#!/bin/sh\nprintf invoked > \"$HOME/unexpected-story-call\"\nexit 99\n",
     );
-    for prefix in ["", "bash ", "/bin/bash ", "/usr/bin/bash "] {
-        for selector in ["", "--project test ", "--project=test "] {
-            for args in [
-                "context",
-                "context --full",
-                "view TST-1",
-                "view 1",
-                "list",
-                "capabilities",
-                "capabilities --agent=claude",
-                "capabilities --agent=codex",
-                "ensure-cli",
-            ] {
+    for prefix in INTERPRETER_PREFIXES {
+        for selector in PROJECT_SELECTORS {
+            for args in ADMITTED_READER_ARGS {
                 let text = format!("{prefix}{launcher} {selector}{args}");
                 for codex in [false, true] {
                     assert_eq!(ask(&harness, &text, codex), serde_json::json!({}), "{text}");
@@ -118,72 +272,19 @@ fn installed_launcher_reader_grammar() {
 fn launcher_exception_rejects_mutation_and_ambiguous_shell_forms() {
     let harness = fixture();
     let launcher = quoted(&harness.codex_launcher());
-    for args in [
-        "",
-        "create --title x",
-        "sync",
-        "handoff",
-        "triage",
-        "doctor",
-        "capture TST-1",
-        "reset TST-1",
-        "reap TST-1",
-        "notify TST-1 x",
-        "complete execute TST-1",
-        "unclaim TST-1",
-        "scaffold-agents-md",
-        "unknown",
-        "context --unknown",
-        "context --full --full",
-        "context extra",
-        "view",
-        "view --help",
-        "view TST-1 extra",
-        "view ../TST-1",
-        "list --ready",
-        "capabilities --agent=other",
-        "capabilities --agent=codex --agent=claude",
-        "capabilities --agent codex",
-        "ensure-cli --install",
-        "--project",
-        "--project= context",
-        "--project a --project b context",
-        "context --project a",
-    ] {
+    for args in REJECTED_ARGS {
         assert_denied(&harness, &format!("bash {launcher} {args}"));
     }
-    for text in [
-        format!("bash {launcher} context; rm {launcher}"),
-        format!("bash {launcher} context && story new x"),
-        format!("story new x && bash {launcher} context"),
-        format!("bash {launcher} context | cat"),
-        format!("bash {launcher} context > /tmp/output"),
-        format!("bash {launcher} context 2>&1"),
-        format!("bash {launcher} context < /dev/null"),
-        format!("bash {launcher} context\nrm {launcher}"),
-        format!("bash {launcher} context\r\n"),
-        format!("bash {launcher} context # ignored"),
-        format!("bash {launcher} context $(touch /tmp/unwanted)"),
-        format!("bash {launcher} context `touch /tmp/unwanted`"),
-        format!("bash {launcher} context <(cat /dev/null)"),
-        format!("bash -c {launcher} context"),
-        format!("bash -- {launcher} context"),
-        format!("env bash {launcher} context"),
-        format!("STORY_BIN=bad bash {launcher} context"),
-        format!("python3 {launcher} context"),
-        format!("source {launcher} context"),
-        format!("bash {launcher} --project '$PROJECT' context"),
-        format!("bash {launcher} --project '*' context"),
-        format!("bash {launcher} --project '{{a,b}}' context"),
-        format!("bash {launcher} --project '~' context"),
-        format!("bash '{}.bak' context", harness.codex_launcher().display()),
-        format!(
+    for text in rejected_compositions(&harness.codex_launcher()) {
+        assert_denied(&harness, &text);
+    }
+    assert_denied(
+        &harness,
+        &format!(
             "bash '{}/../storyhook/story.sh' context",
             harness.codex_launcher().parent().unwrap().display()
         ),
-    ] {
-        assert_denied(&harness, &text);
-    }
+    );
 }
 
 #[test]
@@ -195,18 +296,9 @@ fn installed_launcher_dispatch_is_not_an_installed_artifact_edit() {
         "story",
         "#!/bin/sh\nprintf invoked > \"$HOME/unexpected-story-call\"\nexit 99\n",
     );
-    for prefix in ["", "bash ", "/bin/bash ", "/usr/bin/bash "] {
-        for selector in ["", "--project test ", "--project=test "] {
-            for args in [
-                "dispatch TST-1",
-                "dispatch TST-1 --agent=codex",
-                "dispatch --agent=claude TST-1",
-                "dispatch TST-1 --auto --resume",
-                "dispatch --next --auto --agent=codex",
-                "dispatch TST-1 --force",
-                "dispatch TST-1 --auto --full-auto",
-                "dispatch TST-1 --agent=codex --model=gpt-6-astra --effort=high --speed=fast",
-            ] {
+    for prefix in INTERPRETER_PREFIXES {
+        for selector in PROJECT_SELECTORS {
+            for args in ADMITTED_DISPATCH_ARGS {
                 let text = format!("{prefix}{launcher} {selector}{args}");
                 for codex in [false, true] {
                     assert_eq!(ask(&harness, &text, codex), serde_json::json!({}), "{text}");
@@ -222,42 +314,10 @@ fn installed_launcher_dispatch_is_not_an_installed_artifact_edit() {
 fn dispatch_exception_preserves_argument_shell_and_identity_guards() {
     let harness = fixture();
     let launcher = quoted(&harness.codex_launcher());
-    for args in [
-        "dispatch",
-        "dispatch --help",
-        "dispatch ../TST-1",
-        "dispatch TST-1 TST-2",
-        "dispatch TST-1 --unknown",
-        "dispatch TST-1 --agent other",
-        "dispatch TST-1 --agent=other",
-        "dispatch TST-1 --agent=codex --agent=claude",
-        "dispatch TST-1 --model=",
-        "dispatch TST-1 --effort=",
-        "dispatch TST-1 --speed=slow",
-        "dispatch TST-1 --auto --auto",
-        "dispatch TST-1 --force --resume",
-        "dispatch TST-1 --full-auto",
-        "dispatch TST-1 --next",
-        "dispatch --next --next",
-        "dispatch --next --force",
-        "dispatch --next --resume",
-        "dispatch --next --auto --full-auto",
-        "dispatch TST-1 --project other",
-    ] {
+    for args in REJECTED_DISPATCH_ARGS {
         assert_denied(&harness, &format!("bash {launcher} {args}"));
     }
-    for text in [
-        format!("bash {launcher} dispatch TST-1; rm {launcher}"),
-        format!("bash {launcher} dispatch TST-1 && story new x"),
-        format!("bash {launcher} dispatch TST-1\nrm {launcher}"),
-        format!("bash {launcher} dispatch TST-1 > {launcher}"),
-        format!("bash {launcher} dispatch TST-1 | cat"),
-        format!("bash {launcher} dispatch '$(touch /tmp/unwanted)'"),
-        format!("bash {launcher} --project {launcher} dispatch TST-1"),
-        format!("bash {launcher} dispatch TST-1 --model={launcher}"),
-        format!("bash -c {launcher} dispatch TST-1"),
-        format!("STORY_LAUNCH_CMD=bad bash {launcher} dispatch TST-1"),
-    ] {
+    for text in rejected_dispatch_compositions(&harness.codex_launcher()) {
         assert_denied(&harness, &text);
     }
     fs::write(harness.codex_launcher(), "exec arbitrary-program\n").unwrap();
@@ -368,7 +428,7 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
     let launcher = quoted(&harness.codex_launcher());
     // Linux may provide /usr/bin/bash; macOS provides only /bin/bash.
     // Grammar coverage above still checks every supported spelling.
-    let prefixes: Vec<_> = ["", "bash ", "/bin/bash ", "/usr/bin/bash "]
+    let prefixes: Vec<_> = INTERPRETER_PREFIXES
         .into_iter()
         .filter(|prefix| !prefix.starts_with('/') || Path::new(prefix.trim()).is_file())
         .collect();
@@ -431,9 +491,17 @@ fn install_checkout_helpers(harness: &Harness) -> PathBuf {
         .home
         .join(".codex/plugins/cache/storyhook/story")
         .join(env!("CARGO_PKG_VERSION"));
+    install_checkout_helpers_at(&cache);
+    cache
+}
+
+/// Write this checkout's actual plugin tree at `root`, byte for byte and mode
+/// for mode — what a provider's plugin install leaves behind, minus the
+/// provider.
+pub(super) fn install_checkout_helpers_at(root: &Path) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story");
     for (relative, (bytes, executable)) in regular_files(&source) {
-        let path = cache.join(relative);
+        let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         fs::set_permissions(
@@ -442,7 +510,6 @@ fn install_checkout_helpers(harness: &Harness) -> PathBuf {
         )
         .unwrap();
     }
-    cache
 }
 
 #[test]
