@@ -436,7 +436,8 @@ fn linking_a_checkout_preserves_every_user_authored_configuration_table() {
         &pointer_path,
         format!(
             "schema = 1\nuuid = \"{uuid}\"\nprefix = \"OLD\"\n\n[plugin]\nenabled = true\n\n\
-             [hooks]\ntimeout_ms = 5000\n\n[github]\napi_url = \"https://api.example.test\"\n"
+             [hooks]\ntimeout_ms = 5000\n\n[github]\napi_url = \"https://api.example.test\"\n\n\
+             [verify]\ngate = \"make test-full\"\n"
         ),
     )
     .expect("writing the hand-authored pointer");
@@ -480,6 +481,11 @@ fn linking_a_checkout_preserves_every_user_authored_configuration_table() {
         after["github"]["api_url"].as_str(),
         Some("https://api.example.test"),
         "the [github] table must survive a prefix repair: {after:?}"
+    );
+    assert_eq!(
+        after["verify"]["gate"].as_str(),
+        Some("make test-full"),
+        "the [verify] table must survive a prefix repair: {after:?}"
     );
 }
 

@@ -17,8 +17,9 @@
 # it shipped ahead of them, SH-456 — and was corrected by SH-646.)
 #
 # THE REENTRANCY LIST CROSSES `scripts/merge-watch.sh`'S ENVIRONMENT SCRUB.
-# `verify-pr.sh` holds `gate`, `merge-watch.sh` execs `make test` inside it,
-# and `run-tests.sh` re-execs under `machine-lock.sh gate`: that inner take
+# `verify-pr.sh` holds `gate`, `merge-watch.sh` execs the project's gate (`make
+# test` by default, SH-649) inside it, and `run-tests.sh` re-execs under
+# `machine-lock.sh gate`: that inner take
 # runs only because `STORYHOOK_MACHINE_LOCKS` (set below on a successful take)
 # survived `merge-watch.sh`'s `env -u` list. Strip it there and every
 # verification waits on its own outer holder for ever — see the comment on

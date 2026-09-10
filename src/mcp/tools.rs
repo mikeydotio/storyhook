@@ -1011,6 +1011,7 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Log { .. }

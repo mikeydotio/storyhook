@@ -291,13 +291,15 @@ pane_command() {
 }
 
 # PANE_PROBE_FORMAT -- the one composite liveness question this plugin asks a
-# pane: its pid, its foreground command, and whether tmux itself considers the
-# pane dead, tab-separated. The SAME spelling the daemon's Full Auto reconciler
-# asks (`WINDOW_PROBE_FORMAT`, src/service/engine.rs) and the fake tmux answers
-# in one arm, pinned equal by tests/notify_reasons.rs rather than copied twice
-# (SH-136). A second, single-field `#{pane_dead}` spelling would be a third
-# format for every fixture to learn.
-PANE_PROBE_FORMAT='#{pane_pid}	#{pane_current_command}	#{pane_dead}'
+# pane: its pid, its foreground command, whether tmux itself considers the
+# pane dead, and the window's last activity, tab-separated. The SAME spelling
+# the daemon's Full Auto reconciler asks (`WINDOW_PROBE_FORMAT`,
+# src/service/engine.rs) and the fake tmux answers in one arm, pinned equal by
+# tests/notify_reasons.rs rather than copied twice (SH-136). A second,
+# single-field `#{pane_dead}` spelling would be a third format for every
+# fixture to learn. Fields are read by POSITION, never as "the last one", so
+# the reconciler may widen the format again without moving the dead flag.
+PANE_PROBE_FORMAT='#{pane_pid}	#{pane_current_command}	#{pane_dead}	#{window_activity}'
 
 # pane_probe <pane> -- READ-ONLY. Echo the pane's PANE_PROBE_FORMAT answer, or
 # fail (empty) when tmux cannot be asked. Failure is distinct from "dead" on
@@ -319,7 +321,7 @@ pane_probe() {
 pane_is_dead() {
   local answer dead
   answer=$(pane_probe "$1") || return 1
-  dead="${answer##*	}"
+  dead=$(printf '%s\n' "$answer" | cut -f 3)
   [ "$dead" = 1 ]
 }
 

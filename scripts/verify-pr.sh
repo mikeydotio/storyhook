@@ -285,6 +285,29 @@ run_verification_gate() {
     [ "$gate_status" -eq 0 ]
 }
 
+# A gate that exited 0 has certified the tree only if it minted a `gate` or
+# `full` receipt on the way (`make test` and `make test-full` end in
+# `gate-receipt.sh postlude`; a configured `[verify] gate` need not — SH-649).
+# Landing asks `merge-preflight.sh` exactly this before it merges, so the same
+# reader is asked here, right after the gate, rather than a second parser of
+# the receipt file; without this the refusal surfaced downstream, from
+# `reconcile_land_refusal`, as "no longer has a qualifying release-gate
+# receipt" — a diagnosis about the wrong layer, after GitHub had been asked
+# again. Refused by name: the gate, the tree, and what a gate must do.
+require_certified_by_gate() {
+    certified_tree="$1"
+    certified_base="$2"
+    certified_head="$3"
+    recheck="$(bash "$script_dir/merge-preflight.sh" "$certified_base" "$certified_head" 2>&1)"
+    recheck_status=$?
+    recheck_tree="$(printf '%s\n' "$recheck" | head -n1)"
+    if [ "$recheck_status" -eq 0 ] && [ "$recheck_tree" = "$certified_tree" ]; then
+        return 0
+    fi
+    gate_progress_emit_item "release gate" failed
+    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). The configured [verify] gate must certify the tree it ran on by ending in scripts/gate-receipt.sh postlude at tier gate or full — make test and make test-full do; make test-changed and a bare test runner do not. Gate log: $log"
+}
+
 # Posts the red verdict for the gate `run_verification_gate` just reported as
 # failed. The wire shape is exactly the one it used to emit itself; only the
 # moment moved, to after the caller's head confirmation.
@@ -615,8 +638,16 @@ if [ "${1:-}" = --ensure-verifier-worktree ]; then
     exit 0
 fi
 
-[ "$#" -eq 1 ] || die_json "usage: verify-pr.sh <pr-url>"
+# The gate is an argument, never a default of this script's own (SH-649):
+# the daemon reads the project's `[verify] gate` from its pointer file and
+# `GateCommand::DEFAULT` is the one place `make test` lives. A caller that
+# names no gate is refused by name rather than handed one it did not choose.
+[ "$#" -ge 3 ] && [ "$2" = -- ] \
+    || die_json "usage: verify-pr.sh <pr-url> -- <gate-command...> (the daemon passes the project's [verify] gate)"
 submitted_pr="$1"
+shift 2
+gate_command=("$@")
+gate_display="$*"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
@@ -666,14 +697,15 @@ case "$preflight_status" in
 (0)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
     gate_progress_emit_item "release gate" reused
-    verifier_window_banner "PR #$pr — merge tree $tree already certified; release gate reused, no live make-test output for this run"
+    verifier_window_banner "PR #$pr — merge tree $tree already certified; release gate reused, no live \`$gate_display\` output for this run"
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
-    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" make test || {
+    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" "${gate_command[@]}" || {
         confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
         emit_tests_failed
     }
+    require_certified_by_gate "$tree" "$base_ref" "$head_ref"
     ;;
 (*)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
