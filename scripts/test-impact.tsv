@@ -38,6 +38,7 @@ e2e_browser_coverage	:(glob)**/*
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
+e2e_text_assertion_door	:(glob)e2e/**/*.ts
 engine_reconcile	:(glob)**/*
 epic_is_a_type	:(glob)**/*
 event_kind_vocabulary	:(glob)**/*
