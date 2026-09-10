@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { test, expect } from "./support";
-import { dispatchStory, openProject, requiredEnv, seedToken } from "./support";
+import { dispatchStory, openProject, requiredEnv, seedToken, storyBinary } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
@@ -380,7 +380,7 @@ test("a saved token dispatches Codex Astra from the real catalog to the executed
   expect(provider.argv[provider.argv.indexOf("-m") + 1]).toBe("gpt-6-astra");
   expect(provider.cwd).toContain(join(ALPHA_CHECKOUT, ".codex/worktrees"));
   expect(existsSync(join(provider.cwd, ".git"))).toBe(true);
-  const claimed = JSON.parse(execFileSync(resolve("../target/debug/story"),
+  const claimed = JSON.parse(execFileSync(storyBinary(),
     ["show", basename(provider.cwd), "--json"],
     { cwd: ALPHA_CHECKOUT, encoding: "utf8", timeout: 15_000 },
   )).story.story;
