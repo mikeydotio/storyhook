@@ -266,9 +266,7 @@ fn finding_for(report: &str, label: &str) -> Option<String> {
     let mut lines = report.lines();
     lines.find(|line| line.starts_with(label))?;
     let next = lines.next()?;
-    next.trim_start()
-        .strip_prefix("! ")
-        .map(str::to_string)
+    next.trim_start().strip_prefix("! ").map(str::to_string)
 }
 
 fn doctor_install(env: &TestEnv) -> String {
@@ -285,13 +283,17 @@ fn doctor_install(env: &TestEnv) -> String {
 /// take with it: the plugin cache — the exact directory that survived on the
 /// filing machine (SH-640).
 fn plant_claude_cache(env: &TestEnv) -> std::path::PathBuf {
-    let cache = env.home().join(".claude/plugins/cache/storyhook/story/2.4.2");
+    let cache = env
+        .home()
+        .join(".claude/plugins/cache/storyhook/story/2.4.2");
     std::fs::create_dir_all(&cache).unwrap();
     env.home().join(".claude/plugins/cache/storyhook")
 }
 
 fn plant_codex_cache(env: &TestEnv) -> std::path::PathBuf {
-    let cache = env.home().join(".codex/plugins/cache/storyhook/story/2.4.2");
+    let cache = env
+        .home()
+        .join(".codex/plugins/cache/storyhook/story/2.4.2");
     std::fs::create_dir_all(&cache).unwrap();
     env.home().join(".codex/plugins/cache/storyhook")
 }
@@ -425,7 +427,10 @@ fn codex_residue_counts_a_managed_file_by_its_marker_not_its_name() {
     let report = doctor_install(&marked);
     let finding = finding_for(&report, "codex plugin")
         .unwrap_or_else(|| panic!("a marked launcher is storyhook's residue:\n{report}"));
-    assert!(finding.contains(&launcher.display().to_string()), "{report}");
+    assert!(
+        finding.contains(&launcher.display().to_string()),
+        "{report}"
+    );
 
     let unmarked = TestEnv::isolated();
     let launcher = unmarked.home().join(".codex/storyhook/story.sh");
