@@ -745,6 +745,18 @@ case "${1:-}" in
       esac
       shift || true
     done
+    # Real tmux (3.7c, measured for SH-650) refuses to paste into a pane whose
+    # process has exited under remain-on-exit: "target pane has exited", exit 1.
+    # Answer the same way, BEFORE logging, so a test that counts pastes sees
+    # what a real server would have accepted -- a fixture that pastes into a
+    # corpse and reports success is the SH-263/SH-364 shape (the gate was
+    # right; the fixture lied to it). Only a pane that was spawned and has since
+    # died counts: a state with no pid at all has no process to be dead.
+    dead_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
+    if [[ "$dead_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$dead_pid" 2>/dev/null; then
+      printf 'target pane has exited\n' >&2
+      exit 1
+    fi
     bfile="$STATE/buf-${bname:-default}"
     content="$(cat "$bfile" 2>/dev/null || printf '')"
     printf '%s\n' "$content" >> "$STATE/pastes.log" 2>/dev/null || true
