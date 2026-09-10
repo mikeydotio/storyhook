@@ -28,9 +28,10 @@ pub struct CleanupRemoval {
     /// Whether the worktree existed before this pass.
     pub removed_worktree: bool,
     /// Whether the local branch existed before this pass.
+    ///
+    /// There is no remote counterpart: the verifier's merge step deletes the
+    /// remote branch and cleanup never reads or writes it (SH-653).
     pub removed_local_branch: bool,
-    /// Whether the remote branch existed before this pass.
-    pub removed_remote_branch: bool,
     /// Bytes measured beneath the worktree before removal.
     pub reclaimed_bytes: u64,
 }
@@ -247,11 +248,8 @@ fn is_operational_failure(reason: &str) -> bool {
     matches!(
         reason,
         "fetch-failed"
-            | "remote-unverifiable"
             | "remove-worktree-failed"
             | "delete-local-branch-failed"
-            | "delete-remote-branch-failed"
-            | "postcondition-unverifiable"
             | "postcondition-failed"
     )
 }
@@ -461,26 +459,12 @@ fn clean_candidate(
         return Err(refuse("fetch-failed", stderr(&fetch)));
     }
 
+    // Only what cleanup itself would delete has to be reachable: the worktree
+    // and the local branch. The remote branch is neither read nor written —
+    // `land-pr.sh` deletes it at merge time, and nothing on the remote can be
+    // lost by a tool that never touches it.
     let local_ref = format!("refs/heads/{}", lease.branch);
-    let remote_ref = format!("refs/remotes/origin/{}", lease.branch);
     let base_ref = format!("refs/remotes/origin/{default_branch}");
-    let remote_output = git(
-        repository,
-        &["ls-remote", "--heads", "origin", &lease.branch],
-    )
-    .map_err(|error| refuse("remote-unverifiable", error))?;
-    if !remote_output.status.success() {
-        return Err(refuse("remote-unverifiable", stderr(&remote_output)));
-    }
-    let remote_exists = !remote_output.stdout.is_empty();
-    if remote_exists {
-        let branch_spec = format!("+refs/heads/{}:{remote_ref}", lease.branch);
-        let branch_fetch = git(repository, &["fetch", "--quiet", "origin", &branch_spec])
-            .map_err(|error| refuse("fetch-failed", error))?;
-        if !branch_fetch.status.success() {
-            return Err(refuse("fetch-failed", stderr(&branch_fetch)));
-        }
-    }
     let mut tips = BTreeSet::new();
     if worktree_exists {
         tips.insert(
@@ -488,13 +472,11 @@ fn clean_candidate(
                 .map_err(|detail| refuse("worktree-unverifiable", detail))?,
         );
     }
-    for reference in [&local_ref, &remote_ref] {
-        if ref_exists(repository, reference) {
-            tips.insert(
-                git_text(repository, &["rev-parse", reference])
-                    .map_err(|detail| refuse("branch-unverifiable", detail))?,
-            );
-        }
+    if ref_exists(repository, &local_ref) {
+        tips.insert(
+            git_text(repository, &["rev-parse", &local_ref])
+                .map_err(|detail| refuse("branch-unverifiable", detail))?,
+        );
     }
     for tip in tips {
         let answer = git(
@@ -512,7 +494,6 @@ fn clean_candidate(
 
     let removed_worktree = worktree_exists;
     let removed_local_branch = ref_exists(repository, &local_ref);
-    let removed_remote_branch = remote_exists;
     let reclaimed_bytes = if worktree_exists {
         directory_size(&lease.worktree_path)
     } else {
@@ -525,7 +506,6 @@ fn clean_candidate(
             branch: lease.branch.clone(),
             removed_worktree,
             removed_local_branch,
-            removed_remote_branch,
             reclaimed_bytes,
         });
     }
@@ -545,28 +525,10 @@ fn clean_candidate(
         run_git(repository, &["branch", "-D", &lease.branch])
             .map_err(|detail| refuse("delete-local-branch-failed", detail))?;
     }
-    if removed_remote_branch {
-        run_git(
-            repository,
-            &["push", "--quiet", "origin", "--delete", &lease.branch],
-        )
-        .map_err(|detail| refuse("delete-remote-branch-failed", detail))?;
-    }
-    let remote_after = git(
-        repository,
-        &["ls-remote", "--heads", "origin", &lease.branch],
-    )
-    .map_err(|error| refuse("postcondition-unverifiable", error))?;
-    if !remote_after.status.success() {
-        return Err(refuse("postcondition-unverifiable", stderr(&remote_after)));
-    }
-    if lease.worktree_path.exists()
-        || ref_exists(repository, &local_ref)
-        || !remote_after.stdout.is_empty()
-    {
+    if lease.worktree_path.exists() || ref_exists(repository, &local_ref) {
         return Err(refuse(
             "postcondition-failed",
-            "worktree path, local branch, or remote branch remains".into(),
+            "worktree path or local branch remains".into(),
         ));
     }
     Ok(CleanupRemoval {
@@ -575,7 +537,6 @@ fn clean_candidate(
         branch: lease.branch.clone(),
         removed_worktree,
         removed_local_branch,
-        removed_remote_branch,
         reclaimed_bytes,
     })
 }
@@ -789,21 +750,23 @@ mod tests {
     }
 
     #[test]
-    fn merged_inactive_story_removes_worktree_artifacts_and_both_branches() {
+    fn merged_inactive_story_removes_the_worktree_and_local_branch_and_never_the_remote() {
         let repo = Repo::new(true);
+        assert!(repo.workspace.origin_has_branch(), "fixture control");
         let removal = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
         assert!(removal.removed_worktree);
         assert!(removal.removed_local_branch);
-        assert!(removal.removed_remote_branch);
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(!repo.worktree.exists());
         assert!(!repo.workspace.local_branch_exists());
-        assert!(!repo.workspace.origin_has_branch());
+        assert!(
+            repo.workspace.origin_has_branch(),
+            "the remote branch is the verifier's merge step's to delete, never cleanup's"
+        );
 
         let retry = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
         assert!(!retry.removed_worktree);
         assert!(!retry.removed_local_branch);
-        assert!(!retry.removed_remote_branch);
     }
 
     #[test]
@@ -830,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn locked_worktree_and_divergent_remote_are_preserved() {
+    fn a_locked_worktree_is_preserved_and_a_divergent_remote_is_left_alone() {
         let locked = Repo::new(true);
         run_git(
             &locked.checkout,
@@ -860,39 +823,13 @@ mod tests {
         run_git(&clone, &["commit", "-m", "remote divergence"]).unwrap();
         run_git(&clone, &["push", "origin", "worktree-SH-7"]).unwrap();
 
-        let refusal = clean_candidate(&divergent.checkout, &divergent.lease, false).unwrap_err();
-        assert_eq!(refusal.reason, "unmerged-work");
-        assert!(divergent.worktree.exists());
-    }
-
-    #[test]
-    fn remote_deletion_failure_never_claims_complete_cleanup() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let repo = Repo::new(true);
-        let remote =
-            PathBuf::from(git_text(&repo.checkout, &["remote", "get-url", "origin"]).unwrap());
-        let hook = remote.join("hooks/pre-receive");
-        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-        let mut permissions = fs::metadata(&hook).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&hook, permissions).unwrap();
-
-        let refusal = clean_candidate(&repo.checkout, &repo.lease, false).unwrap_err();
-
-        assert_eq!(refusal.reason, "delete-remote-branch-failed");
-        assert!(!repo.worktree.exists(), "earlier worktree leg did complete");
-        assert!(!ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
-        assert!(
-            !git_text(
-                &repo.checkout,
-                &["ls-remote", "--heads", "origin", "worktree-SH-7"]
-            )
-            .unwrap()
-            .is_empty(),
-            "the report must remain a failure while the remote ref survives"
-        );
-        assert!(is_operational_failure(&refusal.reason));
+        // Nothing on the remote can be lost by a tool that never writes it:
+        // the local worktree and branch are reachable from the default branch
+        // and go; the remote-only commit stays exactly where it was pushed.
+        let removal = clean_candidate(&divergent.checkout, &divergent.lease, false).unwrap();
+        assert!(removal.removed_worktree);
+        assert!(!divergent.worktree.exists());
+        assert!(divergent.workspace.origin_has_branch());
     }
 
     #[test]

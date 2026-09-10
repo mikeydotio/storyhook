@@ -404,7 +404,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     branch: "worktree-SH-7".to_string(),
                     removed_worktree: true,
                     removed_local_branch: true,
-                    removed_remote_branch: true,
                     reclaimed_bytes: 4096,
                 }],
                 skipped: vec![CleanupSkip {
