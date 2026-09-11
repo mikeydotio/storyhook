@@ -136,10 +136,10 @@ A second native Codex council (DevOps, architecture, security) voted 3–0 to:
    SH-682 / AGE-102 retain the retirement PR and their installed-daemon
    portability blocker; this investigation does not resolve that blocker.
 
-The full outcome was commented on SH-681 immediately, before work resumed.
-Its local trail is `.council/sh-681-concurrent-retirement/DECISION.md`; the story
-comment survives worktree reclamation. The earlier scope council trail is
-`.council/sh-681-hook-scope/DECISION.md`, likewise preserved on the story.
+Both full council outcomes were commented on SH-681 before work resumed.
+Run `story show SH-681`: the 2026-09-11 16:31:31Z comment records the scope
+decision, and the 2026-09-11 16:53:49Z comment records the retirement decision.
+These durable records survive worktree reclamation.
 
 Agentics PR #187 is an archive, not a merge recommendation: merging or
 installing it would conflict with retirement PR #186. Publication of the
