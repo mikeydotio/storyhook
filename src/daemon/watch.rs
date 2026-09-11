@@ -21,19 +21,45 @@
 //!   safety net for a write this daemon did not itself serve — a `story tui`
 //!   session on the same store, a second machine, a `sqlite3` prompt.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::daemon::bus::{Change, ChangeBus};
-use crate::store::{ReadOps, Store};
+use crate::store::{EngineRunRecord, ReadOps, Store, StoreError};
 
 /// What the store looked like the last time [`ChangeWatcher::notice`] looked.
+#[derive(Default)]
 struct Baseline {
     /// The store's `PRAGMA data_version` the last time it was read, or `None`
     /// if that read has never once succeeded.
     token: Option<u64>,
+    snapshot: Snapshot,
+}
+
+/// Attribution inputs from one read transaction; lane observations are excluded.
+#[derive(Default)]
+struct Snapshot {
     /// Every project's slug and the highest `global_seq` its event log held.
     seqs: BTreeMap<String, i64>,
+    /// Only live runs, keyed by identity rather than count or timestamp.
+    runs: BTreeMap<String, EngineRunRecord>,
+}
+
+impl Snapshot {
+    fn read<S: Store>(store: &S) -> Result<Self, StoreError> {
+        store.read(|tx| {
+            let mut seqs = BTreeMap::new();
+            for project in tx.projects()? {
+                seqs.insert(project.slug, tx.max_global_seq(project.id)?.get());
+            }
+            let runs = tx
+                .live_engine_runs()?
+                .into_iter()
+                .map(|run| (run.id.clone(), run))
+                .collect();
+            Ok(Self { seqs, runs })
+        })
+    }
 }
 
 /// Diffs the store against its own last-seen state and publishes what moved.
@@ -60,11 +86,20 @@ impl ChangeWatcher {
     /// `a_write_that_landed_before_the_daemon_started_is_not_replayed` pins
     /// the client-side half of the same property.
     pub fn new<S: Store>(store: &S) -> Self {
+        let baseline = match store.change_token().and_then(|token| {
+            Ok(Baseline {
+                token: Some(token),
+                snapshot: Snapshot::read(store)?,
+            })
+        }) {
+            Ok(baseline) => baseline,
+            Err(error) => {
+                eprintln!("storyhook: could not initialize change watcher; will retry: {error}");
+                Baseline::default()
+            }
+        };
         ChangeWatcher {
-            baseline: Arc::new(Mutex::new(Baseline {
-                token: store.change_token().ok(),
-                seqs: project_sequences(store),
-            })),
+            baseline: Arc::new(Mutex::new(baseline)),
         }
     }
 
@@ -73,8 +108,9 @@ impl ChangeWatcher {
     ///
     /// The token is the cheap gate — one pragma, whatever the store holds.
     /// Only when it has moved does this pay for the sharper question: which
-    /// projects' histories grew? Those get a precise [`Change::Project`], and
-    /// a project appearing or disappearing gets [`Change::Catalog`].
+    /// projects' histories or live engine runs changed? Those get a precise
+    /// [`Change::Project`], and a project appearing or disappearing gets
+    /// [`Change::Catalog`].
     ///
     /// **A change it cannot attribute becomes [`Change::Resync`].** Editing a
     /// state definition appends no story event, so nothing's sequence moves
@@ -82,58 +118,68 @@ impl ChangeWatcher {
     /// at a project would be worse than the resync: a dashboard showing
     /// something untrue is the failure this whole feed exists to prevent.
     pub fn notice<S: Store>(&self, store: &S, bus: &ChangeBus) {
-        let Ok(token) = store.change_token() else {
-            return;
-        };
         let mut baseline = self.baseline.lock().unwrap_or_else(PoisonError::into_inner);
+        let token = match store.change_token() {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("storyhook: could not read change watcher token; will retry: {error}");
+                return;
+            }
+        };
         if baseline.token == Some(token) {
             return;
         }
-        baseline.token = Some(token);
-
-        let fresh = project_sequences(store);
+        let fresh = match Snapshot::read(store) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // An unreadable snapshot is not an empty catalog. Keep the
+                // token too: a retry must not depend on another write.
+                eprintln!("storyhook: could not attribute store changes; will retry: {error}");
+                return;
+            }
+        };
         // A change nobody is listening for is still a change: the baseline
         // has to move, or the first client to connect — which has just
         // fetched everything — would be told to refetch it again.
         if bus.subscriber_count() == 0 {
-            baseline.seqs = fresh;
+            *baseline = Baseline {
+                token: Some(token),
+                snapshot: fresh,
+            };
             return;
         }
 
-        let mut attributed = false;
-        for (slug, seq) in &fresh {
-            if baseline.seqs.get(slug) != Some(seq) {
-                bus.publish(Change::Project(slug.clone()));
-                attributed = true;
+        let previous = &baseline.snapshot;
+        let mut projects = BTreeSet::new();
+        for (slug, seq) in &fresh.seqs {
+            if previous.seqs.get(slug) != Some(seq) {
+                projects.insert(slug.clone());
             }
         }
-        if fresh.len() != baseline.seqs.len() {
+        // CLI controls append no story event. Compare run values, not their
+        // second-resolution updated_at; retain the old slug on removal.
+        // Lane observations must remain Resync or reconciliation feeds itself.
+        for (id, run) in fresh.runs.iter().chain(previous.runs.iter()) {
+            if fresh.runs.get(id) != previous.runs.get(id) {
+                projects.insert(run.project_slug.clone());
+            }
+        }
+        let mut attributed = !projects.is_empty();
+        for slug in projects {
+            bus.publish(Change::Project(slug));
+        }
+        if fresh.seqs.len() != previous.seqs.len() {
             bus.publish(Change::Catalog);
             attributed = true;
         }
         if !attributed {
             bus.publish(Change::Resync);
         }
-        baseline.seqs = fresh;
+        *baseline = Baseline {
+            token: Some(token),
+            snapshot: fresh,
+        };
     }
-}
-
-/// Every project's slug and the highest `global_seq` its event log holds.
-///
-/// An unreadable store yields an empty map rather than an error: both of
-/// [`ChangeWatcher`]'s callers are background-safety-net shaped even when one
-/// of them runs at the request boundary — a transient read failure here must
-/// not fail the request that is *answering*, only skip its notification.
-fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
-    store
-        .read(|tx| {
-            let mut seqs: BTreeMap<String, i64> = BTreeMap::new();
-            for project in tx.projects()? {
-                seqs.insert(project.slug, tx.max_global_seq(project.id)?.get());
-            }
-            Ok(seqs)
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
