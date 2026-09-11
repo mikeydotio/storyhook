@@ -496,6 +496,26 @@ halted rather than retrying, and this project's — a reader of a stale comment
 cannot release a newer incident. The id is positional and required for the
 same reason; an acknowledgement retries nothing itself, the next tick does.
 
+**A base that moves during the gate is the story's CONFLICT, never a halt.**
+The story's own PR met the class a second time: a fetch elsewhere in the shared
+repository moved `refs/remotes/origin/dev` while the gate ran, and SH-649's
+post-gate certification check re-resolved that ref, computed a different
+merge, met a conflict, and halted the queue as "certified nothing" over a tree
+it had certified. `verify-pr.sh` now pins `base_commit`/`head_commit` right
+after `refresh_submission_refs` and hands those to the preflight, the gate and
+`require_certified_by_gate`, so the check asks exactly whether the gate
+certified the tree it ran on; a base that has moved is found by `land-pr.sh`
+under the merge lock and answered as the story's own conflict.
+
+**The rule this settles, by operator determination (2026-09-11).** A story
+under verification whose merge conflicts **holds the queue**: the implementer
+is notified, reconciles, and resubmits, and the verifier proceeds with its
+remaining steps for that story — the conflict queue-hold above, which exists so
+a story with conflicting changes is not bypassed by every later story each time
+it comes back up. **Every other story-scoped failure returns the story** to its
+implementer and the verifier proceeds to the next candidate (RED, invalid
+submission). A halt is reserved for the verifier's own inability to run.
+
 **Stated limits.** The receipt seam (an embedded `merge-preflight.sh` reading
 what a merge tree's `gate-receipt.sh` wrote) is the same contract shape one hop
 over and stays tolerated; repeated acknowledgements against an unfixed cause

@@ -1869,7 +1869,17 @@ Standing rules for every wave:
   `InvalidSubmission`. What SH-666 changed is the report — the halt names the
   verifier, says no story is at fault, and prints `story verifier ack <incident-id>`,
   the CLI twin of the dashboard's acknowledge through one shared service function —
-  and it left the policy alone. RCA: `docs/rca/verifier-halt-read-as-a-story-block.md`.
+  and it left the policy alone. **The same class hit once more, one seam over, while this
+  story verified**: a fetch elsewhere in the shared repository moved `origin/dev` during
+  the gate, and SH-649's post-gate certification check re-resolved that ref instead of
+  the commits the gate ran on — a different merge, a real conflict, and a permanent halt
+  reading "certified nothing" over a tree it had certified. `verify-pr.sh` now pins the
+  two commits right after the refs converge and asks every later step about those.
+  **By operator determination (2026-09-11): a conflict on a story under verification
+  holds the queue** while its implementer reconciles, so it cannot be starved by every
+  later story; every other story-scoped failure returns the story and the verifier moves
+  on; a halt is for the verifier's own inability to run. RCA:
+  `docs/rca/verifier-halt-read-as-a-story-block.md`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
