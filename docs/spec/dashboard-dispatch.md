@@ -1080,6 +1080,56 @@ Refers to SH-436/SH-510 (the agent selector and remembered-defaults precedent th
 story extends) and SH-361 (`GET /api/dispatch-log`, the sibling daemon-scoped route
 `GET /api/dispatch-options` is modelled on).
 
+## As built — SH-670 (a degraded catalog slot says why)
+
+Filed as "Claude models and efforts are missing from the dispatch config dialog". They
+were: the live daemon answered `GET /api/dispatch-options` with Codex's full catalog and
+`"claude": {"ok": false, "reason": "could not find plugins/story/bin/story.sh for agent
+`claude` -- install it with `story plugin install claude` or set
+STORYHOOK_DISPATCH_SCRIPT"}`. That is SH-517's degradation working as designed — the
+helper for one provider could not be resolved (Claude Code had no `story@storyhook`
+registered on that machine; Codex did) — and the dashboard rendered it exactly like a
+provider with no options: Model, Effort and Speed holding a bare "Default". The `reason`,
+the one line naming the fix, reached the browser and was discarded. SH-616's Provider row
+could not help: `installed` is a PATH check on the provider *binary*, so Claude looked
+launchable, Submit was enabled, and the dispatch itself then failed with the same
+resolver message (SH-671, which owns the install/resolver side).
+
+**What changed.** Each launcher has an options notice (`#dispatch-options-notice`,
+`#engine-options-notice`; `.modal-error`, `role="status"`, `aria-live="polite"`) that
+`applyProviderOptions` — the one function every path funnels through: modal open,
+availability resolved, provider change, the live Full Auto run's own selector rebuild —
+renders for the provider showing:
+
+- a slot with `ok === false` → `<Label> options unavailable: <reason>. Model, Effort and
+  Speed will use the provider's defaults.` (`reason` verbatim when it is a string; "the
+  helper reported no catalog" otherwise, so a malformed slot never prints `undefined`);
+- a failed fetch → `Provider options could not be loaded: <describeFailure(err)>. …` —
+  `fetchDispatchOptions` keeps the failure in `dispatchOptionsFailure` because the
+  availability path deliberately receives a `null` catalog (unknown, not negative), so
+  this is the only place the reason survives;
+- otherwise empty. Cancel clears it.
+
+**Why a notice and not a gate.** SH-517 chose "degrade the selector, never break
+dispatch" so a stale installed plugin cannot turn dispatch off; SH-616 chose a
+daemon-start PATH snapshot for launchability. A helper missing now may be installed a
+minute later and the 60-second capabilities cache will pick it up, whereas the SH-616
+snapshot needs a daemon restart. Gating Submit on the catalog would have re-decided both
+and made the dialog stricter than the endpoint it fronts. The notice makes the
+degradation honest without changing what is submittable; a launch that genuinely cannot
+resolve its helper still fails loud at `POST …/dispatch` with the same sentence.
+
+**Not changed here.** The helper is provider-agnostic — the Codex-installed copy answers
+`capabilities --agent=claude` correctly — and `src/daemon/verification.rs` already
+resolves `Codex` falling back to `Claude`. A cross-provider fallback in
+`resolve_dispatch_script_from_for_agent` would remove this failure at the root; it is
+SH-671's lane and was left to it.
+
+`e2e/specs/dispatch-options-notice.spec.ts` pins the live payload above (Claude
+unresolvable, Codex intact) on both launchers, a healthy catalog showing nothing, a slot
+with no `reason` string, and a 500 that clears once a later fetch succeeds.
+`tests/web_test.rs` fences the two ids.
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
