@@ -25,6 +25,11 @@ When you notice the user has completed a logical unit of work, suggest running `
 Versioning settings are in `.semver/config.yaml`. Do not modify this file unless the user explicitly asks to change semver settings.
 <!-- semver:end -->
 
+## Scope: adopt or file
+
+**The rubric ships in the binary: run `story help scope-rubric`.** It is not
+restated here, and `tests/scope_rubric.rs` fails if it starts being.
+
 ## Story priority rubric
 
 **The rubric ships in the binary: run `story help priority-rubric`.** That is the
