@@ -292,6 +292,9 @@ pub trait ReadOps {
         project: ProjectId,
     ) -> Result<Option<VerificationIncident>, StoreError>;
 
+    /// Whether this project permits new verifier admissions; defaults to true.
+    fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
+
     /// Every project's verifier incident, ordered by project — for the
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
@@ -538,6 +541,13 @@ pub trait WriteOps: ReadOps {
 
     /// Clears the incident only when its identity still matches `incident_id`.
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError>;
+
+    /// Persists manual verifier admission permission independently of incidents.
+    fn put_verification_enabled(
+        &mut self,
+        project: ProjectId,
+        enabled: bool,
+    ) -> Result<(), StoreError>;
 
     /// Registers a git origin as belonging to this project.
     ///

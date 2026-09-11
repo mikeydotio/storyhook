@@ -176,46 +176,22 @@ pub struct VerificationQueue<'a, S: Store> {
 }
 
 /// Acknowledges exactly the halted verification incident `incident_id` for the
-/// project `ctx` selects, releasing the queue for another attempt (SH-573).
+/// project `ctx` selects, without changing manual admission permission (SH-668).
 ///
-/// One function for both doors — `POST .../verification/ack` and
-/// `story verifier ack <incident-id>` (SH-666) — so their contract cannot
-/// drift (SH-136): the id must name the incident that is *current*, still
+/// Shares transactional validation with `POST .../verification/ack` so
+/// `story verifier ack <incident-id>` (SH-666) cannot drift from it (SH-136):
+/// the id must name the incident that is *current*, still
 /// halted rather than retrying, and this project's. A reader of a stale
 /// comment therefore cannot acknowledge a newer incident by accident, and an
-/// acknowledgement retries nothing by itself: the verifier's next tick does.
+/// acknowledgement retries nothing by itself: the verifier's next tick does,
+/// provided manual admission is enabled.
 pub fn acknowledge_verification_incident<S: Store>(
     ctx: &Ctx<'_, S>,
     incident_id: &str,
 ) -> Result<VerificationIncident, AppError> {
-    let current = ctx
-        .store()
-        .read(|tx| tx.verification_incident(ctx.project()))?;
-    let Some(current) = current else {
-        return Err(AppError::Validation(
-            "no verification incident is active for this project".into(),
-        ));
-    };
-    if !current.halted {
-        return Err(AppError::Validation(
-            "the verification incident is still retrying".into(),
-        ));
-    }
-    if current.incident_id != incident_id {
-        return Err(AppError::Validation(format!(
-            "verification incident `{incident_id}` is stale; current incident is `{}`",
-            current.incident_id
-        )));
-    }
-    // The read above is keyed by this project (SH-648), so an incident of
-    // another project can only ever answer as "stale" here — but the
-    // invariant is stated, not assumed.
-    debug_assert_eq!(current.project, ctx.project());
-    ctx.store().write(|tx| {
-        tx.clear_verification_incident(incident_id)?;
-        Ok(())
-    })?;
-    Ok(current)
+    Ok(ctx.store().write(|tx| {
+        super::verification_control::acknowledge_in_transaction(tx, ctx.project(), incident_id)
+    })?)
 }
 
 impl<'a, S: Store> VerificationQueue<'a, S> {
