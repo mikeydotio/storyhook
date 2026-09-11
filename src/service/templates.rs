@@ -15,8 +15,9 @@
 
 /// The generated Storyhook-owned `AGENTS.md` instructions.
 ///
-/// `prefix` names the project's story-id prefix and `done_state` its first
-/// CLOSED state, so the examples are runnable in the project they describe
+/// `prefix` names the project's story-id prefix and `done_state` its
+/// completion state — the required `done` the verifier writes (SH-652) — so
+/// the examples are runnable in the project they describe
 /// rather than in a hypothetical one. Repository-owned content such as a
 /// roadmap belongs outside this payload's managed sentinel block.
 #[must_use]

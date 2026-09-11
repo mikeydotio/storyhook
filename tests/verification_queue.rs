@@ -13,8 +13,8 @@ use storyhook::daemon::verification_progress::{VerificationStatus, publish_once,
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
+    CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, Priority, StoryCleanupLease, StoryEvent,
+    SuperState, TmuxCleanupTarget, fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -2619,6 +2619,90 @@ fn a_green_attempt_closes_then_reaps_the_story() {
             .text
             .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
     }));
+}
+
+/// The SH-652 straddle: `shipped` is the positionally first CLOSED state and
+/// `abandoned` the alphabetically first, so either wrong search answers
+/// wrong. Green must land in the required `done`, reap must be asked, and the
+/// cleanup pass must find a green-but-unreaped story under this catalog —
+/// the three reads that have to agree for the actuator's `reap-leased`
+/// (which accepts only `done`) to succeed.
+#[test]
+fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
+    let fixture = ServiceFixture::new();
+    let config_ctx = fixture.ctx();
+    let config = ConfigService::new(&config_ctx);
+    config
+        .add_state("shipped", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .add_state("abandoned", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .reorder_states(
+            &[
+                "todo",
+                "in-progress",
+                "verifying",
+                "blocked",
+                "shipped",
+                "abandoned",
+                "done",
+                "closed",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Completed
+    );
+    let story_no = StoryNo::parse_id("SH", &id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, COMPLETION_STATE_SLUG);
+    assert!(row.archived);
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+
+    // The cleanup pass reads the same answer: strip the completion marker the
+    // reap wrote and the story is a cleanup candidate again, found by the
+    // constant and not by whichever CLOSED state sorts first.
+    let ctx = fixture.ctx();
+    let unreaped = submitted(&fixture, "green, reap still owed", Priority::High, PR_TWO);
+    StoryService::new(&ctx)
+        .comment(
+            &unreaped,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `def456` passed `make test` and pull request {PR_TWO} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &unreaped, PR_TWO)
+        .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .expect("a done story with GREEN and no CLEANUP COMPLETE is owed a reap");
+    assert_eq!(candidate.story_id, unreaped);
 }
 
 #[test]
