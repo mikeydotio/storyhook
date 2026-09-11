@@ -424,7 +424,7 @@ case "${1:-}" in
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
-          "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" \
+          "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" "$STATE/pid_reads" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
           2>/dev/null || true
@@ -474,7 +474,11 @@ case "${1:-}" in
       # this background job's fd (SH-231 — verified empirically: an
       # un-redirected background job keeps a command substitution's pipe open
       # until the job itself exits).
-      ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      if [ "${FAKE_TMUX_PANE_CHILD:-}" = 1 ]; then
+        ( python3 -c 'import pathlib,subprocess,sys,time; child=subprocess.Popen(["sleep","30"]); pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)' "$STATE/child_pid" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      else
+        ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      fi
       printf '%s' "$nw_name" > "$STATE/window_name" 2>/dev/null || true
       printf '%s' "$nw_session" > "$STATE/session_name" 2>/dev/null || true
       # The dispatch sentinel a real SessionStart hook would publish, written
@@ -701,7 +705,16 @@ case "${1:-}" in
       *'#{pane_current_command}'*)
         printf '%s\n' "${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
         ;;
-      *'#{pane_pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
+      *'#{pane_pid}'*)
+        dm_pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
+        reads=$(cat "$STATE/pid_reads" 2>/dev/null || printf 0)
+        printf '%s' "$((reads + 1))" > "$STATE/pid_reads"
+        if [ "${FAKE_TMUX_PID_MISMATCH:-}" = 1 ] && [ "$reads" -gt 0 ]; then
+          printf '%s\n' "$((dm_pid + 1))"
+        else
+          printf '%s\n' "$dm_pid"
+        fi
+        ;;
       *'#{socket_path}'*) printf '%s\n' "$STATE/tmux.sock" ;;
       *'#{pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
       *'#{session_name}'*)
@@ -841,9 +854,10 @@ case "${1:-}" in
     fi
     if [ "$del" = true ]; then rm -f "$bfile" 2>/dev/null || true; fi
     ;;
-  kill-window)
+  kill-window|kill-pane)
     printf '%s\n' "$*" >> "$STATE/kill_window_args.log" 2>/dev/null || true
     [ "${FAKE_TMUX_FAIL_KILL_WINDOW:-}" != 1 ] || exit 1
+    [ "${FAKE_TMUX_FAIL_KILL_PANE:-}" != 1 ] || exit 1
     # $FAKE_TMUX_KILL_WINDOW_PROBE=<path> (SH-308) — a test proving `complete`
     # closes a window BEFORE removing its worktree needs more than "kill-window
     # was called somewhere in the run"; the args log alone can't say WHEN. Each
@@ -890,7 +904,14 @@ case "${1:-}" in
     # an empty server — which is a counted zero, not a refusal.
     case " $* " in
       (*'@storyhook-agent'*)
-        [ ! -f "$STATE/agent_windows" ] || cat "$STATE/agent_windows"
+        if [ -f "$STATE/agent_windows" ]; then
+          cat "$STATE/agent_windows"
+        elif [ -f "$STATE/pane_pid" ] && [ -s "$STATE/storyhook_agent" ]; then
+          census_pid=$(cat "$STATE/pane_pid")
+          if kill -0 "$census_pid" 2>/dev/null; then
+            printf '%s:%s\t%s\t0\n' "$(cat "$STATE/session_name")" "$(cat "$STATE/window_name")" "$(cat "$STATE/storyhook_agent")"
+          fi
+        fi
         ;;
       (*)
         [ ! -f "$STATE/windows" ] || cat "$STATE/windows"
