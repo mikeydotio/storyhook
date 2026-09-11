@@ -333,7 +333,9 @@ fn ensure_creates_a_session_only_when_none_exists() {
 fn journal_view_passes_binary_and_store_as_literal_arguments() {
     let fixture = Fixture::new(true);
     let binary = "/path with spaces/story";
-    let store = "/store's directory/$(inert).db";
+    let store_path = fixture.root.path().join("store's $(inert).db");
+    std::fs::write(&store_path, "").unwrap();
+    let store = store_path.to_str().unwrap();
     let output = run_window(&fixture.tmux_dir(), &["logs", binary, store]);
     assert!(output.status.success(), "{output:?}");
     let log = fixture.calls();
