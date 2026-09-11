@@ -182,7 +182,7 @@ fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
         assert!(Instant::now() < deadline, "view never opened: {text}");
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert!(text.contains("storyhook-verifier:verification\n"));
+    assert!(text.contains("=storyhook-verifier:=verification\n"));
     assert!(text.contains(&format!(
         "{}\n--store-path\n{}\ndaemon\nlogs\n--follow\n",
         storyhook_test_support::story_binary().display(),
