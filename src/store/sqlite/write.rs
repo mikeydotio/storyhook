@@ -804,6 +804,20 @@ fn append(
     source: LinkSource,
     provenance: &Provenance,
 ) -> Result<EventSeq, StoreError> {
+    if read::story_resets(conn, project)?.contains_key(&story)
+        && events.iter().any(|event| {
+            !matches!(
+                event.kind.as_str(),
+                "StoryCommentAdded" | "StoryCommentRetracted"
+            )
+        })
+    {
+        return Err(crate::error::AppError::Validation(format!(
+            "story {} has an unfinished reset; retry story reset before changing it",
+            story.get()
+        ))
+        .into());
+    }
     let head = read::head_seq(conn, project, story)?;
     if let ExpectedSeq::Exact(required) = expected
         && required != head
@@ -1500,5 +1514,26 @@ pub(super) fn put_verification_enabled(
     enabled: bool,
 ) -> Result<(), StoreError> {
     sql(conn.execute("INSERT INTO verification_control (project_id, enabled) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled", rusqlite::params![project.get(), enabled]), "writing verifier admission permission")?;
+    Ok(())
+}
+
+/// Writes recovery authority in the same transaction as its story changes.
+pub(super) fn put_story_reset(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    reservation: Option<&str>,
+) -> Result<(), StoreError> {
+    if let Some(value) = reservation {
+        sql(conn.execute("INSERT INTO story_resets(project_id, story_no, reservation) VALUES (?1, ?2, ?3) ON CONFLICT(project_id, story_no) DO UPDATE SET reservation = excluded.reservation", params![project.get(), story.get(), value]), "writing reset reservation")?;
+    } else {
+        sql(
+            conn.execute(
+                "DELETE FROM story_resets WHERE project_id = ?1 AND story_no = ?2",
+                params![project.get(), story.get()],
+            ),
+            "clearing reset reservation",
+        )?;
+    }
     Ok(())
 }

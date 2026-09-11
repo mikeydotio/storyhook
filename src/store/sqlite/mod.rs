@@ -846,6 +846,13 @@ macro_rules! impl_read_ops {
                 read::verification_incident(&self.conn, project)
             }
 
+            fn story_resets(
+                &self,
+                project: ProjectId,
+            ) -> Result<std::collections::BTreeMap<StoryNo, String>, StoreError> {
+                read::story_resets(&self.conn, project)
+            }
+
             fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
                 read::verification_enabled(&self.conn, project)
             }
@@ -1047,6 +1054,15 @@ impl WriteOps for SqliteWriteTx<'_> {
         incident: &VerificationIncident,
     ) -> Result<(), StoreError> {
         write::put_verification_incident(&self.conn, incident)
+    }
+
+    fn put_story_reset(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        reservation: Option<&str>,
+    ) -> Result<(), StoreError> {
+        write::put_story_reset(&self.conn, project, story, reservation)
     }
 
     fn put_verification_enabled(

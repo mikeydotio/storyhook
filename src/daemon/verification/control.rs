@@ -116,14 +116,48 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> Result<Option<VerificationGuard>, AppError> {
+        let workspace = if !candidate.checkout.as_os_str().is_empty()
+            && candidate.checkout.join(".git").exists()
+        {
+            Some(crate::service::workspace_lock::WorkspaceLock::acquire(
+                &candidate.checkout,
+                &candidate.story_id,
+            )?)
+        } else {
+            None
+        };
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let allowed = store.read(|tx| {
-            Ok(tx.verification_enabled(candidate.project)?
+            let project = tx
+                .project(candidate.project)?
+                .ok_or_else(|| AppError::NotFound("verification project disappeared".into()))?;
+            let number = crate::store::StoryNo::parse_id(&project.prefix, &candidate.story_id)?;
+            Ok(!tx.story_resets(candidate.project)?.contains_key(&number)
+                && tx.verification_enabled(candidate.project)?
                 && !tx
                     .verification_incident(candidate.project)?
                     .is_some_and(|incident| incident.halted))
         })?;
-        Ok(allowed.then(|| self.acquire_locked(&mut slots, candidate, started_at)))
+        Ok(allowed.then(|| {
+            let guard = self.acquire_locked(&mut slots, candidate, started_at);
+            slots
+                .get_mut(&candidate.project)
+                .expect("just acquired")
+                .workspace = workspace.map(Arc::new);
+            guard
+        }))
+    }
+
+    /// Shares this attempt’s workspace ownership with its bounded subprocesses.
+    pub(super) fn workspace_for(
+        &self,
+        project: ProjectId,
+    ) -> Option<Arc<crate::service::workspace_lock::WorkspaceLock>> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&project)
+            .and_then(|slot| slot.workspace.clone())
     }
 
     pub(super) fn cancellation_for(&self, project: ProjectId) -> Cancellation {

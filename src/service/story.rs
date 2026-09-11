@@ -1409,7 +1409,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
     /// Fires the hooks a state change owes: always `state_change`, plus
     /// `close` when the story ended up closed.
-    fn fire_transition_hooks(
+    pub(super) fn fire_transition_hooks(
         &self,
         id: &str,
         title: &str,

@@ -2028,6 +2028,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
+<div class="backdrop" id="reset-modal-backdrop" data-overlay="reset-modal" hidden></div>
+<div class="modal" id="reset-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="reset-modal-header">
+  <div class="modal-header" id="reset-modal-header">Reset story</div>
+  <div class="modal-body">
+    <p id="reset-modal-summary"></p>
+    <p>The story returns to Todo. Its worktree and tmux window are removed. Branches, commits, and story history are preserved.</p>
+    <label><input type="checkbox" id="reset-force" aria-describedby="reset-force-warning"> Force</label>
+    <p id="reset-force-warning">Force permanently discards uncommitted worktree changes and removes locked worktrees.</p>
+    <div class="modal-error" id="reset-modal-error" role="alert"></div>
+    <div id="reset-modal-progress" role="status"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="reset-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-danger-solid" id="reset-modal-submit">Reset story</button>
+  </div>
+</div>
+
 <div class="backdrop" id="close-modal-backdrop" data-overlay="close-modal" hidden></div>
 <div class="modal" id="close-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="close-modal-header">
   <div class="modal-header" id="close-modal-header">Drop story</div>
@@ -6655,6 +6672,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           ? "A dispatch is already in progress for this story"
           : null,
         onSelect: function() { openDispatchModal(st.id, invoker); }
+      },
+      dispatchHidden ? null : {
+        label: "Reset", danger: true,
+        disabled: dispatchInFlight || !!state.pending[st.id],
+        onSelect: function() { openResetModal(st.id, st.title); }
       },
       { separator: true },
       (function() {
@@ -15051,6 +15073,61 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** The story being deliberately closed, and the claim that prevents a held
    * Enter or double press from issuing several state changes. Kept separate for
    * the same subject-vs-request reason the delete modal documents below. */
+  var resetModalTarget = null;
+  var resetModalInFlight = false;
+  var resetModalOpenFrame = null;
+
+  function setResetModalInFlight(value) {
+    resetModalInFlight = value;
+    ["reset-modal-submit", "reset-modal-cancel", "reset-force"].forEach(function(id) { $(id).disabled = value; });
+    $("reset-modal-progress").textContent = value ? "Resetting workspace…" : "";
+  }
+
+  /** Pin the project as well as the story: navigation cannot retarget cleanup. */
+  function openResetModal(id, title) {
+    resetModalTarget = { id: id, repo: state.repoId };
+    setResetModalInFlight(false);
+    $("reset-force").checked = false;
+    $("reset-modal-summary").textContent = "Reset " + id + (title ? " — " + title : "") + "?";
+    $("reset-modal-error").textContent = "";
+    showBackdrop("reset-modal-backdrop");
+    activateOverlay("reset-modal", "reset-modal-cancel");
+    resetModalOpenFrame = requestAnimationFrame(function() {
+      resetModalOpenFrame = null;
+      if (overlayStack[overlayStack.length - 1] !== "reset-modal") return;
+      $("reset-modal").classList.add("open");
+      $("reset-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeResetModal() {
+    if (resetModalInFlight) return;
+    if (resetModalOpenFrame !== null) cancelAnimationFrame(resetModalOpenFrame);
+    resetModalOpenFrame = null;
+    resetModalTarget = null;
+    hideBackdrop("reset-modal-backdrop");
+    $("reset-modal").classList.remove("open");
+    $("reset-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("reset-modal");
+  }
+
+  function submitResetStory() {
+    if (resetModalInFlight || !resetModalTarget) return;
+    var target = resetModalTarget;
+    setResetModalInFlight(true);
+    api("POST", repoApiBase(target.repo) + "/story/" + encodeURIComponent(target.id) + "/reset", { force: $("reset-force").checked })
+      .then(function(resp) {
+        setResetModalInFlight(false);
+        closeResetModal();
+        toast(target.id + " reset to Todo", "success");
+        if (state.repoId === target.repo) handleMutationSuccess(resp);
+      })
+      .catch(function(err) {
+        setResetModalInFlight(false);
+        $("reset-modal-error").textContent = describeMutationFailure(err);
+      });
+  }
+
   var closeModalStoryId = null;
   var closeModalInFlight = false;
   var closeModalOpenFrame = null;
@@ -15417,6 +15494,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // an allowlist entry reading "this one is correct by accident", which is a
     // note that rots.
     bindEnterSubmit($("drop-blocked-reason-input"), submitDropBlockedReasonModal);
+    $("reset-modal-cancel").addEventListener("click", closeResetModal);
+    $("reset-modal-backdrop").addEventListener("click", closeResetModal);
+    $("reset-modal-submit").addEventListener("click", submitResetStory);
     $("close-modal-cancel").addEventListener("click", closeCloseModal);
     $("close-modal-backdrop").addEventListener("click", closeCloseModal);
     $("close-modal-submit").addEventListener("click", submitCloseStory);
@@ -15491,6 +15571,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Close can be outstanding over the story drawer. It is the topmost
         // surface, so Escape belongs to it alone; while its uncancelable request
         // is in flight `closeCloseModal()` deliberately keeps it open.
+        if (overlayStack[overlayStack.length - 1] === "reset-modal") {
+          closeResetModal();
+          return;
+        }
         if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
           return;
