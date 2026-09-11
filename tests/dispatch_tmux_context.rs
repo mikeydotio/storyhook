@@ -385,7 +385,9 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             created_at: "2026-01-01T00:00:00Z".into(),
             verifying_since: None,
             verifying_generation: None,
-            checkout: env.home().to_path_buf(),
+            checkout: std::env::var_os("STORY_CALLBACK_CHECKOUT")
+                .expect("callback checkout")
+                .into(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),
         };
@@ -419,10 +421,28 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
     let unrelated_socket = socket_dir.join("unrelated");
     let _default_server = server(&default_socket);
     let _unrelated_server = server(&unrelated_socket);
+    let checkout = scratch.path().join("repo");
+    std::fs::create_dir(&checkout).expect("fixture checkout");
+    let mut git = storyhook::env::git_env::command(&checkout);
+    git.args(["init", "-q"]);
+    let output = ChildGuard::spawn_with_output(&mut git)
+        .expect("fixture git init")
+        .wait_with_output_within(STORY_COMMAND_DEADLINE, || "git init stalled".into());
+    assert!(output.status.success(), "fixture git init failed");
+    let identity =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib/agent_identity.py");
     for socket in [&default_socket, &unrelated_socket] {
         tmux(
             socket,
-            &["new-window", "-d", "-n", "SH-CALLBACK-1", "/bin/cat"],
+            &[
+                "new-window",
+                "-d",
+                "-n",
+                "SH-CALLBACK-1",
+                "-c",
+                checkout.to_str().unwrap(),
+                "/bin/cat",
+            ],
         );
         tmux(
             socket,
@@ -431,6 +451,28 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
         tmux(
             socket,
             &["set-option", "-w", "-t", "@1", "automatic-rename", "off"],
+        );
+        let pane = tmux(socket, &["display-message", "-p", "-t", "@1", "#{pane_id}"]);
+        let pid = tmux(
+            socket,
+            &["display-message", "-p", "-t", "@1", "#{pane_pid}"],
+        );
+        let mut register = Command::new("python3");
+        register
+            .arg(&identity)
+            .args(["register", "fixture", "SH-CALLBACK-1", "SH-CALLBACK-1"])
+            .arg(&checkout)
+            .args([pane.trim(), pid.trim(), "codex"])
+            .current_dir(&checkout)
+            .env("TMUX", format!("{},0,0", socket.display()));
+        let output = ChildGuard::spawn_with_output(&mut register)
+            .expect("fixture agent registration")
+            .wait_with_output_within(STORY_COMMAND_DEADLINE, || "registration stalled".into());
+        assert!(
+            output.status.success(),
+            "fixture registration: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     let inherited_tmux = tmux(
@@ -477,6 +519,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             ])
             .env(RESULT_ENV, &result_path)
             .env("STORY_CALLBACK_HELPER", selected_helper)
+            .env("STORY_CALLBACK_CHECKOUT", &checkout)
             .env("STORY_CALLBACK_MESSAGE", &marker)
             .env("STORY_CALLBACK_INHERITED_TMUX", inherited_tmux.trim())
             .env("STORY_CALLBACK_INHERITED_PANE", inherited_pane.trim())

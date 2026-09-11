@@ -10,6 +10,111 @@ use storyhook_test_support::ServiceFixture;
 const PR: &str = "https://github.com/acme/widgets/pull/1";
 
 #[test]
+fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
+    struct EvidenceActuator(LandingOutcome);
+    impl VerificationActuator for EvidenceActuator {
+        fn submit(
+            &self,
+            _: &VerificationCandidate,
+        ) -> Result<
+            storyhook::domain::SubmittedPullRequest,
+            storyhook::daemon::verification::SubmissionFailure,
+        > {
+            panic!("linked fixture does not submit")
+        }
+        fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+            let certificate = certification();
+            VerificationOutcome::Certified {
+                head: certificate.head,
+                tree: certificate.tree,
+                gate: certificate.gate,
+                detail: "Don't utilize this gate output as authored prose.".into(),
+            }
+        }
+        fn land(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
+            self.0.clone()
+        }
+        fn recover_landing(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
+            self.0.clone()
+        }
+        fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {
+            panic!("landing evidence must not return work to an agent")
+        }
+        fn redispatch(&self, _: &VerificationCandidate, _: &ResumePlan) -> Result<(), AppError> {
+            panic!("landing evidence must not redispatch work")
+        }
+        fn reap(&self, _: &VerificationCandidate) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    let evidence = "Don't utilize this diagnostic as authored prose.\n```raw\nIt's external.\n```";
+    for outcome in [
+        LandingOutcome::Merged {
+            detail: evidence.into(),
+        },
+        LandingOutcome::NotAttempted {
+            detail: evidence.into(),
+        },
+        LandingOutcome::Uncertain {
+            detail: evidence.into(),
+        },
+    ] {
+        let f = ServiceFixture::new();
+        let id = submitted(&f);
+        let pending = matches!(outcome, LandingOutcome::Uncertain { .. });
+        let merged = matches!(outcome, LandingOutcome::Merged { .. });
+        let actuator = EvidenceActuator(outcome);
+        assert_eq!(
+            tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+            if merged {
+                TickResult::Completed
+            } else {
+                TickResult::RetryLater
+            }
+        );
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), storyhook::store::StoryNo::parse_id("SH", &id)?))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.snapshot.state,
+            if merged { "done" } else { "verifying" }
+        );
+        assert!(
+            row.snapshot.comments.iter().any(|c| c
+                .text
+                .lines()
+                .map(|line| line.strip_prefix("> ").unwrap_or(line))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .contains(evidence)),
+            "quoted external evidence must preserve its line content"
+        );
+        assert_eq!(
+            f.store().read(|tx| tx.landing_intents()).unwrap().len(),
+            usize::from(pending)
+        );
+        if pending {
+            let recovery = EvidenceActuator(LandingOutcome::Merged {
+                detail: evidence.into(),
+            });
+            assert_eq!(
+                tick_with(f.store(), f.env(), &recovery, f.project()).unwrap(),
+                TickResult::Completed
+            );
+            assert!(
+                f.store()
+                    .read(|tx| tx.landing_intents())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
 fn pending_landing_recovery_respects_project_and_stop_permission() {
     use storyhook::daemon::verification::VerificationActivity;
     use storyhook::service::verification_control::VerificationAction;

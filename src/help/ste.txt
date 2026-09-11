@@ -1,0 +1,32 @@
+STE checks for story text
+
+Write comments, titles, and descriptions in ASD-STE100 Simplified Technical
+English. Checks apply to every caller, including humans and generated text.
+An optional actor label does not change the policy.
+
+The checker rejects:
+  sentence-length  More than 20 words in one sentence or title fragment.
+  contraction      Short forms such as "don't". Write the words in full.
+  vocabulary       utilize/commence and their regular verb forms.
+                   Use use/start with the correct verb form.
+
+The 20-word limit is StoryHook policy for mixed text. STE permits 25 words
+in descriptive sentences. The supported vocabulary list is not a dictionary.
+Possible passive voice produces advice; it does not reject a write.
+
+Markdown paragraphs, headings, list items, and table cells have separate
+sentence counts. Soft and hard line breaks do not reset the count.
+Code blocks and block quotes preserve literal evidence. Inline code counts
+as one technical unit. Links, paths, and identifiers remain usable.
+Do not put ordinary prose in code or evidence blocks to avoid checks.
+
+On failure, the command saves no changes and exits with code 2. Each finding
+names the field, rule, source location, and repair action. JSON errors carry
+kind:"text_lint" and a findings array. Repair the text and submit it again.
+Agents must fix errors, preserve the meaning, and retry the failed command.
+
+Existing history remains readable. Restoration and replay preserve old text.
+Passing proves only that these checks passed. Authors remain responsible for
+full STE compliance, including meaning, grammar, and technical terminology.
+
+Standard: https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf

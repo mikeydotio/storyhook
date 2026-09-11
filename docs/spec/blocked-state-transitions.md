@@ -32,7 +32,8 @@ events, comments, PR status updates, or read-model changes may survive refusal.
 Pure `fold_story` reconstructs accepted history without new admission checks.
 Raw import/migration and deterministic restore defaults are replay/repair paths.
 Catalog occupant migration and integrity repair have explicit maintenance entry
-points. Live undo is compensating input and obeys admission. Computed epic
+points. Live undo may restore historical text without new authoring checks,
+but its compensating transitions still obey blocker admission. Computed epic
 rollups remain projections; effective epic states resolve dependency blockers.
 An architectural regression prevents new live callers bypassing admission.
 
@@ -64,6 +65,9 @@ request permits release; timeout, connection loss, or a currently OPEN PR do not
 prove that an earlier request cannot still complete. Ambiguous intents remain
 visible and fenced, without automatic expiry or starvation of unrelated work.
 Independent actors merging directly on GitHub are outside this local guarantee.
+
+Completion, retry, and pending comments quote external gate and landing evidence
+verbatim. Authoring checks must not prevent recording an external outcome.
 
 The three-seat council selected durable intent by ranked-choice majority (2–1).
 A transient SQLite lock releases on process death and cannot fence a remote

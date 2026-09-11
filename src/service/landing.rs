@@ -109,11 +109,12 @@ impl<S: Store> VerificationQueue<'_, S> {
             let states = tx.state_map(intent.project)?;
             let now = ctx.now();
             let comment = format!(
-                "{} merge tree `{}` passed `{}` and pull request {} landed. {detail}",
+                "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
                 super::VERIFICATION_GREEN_PREFIX,
                 intent.certification.tree,
                 intent.certification.gate,
-                intent.pull_request
+                intent.pull_request,
+                crate::text_lint::quote_evidence(detail)
             );
             if let Some(incident) = tx.verification_incident(intent.project)?
                 && incident.project == intent.project

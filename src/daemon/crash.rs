@@ -830,7 +830,11 @@ fn title_for(record: &CrashRecord) -> String {
                 .first()
                 .map(|panic| panic.message.as_str())
                 .unwrap_or("unknown panic");
-            format!("Daemon panic: {}", truncate_title(message))
+            let excerpt = truncate_title(message);
+            // A delimiter longer than any captured run cannot end inside the evidence.
+            let width = excerpt.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1;
+            let delimiter = "`".repeat(width);
+            format!("Daemon panic: {delimiter} {excerpt} {delimiter}")
         }
         CrashClassification::FatalSignal(signal) => format!("Daemon crash: fatal signal {signal}"),
         CrashClassification::UncleanExit => "Daemon crash: unclean exit".to_string(),
@@ -854,18 +858,19 @@ fn truncate_title(message: &str) -> String {
 /// preserved log.
 fn describe_crash(record: &CrashRecord) -> String {
     let mut body = String::new();
+    let mut evidence = String::new();
     match &record.classification {
         CrashClassification::Panicked => {
             body.push_str("The daemon panicked and did not exit cleanly.\n\n");
             if let Some(panic) = record.panics.first() {
-                body.push_str(&format!("**Message:** {}\n", panic.message));
+                evidence.push_str(&format!("**Message:**\n\n{}\n\n", panic.message));
                 if let Some(location) = &panic.location {
-                    body.push_str(&format!(
+                    evidence.push_str(&format!(
                         "**Location:** {}:{}:{}\n",
                         location.file, location.line, location.column
                     ));
                 }
-                body.push_str(&format!("**Thread:** {}\n", panic.thread));
+                evidence.push_str(&format!("**Thread:** {}\n", panic.thread));
             }
         }
         CrashClassification::FatalSignal(signal) => {
@@ -879,14 +884,14 @@ fn describe_crash(record: &CrashRecord) -> String {
         }
     }
     if let Some(daemon) = &record.daemon {
-        body.push_str(&format!(
+        evidence.push_str(&format!(
             "**Version:** {}\n**Pid:** {}\n**Started:** {}\n",
             daemon.version, daemon.pid, daemon.started_at
         ));
     }
-    body.push_str(&format!("**Detected:** {}\n", record.detected_at));
+    evidence.push_str(&format!("**Detected:** {}\n", record.detected_at));
     if !record.inflight.is_empty() {
-        body.push_str(&format!(
+        evidence.push_str(&format!(
             "\n**In flight at the time ({}):**\n",
             record.inflight.len()
         ));
@@ -896,20 +901,20 @@ fn describe_crash(record: &CrashRecord) -> String {
                 .as_deref()
                 .map(|p| format!(" on `{p}`"))
                 .unwrap_or_default();
-            body.push_str(&format!("- `{}`{project}\n", request.command));
+            evidence.push_str(&format!("- `{}`{project}\n", request.command));
         }
     }
     if let Some(log_path) = &record.log_path {
-        body.push_str(&format!(
+        evidence.push_str(&format!(
             "\n**Preserved log:** `{}`\n\n",
             log_path.display()
         ));
         if let Ok(raw) = std::fs::read_to_string(log_path) {
-            body.push_str("```\n");
-            body.push_str(&bounded_excerpt(&redact(&raw), MAX_LOG_EXCERPT_BYTES));
-            body.push_str("\n```\n");
+            evidence.push_str(&bounded_excerpt(&redact(&raw), MAX_LOG_EXCERPT_BYTES));
+            evidence.push('\n');
         }
     }
+    body.push_str(&crate::text_lint::quote_evidence(&evidence));
     body
 }
 
@@ -1346,8 +1351,38 @@ mod tests {
         let record = panicked_record("index out of bounds: the len is 3", "2.1.1");
         assert_eq!(
             title_for(&record),
-            "Daemon panic: index out of bounds: the len is 3"
+            "Daemon panic: ` index out of bounds: the len is 3 `"
         );
+    }
+
+    #[test]
+    fn captured_crash_evidence_does_not_fail_authoring_checks() {
+        use std::num::NonZeroUsize;
+        use ste_lint::{Format, Options, Severity};
+
+        for message in [
+            "Don't utilize `this`.",
+            "`Don't` utilize ``this``.",
+            "Don't stop.\n```\nCommence work.",
+            "",
+        ] {
+            let record = panicked_record(message, "2.1.1");
+            let body = describe_crash(&record);
+            assert!(body.contains(&crate::text_lint::quote_evidence(message)));
+            for text in [title_for(&record), body] {
+                let findings = ste_lint::lint(
+                    &text,
+                    Options {
+                        format: Format::Markdown,
+                        sentence_limit: NonZeroUsize::new(20).unwrap(),
+                    },
+                );
+                assert!(
+                    findings.iter().all(|f| f.severity != Severity::Error),
+                    "{text}: {findings:?}"
+                );
+            }
+        }
     }
 
     #[test]

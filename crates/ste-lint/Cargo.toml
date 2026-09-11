@@ -1,0 +1,15 @@
+[package]
+name = "ste-lint"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Deterministic writing checks with source diagnostics for technical English"
+license = "MIT"
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }
+regex = "1.12.3"
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
