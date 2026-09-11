@@ -1371,8 +1371,9 @@ where
         match outcome {
             VerificationOutcome::Merged { tree, detail, gate } => {
                 let green_comment = format!(
-                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
-                    pull_request.url
+                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed.\n\n{}",
+                    pull_request.url,
+                    crate::text_lint::quote_evidence(&detail)
                 );
                 if matches!(
                     queue.record_generation_merged(
@@ -1412,8 +1413,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history. Run new and impacted tests. Commit the work. Move {} back to verifying. The verifier pushes.\n\n{}",
+                        candidate.story_id,
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                 )?;
                 let remediation_started = match remediation_started {
@@ -1456,8 +1458,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; the verifier pushes and links the pull request.",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — repair the submission from the story's worktree. Move {} back to verifying. The verifier pushes and links the pull request.\n\n{}",
+                        candidate.story_id,
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                 )?;
                 if matches!(result, GenerationWrite::Applied(_)) {
@@ -1476,8 +1479,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree. Run new and impacted tests. Commit the work. Move {} back to verifying. The verifier pushes.\n\n{}",
+                        candidate.story_id,
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                 )?;
                 if matches!(result, GenerationWrite::Applied(_)) {
@@ -1506,10 +1510,10 @@ where
 /// The diagnosis for a story that entered `verifying` with no lease (SH-647):
 /// the verifier has no branch to push, and the agent's own charter names the
 /// one thing that fixes it.
-const UNLEASED_SUBMISSION: &str = "verification could not submit this story: it entered \
-`verifying` from outside its dispatched worktree, so no cleanup lease names a branch to push \
-and no pull request is linked. From inside the story's worktree, commit the work and run \
-`story move <id> verifying` again; the verifier pushes the branch and opens the pull request.";
+const UNLEASED_SUBMISSION: &str = "Verification could not submit this story. It entered \
+`verifying` from outside its dispatched worktree. No cleanup lease names a branch to push. \
+No pull request is linked. From inside the story's worktree, commit the work. Run \
+`story move <id> verifying` again. The verifier pushes the branch and opens the pull request.";
 
 /// Whether this tick owes the candidate a submission (SH-647): it is leased
 /// — so a branch is known — and its linked pull request is either absent or
@@ -1556,9 +1560,9 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
             {
                 {
                     let diagnosis = format!(
-                        "verification found pull request {} open for this story's branch, but the \
-                         story links {} instead; unlink one (`story unlink-pr`) or close it, then \
-                         run `story move {} verifying` again",
+                        "Verification found pull request {} open for this story's branch. The \
+                         story links {} instead. Unlink one (`story unlink-pr`) or close it. Then \
+                         run `story move {} verifying` again.",
                         pull_request.url, linked.url, candidate.story_id
                     );
                     return Ok(
@@ -1767,7 +1771,8 @@ fn record_cleanup_required(
         ctx,
         candidate,
         &format!(
-            "CENTRAL VERIFICATION CLEANUP REQUIRED — the PR landed and the story is done, but automatic reap failed: {error}"
+            "CENTRAL VERIFICATION CLEANUP REQUIRED — the PR landed and the story is done. Automatic reap failed.\n\n{}",
+            crate::text_lint::quote_evidence(&error.to_string())
         ),
     )
 }
@@ -1813,8 +1818,9 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
         ctx,
         candidate,
         &format!(
-            "{VERIFICATION_RESUME_PREFIX} {absent}. Re-dispatching {} into its own window and worktree with the resume clause.",
-            candidate.story_id
+            "{VERIFICATION_RESUME_PREFIX} re-dispatching {} into its own window and worktree with the resume clause.\n\n{}",
+            candidate.story_id,
+            crate::text_lint::quote_evidence(&absent)
         ),
     )?;
     let plan = resume_plan(ctx.store(), candidate)?;
@@ -1848,14 +1854,16 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
             ctx,
             candidate,
             &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards: {detail} ({reason}). It stands as the comment above this one."
+                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
+                crate::text_lint::quote_evidence(&format!("{detail} ({reason})"))
             ),
         )?,
         Err(error) => comment_once(
             ctx,
             candidate,
             &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards: {error}. It stands as the comment above this one."
+                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
+                crate::text_lint::quote_evidence(&error.to_string())
             ),
         )?,
     }

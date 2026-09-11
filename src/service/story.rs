@@ -176,8 +176,8 @@ pub fn default_unclaim_comment(outcome: &UnclaimOutcome) -> String {
             outcome.from, outcome.restored_to
         ),
         Some(fallback) => format!(
-            "Unclaimed from {}; restored to {} rather than the state it was claimed from, \
-             because {}",
+            "Unclaimed from {}; restored to {} rather than the state it was claimed from. \
+             Reason: {}.",
             outcome.from,
             outcome.restored_to,
             fallback.explain(&outcome.from)

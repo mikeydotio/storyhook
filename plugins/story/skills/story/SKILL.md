@@ -53,6 +53,11 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 
 ## List → Pick
 
+Write comments, story titles, and descriptions in ASD-STE100. Read `story help ste`
+for the supported checks. If a write fails with `text_lint`, use its field, rule,
+and repair guidance to revise the text. Preserve the meaning, then retry the failed
+command. Do not put ordinary prose in code blocks to avoid a check.
+
 1. Run `bash "<story-helper>" list`. If `ok` is `false`, show `display` and stop.
 2. If `count` is `0`, show `display` and stop without asking a question.
 3. Otherwise show the ready stories in their returned order and ask exactly one concise

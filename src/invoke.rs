@@ -379,7 +379,10 @@ pub fn dispatch<S: Store>(
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
-            ctx.story_view(&id)
+            Ok(crate::text_lint::with_advice(
+                ctx.story_view(&id)?,
+                &[("comment", &text)],
+            ))
         }
         Invocation::Assign { id, member } => {
             StoryService::new(ctx).assign(&id, &member)?;

@@ -2334,6 +2334,7 @@ dependencies = [
  "serde_json",
  "serde_yml",
  "sha2",
+ "ste-lint",
  "storyhook-test-support",
  "tempfile",
  "thiserror",

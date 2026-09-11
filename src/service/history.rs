@@ -33,7 +33,7 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ReadOps, Store, StoryNo, partition_known};
 
-use super::{Ctx, append_and_fold, project_prefix, resolve_story};
+use super::{Ctx, append_and_fold, append_restored_and_fold, project_prefix, resolve_story};
 
 /// Restores a story to the state a given event log folds to, by appending the
 /// events that get it there.
@@ -90,7 +90,7 @@ pub fn restore<S: Store>(
 
     let cleanup = ctx.store().write(|tx| {
         if !story_events.is_empty() {
-            append_and_fold(
+            append_restored_and_fold(
                 tx,
                 project,
                 story_no,
