@@ -112,6 +112,45 @@ of the dashboard's acknowledge, sharing one service function
 the halt comment can act where they read it — and a stale comment cannot
 release a newer incident.
 
+## Adopted: the certification check halted the queue on a moved base
+
+While this story's own PR was under verification, the verifier halted again —
+a second incident of the same class, one seam over, adopted into SH-666 on the
+operator's determination (2026-09-11).
+
+| When (UTC) | Fact |
+|---|---|
+| 02:40:35 | PR #763's verification started against `dev` at `12741cf77`; merge tree `f85a0c64…` computed; gate started. |
+| 02:52:10–45 | A `/story do` for SH-670 created its worktree in the shared repository; its fetch moved `refs/remotes/origin/dev` to `7dec28cec` (SH-652 and SH-650 had landed, both touching `CLAUDE.md` and `verification-workflow.md`). Reflog entry at 02:52:45. |
+| ~03:01 | Gate green. A `tier gate` receipt for `f85a0c64…` exists in the receipt store: the tree WAS certified. |
+| 03:01:34 | `require_certified_by_gate "$tree" "$base_ref" "$head_ref"` re-ran `merge-preflight.sh` on the mutable ref, which now resolved to the new tip: a different merge, a real conflict, a nonzero exit, and the message "exited 0 … but certified nothing", disposition permanent. The whole queue halted on incident `2:29325`. |
+
+Two defects in `scripts/verify-pr.sh`. The check SH-649 added between the gate
+and landing was handed `$base_ref`, not the commit the gate ran against —
+SH-584's correction ("resolve both transaction refs to commit ids before
+checkout, preflight, …") missing from the one call added after it. And a base
+that moved was classified as a permanent verifier failure, when it is the most
+story-scoped outcome there is.
+
+**The required behaviour, by operator determination (2026-09-11):** a story
+under verification whose merge conflicts holds the queue while its implementer
+is notified, reconciles, and reports back; the verifier then proceeds with its
+remaining steps for that story. Every other story-scoped failure returns the
+story to its implementer and the verifier proceeds to the next candidate.
+Holding on a conflict is what prevents starvation — otherwise a story with
+conflicting changes is bypassed by every later story each time it comes back
+up. That is the mechanism `Conflict` already has (`return_for_repair`, the
+notify, `wait_for_reconciled_candidate`; SH-521, SH-650), and RED/invalid
+already return without holding. The fix therefore reclassifies nothing new: it
+makes the moved-base case *reach* `Conflict`. The transaction is pinned to two
+commits right after the refs converge, and the preflight, the gate and the
+certification check all speak about those parents; landing then refreshes the
+base under the merge lock and answers CONFLICT (or a fresh tree to verify).
+`tests/merge_gate.rs::a_base_that_moves_during_the_gate_is_a_conflict_for_the_story_never_a_halt`
+constructs the incident — a certifying gate that moves both the origin branch
+and the remote-tracking ref before returning — and was red with the incident's
+message verbatim before the fix.
+
 ## Stated limits
 
 - The receipt seam survives SH-654: an embedded `merge-preflight.sh` reads
