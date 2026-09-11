@@ -41,7 +41,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 | `claim <id>` or `claim --next` | Run **Claim** below. One of the two is required; a bare `claim` is refused rather than resolved to `--next`. |
 | `unclaim <id>` | Run **Release** below. Hands the claim back and closes the story's tmux window. Nothing on disk is touched. |
 | `reset <id> [--force]` | Run **Release** below. Everything `unclaim` does, then deletes the worktree and the branch. |
-| `context [--full]` | Load `<plugin-root>/skills/story-context/SKILL.md` and pass the flag through. |
+| `context [--full] [--story <id>]` | Load `<plugin-root>/skills/story-context/SKILL.md` and pass the flag through. |
 | `setup` | Load `<plugin-root>/skills/story-setup/SKILL.md`. |
 | `sync [--since <duration>]` | Load `<plugin-root>/skills/story-sync/SKILL.md` and pass the flag through. |
 | `handoff [--since <duration>]` | Load `<plugin-root>/skills/story-handoff/SKILL.md` and pass the flag through. |
@@ -95,7 +95,10 @@ so wrapping it would only add a second JSON shape to keep in step. This is the s
 
 Show that rendering. Then summarize what the story is about and what needs to be done. If the
 story has child stories, list them. If it has dependencies that are already done, note what was
-completed. Proceed with the implementation work from there.
+completed. Before beginning or resuming implementation, run `story help obviation-review`
+and `bash "<story-helper>" context --story <id>` for the claimed story. Follow the review
+procedure against every candidate; a likely-obviated story stays open and blocked for
+human review. A dry-run claim does not authorize state or relationship changes.
 
 This synthesis is yours to write. The claim answers with facts; what they *mean* is judgment,
 and no command can assert it for you.
