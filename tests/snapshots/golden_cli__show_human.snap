@@ -78,7 +78,7 @@ flagged: no
 
 $ story show SH-13
 SH-13 Old approach: file-per-story
-state: closed (CLOSED)
+state: dropped (CLOSED)
 draft: no
 assignee: -
 priority: low

@@ -131,7 +131,8 @@ assert_contains "$(jqf "$out" .display)" "worktree remains" \
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$survivor") \
   || fail_test "rollback-survivor: fixture did not leave the branch it reports"
 state=$(cd "$repo" && story show "$survivor" --json | jq -r '.story.story.state')
-assert_eq "$state" "todo" \
-  "rollback-survivor: claim rollback is independent from failed Git cleanup"
+assert_eq "$state" "in-progress" \
+  "rollback-survivor: incomplete Git cleanup preserves the claim"
+assert_eq "$(jqf "$out" .claimed)" true "rollback-survivor: claimed reflects preserved state"
 
 finish

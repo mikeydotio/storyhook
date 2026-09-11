@@ -154,7 +154,7 @@ fn completed_since(
             | StoryEvent::StoryStateChanged { at, state }
             | StoryEvent::StoryClosedAndArchived { at, state } => (at, state.as_str()),
             // Legacy deletion abandons a story, even if it was done beforehand.
-            StoryEvent::StoryDeleted { at, .. } => (at, crate::domain::CLOSED_STATE_SLUG),
+            StoryEvent::StoryDeleted { at, .. } => (at, crate::domain::DROPPED_STATE_SLUG),
             _ => continue,
         };
         if next == "done" && state != Some("done") && instant(id, "done-entry", at)? > created {

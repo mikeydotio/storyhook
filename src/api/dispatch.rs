@@ -242,10 +242,8 @@ pub enum DispatchReason {
     /// CHARTER-INERT (SH-232's runtime-enforcement rider). See
     /// [`prompt_override_violation`].
     UnsafePromptOverride,
-    /// The machine lane budget is full (SH-655): `story lane-budget`
-    /// counted as many live agent windows as the budget allows, and the
-    /// dispatch was refused before any claim rather than opening one more
-    /// session. The payload's `lane_budget` object carries the census.
+    /// Legacy pre-SH-672 helper refusal, retained to decode older installed
+    /// plugins without losing their diagnostic. Current helpers never emit it.
     LaneBudget,
     /// A reason string this binary does not recognize, carried verbatim
     /// rather than dropped.

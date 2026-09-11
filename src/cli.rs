@@ -598,10 +598,9 @@ pub enum Invocation {
     /// is that the store will not open, or opens read-only, so a verb that
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
-    /// `story lane-budget` — the machine lane budget and the live agent
-    /// windows counted against it (SH-655). Store-free and daemon-free on
-    /// purpose: `cmd_dispatch` asks it before any claim exists, from inside
-    /// the operator's own tmux, whose server the daemon may not share.
+    /// `story lane-budget` — an informational census of live agent
+    /// windows (SH-672). Store-free and daemon-free so the operator reads
+    /// their own tmux server, which the daemon may not share.
     LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
@@ -4932,9 +4931,9 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// deliberately not completed, keeping it and everything it records.
 ///
 /// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
-/// it moves to is a real one ([`crate::domain::CLOSED_STATE_SLUG`]) and the
+/// it moves to is a real one ([`crate::domain::DROPPED_STATE_SLUG`]) and the
 /// reason is a real comment, so this needs no new event kind, no new snapshot
-/// field, no dispatch arm, and no MCP or wire surface — `story move <id> closed
+/// field, no dispatch arm, and no MCP or wire surface — `story move <id> dropped
 /// "<reason>"` does exactly the same thing and is the same story afterwards.
 ///
 /// What the sugar adds is the requirement: `move` takes an optional comment,
@@ -4956,7 +4955,7 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     }
     Ok(Invocation::SetState {
         id: args[1].clone(),
-        state: crate::domain::CLOSED_STATE_SLUG.to_string(),
+        state: crate::domain::DROPPED_STATE_SLUG.to_string(),
         comment: Some(reason),
         if_state: None,
         awaiting: None,

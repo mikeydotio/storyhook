@@ -41,7 +41,7 @@ source: tests/golden_cli.rs
       "super": "CLOSED"
     },
     {
-      "slug": "closed",
+      "slug": "dropped",
       "super": "CLOSED"
     },
     {
@@ -539,7 +539,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryStateChanged",
-          "state": "closed"
+          "state": "dropped"
         },
         {
           "at": "[timestamp]",
@@ -549,7 +549,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryClosedAndArchived",
-          "state": "closed"
+          "state": "dropped"
         }
       ],
       "id": "SH-13"

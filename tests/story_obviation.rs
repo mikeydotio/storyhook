@@ -157,5 +157,5 @@ fn suspected_obviation_stays_open_and_blocked_until_human_resolution() {
     run(&p, &["relate", "SH-1", "obviated-by", "SH-2"]);
     run(&p, &["close", "SH-1", "Human confirmed obviation"]);
     let target = json(&p, &["show", "SH-1", "--json"]);
-    assert_eq!(target["story"]["story"]["state"], "closed");
+    assert_eq!(target["story"]["story"]["state"], "dropped");
 }

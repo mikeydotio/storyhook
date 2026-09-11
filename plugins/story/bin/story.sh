@@ -163,6 +163,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
+source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -1037,7 +1038,14 @@ dispatch_ready_note() {
     pid-exited)
       printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
       ;;
+    bootstrap-*)
+      printf 'Codex initialization failed (%s): SessionStart runs on the first submitted turn; the task-free turn did not establish exact hook identity and completed Plan-mode initialization. No story charter was delivered' "$WAIT_READY_REASON"
+      ;;
     no-sentinel)
+      if [ "$AGENT" = codex ]; then
+        printf 'Codex runs SessionStart only after the first prompt. Its initialization prompt was submitted, but no dispatch sentinel appeared; check the enabled Storyhook hook package and hook errors. No story charter was delivered'
+        return
+      fi
       printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
       ;;
     hook-identity-missing)
@@ -1071,6 +1079,7 @@ claim_rollback_note() {
   else
     printf ' WARNING: story %s is now stranded at `%s` with no worktree/window — run `story unclaim %s`, or `story move %s %s --if-state %s` if that refuses.' \
       "$id" "$claimed_state" "$id" "$id" "$pre_state" "$claimed_state"
+    return 1
   fi
 }
 
@@ -1152,6 +1161,29 @@ cleanup_dispatch_git() {
     return 1
   fi
   return 0
+}
+
+# Called only within cmd_dispatch: its local resource-ownership facts are the
+# transaction this rollback consumes. An uncertain stop must not release work.
+rollback_dispatch_attempt() {
+  local stopped stop_error
+  DISPATCH_ROLLBACK_CLAIMED="$reused_claim"
+  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" 2>&1) || true
+  if [ "$(printf '%s' "$stopped" | jq -r '.ok // false' 2>/dev/null || printf false)" != true ]; then
+    stop_error=$(printf '%s' "$stopped" | jq -r '.error // "no termination result"' 2>/dev/null) || stop_error="${stopped:-no termination result}"
+    DISPATCH_CLEANUP_NOTE="WARNING: startup cleanup could not be confirmed: $stop_error; claim and Git resources were preserved"
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=""
+    return
+  fi
+  if cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"; then
+    DISPATCH_CLEANUP_NOTE="the owned startup pane and processes were stopped; $DISPATCH_CLEANUP_NOTE"
+    DISPATCH_ROLLBACK_NOTE=$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state") \
+      || DISPATCH_ROLLBACK_CLAIMED=true
+  else
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=" The claim was preserved because Git cleanup is incomplete."
+  fi
 }
 
 dispatch_cleanup_note() {
@@ -1550,7 +1582,7 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--over-budget] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
   local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
   while [ "$#" -gt 0 ]; do
@@ -1569,7 +1601,9 @@ cmd_dispatch() {
         resume=1; shift ;;
       --over-budget)
         [ -z "$over_budget" ] || fail "--over-budget may be specified only once — usage: $usage"
-        over_budget=1; shift ;;
+        over_budget=1
+        printf 'story.sh: --over-budget is deprecated and has no effect; manual dispatch has no lane budget\n' >&2
+        shift ;;
       --agent=*)
         [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         requested_agent="${1#--agent=}"
@@ -1652,8 +1686,6 @@ cmd_dispatch() {
       configure_dispatch_provider "${requested_agent:-${STORY_AGENT:-claude}}"
       [ -z "$resume" ] \
         || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
-      [ -z "$over_budget" ] \
-        || fail "--over-budget applies only to a dispatch that opens a session — $id is an epic, whose engine run fills its own lanes under the budget."
       # An epic dispatch never reaches LAUNCH_TPL -- SH-468's engine run
       # payload carries only agent/lanes, the same "engine lanes keep
       # today's behavior" boundary SH-517 already draws for --full-auto.
@@ -1808,47 +1840,8 @@ cmd_dispatch() {
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
   fi
 
-  # THE LANE BUDGET (SH-655). D14 promises a machine-wide lane budget, and
-  # until this gate only the engine consulted it, over its own lanes; a
-  # dispatch typed by hand opened the same worktree, the same window and the
-  # same cold workspace build and counted for nothing — seven of them were
-  # measured at load 33 on ten cores. The gate sits here, ahead of BOTH modes'
-  # claim writes and every other side effect, the same place the ready gate
-  # stands: a refusal leaves no claim, no worktree and no window behind.
-  #
-  # It applies exactly when this dispatch would ADD a live session: a new
-  # window is about to open (a `--resume` that found its pane reuses one, so
-  # it adds nothing; a `--resume` whose window is gone, and every `--force`,
-  # open one), and the engine is not the caller — `--full-auto` lanes are
-  # already counted and refused inside the engine's own transaction, and a
-  # second refusal here would read to the engine as a dispatch failure.
-  #
-  # `story lane-budget` takes the census from THIS shell's tmux server, which
-  # is why it is store-free and never starts a daemon. Its three-valued
-  # answer is honoured as written (SH-626): an unanswered census is no
-  # evidence, so the dispatch proceeds and says so on stderr, rather than
-  # refusing over a server nobody could ask or — worse — reading silence as
-  # room. An older `story` that lacks the verb answers the same way. What a
-  # live session IS, and why a dead pane is not one, is the verb's own doc.
-  if [ -z "$existing_pane" ] && [ -z "$full_auto" ]; then
-    local census_json census_probe census_live census_budget
-    census_json=$(story_cli lane-budget --json 2>/dev/null) || census_json=""
-    census_probe=$(printf '%s' "$census_json" | jq -r '.probe // empty' 2>/dev/null || printf '')
-    if [ "$census_probe" = counted ]; then
-      census_live=$(printf '%s' "$census_json" | jq -r '.live')
-      census_budget=$(printf '%s' "$census_json" | jq -r '.budget')
-      if [ "$census_live" -ge "$census_budget" ] && [ -z "$over_budget" ]; then
-        refuse_with "lane-budget" \
-          "$census_live agent sessions are live on this machine ($(printf '%s' "$census_json" | jq -r '.windows | join(", ")')) against a lane budget of $census_budget; end one, or pass --over-budget to dispatch past it." \
-          "$(printf '%s' "$census_json" | jq '{lane_budget: .}')"
-      fi
-      [ -z "$over_budget" ] || [ "$census_live" -lt "$census_budget" ] \
-        || printf 'story.sh: dispatching past the lane budget on --over-budget (%s live against %s)\n' "$census_live" "$census_budget" >&2
-    else
-      printf 'story.sh: the lane budget could not be measured (%s); dispatching without it\n' \
-        "$(printf '%s' "$census_json" | jq -r '.detail // "story lane-budget gave no answer"' 2>/dev/null || printf 'story lane-budget gave no answer')" >&2
-    fi
-  fi
+  # SH-672: manual concurrency belongs to the operator. The census is an
+  # explicit informational command, never an admission check at this door.
 
   # Steps 4-6: story identified, verified ready, and claimed. Two mutually
   # exclusive paths — ID MODE (a caller-named story) and NEXT MODE (SH-344,
@@ -2209,6 +2202,9 @@ cmd_dispatch() {
                 + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent)
              end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
+          (if $agent == "codex" and $auto then
+             "initialize Codex with one task-free prompt; require attempt-bound exact hooks and transcript turn completion"
+           else empty end),
           (if $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
@@ -2379,6 +2375,13 @@ cmd_dispatch() {
   # itself is the only fact that can only be true if new-window succeeded, so
   # it alone decides failure; stderr is still discarded either way since none
   # of these calls has a message worth surfacing on the happy path.
+  local CODEX_BOOTSTRAP_FILE="" CODEX_BOOTSTRAP_TOKEN="" CODEX_BOOTSTRAP_PHASE=not-started
+  if [ "$AGENT" = codex ] && [ -n "$auto" ]; then
+    if ! codex_bootstrap_prepare "$worktree_path"; then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "could not prepare Codex initialization metadata. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+  fi
   local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
@@ -2390,7 +2393,7 @@ cmd_dispatch() {
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
     if ! tmux respawn-pane -k -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
-         -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args \
+         -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
@@ -2403,7 +2406,7 @@ cmd_dispatch() {
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
     # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args "${new_window_args[@]}")
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
@@ -2428,6 +2431,8 @@ cmd_dispatch() {
   local pane_pid
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
+  local DISPATCH_ROLLBACK_CLAIMED="$reused_claim" DISPATCH_ROLLBACK_NOTE=""
+
   # Publish the durable-cleanup handoff before any gate that can leave this
   # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
   # which removes this attempt's marker before preserving or deleting Git
@@ -2436,23 +2441,19 @@ cmd_dispatch() {
   # the project's mutable checkout registration.
   if ! write_cleanup_lease_marker \
       "$PROJECT_SLUG" "$id" "$dir" "$worktree_path" "$worktree_branch" "$pane"; then
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse "cleanup-lease-unavailable" \
-      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note). The diagnostic window was preserved."
+      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE"
   fi
 
-  # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
-  # used to only annotate. An unconfirmed pane gets no text at all: the charter
-  # is an autonomous instruction document whose backticked spans a shell executes
-  # as commands, so "type it anyway and warn" is not a safe default when nobody
-  # is watching the pane. The window is deliberately left standing — it is the
-  # only place the launch failure's own words survive — while the worktree,
-  # branch and any claim created by this dispatch are rolled back so an
-  # immediate retry is not answered with "already dispatched?" (the collision
-  # guard keys on worktree/branch). A forced pre-existing claim stays put.
+  # Step 11: the charter needs both process identity and provider readiness.
+  # Codex first sends a task-free initialization turn to trigger its deferred
+  # hook. Capture failure evidence before terminating this attempt's process
+  # tree; only confirmed termination permits Git/claim rollback. An uncertain
+  # owner or a potentially submitted charter preserves resources instead.
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
-    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" \
+    codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
       && provider_ready=true
   elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
@@ -2462,16 +2463,18 @@ cmd_dispatch() {
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$reused_claim" \
+            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
+            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
+              bootstrap_phase:$bootstrap,
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
@@ -2483,12 +2486,12 @@ cmd_dispatch() {
   if ! ensure_provider_plan_mode "$pane"; then
     local mode_tail
     mode_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
-            --argjson claimed "$reused_claim" \
+            --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:false,
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
@@ -2501,11 +2504,11 @@ cmd_dispatch() {
      && ! schedule_plan_approval "$pane" "$pane_pid" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-approval-unarmed \
-      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
+            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
@@ -2527,11 +2530,11 @@ cmd_dispatch() {
       # Nothing reached the input box, so nothing was submitted (guaranteed by
       # send_prompt_confirmed: no Enter is sent before receipt is observed).
       # Safe to roll everything back, exactly as a failed window-open does.
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      rollback_dispatch_attempt
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
+              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
                 readiness_confirmed:true, delivery_phase:"undelivered",
                 pane_tail:$tail, claimed:$claimed}')"

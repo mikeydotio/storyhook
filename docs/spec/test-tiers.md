@@ -930,7 +930,7 @@ over a mechanism that is not actually reliable.
 
 ## One suite at a time on this machine (SH-457)
 
-`scripts/run-tests.sh` runs under the machine-wide `gate` lock
+`scripts/run-tests.sh` runs under the repository's `gate` lock
 (`scripts/machine-lock.sh`, SH-456). Every caller therefore queues: both Rust
 batteries, `scripts/run-changed.sh`, and a bare `bash scripts/run-tests.sh`
 typed by hand.
@@ -958,7 +958,7 @@ rather than asking anyone to remember a step.
 
 Liveness is sufficient for a waiter and insufficient for a holder: an
 infinite loop, deadlocked mutex or wedged syscall leaves the process alive
-while it holds every later verification off the machine-wide gate. The lock
+while it holds every later verification off the repository's gate. The lock
 therefore watches the SH-524 append-only journal while `gate` is held. Each
 growth event resets the full inactivity budget; total runtime has no ceiling.
 
@@ -1118,7 +1118,7 @@ all.
 wedged a `bash scripts/run-rust-battery.sh core` run for **ten hours and
 twenty-one minutes** (2026-08-31 22:35 → 2026-09-01 08:56): the test binary at
 0% CPU with its own `story daemon --serve --port 0` child alive and never
-reaped. It held the machine-wide `gate` lock the whole time, and every
+reaped. It held the repository's `gate` lock the whole time, and every
 subsequent verification on the machine queued behind it.
 
 Nothing above the test could have ended it. `run-tests.sh`,
@@ -1326,7 +1326,7 @@ binary's blocks, so an unsupported hard link fails loudly with both paths.
 
 This closes every producer door without naming one: Makefile builds, E2E,
 baseline capture and a hand-run `cargo build` can all replace the shared path,
-and no already-running consumer follows it. Widening the machine-wide `gate`
+and no already-running consumer follows it. Widening the repository's `gate`
 lock remains rejected because it enlarges the critical section and still
 cannot cover a hand-run producer. A per-leg `CARGO_TARGET_DIR` remains rejected
 because it covers only listed legs while paying the graph's disk and cold-build

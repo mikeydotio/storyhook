@@ -148,7 +148,7 @@ fn states_are_listed_in_board_order_not_alphabetical_order() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -193,8 +193,8 @@ fn every_configured_state_appears_in_the_usage_map_even_when_empty() {
         slugs,
         [
             "blocked",
-            "closed",
             "done",
+            "dropped",
             "in-progress",
             "todo",
             "verifying"
@@ -224,7 +224,7 @@ fn a_new_state_is_appended_to_the_board_order() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             "in-review"
         ]
     );
@@ -401,7 +401,7 @@ fn editing_one_field_never_drops_another() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ],
         "an edit must not disturb the board order"
     );
@@ -652,7 +652,7 @@ fn an_empty_state_is_removed_without_ceremony() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -721,7 +721,7 @@ fn a_required_state_cannot_be_removed() {
         "verifying",
         "blocked",
         "done",
-        "closed",
+        "dropped",
     ] {
         let error = ConfigService::new(&fixture.ctx())
             .remove_state(slug, None)
@@ -772,7 +772,7 @@ fn a_deleted_story_does_not_hold_a_state_open() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     let no = StoryNo::parse_id("SH", &id).unwrap();
@@ -820,7 +820,7 @@ fn a_migration_that_fails_part_way_moves_nothing_at_all() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             SPARE
         ],
         "the configuration change survived a rollback"
@@ -873,7 +873,7 @@ fn reordering_rewrites_the_board_order() {
         "blocked".to_string(),
         "verifying".to_string(),
         "in-progress".to_string(),
-        "closed".to_string(),
+        "dropped".to_string(),
     ];
     let reordered = ConfigService::new(&fixture.ctx())
         .reorder_states(&order)
@@ -889,7 +889,7 @@ fn reordering_rewrites_the_board_order() {
             "blocked",
             "verifying",
             "in-progress",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(
@@ -900,7 +900,7 @@ fn reordering_rewrites_the_board_order() {
             "blocked",
             "verifying",
             "in-progress",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -914,7 +914,7 @@ fn reordering_carries_every_states_fields_across() {
         "verifying".to_string(),
         "blocked".to_string(),
         "done".to_string(),
-        "closed".to_string(),
+        "dropped".to_string(),
     ];
     ConfigService::new(&fixture.ctx())
         .reorder_states(&order)
@@ -947,7 +947,7 @@ fn a_partial_order_is_rejected() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -982,7 +982,7 @@ fn a_repeated_or_unknown_slug_is_rejected() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -998,7 +998,7 @@ fn reordering_changes_which_state_a_new_story_opens_in() {
             "verifying".to_string(),
             "blocked".to_string(),
             "done".to_string(),
-            "closed".to_string(),
+            "dropped".to_string(),
         ])
         .expect("reordering");
     let story = StoryService::new(&ctx)
@@ -1025,7 +1025,7 @@ fn concurrent_reorders_leave_one_state_per_position() {
             "blocked".to_string(),
             "verifying".to_string(),
             "in-progress".to_string(),
-            "closed".to_string(),
+            "dropped".to_string(),
         ],
         vec![
             "in-progress".to_string(),
@@ -1033,7 +1033,7 @@ fn concurrent_reorders_leave_one_state_per_position() {
             "blocked".to_string(),
             "verifying".to_string(),
             "todo".to_string(),
-            "closed".to_string(),
+            "dropped".to_string(),
         ],
     ];
     std::thread::scope(|scope| {

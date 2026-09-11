@@ -2534,11 +2534,10 @@ fn a_reason_naming_its_own_recorded_blocker_is_not_a_notice() {
     );
 }
 
-/// A reason naming a story that has already closed is not a live gap -- the
-/// mention no longer needs an edge that would clear itself, because there is
-/// nothing left for it to clear against.
+/// SH-658: a closed mention cannot prove that the prose is obsolete, but
+/// the independent hold must be visible to an operator reviewing the backlog.
 #[test]
-fn a_reason_naming_a_closed_story_is_not_a_notice() {
+fn a_reason_naming_a_closed_story_is_a_stale_awaiting_notice() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let worker = new_story(&ctx, "worker");
@@ -2551,10 +2550,114 @@ fn a_reason_naming_a_closed_story_is_not_a_notice() {
         .unwrap();
 
     let notices = examine(&fixture).notices;
-    assert!(
-        notices.iter().all(|n| !n.contains("reason names")),
-        "{notices:?}"
-    );
+    let notice = notices
+        .iter()
+        .find(|n| n.contains("possibly stale awaiting"))
+        .unwrap_or_else(|| panic!("missing stale awaiting notice: {notices:?}"));
+    assert!(notice.contains(&worker));
+    assert!(notice.contains(&closed));
+    assert!(notice.contains(&format!("resolved once {closed} lands")));
+    assert!(notice.contains(&format!("story unblock {worker}")));
+}
+
+#[test]
+fn stale_awaiting_notice_finds_legacy_block_on_after_edges_are_retracted() {
+    for hidden in [false, true] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let worker = new_story(&ctx, "worker");
+        let blocker = new_story(&ctx, "blocker");
+        // Recreate the old writer, not the repaired block_on command.
+        RelationService::new(&ctx)
+            .relate(&worker, "blocked-by", &blocker, false)
+            .unwrap();
+        let reason = format!("needs {blocker}; see {blocker} again");
+        StoryService::new(&ctx)
+            .set_awaiting(&worker, &reason)
+            .unwrap();
+        StoryService::new(&ctx)
+            .set_state(&blocker, "done", None, None, None)
+            .unwrap();
+        if hidden {
+            StoryService::new(&ctx).hide(&blocker).unwrap();
+        }
+        assert!(relations_of(&fixture, &worker).is_empty());
+        let notices = examine(&fixture).notices;
+        let stale: Vec<_> = notices
+            .iter()
+            .filter(|n| n.contains("possibly stale awaiting"))
+            .collect();
+        assert_eq!(stale.len(), 1, "{notices:?}");
+        assert!(stale[0].contains(&blocker));
+        let events_before = events_of(&fixture, 1);
+        IntegrityService::new(&ctx).repair().unwrap();
+        assert_eq!(
+            events_of(&fixture, 1),
+            events_before,
+            "advice never erases the hold"
+        );
+        assert_eq!(examine(&fixture).notices, notices);
+    }
+}
+
+#[test]
+fn stale_awaiting_notice_excludes_live_edges_and_nonclosed_mentions() {
+    for scenario in [
+        "no id",
+        "unknown",
+        "foreign",
+        "self",
+        "open mention",
+        "open edge",
+        "closed subject",
+        "no awaiting",
+    ] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let worker = new_story(&ctx, "worker");
+        let closed = new_story(&ctx, "closed");
+        let open = new_story(&ctx, "open");
+        let stories = StoryService::new(&ctx);
+        stories
+            .set_state(&closed, "done", None, None, None)
+            .unwrap();
+        let reason = match scenario {
+            "no id" => "external approval".to_string(),
+            "unknown" => "needs SH-999".to_string(),
+            "foreign" => "needs XY-2".to_string(),
+            "self" => format!("review {worker}"),
+            "open mention" => format!("needs {open}"),
+            _ => format!("needs {closed}"),
+        };
+        if scenario != "no awaiting" {
+            stories.set_awaiting(&worker, &reason).unwrap();
+        }
+        if scenario == "open edge" {
+            RelationService::new(&ctx)
+                .relate(&worker, "blocked-by", &open, false)
+                .unwrap();
+        }
+        if scenario == "closed subject" {
+            stories
+                .set_state(&worker, "done", None, None, None)
+                .unwrap();
+            append_to_one_end(
+                &fixture,
+                &worker,
+                &[StoryEvent::StoryAwaitingSet {
+                    at: FIXTURE_NOW.to_string(),
+                    awaiting: reason,
+                }],
+            );
+        }
+        let notices = examine(&fixture).notices;
+        assert!(
+            notices
+                .iter()
+                .all(|n| !n.contains("possibly stale awaiting")),
+            "{scenario}: {notices:?}"
+        );
+    }
 }
 
 /// A healthy project -- no prose reason mentioning any story at all --

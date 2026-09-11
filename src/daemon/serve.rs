@@ -170,9 +170,10 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
-    /// The exact verification generation currently owned by the serialized
-    /// verifier (SH-549). Shared with the progress publisher and REST board;
-    /// queue ordering alone cannot answer this once priorities change.
+    /// The exact verification generation each project's verifier currently
+    /// owns (SH-549; one worker per project since SH-648). Shared with the
+    /// progress publisher and REST board; queue ordering alone cannot answer
+    /// this once priorities change.
     verification_activity: crate::daemon::verification::VerificationActivity,
     /// Engine controls are answered on per-connection workers, never the
     /// fixed store-dispatch pool. This controller owns the persistent store

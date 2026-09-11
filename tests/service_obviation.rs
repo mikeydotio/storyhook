@@ -135,7 +135,7 @@ fn recent_comments_and_repeated_done_events_do_not_turn_old_completions_into_can
         .unwrap();
     }
     let abandoned = create(&f, "abandoned after target");
-    move_to(&f, &abandoned, "closed");
+    move_to(&f, &abandoned, "dropped");
     assert_eq!(review(&f, &target)["candidates"], serde_json::json!([]));
 }
 
@@ -265,4 +265,32 @@ fn completion_and_current_activity_are_both_reported_once() {
         r["candidates"][0]["reasons"],
         serde_json::json!(["in-progress", "completed-since-creation"])
     );
+}
+
+#[test]
+fn legacy_deletion_preserves_prior_completion_without_becoming_a_completion() {
+    let mut f = ServiceFixture::new();
+    let target = create(&f, "target");
+    let completed = create(&f, "completed then deleted");
+    let abandoned = create(&f, "deleted without completion");
+    at(&mut f, "2026-01-01T00:01:00Z");
+    move_to(&f, &completed, "done");
+    for id in [&completed, &abandoned] {
+        inject_events(
+            f.store(),
+            f.project(),
+            StoryNo::parse_id("SH", id).unwrap(),
+            &[StoryEvent::StoryDeleted {
+                at: "2026-01-01T00:02:00Z".into(),
+                reason: "legacy abandonment".into(),
+            }],
+        )
+        .unwrap();
+    }
+    let r = review(&f, &target);
+    let candidates = r["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["story"]["id"], completed);
+    assert_eq!(candidates[0]["story"]["state"], "dropped");
+    assert_eq!(candidates[0]["completed_at"], "2026-01-01T00:01:00Z");
 }

@@ -353,7 +353,15 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         &[
             "bash",
             "-c",
-            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+            // `--held` asked from INSIDE the speculative checkout: the poller
+            // worktree's swapped gitlink resolves the repository's own common
+            // dir, so the key the inner `run-tests.sh` take derives is the one
+            // the outer `verify-pr.sh` hold recorded (SH-648) — the fact the
+            // reentrancy invariant now rests on.
+            &format!(
+                "bash '{}' --held gate || exit 99; [ -z \"${{STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+                checkout().join("scripts/machine-lock.sh").display()
+            ),
         ],
     );
 
