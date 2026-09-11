@@ -17,7 +17,7 @@ use wait_timeout::ChildExt;
 mod activity_tests;
 mod cancellation;
 mod progress;
-pub(crate) use cancellation::Cancellation;
+pub use cancellation::Cancellation;
 
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
