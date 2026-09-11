@@ -407,7 +407,7 @@ only while that state is CLOSED — `None` below the SH-125 floor, on which a
 writer refuses (`run story doctor --fix`) and the scaffolded `AGENTS.md`,
 being documentation, renders the constant. Its consumers: both verifier
 writers through one private door, `next_cleanup`'s query, `service::pr_check`,
-`service::project::closed_state` (the template), and the TUI's `>`-key walk in
+`service::project::completion_state_slug` (the template, formerly `closed_state`), and the TUI's `>`-key walk in
 both components. The helper spells the same constant in its config block, the
 way it already spells `verifying`; `tests/plugin_contract.rs` pins the two
 equal, so the verifier's write and the helper's reap agree by construction

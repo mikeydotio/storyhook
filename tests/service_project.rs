@@ -12,7 +12,7 @@ use std::path::Path;
 
 use storyhook::domain::{COMPLETION_STATE_SLUG, SuperState};
 use storyhook::service::project::{
-    DEFAULT_PREFIX, ProjectPointer, closed_state, pointer_path, read_pointer,
+    DEFAULT_PREFIX, ProjectPointer, completion_state_slug, pointer_path, read_pointer,
 };
 use storyhook::service::{Clock, InitOptions, ProjectService};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
@@ -537,8 +537,8 @@ fn a_project_with_no_closed_state_still_renders_a_template() {
 
     let done = fixture
         .store
-        .read(|tx| Ok(closed_state(tx, outcome.project)?))
-        .expect("reading the closed state");
+        .read(|tx| Ok(completion_state_slug(tx, outcome.project)?))
+        .expect("reading the completion state");
     assert_eq!(done, "done", "the template must still render");
 }
 

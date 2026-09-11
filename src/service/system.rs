@@ -38,7 +38,7 @@ use crate::error::AppError;
 use crate::store::Store;
 use crate::{event_hooks, hooks, plugin};
 
-use super::project::closed_state;
+use super::project::completion_state_slug;
 use super::{Ctx, project_prefix, templates};
 
 /// The scaffolding, git-hook and plugin commands.
@@ -61,10 +61,12 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
         match kind {
             "agents-md" => {
                 let project = self.ctx.project();
-                let (prefix, done) = self
-                    .ctx
-                    .store()
-                    .read(|tx| Ok((project_prefix(tx, project)?, closed_state(tx, project)?)))?;
+                let (prefix, done) = self.ctx.store().read(|tx| {
+                    Ok((
+                        project_prefix(tx, project)?,
+                        completion_state_slug(tx, project)?,
+                    ))
+                })?;
                 Ok(templates::agents_md(&prefix, &done))
             }
             "claude-md" => Ok(templates::claude_md()),

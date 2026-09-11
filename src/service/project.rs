@@ -1280,7 +1280,9 @@ impl<'a, S: Store> ProjectService<'a, S> {
             write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
         }
 
-        let done_state = self.store.read(|tx| Ok(closed_state(tx, project)?))?;
+        let done_state = self
+            .store
+            .read(|tx| Ok(completion_state_slug(tx, project)?))?;
         let agents_md = options.agents_md && self.write_agents_md(&root, &prefix, &done_state)?;
 
         // Read after the transaction, because the holder is only interesting
@@ -1823,7 +1825,7 @@ pub fn default_types() -> Vec<TypeDef> {
 /// `story doctor --fix`. Until SH-652 this answered the project's *first*
 /// CLOSED state, which is a layout fact, and disagreed with the verifier the
 /// moment a project ordered another CLOSED state ahead of `done`.
-pub fn closed_state(tx: &impl ReadOps, project: ProjectId) -> Result<String, AppError> {
+pub fn completion_state_slug(tx: &impl ReadOps, project: ProjectId) -> Result<String, AppError> {
     Ok(completion_state(&tx.states(project)?)
         .map_or_else(|| COMPLETION_STATE_SLUG.to_string(), |state| state.slug))
 }
