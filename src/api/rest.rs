@@ -46,7 +46,7 @@ use crate::output::{ReportData, Response, render_response};
 use crate::service::{
     AttachmentService, CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService,
 };
-use crate::store::{ProjectId, ReadOps, Store, WriteOps};
+use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
@@ -978,32 +978,10 @@ fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let expected = require_str(&obj, "incident_id")?;
-        let current = ctx
-            .store()
-            .read(|tx| tx.verification_incident(ctx.project()))?;
-        let Some(current) = current else {
-            return Err(AppError::Validation(
-                "no verification incident is active for this project".into(),
-            ));
-        };
-        if !current.halted {
-            return Err(AppError::Validation(
-                "the verification incident is still retrying".into(),
-            ));
-        }
-        if current.incident_id != expected {
-            return Err(AppError::Validation(format!(
-                "verification incident `{expected}` is stale; current incident is `{}`",
-                current.incident_id
-            )));
-        }
-        ctx.store().write(|tx| {
-            tx.clear_verification_incident(expected)?;
-            Ok(())
-        })?;
+        let acknowledged = crate::service::acknowledge_verification_incident(ctx, expected)?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": expected}).to_string(),
+            serde_json::json!({"acknowledged": acknowledged.incident_id}).to_string(),
         ))
     })()
     .unwrap_or_else(|error| error_reply(&error))

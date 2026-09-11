@@ -37,7 +37,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::github_remote::{GithubApiBase, GithubRepo};
 use crate::domain::pr_url::{PullRequestRef, parse_pr_url};
-use crate::domain::{StoryEvent, SuperState, has_children};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, StoryEvent, SuperState, completion_state, has_children,
+};
 use crate::error::AppError;
 use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::output::Response;
@@ -210,15 +212,17 @@ pub fn run_check<S: Store>(
                 // still something to close — a story a person already closed
                 // by hand is not reopened-and-reclosed by this.
                 if link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
-                    let closed_state = states
-                        .values()
-                        .find(|state| state.super_state == SuperState::Closed)
-                        .cloned()
-                        .ok_or_else(|| {
-                            StoreError::Invariant("project has no CLOSED-mapped state".to_string())
-                        })?;
+                    // The completion state by name, never "the first CLOSED
+                    // state": `states` is a BTreeMap, so that search answered
+                    // `closed` — abandonment — on every default catalog
+                    // (SH-652).
+                    let completion = completion_state(&tx.states(project)?).ok_or_else(|| {
+                        StoreError::Invariant(format!(
+                            "project has no CLOSED `{COMPLETION_STATE_SLUG}` state"
+                        ))
+                    })?;
                     events.extend(state_transition_events(
-                        &closed_state,
+                        &completion,
                         row.awaiting.is_some(),
                         &now,
                         Vec::new(),

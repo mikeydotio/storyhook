@@ -575,6 +575,83 @@ pub struct CleanupReceipt {
     pub display: String,
 }
 
+/// Whose problem a refused submission is (SH-647).
+///
+/// The helper decides, because only it saw git's or gh's own words: a dirty
+/// worktree or a rejected push is the agent's to repair and the story is
+/// returned to it with the message; an unreachable GitHub or a failed push is
+/// the verifier's, recorded as a retryable incident while the story stays in
+/// `verifying`. A daemon that guessed the class from the reason token would be
+/// SH-312's "ambiguous reported as definite" one layer over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubmissionRefusalClass {
+    /// The agent's to fix; the story is returned to it.
+    Repair,
+    /// The verifier's; retried unchanged, the story stays submitted.
+    Infrastructure,
+}
+
+/// The pull request a leased submission left open for its branch (SH-647).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmittedPullRequest {
+    /// The pull request's URL, as GitHub reports it.
+    pub url: String,
+    /// The pull request number.
+    pub number: u64,
+    /// The base branch the pull request targets — the repository's default.
+    pub base: String,
+    /// The head commit GitHub reports for the pull request after the push.
+    pub head_oid: String,
+    /// Whether the helper adopted an already-open pull request rather than
+    /// creating one. `true` is the steady state: every resubmission after the
+    /// first adopts.
+    pub adopted: bool,
+}
+
+/// Machine-verifiable receipt returned by `story.sh submit` (SH-647).
+///
+/// One shape for both answers, so the daemon can read a refusal's `class`
+/// and a success's `pull_request` from the same document: a refusal carries
+/// `reason`, `class` and `display` (plus `dirty_files` when that is what was
+/// refused) and none of the success fields, which is why every success field
+/// defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmissionReceipt {
+    /// Whether the branch is on origin and exactly one pull request is open.
+    pub ok: bool,
+    /// Receipt wire-format version; currently [`CLEANUP_LEASE_VERSION`].
+    #[serde(default)]
+    pub receipt_version: u32,
+    /// Canonical story id echoed independently for defensive validation.
+    #[serde(default)]
+    pub story_id: String,
+    /// Exact lease the helper consumed.
+    #[serde(default)]
+    pub lease: Option<StoryCleanupLease>,
+    /// Whether this invocation moved the remote branch (`false` on the no-op
+    /// push of an unchanged tip — not failure).
+    #[serde(default)]
+    pub pushed: bool,
+    /// The open pull request, present exactly when `ok`.
+    #[serde(default)]
+    pub pull_request: Option<SubmittedPullRequest>,
+    /// Refusal token, present exactly when `!ok` and the helper refused by
+    /// name rather than failing outright.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Whose problem the refusal is; absent on a bare failure (usage, a
+    /// missing tool), which the daemon treats as its own.
+    #[serde(default)]
+    pub class: Option<SubmissionRefusalClass>,
+    /// Paths `git status --porcelain` reported when the refusal is
+    /// `dirty-worktree`.
+    #[serde(default)]
+    pub dirty_files: Vec<String>,
+    /// Human-readable helper result for diagnostics and the returned story.
+    pub display: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StoryEvent {
@@ -1406,6 +1483,22 @@ pub const CLOSED_STATE_SLUG: &str = "closed";
 /// The reserved OPEN handoff state owned by centralized verification.
 pub const VERIFYING_STATE_SLUG: &str = "verifying";
 
+/// The slug of the state verified work comes to rest in (SH-652): what the
+/// verifier writes after a green merge, what `story pr-check` closes a merged
+/// story into, what the scaffolded `AGENTS.md` names, and the one CLOSED state
+/// `story.sh reap` accepts as completion.
+///
+/// Named rather than searched for, for the same reason as
+/// [`CLOSED_STATE_SLUG`]: a catalog is user-ordered and user-extended, so "the
+/// first CLOSED state" answers `abandoned` the moment somebody puts one ahead
+/// of `done`, and "the first CLOSED state in a `BTreeMap`" answered `closed`
+/// for every default catalog (`service::pr_check`, before SH-652) while three
+/// comments claimed catalog order protected it. Catalog order is layout — the
+/// board's columns and where new stories land — never a business outcome.
+/// [`completion_state`] is the one resolver; `tests/completion_state_search.rs`
+/// fences every other CLOSED-state search in `src/`.
+pub const COMPLETION_STATE_SLUG: &str = "done";
+
 pub static REQUIRED_STATES: [RequiredState; 6] = [
     RequiredState {
         slug: "todo",
@@ -1424,16 +1517,17 @@ pub static REQUIRED_STATES: [RequiredState; 6] = [
         super_state: SuperState::Open,
     },
     RequiredState {
-        slug: "done",
+        slug: COMPLETION_STATE_SLUG,
         super_state: SuperState::Closed,
     },
-    // After `done`, deliberately. Three functions answer "the CLOSED state"
-    // with a bare `.find()` — `service::project::closed_state`, which names the
-    // state in every generated AGENTS.md, and `service::pr_check`, where a
-    // merged PR closes its story and abandonment would be a lie — and ordering
-    // is what keeps both answering `done`. The third,
-    // `resting_state_for_closure`, is the one that should answer `closed`, and
-    // it names the slug instead of relying on this position.
+    // After `done`, deliberately: `default_states` mirrors this order into
+    // every new catalog, and a board whose first CLOSED column is the
+    // abandonment state would read as though finishing work were the
+    // exception. Nothing *resolves* by this position any more — both
+    // completion and abandonment are named (`completion_state`,
+    // `resting_state_for_closure`), which is what SH-652 fixed after
+    // `service::pr_check` proved that a positional search reads a `BTreeMap`
+    // as readily as a `Vec` and answers `closed` when it does.
     RequiredState {
         slug: CLOSED_STATE_SLUG,
         super_state: SuperState::Closed,
@@ -1477,7 +1571,7 @@ fn resting_state_for_closure(states: &BTreeMap<String, StateDef>) -> Option<&Sta
     };
 
     closed(CLOSED_STATE_SLUG)
-        .or_else(|| closed("done"))
+        .or_else(|| closed(COMPLETION_STATE_SLUG))
         .or_else(|| {
             states
                 .values()
@@ -2460,6 +2554,29 @@ pub fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
         .cloned()
 }
 
+/// The state verified work comes to rest in: the catalog's
+/// [`COMPLETION_STATE_SLUG`], and only while it is CLOSED.
+///
+/// `None` for a catalog below the SH-125 floor — one read through a legacy
+/// path, or a `done` a user edit has reclassified OPEN, which
+/// `with_required_states` refuses but the fold still has to read. A caller
+/// that would *write* a story into the answer refuses on `None` and names
+/// `story doctor --fix`; a caller that merely *documents* the answer (the
+/// scaffolded `AGENTS.md`) renders the constant, because documentation that
+/// fails to render is worse than documentation naming a state the reader can
+/// add.
+///
+/// Deliberately not "the first CLOSED state", positional or alphabetical —
+/// see [`COMPLETION_STATE_SLUG`] for the two ways that answer has been wrong.
+pub fn completion_state(states: &[StateDef]) -> Option<StateDef> {
+    states
+        .iter()
+        .find(|state| {
+            state.slug == COMPLETION_STATE_SLUG && state.super_state == SuperState::Closed
+        })
+        .cloned()
+}
+
 /// The project's first configured type — what a new story should be typed as
 /// when nothing more specific is asked for. `None` for an empty catalog,
 /// which `story type` no longer produces (`ConfigService::remove_type`
@@ -2564,10 +2681,10 @@ fn computed_epic_state(
             .all(|(_, _, superstate)| *superstate == SuperState::Closed)
     {
         let first = &children[0].1;
-        if first != "done" && children.iter().all(|(_, state, _)| state == first) {
+        if first != COMPLETION_STATE_SLUG && children.iter().all(|(_, state, _)| state == first) {
             first.clone()
         } else {
-            "done".to_string()
+            COMPLETION_STATE_SLUG.to_string()
         }
     } else {
         let incomplete: Vec<&(StorySnapshot, String, SuperState)> = children
@@ -2603,7 +2720,7 @@ fn computed_epic_state(
         .find(|definition| definition.slug == state)
         .map(|definition| definition.super_state.clone())
         .unwrap_or_else(|| {
-            if state == "done" {
+            if state == COMPLETION_STATE_SLUG {
                 SuperState::Closed
             } else {
                 SuperState::Open
@@ -4146,14 +4263,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        CLOSED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges,
-        StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
-        VERIFYING_STATE_SLUG, active_state, compute_display_state, compute_progress, default_type,
-        derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
-        last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
-        validate_event_for_append, validate_required_states, validate_state_defs,
-        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
-        with_required_states, would_create_parent_cycle,
+        CLOSED_STATE_SLUG, COMPLETION_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES,
+        STATE_ROLE_ACTIVE, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
+        StorySnapshot, SuperState, TypeDef, VERIFYING_STATE_SLUG, active_state, completion_state,
+        compute_display_state, compute_progress, default_type, derive_family_relationships,
+        fold_story, has_children, is_claimable, is_ready, last_activity_type, needs_intervention,
+        normalize_labels, ready_order, story_number, validate_event_for_append,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -4415,15 +4532,19 @@ mod tests {
                 "closed"
             ]
         );
-        // Order is load-bearing, not cosmetic: `closed` comes AFTER `done` so
-        // that `service::project::closed_state` and `service::pr_check`, which
-        // both take the first CLOSED state they find, keep answering `done`
-        // (SH-505).
-        let first_closed = REQUIRED_STATES
-            .iter()
-            .find(|r| r.super_state == SuperState::Closed)
-            .expect("the floor has a CLOSED state");
-        assert_eq!(first_closed.slug, "done");
+        // `closed` comes AFTER `done`: `default_states` mirrors this order
+        // into every new catalog's board, and completion should be the first
+        // CLOSED column a reader sees. Nothing resolves by this position any
+        // more — both CLOSED states are named (SH-505, SH-652) — so this is a
+        // layout fact, asserted by slug rather than by searching for "the
+        // first CLOSED state", which is the search SH-652 fences.
+        let position = |slug: &str| {
+            REQUIRED_STATES
+                .iter()
+                .position(|r| r.slug == slug)
+                .unwrap_or_else(|| panic!("the floor names `{slug}`"))
+        };
+        assert!(position(COMPLETION_STATE_SLUG) < position(CLOSED_STATE_SLUG));
         // Every one of them is a slug the CLI and the web router can address.
         for required in &REQUIRED_STATES {
             validate_state_slug(required.slug).expect("a required slug must be addressable");
@@ -6853,6 +6974,66 @@ mod tests {
     #[test]
     fn default_type_is_none_for_a_project_with_no_types_configured() {
         assert_eq!(default_type(&[]), None);
+    }
+
+    // --- completion_state (SH-652) -----------------------------------------
+
+    /// The straddle: a catalog where the positionally first CLOSED state
+    /// (`shipped`) and the alphabetically first CLOSED state (`abandoned`)
+    /// both differ from `done`. Either wrong search answers wrong here.
+    fn straddle_catalog() -> Vec<StateDef> {
+        vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
+            state(VERIFYING_STATE_SLUG, SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+            state("abandoned", SuperState::Closed, None),
+            state(COMPLETION_STATE_SLUG, SuperState::Closed, None),
+            state(CLOSED_STATE_SLUG, SuperState::Closed, None),
+        ]
+    }
+
+    #[test]
+    fn completion_state_is_the_required_done_not_the_first_closed_state() {
+        let answer = completion_state(&straddle_catalog()).expect("the floor is present");
+        assert_eq!(answer.slug, COMPLETION_STATE_SLUG);
+        assert_eq!(answer.super_state, SuperState::Closed);
+    }
+
+    #[test]
+    fn completion_state_is_the_same_answer_for_the_default_catalog() {
+        let states: Vec<StateDef> = REQUIRED_STATES
+            .iter()
+            .map(|required| state(required.slug, required.super_state.clone(), None))
+            .collect();
+        assert_eq!(
+            completion_state(&states).map(|s| s.slug),
+            Some(COMPLETION_STATE_SLUG.to_string())
+        );
+    }
+
+    /// A `done` a user edit reclassified OPEN is not what anything downstream
+    /// means by "done" — the SH-130 shape — so it is not an answer.
+    #[test]
+    fn completion_state_refuses_a_done_that_is_open() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state(COMPLETION_STATE_SLUG, SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        assert_eq!(completion_state(&states), None);
+    }
+
+    /// A catalog below the floor has no completion state at all; it does not
+    /// borrow the nearest CLOSED one.
+    #[test]
+    fn completion_state_is_none_below_the_floor() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        assert_eq!(completion_state(&states), None);
     }
 
     // --- compute_display_state (SH-165) -------------------------------

@@ -262,6 +262,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             | EngineAction::Stop { .. }
             | EngineAction::Ack { .. } => Vec::new(),
         },
+        Invocation::Verifier { .. } => Vec::new(),
 
         Invocation::Help
         | Invocation::Project { .. }

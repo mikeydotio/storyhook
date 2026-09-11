@@ -24,7 +24,7 @@ use storyhook::cli::{
     DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
     HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
     PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, WebAction,
+    UnclaimComment, VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
@@ -1818,6 +1818,11 @@ fn invocation_corpus() -> Vec<Invocation> {
                 run: Some("run-1".to_string()),
             },
         },
+        Invocation::Verifier {
+            action: VerifierAction::Ack {
+                incident_id: "2:28821".to_string(),
+            },
+        },
         Invocation::Cleanup { dry_run: true },
         Invocation::Attachment {
             action: AttachmentAction::List {
@@ -1856,6 +1861,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Engine { .. } => "Engine",
+        Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
@@ -1926,7 +1932,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        69,
+        70,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

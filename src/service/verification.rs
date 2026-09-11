@@ -8,7 +8,10 @@
 use std::path::PathBuf;
 
 use crate::domain::pr_url::parse_pr_url;
-use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, Priority, StateDef, StoryCleanupLease, StoryEvent, SubmittedPullRequest,
+    SuperState, VERIFYING_STATE_SLUG, completion_state,
+};
 use crate::error::AppError;
 use crate::store::{
     ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
@@ -21,6 +24,38 @@ use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 /// The required OPEN state that hands a published PR to the verifier.
 pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
 
+/// The required OPEN state a story is returned to when verification hands it
+/// back to its agent (conflict, red, or an invalid submission). Named once so
+/// the Full Auto reconciler recognises "returned for repair" by the same
+/// spelling the verifier writes (SH-650, `returned_for_repair`).
+pub const RETURNED_STATE: &str = "in-progress";
+
+/// Whether the story's own state history ends with the verifier's return:
+/// its latest `StoryStateChanged` is [`RETURNED_STATE`] and the one before it
+/// is [`VERIFYING_STATE`], with no state change since (SH-650).
+///
+/// This is the store-derived fact the engine reads instead of a lane mark the
+/// verifier would have to write: between `record_generation_returned` and the
+/// respawned pane coming alive, the story is `in-progress` with no `awaiting`
+/// and a dead window, and a reconciler that took the dead window as evidence
+/// would quarantine the lane and strike the breaker for the very remediation
+/// the verifier is delivering. The fact ends, by construction, at the story's
+/// next state change — the agent resubmitting to `verifying`, or a person
+/// moving it — and is overridden earlier by `awaiting` (the verifier's own
+/// refusal to re-dispatch), which the engine classifies ahead of the window.
+pub fn returned_for_repair(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<bool, StoreError> {
+    let events = tx.events_for(project, story)?;
+    let mut changes = events.iter().rev().filter_map(|event| match event.known() {
+        Some(StoryEvent::StoryStateChanged { state, .. }) => Some(state.as_str()),
+        _ => None,
+    });
+    Ok(changes.next() == Some(RETURNED_STATE) && changes.next() == Some(VERIFYING_STATE))
+}
+
 /// Durable comment prefix proving the centralized release gate landed a PR.
 pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
@@ -30,6 +65,11 @@ pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLE
 /// Durable comment prefix for verifier infrastructure failures.
 pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
+/// Durable comment prefix recording that the verifier pushed a leased branch
+/// and opened or adopted its pull request (SH-647). One marked comment per
+/// generation: a resubmission that moves the branch replaces it.
+pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GenerationWrite<T> {
@@ -37,6 +77,16 @@ pub(crate) enum GenerationWrite<T> {
     Applied(T),
     /// A later state transition superseded the candidate before the write.
     Superseded,
+}
+
+impl<T> GenerationWrite<T> {
+    /// Maps the applied value, leaving a superseded write superseded.
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> GenerationWrite<U> {
+        match self {
+            GenerationWrite::Applied(value) => GenerationWrite::Applied(f(value)),
+            GenerationWrite::Superseded => GenerationWrite::Superseded,
+        }
+    }
 }
 
 /// A malformed verification submission that must return to its author.
@@ -125,6 +175,49 @@ pub struct VerificationQueue<'a, S: Store> {
     store: &'a S,
 }
 
+/// Acknowledges exactly the halted verification incident `incident_id` for the
+/// project `ctx` selects, releasing the queue for another attempt (SH-573).
+///
+/// One function for both doors — `POST .../verification/ack` and
+/// `story verifier ack <incident-id>` (SH-666) — so their contract cannot
+/// drift (SH-136): the id must name the incident that is *current*, still
+/// halted rather than retrying, and this project's. A reader of a stale
+/// comment therefore cannot acknowledge a newer incident by accident, and an
+/// acknowledgement retries nothing by itself: the verifier's next tick does.
+pub fn acknowledge_verification_incident<S: Store>(
+    ctx: &Ctx<'_, S>,
+    incident_id: &str,
+) -> Result<VerificationIncident, AppError> {
+    let current = ctx
+        .store()
+        .read(|tx| tx.verification_incident(ctx.project()))?;
+    let Some(current) = current else {
+        return Err(AppError::Validation(
+            "no verification incident is active for this project".into(),
+        ));
+    };
+    if !current.halted {
+        return Err(AppError::Validation(
+            "the verification incident is still retrying".into(),
+        ));
+    }
+    if current.incident_id != incident_id {
+        return Err(AppError::Validation(format!(
+            "verification incident `{incident_id}` is stale; current incident is `{}`",
+            current.incident_id
+        )));
+    }
+    // The read above is keyed by this project (SH-648), so an incident of
+    // another project can only ever answer as "stale" here — but the
+    // invariant is stated, not assumed.
+    debug_assert_eq!(current.project, ctx.project());
+    ctx.store().write(|tx| {
+        tx.clear_verification_incident(incident_id)?;
+        Ok(())
+    })?;
+    Ok(current)
+}
+
 impl<'a, S: Store> VerificationQueue<'a, S> {
     /// Creates a queue over every project in one daemon store.
     #[must_use]
@@ -196,17 +289,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 ))
                 .into());
             }
-            let ordered_states = tx.states(project)?;
-            let done = ordered_states
-                .iter()
-                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
-                .cloned()
-                .ok_or_else(|| {
-                    AppError::Validation(
-                        "project has no required CLOSED `done` state; run `story doctor --fix`"
-                            .to_string(),
-                    )
-                })?;
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
             let states = tx.state_map(project)?;
             clear_candidate_incident(tx, candidate)?;
             append_state_transition(
@@ -234,6 +317,111 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
+    /// Atomically records a submission the verifier just made (SH-647): the
+    /// pull request link, `close_on_merge`, and one marked SUBMITTED comment,
+    /// only while `candidate` is current. Hands back the open link as the
+    /// store now folds it, so the caller proceeds on a store fact rather than
+    /// on a `PrLink` it assembled by hand.
+    ///
+    /// The cross-repository rule is `PrLinkService::link`'s: a project with
+    /// registered GitHub origins accepts only a pull request on one of them;
+    /// a project with none registered has nothing to check against. Re-linking
+    /// a URL the story already links upserts, which is what makes recording
+    /// the adopted pull request on every generation idempotent.
+    pub(crate) fn record_generation_submitted(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        pull_request: &SubmittedPullRequest,
+    ) -> Result<GenerationWrite<PrLink>, AppError> {
+        let reference = parse_pr_url(&pull_request.url)?;
+        let branch = candidate
+            .cleanup_lease
+            .as_ref()
+            .map(|lease| lease.branch.clone())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "story `{}` has no cleanup lease; nothing was submitted on its behalf",
+                    candidate.story_id
+                ))
+            })?;
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let registered =
+                super::pr_link::github_repos_from_remotes(&tx.project_remotes(project)?);
+            if !registered.is_empty()
+                && !registered.iter().any(|repo| {
+                    repo.host.eq_ignore_ascii_case(&reference.host)
+                        && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                        && repo.repo.eq_ignore_ascii_case(&reference.repo)
+                })
+            {
+                return Err(AppError::Validation(format!(
+                    "the verifier opened pull request `{}` on a repository this project has not registered ({}); refusing to link it",
+                    pull_request.url,
+                    registered
+                        .iter()
+                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .into());
+            }
+            let body = format!(
+                "{VERIFICATION_SUBMITTED_PREFIX} `{branch}` is on origin at {}; {} pull request {}.",
+                pull_request.head_oid,
+                if pull_request.adopted {
+                    "adopted open"
+                } else {
+                    "opened"
+                },
+                pull_request.url
+            );
+            let mut events = vec![StoryEvent::StoryPrLinked {
+                at: now.clone(),
+                url: pull_request.url.clone(),
+                owner: reference.owner.clone(),
+                repo: reference.repo.clone(),
+                number: reference.number,
+                close_on_merge: true,
+            }];
+            events.extend(marked_comment_events(
+                &row,
+                VERIFICATION_SUBMITTED_PREFIX,
+                &body,
+                &now,
+            ));
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            let link = tx
+                .open_pr_links_for_story(project, story_no)?
+                .into_iter()
+                .find(|link| link.close_on_merge && link.url == pull_request.url)
+                .ok_or_else(|| {
+                    StoreError::Corrupt(format!(
+                        "pull request `{}` was just linked to `{}` and does not read back open",
+                        pull_request.url, candidate.story_id
+                    ))
+                })?;
+            Ok(GenerationWrite::Applied(link))
+        })?)
+    }
+
     /// Atomically records a diagnosis and returns only the current generation.
     pub(crate) fn record_generation_returned(
         &self,
@@ -250,11 +438,10 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 return Ok(GenerationWrite::Superseded);
             }
             let states = tx.state_map(project)?;
-            let target = states.get("in-progress").cloned().ok_or_else(|| {
-                AppError::Validation(
-                    "project has no required OPEN `in-progress` state; run `story doctor --fix`"
-                        .to_string(),
-                )
+            let target = states.get(RETURNED_STATE).cloned().ok_or_else(|| {
+                AppError::Validation(format!(
+                    "project has no required OPEN `{RETURNED_STATE}` state; run `story doctor --fix`"
+                ))
             })?;
             clear_candidate_incident(tx, candidate)?;
             append_state_transition(
@@ -367,8 +554,21 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             } else {
                 "RETRYING"
             };
+            // What the reader must not conclude: that this story is the
+            // cause, or that the verifier is still serving anyone. An
+            // infrastructure incident is the verifier's own, it stops the
+            // whole queue, and the reader is in a terminal — so the halted
+            // form names the exact command that releases it (SH-666).
+            let consequence = if incident.halted {
+                format!(
+                    "This halt stops the verifier's whole queue. No story is at fault: the verifier itself could not run, and {} is only where the failure was first hit. Fix the cause below, then release the queue with: story verifier ack {}",
+                    candidate.story_id, incident.incident_id
+                )
+            } else {
+                "The verifier is retrying on its own; every story behind this one waits until it recovers or halts.".to_string()
+            };
             let body = format!(
-                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n\n{}",
+                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n{consequence}\n\n{}",
                 incident.attempts,
                 incident.first_failed_at,
                 incident.last_failed_at,
@@ -475,7 +675,7 @@ fn cleanup_candidates_for(
     if let Some(project) = tx.project(project)? {
         let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
         let links = tx.pr_links(project.id)?;
-        let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
+        let rows = tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
         for row in rows {
             let passed = row
                 .snapshot
@@ -553,17 +753,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 ))
                 .into());
             }
-            let ordered_states = tx.states(project)?;
-            let done = ordered_states
-                .iter()
-                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
-                .cloned()
-                .ok_or_else(|| {
-                    AppError::Validation(
-                        "project has no required CLOSED `done` state; run `story doctor --fix`"
-                            .to_string(),
-                    )
-                })?;
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
             let states = tx.state_map(project)?;
             let mut events = vec![StoryEvent::StoryPrMerged {
                 at: now.clone(),
@@ -598,6 +788,22 @@ impl<S: Store> VerificationQueue<'_, S> {
         })?;
         Ok(())
     }
+}
+
+/// The state a green merge lands a story in, or the refusal that names the
+/// repair (SH-652).
+///
+/// One door for both writers so the verifier cannot disagree with itself, and
+/// a refusal rather than a fallback: a catalog with no CLOSED `done` is below
+/// the SH-125 floor, and writing verified work into any other CLOSED state
+/// would record the wrong business outcome — the reason SH-521 chose the
+/// required slug over "whichever CLOSED state sorts first" in the first place.
+fn completion_state_or_refuse(states: &[StateDef]) -> Result<StateDef, AppError> {
+    completion_state(states).ok_or_else(|| {
+        AppError::Validation(format!(
+            "project has no required CLOSED `{COMPLETION_STATE_SLUG}` state; run `story doctor --fix`"
+        ))
+    })
 }
 
 fn candidate_is_current(

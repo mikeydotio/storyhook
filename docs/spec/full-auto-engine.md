@@ -43,7 +43,7 @@ being picked.
 | D2 | **A lane is a window + worktree per story**, created and reaped per story exactly as `--auto` does today. | Context reset is free: each story gets a new process. The alternative — one long-lived lane session freshen-cleared between stories — buys faster startup at the cost of switching a live session's worktree and cwd, and a wedged pane then strands the lane rather than one story. |
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
-| D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
+| D5 | **The verification worker owns submission, exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents commit and move the story to `verifying` from inside their worktree as their final action, and stop; the verifier pushes the leased branch and opens or adopts the PR before it verifies (SH-647). | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
 | D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. A watcher retries bounded transport/TUI races and completes only after its exact dialog leaves the original live pane. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard every keystroke. A changed UI fails closed instead of receiving input; tmux command success alone is not provider acknowledgement (SH-570). |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine — a ceiling that, since SH-657, requires the lane's terminal to have gone silent too, not only its story. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
@@ -134,7 +134,7 @@ flowchart TB
     STORIES --> BUS
     SVC -->|spawn, off store thread| SH
     SH --> TMUX --> AGENT
-    AGENT -->|targeted tests, link PR, move verifying| STORIES
+    AGENT -->|targeted tests, commit, move verifying| STORIES
     STORIES --> VER
     VER --> LOCKS
     VER -->|done / remediation| STORIES
@@ -328,10 +328,10 @@ sequenceDiagram
     Sh-->>Rec: ok, window name
     Rec->>Store: lane -> Working
     Lane->>Store: plan comment on SH-N
-    Lane->>GH: push + open PR
-    Lane->>Store: link PR + comment URL
-    Lane->>Store: story move SH-N verifying (final action)
+    Lane->>Store: commit, then story move SH-N verifying (final action)
     Store-->>Ver: Change::Project(slug)
+    Ver->>GH: push leased branch, open or adopt PR (SH-647)
+    Ver->>Store: link PR + SUBMITTED comment
     Ver->>GH: fetch current base + submitted head
     Ver->>Ver: exact merge tree + make test
     Ver->>GH: land-pr.sh
@@ -1411,7 +1411,9 @@ and daemon-start reconciliation is SH-466's.
 SH-521 landed on `main` while this story's implementation sat unmerged in its
 own worktree, and made `verifying` a required OPEN state and the agent's own
 final action: the charter now ends a successful lane with `story move <n>
-verifying`, then stops. Left unhandled, that is a silent inversion of this
+verifying`, then stops. Since SH-647 that is the *whole* of the handoff —
+pushing the branch and opening the PR moved into the verifier's own first step,
+so the agent no longer runs `git push`, `gh pr create`, or `story link-pr`. Left unhandled, that is a silent inversion of this
 story's own load-bearing rule: `story_closed` reads `false` for an OPEN
 handoff state, so every successful lane would fall through to `WindowGone`
 (the pane is normally already dead — see below) or eventually `Stalled` (D4's
@@ -1453,13 +1455,15 @@ process exits, `story move <n> verifying` included, which is exactly why
 `Verifying` needs its own precedence ahead of `WindowGone` rather than the
 window probe alone being sufficient. This also explains why centralized
 verification's own `notify()` (`plugins/story/bin/story.sh cmd_notify`)
-refuses with `pane-changed` whenever the pane it targets no longer runs the
-dispatched process — the common case, once the pane is already dead — and
-`return_for_repair` (`src/daemon/verification.rs`) falls back to
-`set_awaiting` on that refusal. No special-case code was needed for the
-return-for-repair path on this side: it reduces to the already-existing
-`AgentBlocked` classification once `awaiting` is set, which is what makes the
-next fix below load-bearing for it.
+refuses whenever the pane it targets no longer holds the dispatched process —
+the common case, once the pane is already dead. Until SH-650 that refusal
+parked the story (`set_awaiting`) and this side needed no special case: it
+reduced to `AgentBlocked` once `awaiting` was set. **SH-650 changed both
+halves** — the refusal is `pane-dead`, not `pane-changed` (tmux freezes the
+frozen pane's command, so only `#{pane_dead}` tells), and the verifier now
+re-dispatches the story into the same window with the resume clause instead
+of parking it; the reconciler's own part of that change is under "As built —
+SH-650" below.
 
 **Two conformance repairs, found while re-verifying the branch's own
 committed work against the approved plan rather than newly discovered by the
@@ -2155,7 +2159,8 @@ run's notice; it is not coupled to the timed notice stack.
 blocked story. An engine lane remains occupied while the daemon-owned,
 machine-wide verifier orders submitted work, predicts the exact merge tree,
 runs the release gate, validates its content-addressed receipt, and lands the
-PR. Success moves the story to the configured completion state and reaps its
+PR. Success moves the story to the completion state — the required `done`
+(`domain::completion_state`, SH-652) — and reaps its
 submitted workspace; the engine then observes that completion and frees the
 lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and
@@ -2515,6 +2520,40 @@ live run reconciles itself at roughly 1 Hz for its whole life, because its own
 lane writes move `data_version`, the change poller publishes `Change::Resync`,
 and `poll_engine` wakes on any non-`Ping` change — the tick (72 s then, 300 s
 since SH-657) is an idle floor, never a rate limit.
+
+### SH-650 — a dead window on a story the verifier just returned is deferred
+
+`return_for_repair` used to park a story with `awaiting` when `story.sh
+notify` could not reach its pane, and this reconciler read that as
+`AgentBlocked` → quarantine → a breaker strike for what is ordinary
+remediation (decision D-E, `verification-workflow.md`). The verifier now
+re-dispatches the story into its own window with `dispatch --resume --auto`
+(as the lane it is, when a live lane holds it: the run's provider options and
+`--full-auto`) and pastes the diagnosis afterwards. That exposed a race this
+side owns: the return transition (`verifying` → `in-progress`, no `awaiting`)
+wakes the reconciler, the pane is normally already dead, and the respawned
+pane comes alive only after a readiness wait bounded by `DISPATCH_TIMEOUT` —
+so a steady pass in that window read `WindowGone` and struck the breaker
+anyway. The same gap existed for about a second before SH-650 and was closed
+by `set_awaiting`, a classification this side tolerates.
+
+`LaneObservation.returned_for_repair` is the store-derived fact that closes
+it, read from the story's own state history (`service::verification::
+returned_for_repair`: the latest `StoryStateChanged` is `RETURNED_STATE`, the
+one before it `VERIFYING_STATE`, nothing since) rather than from a lane mark
+the verifier would have to write. On a **steady** pass a `Gone` probe on such
+a story contributes no evidence — SH-626's rule for an unanswered probe, one
+cause over — and the lane is judged by the stall clock, with
+`DISPATCH_TIMEOUT` pinned inside `STALL_CEILING_SECS` so a re-dispatch has
+either shown a live pane or parked the story with `awaiting` (which still
+outranks the deferral) before the clock can fire. A **restart** pass never
+defers: a daemon that died mid-re-dispatch has nobody left to finish it. The
+fact is read lazily, only when the probe says `Gone` on an open,
+non-verifying, non-awaiting story, and the deferral is visible three ways:
+`ReconcileReport.deferred`, `probe_detail` on the lane, and an INFO journal
+line on the deferral's opening and closing edges (never per pass). Stated
+limit: a re-dispatched agent that dies again before its next state change is
+caught by the stall clock, not immediately.
 
 ### SH-646 — the verification workflow has its own design of record
 

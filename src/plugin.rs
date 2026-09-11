@@ -1,13 +1,9 @@
-use std::collections::BTreeSet;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
-
-use fs4::FileExt;
 
 use crate::env::spawn_env::apply_plugin_cli_allowlist;
 use crate::error::AppError;
@@ -24,15 +20,12 @@ const CODEX_RULE_MARKER: &str = "# storyhook-managed: codex-rules-v1";
 const CODEX_LAUNCHER_RELATIVE: &str = ".codex/storyhook/story.sh";
 const CODEX_RULE_RELATIVE: &str = ".codex/rules/storyhook.rules";
 
-struct EmbeddedFile {
-    relative_path: &'static str,
-    bytes: &'static [u8],
-    executable: bool,
-}
+use crate::embedded::EmbeddedFile;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
 pub(crate) mod registration;
+pub mod reinstall;
 
 /// A provider storyhook installs its plugin into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,143 +218,18 @@ fn combined_output(out: &Output) -> String {
     text
 }
 
-fn embedded_file_set(root: &Path) -> Option<BTreeSet<PathBuf>> {
-    fn visit(root: &Path, directory: &Path, found: &mut BTreeSet<PathBuf>) -> Option<()> {
-        let mut entries: Vec<_> = fs::read_dir(directory)
-            .ok()?
-            .collect::<Result<_, _>>()
-            .ok()?;
-        entries.sort_by_key(fs::DirEntry::file_name);
-        for entry in entries {
-            let path = entry.path();
-            let metadata = fs::symlink_metadata(&path).ok()?;
-            if metadata.is_dir() {
-                visit(root, &path, found)?;
-            } else if metadata.is_file() {
-                found.insert(path.strip_prefix(root).ok()?.to_path_buf());
-            } else {
-                return None;
-            }
-        }
-        Some(())
-    }
-
-    let mut found = BTreeSet::new();
-    visit(root, root, &mut found)?;
-    Some(found)
-}
-
-fn release_marketplace_matches(root: &Path) -> bool {
-    let Some(found) = embedded_file_set(root) else {
-        return false;
-    };
-    let expected: BTreeSet<PathBuf> = EMBEDDED_MARKETPLACE
-        .iter()
-        .map(|file| PathBuf::from(file.relative_path))
-        .collect();
-    if found != expected {
-        return false;
-    }
-    EMBEDDED_MARKETPLACE.iter().all(|file| {
-        let path = root.join(file.relative_path);
-        let Ok(metadata) = fs::metadata(&path) else {
-            return false;
-        };
-        let executable = {
-            #[cfg(unix)]
-            {
-                metadata.permissions().mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        };
-        executable == file.executable && fs::read(path).is_ok_and(|bytes| bytes == file.bytes)
-    })
-}
-
-fn write_release_marketplace(root: &Path) -> Result<(), AppError> {
-    for file in EMBEDDED_MARKETPLACE {
-        let path = root.join(file.relative_path);
-        let parent = path.parent().ok_or_else(|| {
-            AppError::Storage(format!(
-                "embedded marketplace path `{}` has no parent",
-                file.relative_path
-            ))
-        })?;
-        fs::create_dir_all(parent)?;
-        fs::write(&path, file.bytes)?;
-        #[cfg(unix)]
-        {
-            let mode = if file.executable { 0o755 } else { 0o644 };
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
-        }
-    }
-    Ok(())
-}
-
+/// Projects this binary's marketplace under its versioned root (SH-538) —
+/// see [`crate::embedded::materialize`] for the reuse/stage/rename contract.
 fn materialize_release_marketplace() -> Result<PathBuf, AppError> {
     let releases = release_marketplaces_root()?;
-    fs::create_dir_all(&releases)?;
-    let lock_path = releases.join(".install.lock");
-    let lock = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "failed to open plugin installation lock `{}`: {error}",
-                lock_path.display()
-            ))
-        })?;
-    FileExt::lock_exclusive(&lock).map_err(|error| {
-        AppError::Storage(format!(
-            "failed to lock plugin installation at `{}`: {error}",
-            lock_path.display()
-        ))
-    })?;
-
     let destination = release_marketplace_root()?;
-    if release_marketplace_matches(&destination) {
-        return Ok(destination);
-    }
-
-    let staged = tempfile::Builder::new()
-        .prefix(".plugin-staging-")
-        .tempdir_in(&releases)?;
-    write_release_marketplace(staged.path())?;
-    if !release_marketplace_matches(staged.path()) {
-        return Err(AppError::Storage(
-            "the staged plugin marketplace did not match its embedded payload".to_string(),
-        ));
-    }
-
-    if destination.exists() || fs::symlink_metadata(&destination).is_ok() {
-        let backup = tempfile::Builder::new()
-            .prefix(".plugin-previous-")
-            .tempdir_in(&releases)?;
-        let previous = backup.path().join("marketplace");
-        fs::rename(&destination, &previous)?;
-        if let Err(error) = fs::rename(staged.path(), &destination) {
-            let restore = fs::rename(&previous, &destination);
-            return Err(AppError::Storage(match restore {
-                Ok(()) => format!(
-                    "failed to publish plugin marketplace at `{}`; restored the previous copy: {error}",
-                    destination.display()
-                ),
-                Err(restore_error) => format!(
-                    "failed to publish plugin marketplace at `{}` ({error}) and failed to restore its previous copy ({restore_error})",
-                    destination.display()
-                ),
-            }));
-        }
-    } else {
-        fs::rename(staged.path(), &destination)?;
-    }
-    Ok(destination)
+    crate::embedded::materialize(
+        EMBEDDED_MARKETPLACE,
+        &releases,
+        &destination,
+        ".install.lock",
+        "plugin marketplace",
+    )
 }
 
 fn remove_claude_plugin() -> Result<(), AppError> {
@@ -910,7 +778,7 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
         .iter()
         .map(|(relative, _)| PathBuf::from(relative))
         .collect();
-    if embedded_file_set(&enabled).as_ref() != Some(&expected_files) {
+    if crate::embedded::file_set(&enabled).as_ref() != Some(&expected_files) {
         return Err(fail(
             "missing, unexpected, or non-regular plugin files".to_string(),
         ));
@@ -1133,6 +1001,86 @@ fn record_managed_paths() {
     let _ = fs::write(&file, body);
 }
 
+/// Where `story plugin install <target>` records that it registered this
+/// provider on this machine: `<data dir>/provider-installs/<target>`.
+///
+/// `story doctor install` reads it to tell a *lost* registration from one
+/// that never existed (SH-671). SH-640 answered that question from the
+/// provider's own leftovers — its plugin cache — and on 2026-09-10 Claude
+/// Code 2.1.268 swept those along with the registration, so the doctor read
+/// a broken machine as a Codex-only one. The receipt is storyhook's file in
+/// storyhook's directory: no provider rewrite can take it, and it is per
+/// target, which the managed-path manifest (naming both providers on every
+/// install) is not.
+pub(crate) fn install_receipt_path(target: PluginTarget) -> Result<PathBuf, AppError> {
+    Ok(data_dir()?
+        .join("provider-installs")
+        .join(target.install_token()))
+}
+
+/// The receipt's contents, if one was written here: what the doctor quotes.
+pub(crate) fn install_receipt(target: PluginTarget) -> Result<Option<String>, AppError> {
+    let path = install_receipt_path(target)?;
+    match fs::read_to_string(&path) {
+        Ok(body) => Ok(Some(body)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Storage(format!(
+            "could not read the install receipt at `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// Writes the receipt once the provider's registration has succeeded —
+/// never before, so a registration that did not land is never claimed, and
+/// never on a failed reinstall, so an earlier install keeps being one.
+///
+/// Loud on failure, on purpose: the registration itself is done by now, and
+/// the message says so, but a receipt that could not be written means the
+/// doctor can no longer detect this install's loss — the operator must hear
+/// that rather than read `every component agrees` over it later.
+fn record_install_receipt(target: PluginTarget) -> Result<(), AppError> {
+    let path = install_receipt_path(target)?;
+    let context = |error: std::io::Error| {
+        AppError::Storage(format!(
+            "the {} plugin is registered, but its install receipt at `{}` could not be \
+             written: {error}. Until `story plugin install {}` succeeds again, `story doctor \
+             install` cannot tell this registration's loss from a provider that was never \
+             installed here.",
+            target.display_name(),
+            path.display(),
+            target.install_token()
+        ))
+    };
+    let parent = path
+        .parent()
+        .expect("the receipt path has a parent directory");
+    fs::create_dir_all(parent).map_err(context)?;
+    fs::write(
+        &path,
+        format!(
+            "version {}\ninstalled_at {}\n",
+            env!("CARGO_PKG_VERSION"),
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ),
+    )
+    .map_err(context)
+}
+
+/// Removes the receipt on a deliberate uninstall. `Ok(Some(path))` names
+/// what was removed; `Ok(None)` means there was none.
+fn remove_install_receipt(target: PluginTarget) -> Result<Option<PathBuf>, AppError> {
+    let path = install_receipt_path(target)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(Some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Storage(format!(
+            "failed to remove the install receipt at `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
 pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
@@ -1144,6 +1092,7 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
         PluginTarget::ClaudeCode => install_claude(project_root, &source),
         PluginTarget::Codex => install_codex(project_root, &source),
     }?;
+    record_install_receipt(target)?;
     Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
@@ -1169,6 +1118,12 @@ fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
     // directory this install owns, the legacy layout included.
     for dir in remove_install_residue(PluginTarget::ClaudeCode)? {
         removed.push(format!("removed installed copies at {}", dir.display()));
+    }
+    if let Some(receipt) = remove_install_receipt(PluginTarget::ClaudeCode)? {
+        removed.push(format!(
+            "removed the install receipt at {}",
+            receipt.display()
+        ));
     }
 
     let claude_md_path = project_root.join("CLAUDE.md");
@@ -1198,6 +1153,12 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
         format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
     for dir in remove_install_residue(PluginTarget::Codex)? {
         message.push_str(&format!("\nremoved installed copies at {}", dir.display()));
+    }
+    if let Some(receipt) = remove_install_receipt(PluginTarget::Codex)? {
+        message.push_str(&format!(
+            "\nremoved the install receipt at {}",
+            receipt.display()
+        ));
     }
 
     let home = home_dir()?;
