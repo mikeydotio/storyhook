@@ -90,7 +90,7 @@ NOT TO BE CONFUSED WITH
 
 new
   Creates the project in storyhook's store with the states every
-  project must have (todo, in-progress, verifying, blocked, done, closed) and default
+  project must have (todo, in-progress, verifying, blocked, done, dropped) and default
   types, writes .storyhook.toml naming it, and generates an AGENTS.md
   if the repository has none.
 
@@ -666,7 +666,7 @@ Examples:
   story state add review --super OPEN --description "Waiting on a reviewer"
   story state set review --role active
   story state set review --no-description
-  story state reorder todo,in-progress,review,verifying,blocked,done,closed
+  story state reorder todo,in-progress,review,verifying,blocked,done,dropped
   story state remove review --move-stories-to todo
 
 Moving stories out of the way:
@@ -685,7 +685,7 @@ Rules:
   - Slugs are lowercase letters, digits, and single dashes ('in-review').
     They are typed as CLI arguments and appear in dashboard URLs.
   - Every project keeps 'todo', 'in-progress', 'verifying' and 'blocked'
-    as OPEN states, and 'done' and 'closed' as CLOSED states. They cannot be removed, and
+    as OPEN states, and 'done' and 'dropped' as CLOSED states. They cannot be removed, and
     their superstates cannot be changed; anything else you add is
     yours to arrange. A project that predates this rule reports it in
     'story doctor', and 'story doctor --fix' adds what is missing.
@@ -979,7 +979,7 @@ When to use:
 
   --fix is also how a project created before the required states
   existed gets them: it adds any of 'todo', 'in-progress', 'verifying',
-  'blocked', 'done' and 'closed' the project is missing, placing a new OPEN state at the
+  'blocked', 'done' and 'dropped' the project is missing, placing a new OPEN state at the
   end of the OPEN run so the state new stories land in does not move.
   It only ever adds. A project that already defines one of those slugs
   under the wrong superstate is reported rather than rewritten, because
@@ -1893,15 +1893,16 @@ Two ways to say why, and they behave differently:
                     CLEARS ITSELF the moment <blocker> closes. Repeat
                     --on to name more than one blocker.
 
-  "<reason>"        Free text. Never clears itself — you (or
+  "<reason>"        Without --on: free text. Never clears itself — you (or
                     `story unblock`) have to notice and clear it by
                     hand.
 
-Both may be given together, in one call: the edge and the reason
-commit atomically. A reason is only required when no --on was given
-at all.
+With --on, the optional reason is saved as a comment naming the
+blockers, in the same transaction as the edges. It does not set or
+clear awaiting. Existing independent prose holds remain in effect.
+A reason is only required when no --on was given at all.
 
-If a reason names a story id with no --on recording it as the
+If an awaiting reason names a story id with no edge recording it as the
 blocker, the response carries a warning saying so — the edge is
 almost always what you meant.
 
@@ -2652,7 +2653,7 @@ Related:
             "close",
             r#"story close <id> "<reason>"
 
-Retire a story that will not be done. The story moves to the `closed`
+Retire a story that will not be done. The story moves to the `dropped`
 state — CLOSED superstate, so it stops counting as open, ready, or a
 blocker — and the reason is recorded as a comment on it.
 
@@ -2661,8 +2662,8 @@ labels and every relationship it has. That is the whole point. It is
 the record of a decision not to do something, which is worth as much
 as the record of doing it.
 
-`closed` behaves exactly like `done` in every other respect. The two
-differ in what they claim: `done` says the work was finished, `closed`
+`dropped` behaves exactly like `done` in every other respect. The two
+differ in what they claim: `done` says the work was finished, `dropped`
 says it was deliberately abandoned.
 
 Reopen one by moving it anywhere open — `story reopen <id>`, or
@@ -3260,30 +3261,28 @@ Related:
             "lane-budget",
             r#"story lane-budget [--json]
 
-The machine lane budget, and the live agent sessions counted against it.
+An informational census of live agent sessions on your tmux server.
 
 A live agent session is a tmux window that a dispatch opened -- its
-@storyhook-agent option is set -- and whose pane is not dead. Every
-dispatch counts, whether the Full Auto engine filled the lane or a person
-ran /story do; a finished session's window stays around (remain-on-exit)
-and no longer counts. The budget is the engine's own machine-wide lane
-budget, so the two doors measure one number.
+@storyhook-agent option is set -- and whose pane is not dead. A dead pane
+does not count, even when remain-on-exit keeps its window around.
+Windows on other tmux sockets and agents started outside dispatch are
+outside this census.
 
-When to use:
-  Before dispatching by hand on a busy machine, and by /story do itself,
-  which refuses a new session past the budget unless --over-budget says
-  you meant it. The census is taken from the tmux server your own shell
-  is attached to; a daemon on another socket cannot answer for it, which
-  is why this command never starts one.
+Use this count to inform your own concurrency decisions. Manual dispatch
+does not consult it or enforce a lane budget. The Full Auto engine limits
+each run by its configured --lanes value; other runs and manual sessions
+do not consume that run's capacity.
 
-  If tmux cannot be asked, the answer is "unanswered", not zero: --json
-  then carries "probe": "unanswered" with the probe's own words, and no
-  "live" or "available" field at all. A caller must not read silence as
-  room.
+The census comes from the tmux server your own shell is attached to.
+This command opens no store and starts no daemon. If tmux cannot be
+asked, the answer is "unanswered", not zero: --json carries the probe's
+own words and omits "live" and "windows". Neither rendering assigns a
+budget or says whether another dispatch is available.
 
 Examples:
-  story lane-budget          # 6 of 4 lanes in use on this machine -- at the budget
-  story lane-budget --json   # {"budget": 4, "probe": "counted", "live": 6, ...}
+  story lane-budget          # 6 live agent sessions on this tmux server
+  story lane-budget --json   # {"probe": "counted", "live": 6, "windows": [...]}
 
 Related:
   story engine status  -- The engine's own lanes and runs
@@ -3344,7 +3343,7 @@ BULK & INTEGRATION
 PROJECT MANAGEMENT
   story phase list|show|add|remove  Manage story phases
   story doctor [--fix]            Integrity checks and repair
-  story lane-budget               Live agent sessions against the machine lane budget
+  story lane-budget               Informational census of live agent sessions
   story report [--html]           Generate project report
   story scaffold <variant>        Generate agent instruction files
   story hooks install|uninstall   Manage git hooks

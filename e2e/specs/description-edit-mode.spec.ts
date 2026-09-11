@@ -399,7 +399,7 @@ test("a drawer mutation retains unchanged sections and their handlers read curre
   });
   expect(retained).toEqual({ comments: true, footer: true });
 
-  await page.locator("#drawer-footer button", { hasText: "Close" }).click();
+  await page.locator("#drawer-footer button", { hasText: "Drop" }).click();
   await expect(page.locator("#close-modal-summary")).toContainText(nextTitle);
   await page.locator("#close-modal-cancel").click();
   await page.locator("#drawer-close").click();

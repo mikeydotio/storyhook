@@ -839,8 +839,15 @@ macro_rules! impl_read_ops {
                 read::live_engine_runs(&self.conn)
             }
 
-            fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError> {
-                read::verification_incident(&self.conn)
+            fn verification_incident(
+                &self,
+                project: ProjectId,
+            ) -> Result<Option<VerificationIncident>, StoreError> {
+                read::verification_incident(&self.conn, project)
+            }
+
+            fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
+                read::verification_incidents(&self.conn)
             }
 
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {

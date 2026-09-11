@@ -8,8 +8,8 @@ Stories: 16 (13 open, 3 closed)
 
 ## State Distribution
 
-- closed: 1
 - done: 2
+- dropped: 1
 - in-progress: 2
 - review: 1
 - todo: 10
@@ -46,8 +46,8 @@ $ story context --format json
 {
   "blocked_count": 3,
   "by_state": {
-    "closed": 1,
     "done": 2,
+    "dropped": 1,
     "in-progress": 2,
     "review": 1,
     "todo": 10
@@ -104,8 +104,8 @@ Stories: 16 (13 open, 3 closed)
 
 ## State Distribution
 
-- closed: 1
 - done: 2
+- dropped: 1
 - in-progress: 2
 - review: 1
 - todo: 10
@@ -160,7 +160,7 @@ $ story handoff
 ## Closed (3)
 
 - SH-8 Retire the JSONL reader [done]
-- SH-13 Old approach: file-per-story [closed]
+- SH-13 Old approach: file-per-story [dropped]
 - SH-14 Prototype the archive format [done]
 
 
@@ -187,7 +187,7 @@ $ story handoff --since 7d
 ## Closed (3)
 
 - SH-8 Retire the JSONL reader [done]
-- SH-13 Old approach: file-per-story [closed]
+- SH-13 Old approach: file-per-story [dropped]
 - SH-14 Prototype the archive format [done]
 
 
@@ -214,5 +214,5 @@ $ story handoff --since 2h
 ## Closed (3)
 
 - SH-8 Retire the JSONL reader [done]
-- SH-13 Old approach: file-per-story [closed]
+- SH-13 Old approach: file-per-story [dropped]
 - SH-14 Prototype the archive format [done]

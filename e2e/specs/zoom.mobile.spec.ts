@@ -344,7 +344,7 @@ test("the close modal's reason field is at least 16px", async ({ page }) => {
   await page
     .locator('.column[data-state="todo"] .card', { hasText: title })
     .click();
-  await page.locator("#drawer-footer").getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator("#drawer-footer").getByRole("button", { name: "Drop", exact: true }).click();
   await expect(page.locator("#close-modal")).toHaveClass(/open/);
 
   await expectNoZoomingControls(page.locator("#close-modal"), "the close modal", 1);

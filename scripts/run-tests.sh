@@ -133,7 +133,7 @@ if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
     # one.
     unset STORYHOOK_GATE_LOCK_TAKEN STORYHOOK_GATE_LOCK_DEPTH
 elif [ "${STORYHOOK_GATE_LOCK:-1}" = "0" ]; then
-    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT the machine-wide 'gate' lock; a concurrent suite will contend with this one" >&2
+    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT this repository's 'gate' lock; a concurrent suite will contend with this one" >&2
 else
     # THE DEPTH GUARD, AND WHY IT IS NOT THE SAME CHECK TWICE.  Arriving here
     # a second time means the handshake above did not land -- and the failure

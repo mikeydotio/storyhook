@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SH-571: autonomous Codex dispatch must prove the exact Storyhook hook package
-# ran before the helper can deliver a prompt. Attended Codex remains screen-gated.
+# ran before the helper can deliver the story charter. Attended Codex remains screen-gated.
 source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
@@ -37,6 +37,11 @@ assert_eq "$(jqf "$out" .ok)" "false" "missing hook: autonomous dispatch refuses
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "missing hook: absence has a distinct readiness reason"
 assert_eq "$(state_of)" "todo" "missing hook: claim rolls back"
+
+dispatch_case malformed "" --auto
+assert_eq "$(jqf "$out" .ok)" false "malformed sentinel: autonomous dispatch refuses"
+assert_eq "$(jqf "$out" .wait_ready_reason)" hook-identity-missing "malformed sentinel cannot establish identity"
+assert_eq "$(state_of)" todo "malformed sentinel: confirmed cleanup releases claim"
 
 dispatch_case legacy "" --auto
 assert_eq "$(jqf "$out" .ok)" "false" "legacy sentinel: autonomous dispatch refuses"

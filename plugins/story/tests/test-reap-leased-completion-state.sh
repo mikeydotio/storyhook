@@ -14,7 +14,7 @@ slug=$(slug_for "$repo")
 (cd "$repo" \
   && story state add shipped --super CLOSED >/dev/null \
   && story state add abandoned --super CLOSED >/dev/null \
-  && story state reorder todo,in-progress,verifying,blocked,shipped,abandoned,done,closed >/dev/null)
+  && story state reorder todo,in-progress,verifying,blocked,shipped,abandoned,done,dropped >/dev/null)
 repository_path=$(cd "$repo" && pwd -P)
 socket="$FAKE_TMUX_STATE/tmux.sock"
 touch "$socket"
