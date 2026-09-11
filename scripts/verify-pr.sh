@@ -286,6 +286,11 @@ run_verification_gate() {
 # `reconcile_land_refusal`, as "no longer has a qualifying release-gate
 # receipt" — a diagnosis about the wrong layer, after GitHub had been asked
 # again. Refused by name: the gate, the tree, and what a gate must do.
+#
+# It is asked about the PINNED parents the gate ran on, never the refs
+# (SH-666): asked about `refs/remotes/origin/<base>` after a fetch had moved
+# it, it recomputed a different merge, met a real conflict, and halted the
+# whole queue as "certified nothing" — over a tree it had in fact certified.
 require_certified_by_gate() {
     certified_tree="$1"
     certified_base="$2"
@@ -672,10 +677,25 @@ _refs_start=$(date +%s)
 refresh_submission_refs "$pr" "$base" "$head_branch" "$reported_head"
 gate_progress_emit_item "pull request refs" passed "seconds=$(( $(date +%s) - _refs_start ))"
 
+# The transaction is pinned to two COMMITS from here on, never re-read from
+# the refs (SH-584's rule, and SH-666's second incident): `refs/remotes/
+# origin/<base>` is shared with every other process in this repository — a
+# `/story do` creating a worktree, a poller, another verification — and any
+# fetch moves it while the gate runs. The preflight, the gate and the
+# certification check below must all speak about the same two parents, or
+# a base that merely moved reads as a gate that certified nothing. A base
+# that has moved by landing time is landing's to find, under the merge lock,
+# where it is answered as the story's own CONFLICT (or a fresh tree to
+# verify), never as a halt of the verifier.
+base_commit="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" \
+    || die_json "could not resolve $base_ref to a commit after refreshing PR #$pr"
+head_commit="$(git rev-parse --verify "$head_ref^{commit}" 2>/dev/null)" \
+    || die_json "could not resolve $head_ref to a commit after refreshing PR #$pr"
+
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
-preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "$base_ref" "$head_ref" 2>&1)"
+preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "$base_commit" "$head_commit" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
@@ -693,11 +713,11 @@ case "$preflight_status" in
     ;;
 (1)
     gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
-    run_verification_gate "$pr" "$tree" "$base_ref" "$head_ref" "$verifier_wt" "${gate_command[@]}" || {
+    run_verification_gate "$pr" "$tree" "$base_commit" "$head_commit" "$verifier_wt" "${gate_command[@]}" || {
         confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
         emit_tests_failed
     }
-    require_certified_by_gate "$tree" "$base_ref" "$head_ref"
+    require_certified_by_gate "$tree" "$base_commit" "$head_commit"
     ;;
 (*)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
