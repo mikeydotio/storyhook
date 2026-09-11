@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 mod control;
+mod observation;
 use crate::process::Cancellation;
+pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
 
 use super::bus::{Change, ChangeBus};
@@ -406,6 +408,17 @@ pub trait VerificationActuator: Send + Sync {
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
     ) -> VerificationOutcome;
+    /// Verifies with the current attempt's cancellation handle. Synchronous
+    /// adapters may finish normally; subprocess adapters must honor the signal
+    /// and settle owned children before returning.
+    fn verify_cancellable(
+        &self,
+        candidate: &VerificationCandidate,
+        pull_request: &PrLink,
+        _cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        self.verify(candidate, pull_request)
+    }
     /// Delivers remediation to the exact dispatched agent pane, or answers
     /// that no live agent is there to receive it.
     fn notify(
@@ -865,6 +878,19 @@ impl VerificationActuator for ShellVerificationActuator {
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
     ) -> VerificationOutcome {
+        self.verify_cancellable(
+            candidate,
+            pull_request,
+            &self.activity.cancellation_for(candidate.project),
+        )
+    }
+
+    fn verify_cancellable(
+        &self,
+        candidate: &VerificationCandidate,
+        pull_request: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
@@ -946,6 +972,10 @@ impl VerificationActuator for ShellVerificationActuator {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             .env(
+                "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS",
+                self.termination_grace.as_millis().to_string(),
+            )
+            .env(
                 "STORYHOOK_ACTIVITY_CONTEXT",
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
@@ -958,7 +988,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 grace: self.termination_grace,
             },
             &journal,
-            &self.activity.cancellation_for(candidate.project),
+            cancellation,
             |pid| {
                 self.owned_processes
                     .register("verifier", pid, Some(&request_id))
@@ -1289,6 +1319,34 @@ pub fn tick_with_reconciliation<S, A, W>(
     activity: &VerificationActivity,
     inflight: &InFlight,
     project: ProjectId,
+    wait_for_resubmission: W,
+) -> Result<TickResult, AppError>
+where
+    S: Store,
+    A: VerificationActuator,
+    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+{
+    tick_with_bus(
+        store,
+        env,
+        actuator,
+        activity,
+        inflight,
+        project,
+        &ChangeBus::new(),
+        wait_for_resubmission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tick_with_bus<S, A, W>(
+    store: &S,
+    env: &Environment,
+    actuator: &A,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    project: ProjectId,
+    bus: &ChangeBus,
     mut wait_for_resubmission: W,
 ) -> Result<TickResult, AppError>
 where
@@ -1434,7 +1492,18 @@ where
         if active.is_cancelled() {
             return Ok(TickResult::Stopped);
         }
-        let outcome = actuator.verify(&candidate, &pull_request);
+        let Some(outcome) = observation::verify(
+            store,
+            bus,
+            &candidate,
+            &active.cancellation,
+            |cancellation| actuator.verify_cancellable(&candidate, &pull_request, cancellation),
+        )?
+        else {
+            // Authority loss is queue progress, not a durable manual stop.
+            // Refresh creates a new attempt token for a resubmitted generation.
+            continue;
+        };
         if active.is_cancelled() && !matches!(outcome, VerificationOutcome::Merged { .. }) {
             return Ok(TickResult::Stopped);
         }
@@ -2221,13 +2290,14 @@ fn poll_project_verification(
 ) {
     let subscription = bus.subscribe();
     while !stop.load(Ordering::Relaxed) {
-        match tick_with_reconciliation(
+        match tick_with_bus(
             store,
             env,
             actuator,
             activity,
             inflight,
             project,
+            bus,
             |reserved| {
                 wait_for_reconciled_candidate_cancellable(
                     store,

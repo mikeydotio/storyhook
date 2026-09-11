@@ -14,14 +14,42 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 sys.dont_write_bytecode = True
 from verifier_state import Refusal, boot, held, paths, read, save, session_members
 
 
-def execute(command, record_path, record, field, output=None):
+class Cancellation:
+    """Latch signals before admitting children; handlers perform no I/O."""
+
+    def __init__(self):
+        self.signum = None
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, self.request)
+
+    def request(self, signum, _frame):
+        """The first request is irreversible; repeated signals cannot reenter I/O."""
+        if self.signum is None:
+            self.signum = signum
+
+
+def signal_session(sid, signum):
+    """Signal only currently confirmed members of an owned session."""
+    for pid in session_members(sid):
+        try:
+            os.kill(pid, signum)
+        except ProcessLookupError:
+            pass
+
+
+def execute(command, record_path, record, field, cancellation, output=None):
     """Admit a new session only after its identity is durably recorded."""
+    budget_ms = os.environ.get("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "30000")
+    if not budget_ms.isascii() or not budget_ms.isdecimal() or len(budget_ms) > 8 or int(budget_ms) < 4000:
+        raise Refusal("verifier cleanup budget must be 4000..99999999 milliseconds")
+    budget = int(budget_ms) / 1000
     receive, release = os.pipe()
     child = os.fork()
     if child == 0:
@@ -31,6 +59,8 @@ def execute(command, record_path, record, field, output=None):
             if os.read(receive, 1) != b"1":
                 os._exit(125)
             os.close(receive)
+            for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+                signal.signal(signum, signal.SIG_DFL)
             if output is not None:
                 os.dup2(output.fileno(), 1)
             os.execvpe(command[0], command, os.environ)
@@ -40,30 +70,62 @@ def execute(command, record_path, record, field, output=None):
     os.close(receive)
     record[field] = child
     save(record_path, record)
-    os.write(release, b"1")
+    # Cancellation before admission closes the handshake without executing.
+    if cancellation.signum is None:
+        os.write(release, b"1")
     os.close(release)
-
-    def forward(signum, _frame):
-        """Forward cancellation to every recorded session, including subgroups."""
-        current = read(record_path)
-        for sid in {child, current.get("gate_session")} - {None}:
-            for pid in session_members(sid):
-                try:
-                    os.kill(pid, signum)
-                except ProcessLookupError:
-                    pass
-
-    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-        signal.signal(signum, forward)
-    _, status = os.waitpid(child, 0)
-    remaining = session_members(child)
+    grace = budget / (4 if field == "gate_session" else 2)
+    deadline = None
+    killed = False
+    status = None
+    while True:
+        if cancellation.signum is not None and deadline is None:
+            deadline = time.monotonic() + grace
+            signal_session(child, cancellation.signum)
+            # The gate owns a separate session. Its supervisor receives the
+            # lifecycle signal too and must record its completion before exit.
+            if field == "session":
+                gate = read(record_path).get("gate_session")
+                if gate:
+                    signal_session(gate, cancellation.signum)
+        if status is None:
+            waited, value = os.waitpid(child, os.WNOHANG)
+            if waited:
+                status = value
+        if status is None and deadline is None:
+            # Healthy execution needs no machine-wide process census.
+            time.sleep(.1)
+            continue
+        sessions = {child}
+        if field == "session":
+            gate = read(record_path).get("gate_session")
+            if gate:
+                sessions.add(gate)
+        remaining = [pid for sid in sessions for pid in session_members(sid)]
+        if status is not None and not remaining:
+            break
+        if deadline is not None and time.monotonic() >= deadline and not killed:
+            signal_session(child, signal.SIGKILL)
+            # Escalation must also cover the recorded arbitrary execution
+            # session if its supervisor died before completing the record.
+            if field == "session":
+                gate = read(record_path).get("gate_session")
+                if gate:
+                    signal_session(gate, signal.SIGKILL)
+            killed = True
+        if killed and time.monotonic() >= deadline + budget / 8:
+            raise Refusal(f"could not reap execution session {child} after SIGKILL; live writers={remaining}; retained {record_path}")
+        if status is not None and deadline is None:
+            raise Refusal(f"execution session {child} still has live writers {remaining}; retained {record_path}")
+        time.sleep(.05)
+    remaining = [pid for sid in sessions for pid in session_members(sid)]
     if remaining:
         raise Refusal(f"execution session {child} still has live writers {remaining}; retained {record_path}")
     code = os.waitstatus_to_exitcode(status)
     return code if code >= 0 else 128 - code
 
 
-def run(mode, common, worktree, key, command, output=None):
+def run(mode, common, worktree, key, command, cancellation, output=None):
     """Hold kernel exclusion and refuse uncertain previous execution."""
     owner_path = str(key) + ".owner"
     if mode == "held":
@@ -74,7 +136,7 @@ def run(mode, common, worktree, key, command, output=None):
         owner = read(owner_path)
         owner["gate_started"] = True
         save(owner_path, owner)
-        status = execute(command, owner_path, owner, "gate_session")
+        status = execute(command, owner_path, owner, "gate_session", cancellation)
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None
@@ -121,7 +183,7 @@ def run(mode, common, worktree, key, command, output=None):
                  "nonce": uuid.uuid4().hex, "boot": boot(), "gate_started": False,
                  "supervisor": os.getpid()}
         os.environ["STORYHOOK_VERIFIER_OWNER"] = owner["nonce"]
-        status = execute(command, owner_path, owner, "session", output)
+        status = execute(command, owner_path, owner, "session", cancellation, output)
         owner = read(owner_path)
         owner["session"] = None
         owner["completed"] = True
@@ -134,6 +196,7 @@ def run(mode, common, worktree, key, command, output=None):
 
 def main():
     """Expose internal owner operations with contextual, nonzero refusals."""
+    cancellation = Cancellation()
     as_json = sys.argv[1:2] == ["run-json"]
     try:
         mode, common_arg, worktree_arg = sys.argv[1:4]
@@ -147,11 +210,11 @@ def main():
             # Publish a child verdict only after its process tree is settled.
             # A file cannot deadlock when a surviving child retains stdout.
             with tempfile.TemporaryFile() as output:
-                status = run(mode, common, worktree, key, command, output)
+                status = run(mode, common, worktree, key, command, cancellation, output)
                 output.seek(0)
                 shutil.copyfileobj(output, sys.stdout.buffer)
                 return status
-        return run(mode, common, worktree, key, command)
+        return run(mode, common, worktree, key, command, cancellation)
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
         detail = f"verifier-owner: {error}"
         print(detail, file=sys.stderr)

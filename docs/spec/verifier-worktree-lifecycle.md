@@ -133,6 +133,29 @@ Recovery archives must remain available after a replacement checkout is made.
 
 ## Validation
 
+### Cancellation ownership — SH-686
+
+Rust supplies its cleanup grace as `STORYHOOK_VERIFIER_CLEANUP_GRACE_MS`
+(normally 30 seconds). The gate session receives one quarter for TERM cleanup,
+the lifecycle session one half, the outer machine-lock wrapper three quarters,
+and Rust the full budget. Session owners reserve another eighth for bounded
+reaping after KILL. The wrapper's explicit `--termination-grace` leaves other
+callers' existing policy unchanged. The bundled shell entry requires at least
+four seconds so each layer has a positive whole-second wrapper budget.
+
+The outer entry execs its lock wrapper. Python installs signal handlers before
+launch admission; handlers only latch cancellation. Supervisors inspect and
+signal their recorded sessions, including surviving children in other process
+groups, then prove quiescence before marking execution complete. Healthy work
+uses nonblocking waitpid without repeatedly scanning the process table. Unknown
+or unkillable execution retains its records and inherited ownership lock;
+recovery never guesses that it finished. Tracked gate edits retain the existing
+archive behavior, including their private Git administration and object lease.
+
+The complete council decision and nested-budget reasoning are recorded on
+SH-686. Authority monitoring stops before verifier-owned story transitions;
+this process contract also applies to manual cancellation and timeouts.
+
 `tests/verifier_lifecycle.rs` runs isolated real-Git Python cases, including
 production entry points, concurrent preflight, killed owners with surviving
 children, a SIGKILL after the actual pointer swap, and crashes at filesystem

@@ -60,15 +60,20 @@ case "${1:-}" in
 --validate-metadata | --refresh-submission | --reconcile-land-refusal) owner_wt="" ;;
 esac
 if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$owner_wt"; then
-    owner_output="$(STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
-        bash "$script_dir/machine-lock.sh" gate -- \
+    # The lock wrapper must remain the PID supervised by Rust. Its deadline
+    # encloses both session owners, leaving the final quarter for outer reap.
+    cleanup_budget="${STORYHOOK_VERIFIER_CLEANUP_GRACE_MS:-30000}"
+    case "$cleanup_budget" in
+    '' | *[!0-9]*) die_json "invalid verifier cleanup budget: $cleanup_budget" ;;
+    esac
+    [ "${#cleanup_budget}" -le 8 ] && [ "$cleanup_budget" -ge 4000 ] \
+        || die_json "verifier cleanup budget must be 4000..99999999 milliseconds"
+    cleanup_budget="$((10#$cleanup_budget))"
+    export STORYHOOK_VERIFIER_CLEANUP_GRACE_MS="$cleanup_budget"
+    export STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate"
+    exec bash "$script_dir/machine-lock.sh" --termination-grace "$((cleanup_budget * 3 / 4000))" gate -- \
         python3 "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
-        bash "$script_dir/verify-pr.sh" "$@")"
-    owner_status=$?
-    [ "$owner_status" -eq 0 ] \
-        || die_json "verifier lifecycle ownership or supervision failed for $owner_wt (status $owner_status); inspect the lifecycle owner record under $common_dir/storyhook/verifier-lifecycle and the preceding diagnostics"
-    printf '%s\n' "$owner_output"
-    exit 0
+        bash "$script_dir/verify-pr.sh" "$@"
 fi
 
 ensure_verifier_worktree() {
