@@ -33,6 +33,13 @@ verifier_window_enabled() {
     [ "${STORYHOOK_VERIFIER_MIRROR:-1}" != "0" ]
 }
 
+# Match the daemon's own environment boundary for standalone callers too.
+# The subshell preserves the caller's dispatch context after this command.
+verifier_window_tmux() (
+    unset TMUX TMUX_PANE
+    command tmux "$@"
+)
+
 # Resolve the same identity as machine-lock.sh's project key. Derivation stays
 # in the caller's repository; the pane itself always starts in stable HOME.
 # A failed identity is not permission to share some other project's window.
@@ -57,15 +64,15 @@ verifier_window_ensure() {
     local name="$1" target="=${VERIFIER_WINDOW_SESSION}:=$1"
     verifier_window_enabled || return 1
     command -v tmux >/dev/null 2>&1 || return 1
-    if ! tmux has-session -t "=$VERIFIER_WINDOW_SESSION" 2>/dev/null; then
-        tmux new-session -d -c "$HOME" -s "$VERIFIER_WINDOW_SESSION" -n "$name" \
+    if ! verifier_window_tmux has-session -t "=$VERIFIER_WINDOW_SESSION" 2>/dev/null; then
+        verifier_window_tmux new-session -d -c "$HOME" -s "$VERIFIER_WINDOW_SESSION" -n "$name" \
             sleep 2147483647 2>/dev/null \
-            || tmux has-session -t "=$VERIFIER_WINDOW_SESSION" 2>/dev/null || return 1
+            || verifier_window_tmux has-session -t "=$VERIFIER_WINDOW_SESSION" 2>/dev/null || return 1
     fi
-    tmux new-window -d -S -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:" -n "$name" \
+    verifier_window_tmux new-window -d -S -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:" -n "$name" \
         sleep 2147483647 2>/dev/null || return 1
-    tmux set-window-option -t "$target" automatic-rename off >/dev/null 2>&1 || return 1
-    tmux set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || return 1
+    verifier_window_tmux set-window-option -t "$target" automatic-rename off >/dev/null 2>&1 || return 1
+    verifier_window_tmux set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || return 1
 }
 
 # verifier_window_tail <log-path>
@@ -80,7 +87,7 @@ verifier_window_tail() {
     verifier_window_enabled || return 1
     name="$(verifier_window_project)" || return 1
     verifier_window_ensure "$name" || return 1
-    tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
         tail -n +1 -F "$log" 2>/dev/null || return 1
 }
 
@@ -101,7 +108,7 @@ verifier_window_banner() {
     # shellcheck disable=SC2016 # deliberate: $1 must NOT expand here -- it
     # is bash -c's own positional parameter, populated at exec time from
     # the argv element that follows, never from this shell's own $1.
-    tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
         bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" \
         2>/dev/null || return 1
 }
@@ -127,7 +134,7 @@ print(f"activity-{label}-{digest}")
 PY
     )" || return 1
     verifier_window_ensure "$name" || return 1
-    tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
         "$1" --store-path "$store" daemon logs --follow || return 1
 }
 
