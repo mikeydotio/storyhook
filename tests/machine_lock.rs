@@ -86,6 +86,11 @@ fn read_checkout_file(relative: &str) -> String {
 /// A disposable root holding symlinks to the tracked scripts and its own lock
 /// directory. The symlink rather than a copy is the `tests/orphan_check.rs`
 /// rule: the artifact under test is the one that ships.
+///
+/// The root is a git repository (SH-648): `gate` and `merge` are project-scoped
+/// and derive their key from the working directory's git common dir, so a
+/// case that takes either from a non-repository is refused — which is its own
+/// test below, never an accident of the fixture.
 struct Fixture {
     root: TempDir,
 }
@@ -102,6 +107,7 @@ impl Fixture {
             .unwrap_or_else(|error| panic!("fixture: linking tracked {script}: {error}"));
         }
         std::fs::create_dir_all(root.path().join("locks")).expect("fixture: creating locks/");
+        git_init(root.path());
         Self { root }
     }
 
@@ -120,9 +126,44 @@ impl Fixture {
         self.path().join("locks")
     }
 
-    /// The directory the script would use for `name`.
+    /// The directory the script would use for `name`, taken from the working
+    /// directory `cwd` — read back from the script's own `--plan` rather than
+    /// spelled here a second time (SH-136); the derivation itself is pinned by
+    /// `the_project_component_is_the_hash_of_the_canonical_common_dir`, which
+    /// computes the expected key independently.
+    fn lock_from(&self, cwd: &Path, name: &str) -> PathBuf {
+        PathBuf::from(self.plan_field_from(cwd, name, "lock"))
+    }
+
+    /// The directory the script would use for `name` from the fixture root.
     fn lock(&self, name: &str) -> PathBuf {
-        self.lock_root().join(format!("{name}.lock"))
+        self.lock_from(self.path(), name)
+    }
+
+    /// The reentrancy entry the script would record for `name` from `cwd`.
+    fn key_from(&self, cwd: &Path, name: &str) -> String {
+        self.plan_field_from(cwd, name, "key")
+    }
+
+    fn plan_field_from(&self, cwd: &Path, name: &str, field: &str) -> String {
+        let mut cmd = self.command(&["--plan", name, "--", "true"]);
+        cmd.current_dir(cwd);
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("planning the {name} lock from {}: {e}", cwd.display()));
+        assert_eq!(
+            code(&out),
+            0,
+            "--plan {name} from {} must succeed: {}",
+            cwd.display(),
+            stderr(&out)
+        );
+        let printed = String::from_utf8_lossy(&out.stdout);
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{field}=")))
+            .unwrap_or_else(|| panic!("--plan must print `{field}=`\nstdout: {printed}"))
+            .to_string()
     }
 
     /// A `Command` for the script with this fixture's lock root bound. Every
@@ -181,6 +222,68 @@ impl Fixture {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("making a helper executable");
         path
+    }
+}
+
+/// Initialises `path` as a git repository: what makes it a project a
+/// project-scoped lock can be taken from.
+fn git_init(path: &Path) {
+    git(path, &["init", "-q"]);
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap_or_else(|e| panic!("running git {args:?} in {}: {e}", cwd.display()));
+    assert!(
+        out.status.success(),
+        "git {args:?} in {} failed: {}",
+        cwd.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A live holder of `name` from `cwd`, for the cases whose subject is what a
+/// SECOND taker sees while the lock is genuinely held. Released by SIGTERM —
+/// the script's own trap — and reaped within the poll ceiling, so a holder
+/// that could not be told to stop turns the case red rather than sitting out
+/// the wrapped sleep (SH-528).
+struct Holder {
+    child: ChildGuard,
+}
+
+impl Holder {
+    fn take(fixture: &Fixture, cwd: &Path, name: &str) -> Self {
+        let mut cmd = fixture.command(&[name, "--", "sleep", "60"]);
+        cmd.current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = ChildGuard::spawn(&mut cmd).expect("spawning a lock holder");
+        wait_for(&fixture.lock_from(cwd, name).join("pid"));
+        Self { child }
+    }
+
+    fn pid_recorded(fixture: &Fixture, cwd: &Path, name: &str) -> String {
+        std::fs::read_to_string(fixture.lock_from(cwd, name).join("pid"))
+            .expect("reading the holder's pid")
+            .trim()
+            .to_string()
+    }
+
+    fn release(mut self) {
+        Command::new("kill")
+            .args(["-TERM", &self.child.pid().to_string()])
+            .status()
+            .expect("signalling the holder");
+        self.child.wait_within(poll_ceiling(), || {
+            "the lock holder did not die of the SIGTERM sent to release it".to_string()
+        });
     }
 }
 
@@ -1580,12 +1683,15 @@ fn the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it() {
         .expect("running the script with a decoy state home");
 
     let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    let expected_prefix = format!(
+        "lock={}/.local/state/storyhook/locks/gate.",
+        fake_home.display()
+    );
     assert!(
-        printed.contains(&format!(
-            "lock={}/.local/state/storyhook/locks/gate.lock",
-            fake_home.display()
-        )),
-        "the default lock root must derive from $HOME\nstdout: {printed}"
+        printed
+            .lines()
+            .any(|line| line.starts_with(&expected_prefix) && line.ends_with(".lock")),
+        "the default lock root must derive from $HOME, and the gate's key must carry its project component\nstdout: {printed}"
     );
     assert!(
         !printed.contains(&decoy.display().to_string()),
@@ -1769,4 +1875,345 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The project component (SH-648)
+// ---------------------------------------------------------------------------
+
+/// The positive control for every `lock()`/`key_from()` read above: the key
+/// this file's fixture reads back from `--plan` is the one D-B names — the
+/// canonical git common dir, hashed by git's own object hash — computed here
+/// independently of the script. Without this, deriving every expected path
+/// from `--plan` would make `plan_reports_the_resolved_lock_and_runs_nothing`
+/// tautological.
+///
+/// Pinned from three working directories that must agree: the repository,
+/// a linked worktree of it, and a symlink to the repository (the physical
+/// path is what identifies a clone, never the spelling the caller used).
+#[test]
+fn the_project_component_is_the_hash_of_the_canonical_common_dir() {
+    let fixture = Fixture::new();
+    git(
+        fixture.path(),
+        &["commit", "-q", "--allow-empty", "-m", "seed"],
+    );
+    let worktree = scratch_dir();
+    let worktree = worktree.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+        ],
+    );
+    let alias_dir = scratch_dir();
+    let alias = alias_dir.path().join("alias");
+    std::os::unix::fs::symlink(fixture.path(), &alias).expect("fixture: symlinking the repository");
+
+    let common_dir = git(fixture.path(), &["rev-parse", "--git-common-dir"]);
+    let common_dir = std::fs::canonicalize(fixture.path().join(common_dir))
+        .expect("canonicalizing the common dir");
+    // The script hashes the path from stdin; hashing a file holding exactly
+    // the same bytes is the same object hash, and needs no piped child
+    // (SH-535: every spawned test process is a `ChildGuard`'s).
+    let path_file = fixture.path().join("common-dir-bytes");
+    std::fs::write(&path_file, common_dir.display().to_string()).expect("writing the path bytes");
+    let hash = git(
+        fixture.path(),
+        &["hash-object", &path_file.display().to_string()],
+    );
+    let expected_key = format!("gate.{hash}");
+
+    for cwd in [fixture.path(), worktree.as_path(), alias.as_path()] {
+        assert_eq!(
+            fixture.key_from(cwd, "gate"),
+            expected_key,
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(
+            fixture.lock_from(cwd, "gate"),
+            fixture.lock_root().join(format!("{expected_key}.lock")),
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(
+            fixture.plan_field_from(cwd, "gate", "project"),
+            common_dir.display().to_string(),
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(fixture.plan_field_from(cwd, "gate", "scope"), "project");
+    }
+    assert_ne!(
+        fixture.key_from(fixture.path(), "merge"),
+        expected_key,
+        "merge and gate are different locks of the same project"
+    );
+    assert!(
+        fixture
+            .key_from(fixture.path(), "merge")
+            .starts_with("merge.")
+    );
+}
+
+/// D-B, half one: a second repository is a second project, so its suite does
+/// not wait on this one's. Both fixtures share ONE lock root, which is what
+/// the real default root is (`$HOME`), so the only thing keeping them apart is
+/// the key.
+#[test]
+fn two_repositories_do_not_serialize_on_gate() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "other-ran"]);
+    take.current_dir(other.path());
+    let out = take
+        .output()
+        .expect("taking gate from the other repository");
+    let err = stderr(&out);
+
+    assert_eq!(
+        code(&out),
+        0,
+        "a different repository's gate must be free while this one's is held\nstderr: {err}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("other-ran"),
+        "the command must have run: {out:?}"
+    );
+    assert!(
+        !err.contains("waiting for the 'gate' lock"),
+        "the other repository must not have queued behind this one\nstderr: {err}"
+    );
+    assert_ne!(
+        fixture.lock_from(other.path(), "gate"),
+        fixture.lock("gate"),
+        "the two repositories must resolve two lock directories"
+    );
+
+    holder.release();
+}
+
+/// D-B, half two: a linked worktree is the SAME project, so an interactive
+/// `make test` in any worktree of this clone still queues behind this clone's
+/// verifier — and says who it is waiting for.
+#[test]
+fn two_worktrees_of_one_clone_share_the_gate() {
+    let fixture = Fixture::new();
+    git(
+        fixture.path(),
+        &["commit", "-q", "--allow-empty", "-m", "seed"],
+    );
+    let container = scratch_dir();
+    let worktree = container.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+        ],
+    );
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+    let holder_pid = Holder::pid_recorded(&fixture, fixture.path(), "gate");
+
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"]);
+    take.current_dir(&worktree);
+    let out = take.output().expect("taking gate from the linked worktree");
+    let err = stderr(&out);
+
+    assert_eq!(
+        code(&out),
+        75,
+        "a worktree of the same clone must find the gate held\nstderr: {err}"
+    );
+    assert!(
+        err.contains(&format!("held by pid {holder_pid}")),
+        "the waiter must name the holder\nstderr: {err}"
+    );
+    assert_eq!(fixture.lock_from(&worktree, "gate"), fixture.lock("gate"));
+
+    holder.release();
+}
+
+/// A project-scoped name with no project is refused by name, never widened
+/// to the machine (SH-576: an empty answer is refused, not resolved). The
+/// machine-scoped name from the same directory is fine, which is what proves
+/// the refusal is about scope rather than about the directory.
+#[test]
+fn a_project_scoped_name_outside_a_repository_is_refused() {
+    let fixture = Fixture::new();
+    let plain = scratch_dir();
+
+    for name in ["gate", "merge"] {
+        for args in [
+            vec![name, "--", "true"],
+            vec!["--plan", name, "--", "true"],
+            vec!["--held", name],
+        ] {
+            let mut cmd = fixture.command(&args);
+            cmd.current_dir(plain.path());
+            let out = cmd.output().expect("running from a non-repository");
+            let err = stderr(&out);
+            assert_eq!(code(&out), 2, "{args:?} must refuse: {out:?}");
+            assert!(
+                err.contains(&format!("'{name}' lock is scoped to a project"))
+                    && err.contains("not inside a git repository")
+                    && err.contains(&plain.path().display().to_string()),
+                "{args:?}: the refusal must name the lock, the rule and the directory\nstderr: {err}"
+            );
+        }
+    }
+    assert!(
+        std::fs::read_dir(fixture.lock_root())
+            .expect("reading the lock root")
+            .next()
+            .is_none(),
+        "a refusal must take nothing"
+    );
+
+    let mut cmd = fixture.command(&["release-observer", "--", "true"]);
+    cmd.current_dir(plain.path());
+    let out = cmd.output().expect("taking the machine-scoped name");
+    assert_eq!(
+        code(&out),
+        0,
+        "a machine-scoped name needs no project: {}",
+        stderr(&out)
+    );
+}
+
+/// `release-observer` serializes the one Lima guest, a machine resource: its
+/// key is the bare name from a repository and from a plain directory alike.
+#[test]
+fn release_observer_stays_machine_scoped() {
+    let fixture = Fixture::new();
+    let plain = scratch_dir();
+    for cwd in [fixture.path(), plain.path()] {
+        assert_eq!(
+            fixture.plan_field_from(cwd, "release-observer", "scope"),
+            "machine"
+        );
+        assert_eq!(
+            fixture.plan_field_from(cwd, "release-observer", "project"),
+            "none"
+        );
+        assert_eq!(
+            fixture.key_from(cwd, "release-observer"),
+            "release-observer"
+        );
+        assert_eq!(
+            fixture.lock_from(cwd, "release-observer"),
+            fixture.lock_root().join("release-observer.lock")
+        );
+    }
+}
+
+/// `--held` derives the key exactly as a take would, so it answers about the
+/// project the working directory resolves: yes inside the holder's own
+/// process tree and repository, no from another repository even inside that
+/// tree, no with nothing held — and it is a query, so a trailing word is
+/// refused (SH-357) and the machine-scoped name answers too.
+#[test]
+fn held_answers_for_the_project_the_cwd_resolves() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+    let script = fixture.script();
+
+    let out = fixture.run(&["--held", "gate"]);
+    assert_eq!(code(&out), 1, "nothing is held: {out:?}");
+
+    let out = fixture.run(&["gate", "--", "bash", &script, "--held", "gate"]);
+    assert_eq!(code(&out), 0, "held by this process tree: {out:?}");
+
+    let inner = format!(
+        "cd '{}' && bash '{script}' --held gate",
+        other.path().display()
+    );
+    let out = fixture.run(&["gate", "--", "sh", "-c", &inner]);
+    assert_eq!(
+        code(&out),
+        1,
+        "another repository's gate is not what this tree holds: {out:?}"
+    );
+
+    let out = fixture.run(&["gate", "--", "bash", &script, "--held", "merge"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "merge is a different lock of the same project: {out:?}"
+    );
+
+    let out = fixture.run(&[
+        "release-observer",
+        "--",
+        "bash",
+        &script,
+        "--held",
+        "release-observer",
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a machine-scoped hold is answered too: {out:?}"
+    );
+
+    let out = fixture.run(&["--held", "gate", "extra"]);
+    assert_eq!(code(&out), 2);
+    assert!(stderr(&out).contains("--held takes a lock name and nothing else"));
+    let out = fixture.run(&["--held", "--plan", "gate"]);
+    assert_eq!(code(&out), 2, "{out:?}");
+}
+
+/// Reentrancy is per (name, project): an inherited entry for another
+/// repository's `gate` — or the bare pre-SH-648 spelling — must not let a
+/// take skip the lock it has not actually got.
+#[test]
+fn reentrancy_is_per_project() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+    let other_key = fixture.key_from(other.path(), "gate");
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+
+    for inherited in [other_key.as_str(), "gate"] {
+        let mut take =
+            fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"]);
+        take.env("STORYHOOK_MACHINE_LOCKS", inherited);
+        let out = take.output().expect("taking gate under a foreign entry");
+        let err = stderr(&out);
+        assert_eq!(
+            code(&out),
+            75,
+            "an inherited `{inherited}` is not this project's gate, so the take must contend\nstderr: {err}"
+        );
+        assert!(
+            !err.contains("already held by this process tree"),
+            "inherited `{inherited}`\nstderr: {err}"
+        );
+    }
+
+    let own_key = fixture.key_from(fixture.path(), "gate");
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "ran"]);
+    take.env("STORYHOOK_MACHINE_LOCKS", &own_key);
+    let out = take
+        .output()
+        .expect("taking gate under this project's own entry");
+    assert_eq!(code(&out), 0, "{out:?}");
+    assert!(stderr(&out).contains("already held by this process tree"));
+
+    holder.release();
 }

@@ -188,10 +188,12 @@ pub fn acknowledge_verification_incident<S: Store>(
     ctx: &Ctx<'_, S>,
     incident_id: &str,
 ) -> Result<VerificationIncident, AppError> {
-    let current = ctx.store().read(|tx| tx.verification_incident())?;
+    let current = ctx
+        .store()
+        .read(|tx| tx.verification_incident(ctx.project()))?;
     let Some(current) = current else {
         return Err(AppError::Validation(
-            "no verification incident is active".into(),
+            "no verification incident is active for this project".into(),
         ));
     };
     if !current.halted {
@@ -205,11 +207,10 @@ pub fn acknowledge_verification_incident<S: Store>(
             current.incident_id
         )));
     }
-    if current.project != ctx.project() {
-        return Err(AppError::Validation(format!(
-            "verification incident `{incident_id}` belongs to another project"
-        )));
-    }
+    // The read above is keyed by this project (SH-648), so an incident of
+    // another project can only ever answer as "stale" here — but the
+    // invariant is stated, not assumed.
+    debug_assert_eq!(current.project, ctx.project());
     ctx.store().write(|tx| {
         tx.clear_verification_incident(incident_id)?;
         Ok(())
@@ -233,13 +234,20 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         Ok(self.ordered()?.into_iter().next())
     }
 
-    /// Returns every submitted story across every project, in the exact order
-    /// [`Self::next`] would drain them (SH-524): priority, then creation time,
-    /// then project/story identity. A queued candidate's position and wait are
-    /// computed from this list, never re-derived from a second query that
-    /// could race the one [`Self::next`] itself used.
+    /// Returns every submitted story across every project, in one global
+    /// order (SH-524): priority, then creation time, then project/story
+    /// identity. Each project's worker drains [`Self::ordered_for`]; this is
+    /// the cross-project view.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
+    }
+
+    /// Returns one project's submitted stories in the exact order its worker
+    /// drains them (SH-648). A queued candidate's position and wait are
+    /// computed from this list, never re-derived from a second query that
+    /// could race the one the worker itself used.
+    pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| ordered_candidates_for(tx, project))?)
     }
 
     /// Returns this story's current submitted generation, if it still has one.
@@ -248,9 +256,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         candidate: &VerificationCandidate,
     ) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
-            Ok(ordered_candidates(tx)?.into_iter().find(|current| {
-                current.project == candidate.project && current.story_id == candidate.story_id
-            }))
+            Ok(ordered_candidates_for(tx, candidate.project)?
+                .into_iter()
+                .find(|current| current.story_id == candidate.story_id))
         })?)
     }
 
@@ -521,7 +529,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             }
             let incident_id = format!("{}:{}", candidate.project.get(), generation.get());
             let mut incident = tx
-                .verification_incident()?
+                .verification_incident(project)?
                 .filter(|current| current.incident_id == incident_id)
                 .unwrap_or(VerificationIncident {
                     incident_id,
@@ -625,63 +633,91 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
-    /// Returns a completed story whose post-merge resources still need reap.
-    ///
-    /// Active verification is intentionally queried separately and first by
-    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    /// Returns a completed story, in any project, whose post-merge resources
+    /// still need reap. Each project's worker asks [`Self::next_cleanup_for`];
+    /// this is the cross-project view.
     pub fn next_cleanup(&self) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = Vec::new();
             for project in tx.projects()? {
-                let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
-                let links = tx.pr_links(project.id)?;
-                let rows =
-                    tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
-                for row in rows {
-                    let passed = row
-                        .snapshot
-                        .comments
-                        .iter()
-                        .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-                    let reaped = row.snapshot.comments.iter().any(|comment| {
-                        comment
-                            .text
-                            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-                    });
-                    if !passed || reaped {
-                        continue;
-                    }
-                    let pull_request = links
-                        .iter()
-                        .find(|(story_no, link)| {
-                            *story_no == row.story_no
-                                && link.close_on_merge
-                                && link.status == "merged"
-                        })
-                        .map(|(_, link)| link.clone())
-                        .ok_or(VerificationProblem::MissingPullRequest);
-                    candidates.push(VerificationCandidate {
-                        project: project.id,
-                        project_slug: project.slug.clone(),
-                        story_id: row.story_no.to_id(&project.prefix),
-                        title: row.title,
-                        priority: row.priority,
-                        created_at: row.created_at,
-                        // The cleanup pass runs over stories already `done` —
-                        // there is no queue wait left to report.
-                        verifying_since: None,
-                        verifying_generation: None,
-                        checkout: checkout.clone(),
-                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
-                        pull_request,
-                    });
-                }
+                candidates.extend(cleanup_candidates_for(tx, project.id)?);
             }
             sort_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
 
+    /// Returns one project's completed story whose post-merge resources still
+    /// need reap.
+    ///
+    /// Active verification is intentionally queried separately and first by
+    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    pub fn next_cleanup_for(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| {
+            let mut candidates = cleanup_candidates_for(tx, project)?;
+            sort_candidates(&mut candidates);
+            Ok(candidates.into_iter().next())
+        })?)
+    }
+}
+
+/// One project's `done` stories that passed central verification and have
+/// not yet been reaped (SH-648: the cleanup pass is per project, like the
+/// queue it follows).
+fn cleanup_candidates_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, StoreError> {
+    let mut candidates = Vec::new();
+    if let Some(project) = tx.project(project)? {
+        let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
+        let links = tx.pr_links(project.id)?;
+        let rows = tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
+        for row in rows {
+            let passed = row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
+            let reaped = row.snapshot.comments.iter().any(|comment| {
+                comment
+                    .text
+                    .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
+            });
+            if !passed || reaped {
+                continue;
+            }
+            let pull_request = links
+                .iter()
+                .find(|(story_no, link)| {
+                    *story_no == row.story_no && link.close_on_merge && link.status == "merged"
+                })
+                .map(|(_, link)| link.clone())
+                .ok_or(VerificationProblem::MissingPullRequest);
+            candidates.push(VerificationCandidate {
+                project: project.id,
+                project_slug: project.slug.clone(),
+                story_id: row.story_no.to_id(&project.prefix),
+                title: row.title,
+                priority: row.priority,
+                created_at: row.created_at,
+                // The cleanup pass runs over stories already `done` —
+                // there is no queue wait left to report.
+                verifying_since: None,
+                verifying_generation: None,
+                checkout: checkout.clone(),
+                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                pull_request,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+impl<S: Store> VerificationQueue<'_, S> {
     /// Records the verifier-observed merge and closes the submitted story.
     ///
     /// The exact PR URL is checked inside the write transaction. A stale
@@ -796,10 +832,10 @@ fn clear_candidate_incident(
     tx: &mut impl WriteOps,
     candidate: &VerificationCandidate,
 ) -> Result<(), StoreError> {
-    if let Some(incident) = tx.verification_incident()?.filter(|incident| {
-        incident.project == candidate.project
-            && candidate.verifying_generation == Some(incident.generation)
-    }) {
+    if let Some(incident) = tx
+        .verification_incident(candidate.project)?
+        .filter(|incident| candidate.verifying_generation == Some(incident.generation))
+    {
         tx.clear_verification_incident(&incident.incident_id)?;
     }
     Ok(())
@@ -850,14 +886,33 @@ fn verifying_entry(
 }
 
 /// Every submitted story across every project, read from an existing
-/// transaction. The dashboard combines this queue snapshot with its story
-/// snapshot in one transaction; [`VerificationQueue::ordered`] delegates here
-/// so verifier and dashboard ordering cannot drift (SH-549).
+/// transaction, in one global order. Kept for the surfaces that look across
+/// projects; each project's own worker and dashboard use
+/// [`ordered_candidates_for`], which is what this concatenates (SH-648).
 pub(crate) fn ordered_candidates(
     tx: &impl ReadOps,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     let mut candidates = Vec::new();
     for project in tx.projects()? {
+        candidates.extend(ordered_candidates_for(tx, project.id)?);
+    }
+    sort_candidates(&mut candidates);
+    Ok(candidates)
+}
+
+/// One project's submitted stories, read from an existing transaction, in
+/// the order its verifier drains them. The dashboard combines this queue
+/// snapshot with its story snapshot in one transaction;
+/// [`VerificationQueue::ordered_for`] delegates here so verifier and dashboard
+/// ordering cannot drift (SH-549). A project the store does not know yields
+/// an empty queue rather than an error: a worker whose project was deleted
+/// reads that as "nothing to do" and retires itself.
+pub(crate) fn ordered_candidates_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    let mut candidates = Vec::new();
+    if let Some(project) = tx.project(project)? {
         let checkout = tx.checkout_path(project.id)?;
         let registered =
             super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);

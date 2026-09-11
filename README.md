@@ -1037,8 +1037,9 @@ make scratch       # a shell with a throwaway store and this checkout's binary
 ```
 
 `make test` rather than a bare `cargo test`: the wrapper isolates the data
-directory, contains the daemons the suite starts, and takes a machine-wide lock
-so two suites do not contend. A bare `cargo test` is safe — a test build refuses
+directory, contains the daemons the suite starts, and takes the repository's
+`gate` lock so two suites of one clone do not contend (a different repository
+has its own). A bare `cargo test` is safe — a test build refuses
 to resolve a real store — but it is not the gate.
 
 `make scratch` is how to exercise a change by hand. `./target/debug/story`, run
