@@ -1710,9 +1710,12 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
             &base,
         ],
     );
-    assert_ok(&marker_repair, "reusing a healthy verifier with an old marker");
-    let payload: serde_json::Value = serde_json::from_slice(&marker_repair.stdout)
-        .expect("the marker repair must return JSON");
+    assert_ok(
+        &marker_repair,
+        "reusing a healthy verifier with an old marker",
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&marker_repair.stdout).expect("the marker repair must return JSON");
     assert_eq!(payload["result"], "verifier-worktree-ready");
     assert!(
         sentinel.exists(),
