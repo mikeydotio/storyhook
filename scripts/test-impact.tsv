@@ -80,6 +80,8 @@ orphan_check	:(glob)**/*
 plugin_contract	:(glob)**/*
 plugin_install	:(glob)**/*
 plugin_skill_determinism	:(glob)**/*
+portable_receipt	:(glob)scripts/*
+portable_receipt	build.rs
 portfile_fixture_hygiene	:(glob)**/*
 portfile_fixture_hygiene	:(glob)tests/**/*.rs
 press_gate_failsafe	:(glob)**/*

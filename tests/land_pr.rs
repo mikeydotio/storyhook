@@ -58,6 +58,7 @@ impl LandRepo {
             "machine-lock.sh",
             "merge-preflight.sh",
             "gate-receipt.sh",
+            "tree-receipt.sh",
             "tracked-tree.sh",
         ] {
             std::os::unix::fs::symlink(

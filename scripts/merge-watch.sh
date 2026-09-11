@@ -298,6 +298,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
         # statement of record. The names below are scrubbed because each
         # would make the gate answer about the wrong object store, the wrong
         # daemon store, the wrong project, or with a token it must not hold.
+        # The gate chooses when it certifies; the bundle supplies the writer.
+        # Set it here rather than trusting an inherited path from another run.
         exec env -u GIT_OBJECT_DIRECTORY \
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
@@ -305,6 +307,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u GH_TOKEN \
             -u GITHUB_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
+            STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
             "$@"
     ) <&3 &
     child=$!
