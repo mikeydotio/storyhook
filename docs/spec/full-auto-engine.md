@@ -2155,7 +2155,8 @@ run's notice; it is not coupled to the timed notice stack.
 blocked story. An engine lane remains occupied while the daemon-owned,
 machine-wide verifier orders submitted work, predicts the exact merge tree,
 runs the release gate, validates its content-addressed receipt, and lands the
-PR. Success moves the story to the configured completion state and reaps its
+PR. Success moves the story to the completion state — the required `done`
+(`domain::completion_state`, SH-652) — and reaps its
 submitted workspace; the engine then observes that completion and frees the
 lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and

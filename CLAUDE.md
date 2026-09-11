@@ -1836,6 +1836,28 @@ Standing rules for every wave:
   budget; `plugins/story/tests/lib.sh` now puts the fake on `PATH` for every test, the
   SH-263 rule for its state. Design of record: `docs/spec/test-tiers.md` "The compile bound";
   `docs/spec/full-auto-engine.md`'s SH-655 As-built.
+- **The completion state is named, never searched for — and never an environment knob
+  the daemon cannot see** (SH-652). The verifier wrote the required `done` (SH-521), the
+  helper's `reap` accepted only the project's *first* CLOSED state or `$STORY_DONE_STATE`,
+  the scaffolded `AGENTS.md` named the first CLOSED state, and `story pr-check` searched a
+  `BTreeMap` and so closed every merged story into `closed` — abandonment — on every
+  default catalog, under three comments claiming catalog order protected it. Four
+  spellings of one fact. Now one: `domain::COMPLETION_STATE_SLUG`, resolved by
+  `domain::completion_state` (the catalog's `done` while CLOSED; `None` below the floor,
+  on which a writer refuses and the template renders the constant), spelled in
+  `story.sh` as a constant the way `verifying` is and pinned equal by
+  `tests/plugin_contract.rs`. D-G in `docs/spec/verification-workflow.md` said "first
+  CLOSED state, `STORY_DONE_STATE` override"; a council (`story show SH-652`, SH-363)
+  chose the required slug instead, because since SH-114 the helper's reap runs with the
+  **daemon's** environment and one daemon serves every project, so an env override is one
+  client disagreeing with the verifier about one store fact — the defect itself, in the
+  SH-404/SH-411 shape — and because catalog order is documented as layout (`story help
+  state`), not outcome. `STORY_DONE_STATE` is refused by name if set (SH-357, presence not
+  content per SH-534). `tests/completion_state_search.rs` fences the class — every `.find(`
+  on `SuperState::Closed` in `src/` must sit inside the resolver, keyed on the enclosing
+  function (SH-345), mutation-checked both ways — and says its limit is lexical, which is
+  why each consumer also carries a straddle test: `shipped` first by position, `abandoned`
+  first by name, `done` still the answer.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).
