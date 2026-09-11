@@ -3,7 +3,8 @@
 //! `scripts/verify-pr.sh` and the scripts it reaches through its own
 //! directory — `merge-watch.sh`, `merge-preflight.sh`, `land-pr.sh`,
 //! `machine-lock.sh`, `gate-progress.sh`, `verify-window.sh`,
-//! `activity-log.sh`, `activity-run.py`, `test_output.py` — are compiled
+//! `activity-log.sh`, `activity-run.py`, `test_output.py`, `tree-receipt.sh`,
+//! `tracked-tree.sh` — are compiled
 //! into the binary by `build.rs` (`VERIFIER_SCRIPTS`) and written here before
 //! a verification runs. Until SH-654 the daemon spawned
 //! `scripts/verify-pr.sh` relative to the **registered project's checkout**,
