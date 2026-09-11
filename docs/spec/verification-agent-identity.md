@@ -22,6 +22,10 @@ identity from a window name, a generic process name, or a SessionStart sentinel.
 - Register only the exact pane returned by dispatch, after provider readiness
   and before its story charter. Registration failure follows the existing
   pre-charter ownership-aware rollback and preserves diagnostics.
+- Rollback requires the native start token captured at launch. Check it before
+  any signal and again before terminal teardown; missing or changed evidence
+  preserves the process, worktree, and claim. Recheck native start tokens for
+  owned processes before later signals so PID reuse cannot authorize cleanup.
 - Notification selects one unique matching pane, irrespective of active splits.
   A verification cleanup lease constrains its socket and worktree when present.
   Otherwise, untagged recovery requires an exact conventional story worktree

@@ -209,6 +209,27 @@ int main(int argc, char **argv) {
         self.assertEqual(record["worktree"], str(self.worktree.resolve()))
         self.assertTrue(record["process"]["start"])
 
+    def assert_rollback_refuses(self, token):
+        """Unproved launch ownership must leave a real terminal process running."""
+        pid = self.tmux("display-message", "-p", "-t", self.pane, "#{pane_pid}").strip()
+        result = self.run_command(["python3", str(PLUGIN / "lib/stop-dispatch-pane.py"),
+                                   self.pane, pid, token])
+        receipt = json.loads(result.stdout)
+        self.assertFalse(receipt["ok"], receipt)
+        self.assertIn("launch start", receipt["error"])
+        os.kill(int(pid), 0)
+        self.assertNotIn("T", self.run_command(["ps", "-o", "stat=", "-p", pid]).stdout)
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_rollback_refuses_reused_pid_with_stale_start(self):
+        """A matching PID with another start time cannot authorize termination."""
+        self.assert_rollback_refuses("earlier-launch")
+
+    def test_rollback_refuses_missing_launch_start(self):
+        """Cleanup cannot invent ownership when the launch probe failed."""
+        self.assert_rollback_refuses("")
+
     def test_reused_pid_during_startup_cannot_register(self):
         """The PID must still have the incarnation captured before readiness."""
         pid = self.tmux("display-message", "-p", "-t", self.pane, "#{pane_pid}").strip()
