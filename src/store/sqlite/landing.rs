@@ -8,7 +8,7 @@ pub(super) fn read(conn: &Connection) -> Result<Vec<LandingIntent>, StoreError> 
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| StoreError::from_sqlite(e, "reading landing schema version"))?;
     // Old schema fixtures and read-only historical stores have no intents.
-    if version < 35 {
+    if version < 38 {
         return Ok(Vec::new());
     }
     let mut stmt = conn

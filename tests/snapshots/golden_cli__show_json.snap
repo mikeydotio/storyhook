@@ -211,7 +211,7 @@ source: tests/golden_cli.rs
           "priority": "low",
           "priority_assessed": true,
           "relationships": [],
-          "state": "closed",
+          "state": "dropped",
           "story_type": "chore",
           "superstate": "CLOSED",
           "title": "Old approach: file-per-story",

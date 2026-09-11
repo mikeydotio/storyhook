@@ -28,10 +28,13 @@ fn scaffold_agents_md_targets_the_repository_default_branch() {
         .args(["scaffold", "agents-md"])
         .assert()
         .success()
+        // SH-647: the verifier opens the PR, against the repository's default
+        // branch; the agent is told not to push or open one itself.
         .stdout(predicate::str::contains(
-            "create a PR against the repository's default branch",
+            "opens a PR against the repository's default branch",
         ))
-        .stdout(predicate::str::contains("create a PR against `main`").not());
+        .stdout(predicate::str::contains("create a PR against `main`").not())
+        .stdout(predicate::str::contains("Do not push or open a PR"));
 }
 
 #[test]

@@ -24,7 +24,7 @@ claim the epic or launch a Codex pane directly. Show `display` and stop. Without
 helper refuses and names the engine remedy. Never add the engine-private `--full-auto` lane
 marker here.
 
-- `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. The helper refuses before prompt delivery when the
+- `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. The helper refuses before story-charter delivery when the
   story, worktree, Codex process, readiness proof, or Plan-mode footer is unsafe.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
@@ -42,11 +42,24 @@ confirms that dialog disappeared. Automatic workspace-write review handles
 later tool approvals; the trusted packaged hook refuses
 `request_user_input` so the unattended session cannot wait for a person. A
 custom `STORY_LAUNCH_CMD` remains wholesale and is reported as potentially
-weakening that guarantee. Before arming the watcher or delivering the prompt,
-the helper requires a protocol-2 SessionStart sentinel whose `plugin_root`
-exactly matches the package that owns the helper. Missing, legacy, malformed,
-or mismatched hooks refuse and roll back. Attended dispatch is unchanged and
-continues to use screen readiness.
+weakening that guarantee. Autonomous dispatch first confirms the original live
+Codex process and Plan mode, then submits one task-free initialization turn:
+Codex invokes SessionStart only when its first turn begins. The matching packaged
+hook returns `continue:false`, suppressing ordinary context and stopping that turn
+before model work. A private attempt receipt binds the hook root, session and turn;
+the transcript must separately confirm completion with no assistant/tool work.
+Only then does the helper arm the watcher and deliver the story charter once.
+
+The protocol-2 SessionStart sentinel must still name the exact package that owns
+the helper. Missing, legacy, malformed, or mismatched hooks, an incomplete stopped
+turn, or incompatible launch overrides refuse before the charter. The refusal
+includes the initialization phase, reason and captured pane tail. Before rolling
+back new Git resources and the claim, the helper terminates the exact owned startup
+pane and its descendants. Uncertain ownership or cleanup preserves resources and
+reports the failure. Existing work and claims remain preserved on resume/force.
+Attended Codex continues to use screen readiness. See
+[the initialization contract](../../../docs/spec/codex-dispatch-initialization.md)
+for compatibility evidence and the failure matrix.
 
 Codex can surface a Claude-compatible `ExitPlanMode` hook event, but a bare
 `permissionDecision: "allow"` is unsupported and is not its plan-approval
@@ -57,6 +70,15 @@ that exact plan to the story its first implementation step. Custom `STORY_PROMPT
 `STORY_AUTO_PROMPT`, and `STORY_AUTO_PROMPT_SOLO` values are wholesale overrides
 and must carry any equivalent requirement themselves; `STORY_PROMPT_EXTRA` still
 appends after the built-in requirement.
+
+SH-676 supplements that menu with a synchronous, autonomous-only Codex Stop hook.
+A bounded, tool-free Luna classifier recognizes completed plans awaiting prose
+approval. In Default mode it supplies native continuation; in Plan mode it asks
+for the same plan in `proposed_plan` tags so the existing menu watcher can approve.
+Session/story checks and a persistent receipt allow at most one prose continuation.
+The classifier capability contract is currently verified only for Codex 0.154.0;
+other runtimes emit a diagnostic and retain the native menu path. See
+[the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
 
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.

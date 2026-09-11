@@ -22,10 +22,16 @@
 
 use std::path::{Path, PathBuf};
 
+use std::process::Command;
+
 use storyhook::daemon::verification::{ShellVerificationActuator, VerificationActuator};
-use storyhook::domain::Priority;
+use storyhook::domain::{
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, TmuxCleanupTarget,
+};
 use storyhook::service::verification::{VerificationCandidate, VerificationProblem};
-use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir, story_binary};
+use storyhook_test_support::{
+    ChildGuard, FIXTURE_NOW, STORY_COMMAND_DEADLINE, ServiceFixture, scratch_dir, story_binary,
+};
 
 /// A candidate the verifier can `notify` about; no lease, no pull request —
 /// the helper is a stub and only its environment is under test.
@@ -235,5 +241,153 @@ fn a_store_is_published_to_a_child_only_through_child_vars() {
     assert!(
         storyhook_test_support::without_rust_comments(&door_text).contains("STORYHOOK_STORE_PATH"),
         "the door no longer names the variable; the scan is checking the wrong shape"
+    );
+}
+
+/// A leased candidate the verifier can `submit` (SH-647).
+fn leased_candidate(fixture: &ServiceFixture, repository: &Path) -> VerificationCandidate {
+    let mut candidate = candidate(fixture, repository);
+    candidate.cleanup_lease = Some(StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: "SH-1".into(),
+        repository_path: repository.to_path_buf(),
+        worktree_path: repository.join(".codex/worktrees/SH-1"),
+        branch: "worktree-SH-1".into(),
+        tmux: TmuxCleanupTarget {
+            socket_path: repository.join("tmux.sock"),
+        },
+    });
+    candidate
+}
+
+/// A `submit` helper that records its environment to `record` and answers a
+/// receipt the daemon accepts for whatever lease it was handed.
+fn env_recording_submit_helper(dir: &Path, record: &Path) -> PathBuf {
+    let script = dir.join("story.sh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/usr/bin/env bash
+/usr/bin/env > '{record}'
+lease="$STORYHOOK_REAP_LEASE_V1"
+story=$(printf '%s' "$lease" | jq -r .story_id)
+jq -n --argjson lease "$lease" --arg story "$story" \
+  '{{ok:true,receipt_version:1,story_id:$story,lease:$lease,pushed:true,
+     pull_request:{{url:"https://github.com/acme/widgets/pull/7",number:7,base:"dev",head_oid:"0123abcd",adopted:false}},
+     display:"fixture submission"}}'
+"#,
+            record = record.display()
+        ),
+    )
+    .expect("writing the helper stub");
+    script
+}
+
+/// The verifier's `submit` door is the one helper child that must reach
+/// GitHub, so it runs under the submission allowlist: the store and state home
+/// like every other door, the lease and the prompt guards the daemon adds, the
+/// operator's GitHub credential — and nothing else the daemon happened to
+/// inherit. The parent's environment is controlled by re-executing this test
+/// binary with exactly the variables under test set, the way
+/// `tests/dispatch_tmux_context.rs` controls its tmux identity; `set_var` in a
+/// threaded test process would race every other test's `Command` spawn.
+#[test]
+fn the_submit_door_hands_its_child_the_lease_and_the_github_credential_and_nothing_else() {
+    const RESULT_ENV: &str = "STORYHOOK_SUBMIT_ENV_PROBE_RESULT";
+    if let Some(result_path) = std::env::var_os(RESULT_ENV) {
+        let fixture = ServiceFixture::new();
+        let scratch = scratch_dir();
+        let record = scratch.path().join("env.txt");
+        let helper = env_recording_submit_helper(scratch.path(), &record);
+        let actuator = ShellVerificationActuator::with_paths(
+            fixture.env().clone(),
+            helper,
+            story_binary().to_path_buf(),
+        );
+        let candidate = leased_candidate(&fixture, scratch.path());
+        let submitted = actuator.submit(&candidate);
+        let seen = recorded_env(&record);
+        std::fs::write(
+            result_path,
+            serde_json::json!({
+                "error": submitted.err().map(|failure| format!("{failure:?}")),
+                "seen": seen,
+                "lease": candidate.cleanup_lease,
+                "store_path": fixture.env().store_path(),
+            })
+            .to_string(),
+        )
+        .expect("probe result");
+        return;
+    }
+
+    let scratch = scratch_dir();
+    let result_path = scratch.path().join("observed.json");
+    let mut command = Command::new(std::env::current_exe().expect("this test executable"));
+    command
+        .args([
+            "--exact",
+            "the_submit_door_hands_its_child_the_lease_and_the_github_credential_and_nothing_else",
+            "--nocapture",
+        ])
+        .env(RESULT_ENV, &result_path)
+        .env("GH_TOKEN", "fixture-github-token")
+        .env("OPENAI_API_KEY", "must-not-reach-the-helper")
+        .env("STORY_AGENT", "claude");
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("probe subprocess")
+        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "the submit environment probe did not finish".into()
+        });
+    assert!(
+        output.status.success(),
+        "probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&result_path).expect("probe result"))
+            .expect("probe result is JSON");
+    assert!(
+        observed["error"].is_null(),
+        "the stub's receipt must be accepted: {}",
+        observed["error"]
+    );
+    let seen = &observed["seen"];
+    assert_eq!(
+        seen["GH_TOKEN"], "fixture-github-token",
+        "the submission child must be able to reach GitHub; the daemon's GH_TOKEN did not arrive"
+    );
+    assert!(
+        seen.get("OPENAI_API_KEY").is_none(),
+        "an unrelated secret reached the submission helper: the environment was inherited, not rebuilt"
+    );
+    assert!(
+        seen.get("STORY_AGENT").is_none(),
+        "STORY_AGENT is the dispatched agent's identity, never the verifier's"
+    );
+    assert_eq!(seen["GH_PROMPT_DISABLED"], "1");
+    assert_eq!(seen["GIT_TERMINAL_PROMPT"], "0");
+    assert_eq!(
+        seen["STORYHOOK_STORE_PATH"], observed["store_path"],
+        "the store was published beside the state home"
+    );
+    assert!(
+        seen.get("XDG_STATE_HOME").is_some(),
+        "the state home travels with the store (SH-633)"
+    );
+    assert!(
+        seen.get("STORY_BIN").is_some(),
+        "the helper must run the daemon's own `story`"
+    );
+    let lease_seen: serde_json::Value = serde_json::from_str(
+        seen[CLEANUP_LEASE_ENV]
+            .as_str()
+            .expect("the lease rides the private variable"),
+    )
+    .expect("the lease is JSON");
+    assert_eq!(
+        lease_seen, observed["lease"],
+        "the child was handed the exact lease"
     );
 }

@@ -249,7 +249,7 @@ Usage:
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
   story store new <path>                           (create an empty store beside the default one)
   story store backup [--label <text>]              (safe, on-demand backup of the ambient store)
-  story load-context [--format markdown|json]
+  story load-context [--format markdown|json] [--story <id>]
   story handoff [--since <duration>]
   story phase list
   story phase show <N>
@@ -598,10 +598,9 @@ pub enum Invocation {
     /// is that the store will not open, or opens read-only, so a verb that
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
-    /// `story lane-budget` — the machine lane budget and the live agent
-    /// windows counted against it (SH-655). Store-free and daemon-free on
-    /// purpose: `cmd_dispatch` asks it before any claim exists, from inside
-    /// the operator's own tmux, whose server the daemon may not share.
+    /// `story lane-budget` — an informational census of live agent
+    /// windows (SH-672). Store-free and daemon-free so the operator reads
+    /// their own tmux server, which the daemon may not share.
     LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
@@ -740,7 +739,10 @@ pub enum Invocation {
         dry_run: bool,
     },
     Context {
+        /// Output format; omission preserves the ordinary Markdown briefing.
         format: Option<String>,
+        /// Include complete obviation-review evidence relative to this story.
+        story: Option<String>,
     },
     Handoff {
         since: Option<String>,
@@ -2004,12 +2006,12 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "load-context",
         subcommand: None,
-        flags: &[value("format")],
+        flags: &[value("format"), value("story")],
     },
     VerbFlags {
         verb: "context",
         subcommand: None,
-        flags: &[value("format")],
+        flags: &[value("format"), value("story")],
     },
     VerbFlags {
         verb: "graph",
@@ -3801,8 +3803,9 @@ fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     let mut format = None;
+    let mut story = None;
     let mut index = 1;
-    let usage = "usage: story load-context [--format markdown|json]";
+    let usage = "usage: story load-context [--format markdown|json] [--story <id>]";
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
@@ -3812,12 +3815,20 @@ fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
                 format = Some(value.clone());
                 index += 2;
             }
+            "--story" if story.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                story = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
-    Ok(Invocation::Context { format })
+    Ok(Invocation::Context { format, story })
 }
 
 fn validate_phase_number(s: &str) -> Result<(), AppError> {
@@ -4920,9 +4931,9 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// deliberately not completed, keeping it and everything it records.
 ///
 /// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
-/// it moves to is a real one ([`crate::domain::CLOSED_STATE_SLUG`]) and the
+/// it moves to is a real one ([`crate::domain::DROPPED_STATE_SLUG`]) and the
 /// reason is a real comment, so this needs no new event kind, no new snapshot
-/// field, no dispatch arm, and no MCP or wire surface — `story move <id> closed
+/// field, no dispatch arm, and no MCP or wire surface — `story move <id> dropped
 /// "<reason>"` does exactly the same thing and is the same story afterwards.
 ///
 /// What the sugar adds is the requirement: `move` takes an optional comment,
@@ -4944,7 +4955,7 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     }
     Ok(Invocation::SetState {
         id: args[1].clone(),
-        state: crate::domain::CLOSED_STATE_SLUG.to_string(),
+        state: crate::domain::DROPPED_STATE_SLUG.to_string(),
         comment: Some(reason),
         if_state: None,
         awaiting: None,

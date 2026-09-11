@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CLOSED_STATE_SLUG, COMPLETION_STATE_SLUG, StateDef, StoryEvent, StoryIndex, StorySnapshot,
+    COMPLETION_STATE_SLUG, DROPPED_STATE_SLUG, StateDef, StoryEvent, StoryIndex, StorySnapshot,
     SuperState, fold_story,
 };
 use crate::error::AppError;
@@ -53,7 +53,7 @@ pub fn validate_append(
                 | StoryEvent::StoryClosedAndArchived { state, .. }
                     if state != "blocked" =>
                 {
-                    Some(state.as_str())
+                    Some(super::state_rename::historical_slug(state, &map))
                 }
                 _ => None,
             })
@@ -81,7 +81,7 @@ pub fn validate_transition(
     states: &[StateDef],
     index: &impl StoryIndex,
 ) -> Result<(), AppError> {
-    if target == story.state || target == CLOSED_STATE_SLUG || target == "blocked" {
+    if target == story.state || target == DROPPED_STATE_SLUG || target == "blocked" {
         return Ok(());
     }
     let blockers = open_blockers(story, index);
@@ -100,7 +100,7 @@ pub fn validate_transition(
     };
     if target == COMPLETION_STATE_SLUG || position(target)? > position(source)? {
         return Err(AppError::Validation(format!(
-            "story `{}` cannot advance from `{}` to `{target}` while blocked by {}; move to `closed` to abandon it",
+            "story `{}` cannot advance from `{}` to `{target}` while blocked by {}; move to `dropped` to abandon it",
             story.id,
             story.state,
             blockers.join(", ")

@@ -48,7 +48,7 @@ out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$ab" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "abandonment: ok:false"
 assert_eq "$(jqf "$out" .reason)" "not-completion-state" \
   "abandonment: reason distinguishes closure from completion"
-assert_eq "$(jqf "$out" .state)" "closed" "abandonment: reports the state found"
+assert_eq "$(jqf "$out" .state)" "dropped" "abandonment: reports the state found"
 assert_eq "$(jqf "$out" .completion_state)" "done" \
   "abandonment: reports the state required"
 [ -d "$repo/.claude/worktrees/$wab" ] \
@@ -141,7 +141,7 @@ custom=$(new_story "$repo" "Custom closed state is not completion")
 wcustom=$(mk_dispatched "$repo" "$custom")
 (cd "$repo" \
   && story state add shipped --super CLOSED >/dev/null \
-  && story state reorder todo,in-progress,verifying,blocked,shipped,done,closed >/dev/null \
+  && story state reorder todo,in-progress,verifying,blocked,shipped,done,dropped >/dev/null \
   && story move "$custom" shipped >/dev/null)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "shipped-first catalog: a story in shipped is refused"

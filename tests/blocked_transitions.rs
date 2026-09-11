@@ -38,7 +38,7 @@ fn forward_move_refuses_with_context_and_without_appending() {
         .set_state(&story, "in-progress", None, None, None)
         .expect_err("an open blocker must prevent advancement")
         .to_string();
-    for expected in [&story, &blocker, "todo", "in-progress", "closed"] {
+    for expected in [&story, &blocker, "todo", "in-progress", "dropped"] {
         assert!(error.contains(expected), "missing {expected}: {error}");
     }
     let after = fixture
@@ -50,13 +50,13 @@ fn forward_move_refuses_with_context_and_without_appending() {
 
 #[test]
 fn abandonment_is_allowed_but_completion_is_not() {
-    for target in ["closed", "done"] {
+    for target in ["dropped", "done"] {
         let fixture = ServiceFixture::new();
         let (story, _) = blocked(&fixture, "verifying");
         let result = StoryService::new(&fixture.ctx()).set_state(&story, target, None, None, None);
         assert_eq!(
             result.is_ok(),
-            target == "closed",
+            target == "dropped",
             "target {target}: {result:?}"
         );
     }
@@ -102,6 +102,52 @@ fn closing_the_blocker_restores_forward_moves() {
     service
         .set_state(&story, "verifying", None, None, None)
         .unwrap();
+}
+
+#[test]
+fn migrated_abandonment_history_preserves_the_position_before_blocked() {
+    use std::collections::BTreeMap;
+    use storyhook::domain::transition::validate_append;
+    let fixture = ServiceFixture::new();
+    let (id, _) = blocked(&fixture, "todo");
+    let (mut history, states, index) = fixture
+        .store()
+        .read(|tx| {
+            Ok((
+                tx.events_for(fixture.project(), StoryNo::parse_id("SH", &id)?)?
+                    .into_iter()
+                    .filter_map(|e| e.known().cloned())
+                    .collect::<Vec<_>>(),
+                tx.states(fixture.project())?,
+                tx.stories(fixture.project(), &storyhook::store::StoryQuery::all())?
+                    .into_iter()
+                    .map(|r| (r.snapshot.id.clone(), r.snapshot))
+                    .collect::<BTreeMap<_, _>>(),
+            ))
+        })
+        .unwrap();
+    history.extend(
+        ["closed", "blocked"].map(|state| StoryEvent::StoryStateChanged {
+            at: storyhook_test_support::FIXTURE_NOW.into(),
+            state: state.into(),
+        }),
+    );
+    for (target, allowed) in [
+        ("todo", true),
+        ("verifying", true),
+        ("dropped", true),
+        ("done", false),
+    ] {
+        let proposed = [StoryEvent::StoryStateChanged {
+            at: storyhook_test_support::FIXTURE_NOW.into(),
+            state: target.into(),
+        }];
+        assert_eq!(
+            validate_append(&id, &history, &proposed, &states, &index).is_ok(),
+            allowed,
+            "{target}"
+        );
+    }
 }
 
 #[test]
@@ -163,7 +209,7 @@ fn domain_admission_uses_catalog_order_and_exact_abandonment() {
                     let forward = states.iter().position(|s| s.slug == target.slug)
                         > states.iter().position(|s| s.slug == source.slug);
                     let allowed = target.slug == source.slug
-                        || target.slug == "closed"
+                        || target.slug == "dropped"
                         || target.slug == "blocked"
                         || (target.slug != "done" && !forward);
                     assert_eq!(
@@ -280,7 +326,7 @@ fn command_line_move_refuses_a_blocker_and_preserves_the_state() {
         .failure();
     let error = String::from_utf8_lossy(&output.get_output().stderr);
     assert!(
-        error.contains("SH-2") && error.contains("closed"),
+        error.contains("SH-2") && error.contains("dropped"),
         "{error}"
     );
     env.story(dir.path())

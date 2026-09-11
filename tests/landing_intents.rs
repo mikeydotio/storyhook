@@ -9,6 +9,65 @@ use storyhook_test_support::ServiceFixture;
 
 const PR: &str = "https://github.com/acme/widgets/pull/1";
 
+#[test]
+fn pending_landing_recovery_respects_project_and_stop_permission() {
+    use storyhook::daemon::verification::VerificationActivity;
+    use storyhook::service::verification_control::VerificationAction;
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let q = VerificationQueue::new(f.store());
+    let candidate = q.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = q
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("expected admission");
+    };
+    let other = f.add_project("gadgets", "GD");
+    let actuator = RacingActuator {
+        fixture: &f,
+        blocker: None,
+        replacement: false,
+        uncertain: false,
+        recovered: true,
+        landed: Mutex::new(Vec::new()),
+    };
+    assert_eq!(
+        tick_with(f.store(), f.env(), &actuator, other).unwrap(),
+        TickResult::Idle
+    );
+    assert_eq!(
+        f.store().read(|tx| tx.landing_intents()).unwrap(),
+        std::slice::from_ref(&intent)
+    );
+    let activity = VerificationActivity::new();
+    activity
+        .control(f.store(), f.project(), VerificationAction::Stop)
+        .unwrap();
+    assert_eq!(
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+        TickResult::Stopped
+    );
+    assert_eq!(f.store().read(|tx| tx.landing_intents()).unwrap(), [intent]);
+    activity
+        .control(f.store(), f.project(), VerificationAction::Start)
+        .unwrap();
+    assert_eq!(
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+        TickResult::Completed
+    );
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        actuator.landed.lock().unwrap().is_empty(),
+        "recovery must not send another merge"
+    );
+}
+
 fn submitted(f: &ServiceFixture) -> String {
     f.link_origin("https://github.com/acme/widgets");
     let ctx = f.ctx();
@@ -179,7 +238,7 @@ fn reopening_a_historical_closed_dependency_is_fenced_on_another_connection() {
         .unwrap()
         .id;
     StoryService::new(&f.ctx())
-        .set_state(&blocker, "closed", None, None, None)
+        .set_state(&blocker, "dropped", None, None, None)
         .unwrap();
     historical_edge(&f, &id, &blocker);
     let intent = admit(&f);
@@ -304,6 +363,15 @@ struct RacingActuator<'a> {
     landed: Mutex<Vec<String>>,
 }
 impl VerificationActuator for RacingActuator<'_> {
+    fn submit(
+        &self,
+        _: &VerificationCandidate,
+    ) -> Result<
+        storyhook::domain::SubmittedPullRequest,
+        storyhook::daemon::verification::SubmissionFailure,
+    > {
+        panic!("unleased fixture must not submit")
+    }
     fn verify(&self, candidate: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
         if let Some(blocker) = &self.blocker {
             RelationService::new(&self.fixture.ctx())
@@ -391,7 +459,7 @@ fn blocker_added_inside_verification_prevents_the_merge_actuator() {
         landed: Mutex::new(Vec::new()),
     };
     assert_eq!(
-        tick_with(f.store(), f.env(), &actuator).unwrap(),
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
         TickResult::RetryLater
     );
     assert!(actuator.landed.lock().unwrap().is_empty());
@@ -399,7 +467,7 @@ fn blocker_added_inside_verification_prevents_the_merge_actuator() {
     assert_eq!(q.ordered().unwrap()[0].story_id, id);
     assert!(q.next().unwrap().is_none());
     assert_eq!(
-        tick_with(f.store(), f.env(), &actuator).unwrap(),
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
         TickResult::Idle
     );
 }
@@ -417,7 +485,7 @@ fn uncertain_restart_preserves_fence_without_starving_other_work_then_completes_
         landed: Mutex::new(Vec::new()),
     };
     assert_eq!(
-        tick_with(f.store(), f.env(), &actuator).unwrap(),
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
         TickResult::RetryLater
     );
     let second = StoryService::new(&f.ctx())
@@ -444,7 +512,7 @@ fn uncertain_restart_preserves_fence_without_starving_other_work_then_completes_
     };
     // The pending first story is observed, never retried; the next story lands.
     assert_eq!(
-        tick_with(&reopened, f.env(), &other).unwrap(),
+        tick_with(&reopened, f.env(), &other, f.project()).unwrap(),
         TickResult::Completed
     );
     assert_eq!(*other.landed.lock().unwrap(), [second]);
@@ -457,7 +525,7 @@ fn uncertain_restart_preserves_fence_without_starving_other_work_then_completes_
         ..other
     };
     assert_eq!(
-        tick_with(&reopened, f.env(), &recovered).unwrap(),
+        tick_with(&reopened, f.env(), &recovered, f.project()).unwrap(),
         TickResult::Completed
     );
     assert!(reopened.read(|tx| tx.landing_intents()).unwrap().is_empty());
@@ -580,7 +648,7 @@ fn a_replaced_pr_in_the_same_generation_is_reverified_before_landing() {
         landed: Mutex::new(Vec::new()),
     };
     assert_eq!(
-        tick_with(f.store(), f.env(), &actuator).unwrap(),
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
         TickResult::Completed
     );
     assert_eq!(*actuator.landed.lock().unwrap(), [id]);

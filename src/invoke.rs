@@ -400,7 +400,7 @@ pub fn dispatch<S: Store>(
                 view.warnings.extend(crate::block_notice::warnings(
                     ctx,
                     &id,
-                    awaiting.as_deref(),
+                    view.story.awaiting.as_deref(),
                     &view.story.relationships,
                 ));
             }
@@ -702,9 +702,12 @@ pub fn dispatch<S: Store>(
         Invocation::Graph { mode } => {
             query(ctx, |service| service.graph(&mode)).map(|graph| Response::Graph(Box::new(graph)))
         }
-        Invocation::Context { format } => {
+        Invocation::Context { format, story } => {
             let json = format.as_deref() == Some("json");
-            let document = query(ctx, |service| service.context(json))?;
+            let document = query(ctx, |service| match story.as_deref() {
+                Some(id) => service.context_for_story(id, json),
+                None => service.context(json),
+            })?;
             // `RawJson` for the JSON form: the document *is* the result, so the
             // `--json` envelope has nothing to add, and wrapping it as an
             // escaped string double-encodes it (SH-66, the `export --json`

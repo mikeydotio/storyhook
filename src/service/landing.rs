@@ -40,7 +40,7 @@ impl<S: Store> VerificationQueue<'_, S> {
             {
                 return Ok(LandingAdmission::Pending(intent));
             }
-            let Some(current) = super::verification::ordered_candidates(tx)?
+            let Some(current) = super::verification::ordered_candidates_for(tx, candidate.project)?
                 .into_iter()
                 .find(|c| c.project == candidate.project && c.story_id == candidate.story_id)
             else {
@@ -115,7 +115,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 intent.certification.gate,
                 intent.pull_request
             );
-            if let Some(incident) = tx.verification_incident()?
+            if let Some(incident) = tx.verification_incident(intent.project)?
                 && incident.project == intent.project
                 && incident.generation == intent.generation
             {

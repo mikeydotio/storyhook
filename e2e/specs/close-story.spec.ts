@@ -29,7 +29,7 @@ function todoCard(page: import("@playwright/test").Page, title: string) {
 
 async function showClosed(page: import("@playwright/test").Page) {
   await openFilters(page);
-  const toggle = page.locator("#toggle-closed");
+  const toggle = page.getByRole("checkbox", { name: "Show dropped", exact: true });
   if (!(await toggle.isChecked())) await toggle.check();
   await expect(toggle).toBeChecked();
 }
@@ -44,30 +44,30 @@ test("drawer Close requires a reason, records it as a comment, and leaves the cl
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   const footer = page.locator("#drawer-footer");
-  await expect(footer.getByRole("button", { name: "Close", exact: true })).toBeVisible();
+  await expect(footer.getByRole("button", { name: "Drop", exact: true })).toBeVisible();
   await expect(footer.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
-  await footer.getByRole("button", { name: "Close", exact: true }).click();
+  await footer.getByRole("button", { name: "Drop", exact: true }).click();
 
   await expect(page.locator("#close-modal")).toHaveClass(/open/);
   await expect(page.locator("#close-reason")).toBeFocused();
   await page.locator("#close-modal-submit").click();
-  await expect(page.locator("#close-modal-error")).toContainText("A closing reason is required.");
+  await expect(page.locator("#close-modal-error")).toContainText("A reason for dropping the story is required.");
   await expect(card).toBeVisible();
 
   const reason = "Superseded by the smaller implementation";
   const request = page.waitForRequest((candidate) =>
     candidate.method() === "POST" &&
     candidate.url().endsWith(`/story/${id}/move`) &&
-    candidate.postDataJSON()?.state === "closed",
+    candidate.postDataJSON()?.state === "dropped",
   );
   await page.locator("#close-reason").fill(`  ${reason}  `);
   await page.locator("#close-modal-submit").click();
-  expect((await request).postDataJSON()).toEqual({ state: "closed", comment: reason });
+  expect((await request).postDataJSON()).toEqual({ state: "dropped", comment: reason });
 
   await expect(page.locator("#close-modal")).not.toHaveClass(/open/);
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(page.locator("#drawer-body")).toContainText(reason);
-  await expect(footer.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+  await expect(footer.getByRole("button", { name: "Drop", exact: true })).toHaveCount(0);
   await expect(footer.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
 
   // A story that is already CLOSED cannot be closed again, so its permanent
@@ -83,7 +83,7 @@ test("Cancel, backdrop, and Escape dismiss Close without changing the story", as
   await createStory(page, title);
   const card = todoCard(page, title);
   await card.click();
-  const close = page.locator("#drawer-footer").getByRole("button", { name: "Close", exact: true });
+  const close = page.locator("#drawer-footer").getByRole("button", { name: "Drop", exact: true });
 
   await close.click();
   await page.locator("#close-modal-cancel").click();
@@ -114,19 +114,19 @@ test("context-menu Close uses the shared modal and retains the story in closed",
 
   await card.click({ button: "right" });
   const menu = page.locator('.ctxmenu[aria-label="Story actions"]');
-  await menu.getByRole("menuitem", { name: "Close", exact: true }).click();
+  await menu.getByRole("menuitem", { name: "Drop", exact: true }).click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await expect(page.locator("#close-modal")).toHaveClass(/open/);
 
   await page.locator("#close-reason").fill("The experiment is complete");
   await page.locator("#close-modal-submit").click();
-  await expect(page.locator("#toast-stack .toast.success")).toContainText("closed");
+  await expect(page.locator("#toast-stack .toast.success")).toContainText("dropped");
 
   await showClosed(page);
-  await expect(page.locator('.column[data-state="closed"] .card', { hasText: title })).toBeVisible();
+  await expect(page.locator('.column[data-state="dropped"] .card', { hasText: title })).toBeVisible();
 });
 
-test("SH-551 Show closed hides only the closed status", async ({ page }) => {
+test("SH-663 Show dropped hides only the dropped status", async ({ page }) => {
   const completedTitle = `SH-551 completed ${Date.now()}`;
   const closedTitle = `SH-551 closed ${Date.now()}`;
   const completedId = await createStory(page, completedTitle);
@@ -143,12 +143,12 @@ test("SH-551 Show closed hides only the closed status", async ({ page }) => {
   await todoCard(page, closedTitle).click({ button: "right" });
   await page
     .locator('.ctxmenu[aria-label="Story actions"]')
-    .getByRole("menuitem", { name: "Close", exact: true })
+    .getByRole("menuitem", { name: "Drop", exact: true })
     .click();
   await page.locator("#close-reason").fill("No longer needed");
   await page.locator("#close-modal-submit").click();
   await expect(
-    page.locator('.column[data-state="closed"] .card', { hasText: closedTitle }),
+    page.locator('.column[data-state="dropped"] .card', { hasText: closedTitle }),
   ).toBeVisible();
 
   await openFilters(page);

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Proxy for test-submit-leased.sh. Every command reaches the real CLI; the one
+# intercept is `show <id> --json`, whose reported state is rewritten to
+# `verifying` when $STORY_SHOW_AS_VERIFYING names that id. The story itself
+# stays wherever it really is, which is the whole point: the daemon behind
+# the real CLI runs the centralized verifier, and a story genuinely parked in
+# `verifying` is picked up by it within the same second and either returned
+# or submitted -- so a shell test of the SUBMIT verb alone cannot leave a real
+# story there long enough to be asked about (the daemon-driven path is proven
+# in tests/verification_queue.rs against the real helper). This answers the
+# state question the verb asks without racing the process that owns it.
+#
+# An intercept that stops matching cannot go quietly green: the real state is
+# never `verifying`, so every submission would be refused `not-verifying` and
+# the test's success assertions would fail.
+set -euo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+
+is_show_json_for() {
+  local want="$1"; shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --actor | --project) shift 2 || return 1 ;;
+      --actor=* | --project=*) shift ;;
+      *) break ;;
+    esac
+  done
+  [ "${1:-}" = show ] && [ "${2:-}" = "$want" ] && case " $* " in *' --json '*) true ;; *) false ;; esac
+}
+
+if [ -n "${STORY_SHOW_AS_VERIFYING:-}" ] && is_show_json_for "$STORY_SHOW_AS_VERIFYING" "$@"; then
+  "$real" "$@" | jq '.story.story.state = "verifying" | .story.story.superstate = "OPEN"'
+  exit "${PIPESTATUS[0]}"
+fi
+
+exec "$real" "$@"

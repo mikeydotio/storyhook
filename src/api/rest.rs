@@ -226,6 +226,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
         ProjectRoute::Data => "data",
         ProjectRoute::VerificationAck => "verification-ack",
+        ProjectRoute::VerificationControl => "verification-control",
         ProjectRoute::StoryCreate => "new",
         ProjectRoute::StoryShow { .. } => "show",
         ProjectRoute::StoryAttachment { .. } => "attachment-get",
@@ -453,8 +454,25 @@ fn route_project<S: Store>(
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
+        ProjectRoute::VerificationControl => guarded(headers, trusted_hosts, body, |b| {
+            (|| -> Result<Reply, AppError> {
+                let obj = parse_json_object(b)?;
+                let action = serde_json::from_value(serde_json::Value::String(
+                    require_str(&obj, "action")?.into(),
+                ))
+                .map_err(|error| {
+                    AppError::Validation(format!("invalid verifier action: {error}"))
+                })?;
+                let state = verification_activity.control(ctx.store(), ctx.project(), action)?;
+                Ok(json_reply(
+                    200,
+                    serde_json::json!({"state": state}).to_string(),
+                ))
+            })()
+            .unwrap_or_else(|error| error_reply(&error))
+        }),
         ProjectRoute::VerificationAck => guarded(headers, trusted_hosts, body, |b| {
-            route_ack_verification(ctx, b)
+            route_ack_verification(ctx, verification_activity, b)
         }),
         // Answered by [`crate::api::engine::intercept`] in the per-connection
         // worker so a stop-now helper can call back into the daemon without
@@ -865,7 +883,7 @@ fn project_data_json<S: Store>(
 ) -> Result<String, AppError> {
     let now = ctx.now();
     let project = ctx.project();
-    ctx.store().read(|tx| {
+    verification_activity.read_project(ctx.store(), project, |tx, active, control| {
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
@@ -880,11 +898,10 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let active = verification_activity.active();
-            let incident = tx.verification_incident()?;
+            let incident = tx.verification_incident(project)?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates(tx)?,
-                active.as_ref(),
+                &crate::service::verification::ordered_candidates_for(tx, project)?,
+                active,
                 incident.as_ref(),
                 ctx.env(),
                 &now,
@@ -967,6 +984,7 @@ fn project_data_json<S: Store>(
                 "highest_story_number": highest_story_number,
                 "meta": meta_json(tx, project, &data)?,
                 "verification_incident": incident_json,
+                "verification_control": {"state": control},
             });
             to_json(&response)
         })())
@@ -974,14 +992,28 @@ fn project_data_json<S: Store>(
 }
 
 /// Acknowledges exactly the halted incident the browser displayed.
-fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
+fn route_ack_verification<S: Store>(
+    ctx: &Ctx<'_, S>,
+    activity: &VerificationActivity,
+    body: &str,
+) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let expected = require_str(&obj, "incident_id")?;
-        let acknowledged = crate::service::acknowledge_verification_incident(ctx, expected)?;
+        let action = obj
+            .get("action")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| {
+                AppError::Validation(format!("invalid acknowledgement action: {error}"))
+            })?;
+        let acknowledged = activity.acknowledge(ctx, expected, action)?;
+        let control =
+            activity.read_project(ctx.store(), ctx.project(), |_, _, control| Ok(control))?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": acknowledged.incident_id}).to_string(),
+            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control})
+                .to_string(),
         ))
     })()
     .unwrap_or_else(|error| error_reply(&error))

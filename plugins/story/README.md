@@ -78,18 +78,19 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--resume] [--over-budget] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Refuses (`lane-budget`) to open a new session past `story lane-budget`'s machine ceiling unless `--over-budget` says you meant it |
+| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Manual concurrency is operator-controlled; `story lane-budget` is informational. Legacy `--over-budget` is a deprecated no-op |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, then records its window, worktree, and branch after confirmed handoff |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
+| `submit <id>` | not routed by any skill (SH-647) — the centralized verifier's submission step: from the dispatch lease in `STORYHOOK_REAP_LEASE_V1`, push the leased branch and open or adopt the pull request against the default branch, answering with a typed receipt; agents never push |
 | `unclaim <id> [--comment <t> \| --no-comment]` | `/story unclaim` (SH-484) — the inverse of `claim`: release the claim through `story unclaim`, then close the story's tmux window. Nothing on disk is touched |
 | `reset <id> [--force] [--comment <t> \| --no-comment]` | `/story reset` (SH-484) — everything `unclaim` does, then deletes the worktree and the branch, for a story abandoned by a crash where restarting beats inheriting |
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
 | `ensure-cli` | the CLI-availability check six standalone skills used to hand-roll in prose |
-| `context [--full]` | `/story-context` |
+| `context [--full] [--story <id>]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
 | `triage` | `/story-triage` |

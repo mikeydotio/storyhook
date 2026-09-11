@@ -93,7 +93,7 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(states[0].super_state, SuperState::Open);
