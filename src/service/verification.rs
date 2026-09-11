@@ -402,8 +402,21 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             } else {
                 "RETRYING"
             };
+            // What the reader must not conclude: that this story is the
+            // cause, or that the verifier is still serving anyone. An
+            // infrastructure incident is the verifier's own, it stops the
+            // whole queue, and the reader is in a terminal — so the halted
+            // form names the exact command that releases it (SH-666).
+            let consequence = if incident.halted {
+                format!(
+                    "This halt stops the verifier's whole queue. No story is at fault: the verifier itself could not run, and {} is only where the failure was first hit. Fix the cause below, then release the queue with: story verifier ack {}",
+                    candidate.story_id, incident.incident_id
+                )
+            } else {
+                "The verifier is retrying on its own; every story behind this one waits until it recovers or halts.".to_string()
+            };
             let body = format!(
-                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n\n{}",
+                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n{consequence}\n\n{}",
                 incident.attempts,
                 incident.first_failed_at,
                 incident.last_failed_at,
