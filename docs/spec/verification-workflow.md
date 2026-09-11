@@ -464,6 +464,11 @@ defensible design.
 
 ### SH-655 — D-B's "D14's lane budget bounds agents" was not true
 
+**Historical: SH-672 removes the session admission gates described below.**
+Engine limits are independent per run; manual concurrency belongs to the
+operator. The census remains informational, and the compiler bound remains
+machine-wide. See the SH-672 entry in `docs/spec/full-auto-engine.md`.
+
 D-B declined a machine-wide CPU cap as YAGNI on the grounds that D14's lane
 budget bounds agents. It bounded *engine* agents: the budget was enforced over
 `engine_lanes` rows alone, and a `/story do` typed by hand — the same worktree,

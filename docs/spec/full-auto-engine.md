@@ -52,12 +52,12 @@ being picked.
 | D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
-| D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
+| D14 | **Multiple runs, one per project, with independent per-run lane limits (SH-672).** | Each run honors its configured `--lanes`; other runs and manual sessions do not consume its capacity. HTTP request concurrency is a separate bound. |
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
 | D16 | **Provider configuration is explicit, durable run state that operators may revise while a run is running or paused.** Each claim snapshots the current selection transactionally; occupied lanes keep the selection they launched with and future claims use the revision. | Browser preferences and provider environment variables remain outside the run, so neither can silently change it. Explicit reconfiguration gives an operator one auditable control point without interrupting work already in flight. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
 
 **Superseded in part by SH-645 (2026-09-10).** The rows above are the record
-of what was decided and stay as written; `docs/spec/verification-workflow.md`
+of what was decided, with D14 revised by SH-672; `docs/spec/verification-workflow.md`
 is now the design of record for everything from submission to reap, and three
 rows read differently against it. D4's "priority then age": the age that ships
 is story `created_at`, and SH-651 makes it the time the story entered
@@ -69,7 +69,7 @@ keyed by name alone today, and SH-648 keys them by project, so two projects'
 suites may overlap on one machine — a trade-off that spec states rather than
 this table.
 
-**Amended by SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
+**Historical amendment, superseded by SH-672 below: SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
 enforced over `engine_lanes` rows alone, so a session `/story do` opened by
 hand — the same `cmd_dispatch`, worktree, window and cold workspace build —
 counted for nothing, and the dashboard's own in-memory cap (`MAX_RUNNING`, a
@@ -424,7 +424,7 @@ One pass, per live run:
    fire the hook, raise the persistent modal alert. A completion zeroes the streak and series.
 5. **Release** quarantined lanes only when the run remains running in a steady
    pass, or is draining. Halted, paused, and restart-pass lanes retain evidence.
-6. **Fill** idle lanes while the run is `running` and the machine lane budget
+6. **Fill** idle lanes while the run is `running` and its configured lane count
    allows: `story claim --next` scoped and label-filtered, then dispatch.
    A refusal is accounted immediately and ends that fill attempt; it cannot
    prove the queue drained until the next wake.
@@ -1356,7 +1356,7 @@ it, and count it toward the breaker that halts the run. It is one `if` away
 from being wrong in a way no other case would notice, so it carries its own
 test on both the pure and the wired side.
 
-**Both new budgets derive rather than being picked** (SH-394).
+**Historical derivations (SH-394); SH-672 removes the lane-budget derivation below.**
 `ENGINE_LANE_BUDGET` **is** `api::dispatch::MAX_RUNNING` — a filled lane is
 exactly one `story.sh dispatch` subprocess and that bound already exists, so a
 second literal would be a second opinion about one machine (SH-136).
@@ -2633,6 +2633,9 @@ until it is.
 
 ### SH-655 — one census for every door the lane budget guards
 
+**Historical: SH-672 below supersedes the admission gates and budget coupling.
+The census and compiler bound remain.**
+
 **A lane is a live window, and every door counts the same windows.** D14
 promised a machine-wide budget and enforced it over `engine_lanes` rows; a
 manual dispatch was in no table, so seven of them were measured at load 33 on
@@ -2702,3 +2705,36 @@ fixture you can forget is one that will be forgotten again; those files had
 already been leaking resume inventory's `list-panes -a` to the real server.
 The compile bound that shipped alongside is in `docs/spec/test-tiers.md`,
 "The compile bound". Council verdict, plan and decisions: `story show SH-655`.
+
+### SH-672 — concurrency belongs to each run or to the operator
+
+D14 now means one independent configured limit per engine run. The existing
+`--lanes` value (1..=255, also configurable in the dashboard) is checked
+against that run's Dispatching and Working lanes in the same transaction
+that reserves the next story. Reconfiguration preserves occupied lanes and
+prevents refill until occupancy falls below the revised target. Other
+projects' runs, including paused or halted ones, consume no slots in this
+run. No schema or new configuration knob is needed.
+
+`MAX_RUNNING` remains the HTTP endpoint's in-flight request bound, sized
+against the daemon thread pool. It does not measure agent sessions.
+`ENGINE_LANE_BUDGET`, the global occupancy scan, and the census admission
+checks are removed. The source fence that enforced their coupling now
+rejects it; execution tests require six configured lanes to dispatch six
+sessions, and concurrent runs to fill their own independent limits.
+
+Outside the engine, concurrency is between the operator and agent.
+`cmd_dispatch` does not consult a census, including named, next, forced,
+resumed, and engine-issued dispatches. Legacy `--over-budget` is accepted
+with a deprecation diagnostic and has no effect, including epic starts.
+
+`story lane-budget` retains its name and store-free, daemon-free census.
+JSON reports `probe`, `live`, and `windows` when counted, or `probe` and
+`detail` when unanswered. The former `budget` and `available` fields are
+removed. Human output reports the count and window addresses or the probe
+failure. The engine still reports the census and journals outages/recovery,
+but census results never determine admission. The probe's existing socket,
+tagging, and pane-liveness limits remain.
+
+The compile bound from SH-655 remains separate and unchanged: concurrent
+rustc processes still acquire the machine's shared compiler slots.
