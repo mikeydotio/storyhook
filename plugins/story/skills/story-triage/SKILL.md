@@ -42,7 +42,7 @@ one of:
   able to identify an old unassessed representation until schema migration 19
   normalizes it
 - **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
-  the script detects it directly from every story's own relationships (Kahn's algorithm);
+  the script detects it directly from every story's own relationships (strongly connected components);
   this is no longer a manual "eyeball the graph" step
 - **`orphan`** — no relationships at all; may be missing a dependency or a parent
 
