@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::domain::{Priority, SuperState};
+use crate::domain::{Priority, SuperState, completion_state};
 use crate::tui::action::Action;
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
@@ -162,13 +162,9 @@ impl Board {
         if current_idx + 1 < open_states.len() {
             Some(open_states[current_idx + 1].to_string())
         } else {
-            // Already at last OPEN state, check if there's a CLOSED state
-            state
-                .data
-                .states
-                .iter()
-                .find(|s| s.super_state == SuperState::Closed)
-                .map(|s| s.slug.clone())
+            // Past the last OPEN column the story is complete: the required
+            // `done`, never whichever CLOSED state is listed first (SH-652).
+            completion_state(&state.data.states).map(|s| s.slug)
         }
     }
 
@@ -803,7 +799,7 @@ fn priority_display(priority: &Priority, theme: &Theme) -> (&'static str, ratatu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Priority, StateDef, StorySnapshot, SuperState};
+    use crate::domain::{COMPLETION_STATE_SLUG, Priority, StateDef, StorySnapshot, SuperState};
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
@@ -1261,6 +1257,42 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(
             matches!(&actions[0], Action::MoveStory { id, target_state } if id == "SH-1" && target_state == "done")
+        );
+    }
+
+    /// Advancing past the last OPEN column completes the story: the target is
+    /// the required `done`, never whichever CLOSED state the catalog lists
+    /// first (SH-652). `abandoned` sits ahead of `done` here.
+    #[test]
+    fn move_story_forward_at_last_open_completes_not_abandons() {
+        let mut states = test_states();
+        states.insert(
+            3,
+            StateDef {
+                slug: "abandoned".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        );
+        let data = DataStore::from_test_data(
+            states,
+            vec![test_snapshot("SH-1", "review", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.cursor = 3;
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::MoveStory { id, target_state } if id == "SH-1" && target_state == COMPLETION_STATE_SLUG),
+            "{actions:?}"
         );
     }
 
