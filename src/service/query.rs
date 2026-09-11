@@ -1089,6 +1089,8 @@ pub fn story_views(
         comment_mentions_by_id = domain::derive_comment_mentions(&prefix, &stories);
     }
 
+    let resets = tx.story_resets(project)?;
+    let reset_prefix = project_prefix(tx, project)?;
     let mut views = Vec::with_capacity(stories.len());
     for story in stories.into_values() {
         let id = story.id.clone();
@@ -1117,6 +1119,10 @@ pub fn story_views(
         };
 
         views.push(StoryView {
+            reset: resets
+                .get(&StoryNo::parse_id(&reset_prefix, &id)?)
+                .map(|encoded| serde_json::from_str(encoded))
+                .transpose()?,
             story,
             derived_relationships: derived_relationships.get(&id).cloned().unwrap_or_default(),
             referenced_by,
@@ -1164,6 +1170,7 @@ pub fn sort_story_views(views: &mut [StoryView]) {
 fn bare_view(story: StorySnapshot) -> StoryView {
     let referenced_by = ReferencedBy::commits_only(story.referenced_by_commits.clone());
     StoryView {
+        reset: None,
         story,
         derived_relationships: Vec::new(),
         referenced_by,

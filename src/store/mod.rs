@@ -299,6 +299,12 @@ pub trait ReadOps {
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
 
+    /// Durable unfinished reset operations, keyed by story number.
+    fn story_resets(
+        &self,
+        project: ProjectId,
+    ) -> Result<std::collections::BTreeMap<StoryNo, String>, StoreError>;
+
     /// Every project's verifier incident, ordered by project — for the
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
@@ -556,6 +562,14 @@ pub trait WriteOps: ReadOps {
         &mut self,
         project: ProjectId,
         enabled: bool,
+    ) -> Result<(), StoreError>;
+
+    /// Stores or clears an unfinished reset within the caller's transaction.
+    fn put_story_reset(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        reservation: Option<&str>,
     ) -> Result<(), StoreError>;
 
     /// Registers a git origin as belonging to this project.

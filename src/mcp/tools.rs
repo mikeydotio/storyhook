@@ -1012,6 +1012,7 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
 
         Invocation::Claim { .. } => Some("story_claim"),
         Invocation::Unclaim { .. } => Some("story_unclaim"),
+        Invocation::Reset { .. } => None,
 
         Invocation::Help
         | Invocation::Project { .. }

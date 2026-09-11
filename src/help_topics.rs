@@ -591,6 +591,31 @@ Related:
         );
 
         m.insert(
+            "reset",
+            r#"story reset <id> [--force]
+
+Release an open ordinary story's claim, close its owned tmux window, remove
+its owned worktree, and return it to Todo. Branches, commits, story content,
+and relationships are preserved. Closed stories and epics cannot be reset.
+
+Dirty or locked worktrees are refused unless --force is explicit. Force can
+permanently discard uncommitted files. It never overrides ownership checks,
+removes the primary or caller's checkout, or interrupts an active verifier.
+Run reset from outside the target worktree and its tmux window.
+
+Absent resources are already clean. If cleanup fails partway, story show
+reports the retained reset reservation and diagnostics. Retry story reset
+<id> after resolving that error; repeat --force only if you still authorize
+losing worktree changes. Dispatch and lifecycle changes remain unavailable
+until the reservation finishes. Comments remain available during recovery.
+
+Examples:
+  story reset SH-42
+  story reset SH-42 --force
+"#,
+        );
+
+        m.insert(
             "unclaim",
             r#"story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
 

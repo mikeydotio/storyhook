@@ -397,6 +397,12 @@ pub const MIGRATIONS: &[Migration] = &[
         // Operational authority only; no historical events or projections change.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 39,
+        name: "story_reset",
+        sql: include_str!("schema/0039_story_reset.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

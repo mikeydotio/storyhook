@@ -851,7 +851,11 @@ pub(crate) fn ordered_candidates_for(
         let registered =
             super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
+        let resets = tx.story_resets(project.id)?;
         for row in rows {
+            if resets.contains_key(&row.story_no) {
+                continue;
+            }
             let links = tx
                 .open_pr_links_for_story(project.id, row.story_no)?
                 .into_iter()

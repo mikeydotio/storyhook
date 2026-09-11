@@ -116,14 +116,48 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> Result<Option<VerificationGuard>, AppError> {
+        let workspace = if !candidate.checkout.as_os_str().is_empty()
+            && candidate.checkout.join(".git").exists()
+        {
+            Some(crate::service::workspace_lock::WorkspaceLock::acquire(
+                &candidate.checkout,
+                &candidate.story_id,
+            )?)
+        } else {
+            None
+        };
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let allowed = store.read(|tx| {
-            Ok(tx.verification_enabled(candidate.project)?
+            let project = tx
+                .project(candidate.project)?
+                .ok_or_else(|| AppError::NotFound("verification project disappeared".into()))?;
+            let number = crate::store::StoryNo::parse_id(&project.prefix, &candidate.story_id)?;
+            Ok(!tx.story_resets(candidate.project)?.contains_key(&number)
+                && tx.verification_enabled(candidate.project)?
                 && !tx
                     .verification_incident(candidate.project)?
                     .is_some_and(|incident| incident.halted))
         })?;
-        Ok(allowed.then(|| self.acquire_locked(&mut slots, candidate, started_at)))
+        Ok(allowed.then(|| {
+            let guard = self.acquire_locked(&mut slots, candidate, started_at);
+            slots
+                .get_mut(&candidate.project)
+                .expect("just acquired")
+                .workspace = workspace.map(Arc::new);
+            guard
+        }))
+    }
+
+    /// Shares this attempt’s workspace ownership with its bounded subprocesses.
+    pub(super) fn workspace_for(
+        &self,
+        project: ProjectId,
+    ) -> Option<Arc<crate::service::workspace_lock::WorkspaceLock>> {
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&project)
+            .and_then(|slot| slot.workspace.clone())
     }
 
     pub(super) fn cancellation_for(&self, project: ProjectId) -> Cancellation {
@@ -261,6 +295,92 @@ mod tests {
                 assert!(owner.as_ref().is_none_or(VerificationGuard::is_cancelled));
                 assert!(!store.read(|tx| tx.verification_enabled(project)).unwrap());
             });
+        }
+    }
+
+    #[test]
+    fn landing_attempt_and_recovery_inherit_workspace_ownership() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let mut candidate = candidate(&store, &env, project);
+        candidate.checkout = fixture.cwd().to_path_buf();
+        for args in [
+            &["init", "-q"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widgets.git",
+            ][..],
+        ] {
+            crate::service::workspace_lock::git(&candidate.checkout, args, None).unwrap();
+        }
+        candidate.pull_request = Ok(PrLink {
+            owner: "acme".into(),
+            repo: "widgets".into(),
+            number: 1,
+            url: "https://github.com/acme/widgets/pull/1".into(),
+            close_on_merge: true,
+            status: "open".into(),
+            linked_at: env.now(),
+            last_checked_at: None,
+        });
+        let script = fixture.cwd().join("landing.sh");
+        std::fs::write(
+            &script,
+            r#"python3 - <<'PY'
+import os
+target = os.stat('.git/storyhook/workspace-locks/SH-1.lock')
+inherited = False
+for name in os.listdir('/dev/fd'):
+    try:
+        info = os.fstat(int(name))
+    except OSError:
+        continue
+    if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+        inherited = True
+assert inherited, 'landing child lost workspace ownership'
+print('{"result":"merged","detail":"ownership retained"}')
+PY
+"#,
+        )
+        .unwrap();
+        let activity = VerificationActivity::new();
+        let _guard = activity
+            .try_acquire(&store, &candidate, env.now())
+            .unwrap()
+            .unwrap();
+        let intent = crate::store::LandingIntent {
+            id: "reset-exclusion".into(),
+            project,
+            story: crate::store::StoryNo::new(1),
+            story_id: candidate.story_id.clone(),
+            project_slug: candidate.project_slug.clone(),
+            generation: candidate.verifying_generation.unwrap(),
+            pull_request: candidate.pull_request.as_ref().unwrap().url.clone(),
+            checkout: candidate.checkout.clone(),
+            certification: crate::domain::landing::VerifiedSubmission {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
+                gate: "true".into(),
+            },
+            created_at: env.now(),
+        };
+        let journal = journal_path(&env, &candidate);
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        std::fs::write(journal, "").unwrap();
+        let actuator = ShellVerificationActuator::new(env)
+            .with_activity(activity)
+            .with_verifier_script(script);
+        for recover in [false, true] {
+            assert_eq!(
+                actuator.run_landing(&candidate, &intent, recover),
+                LandingOutcome::Merged {
+                    detail: "ownership retained".into(),
+                }
+            );
         }
     }
 }
