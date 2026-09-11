@@ -48,6 +48,11 @@ source_objects="$(cd "$common_dir/objects" && pwd -P)" \
 if [ "${1:-}" = "--speculative-run" ]; then
     [ "$#" -ge 7 ] && [ "${6:-}" = "--" ] \
         || die "private usage: merge-watch.sh --speculative-run <expected-tree> <base-ref> <head-ref> <poller-worktree> -- <command...>"
+    if ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$5"; then
+        exec bash "$script_dir/machine-lock.sh" gate -- \
+            python3 "$script_dir/verifier-owner.py" run "$common_dir" "$5" -- \
+            bash "$script_dir/merge-watch.sh" "$@"
+    fi
     expected_tree="$2"
     base="$3"
     head="$4"
@@ -63,6 +68,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
     base="$base_commit"
     head="$head_commit"
 
+    python3 "$script_dir/verifier-worktree.py" ensure "$common_dir" "$poller_wt" "$base" \
+        || die "could not restore the shared poller worktree lifecycle at $poller_wt"
     [ -e "$poller_wt/.git" ] \
         || die "the speculative poller worktree at $poller_wt has no .git entry"
     # Legacy interrupted runs can leave a missing private HEAD object. A
@@ -96,9 +103,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     private_gitlink=""
     gitlink_tmp=""
     child=""
-    poller_needs_restore=0
-    gitlink_needs_restore=0
-    retain_lease=0
+    lease_registered=0
     inherited_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
 
     lease_is_valid() {
@@ -123,79 +128,20 @@ if [ "${1:-}" = "--speculative-run" ]; then
             git "$@"
     }
 
-    gitlink_matches() {
-        expected="$1"
-        [ -f "$poller_gitlink" ] && [ ! -L "$poller_gitlink" ] \
-            && cmp -s "$expected" "$poller_gitlink"
-    }
-
-    restore_poller() {
-        [ "$poller_needs_restore" -eq 1 ] || return 0
-        # Git checkout can carry edits to unchanged paths across commits.
-        # Never disguise gate edits as changes against the restored index.
-        if ! git_private -C "$poller_wt" diff --quiet \
-            || ! git_private -C "$poller_wt" diff --cached --quiet; then
-            note "tracked state is modified or unreadable at $poller_wt; preserving private Git administration for recovery"
-            retain_lease=1
-            return 1
-        fi
-        if git_private -C "$poller_wt" checkout -q --detach "$base"; then
-            poller_needs_restore=0
-            return 0
-        fi
-        retain_lease=1
-        return 1
-    }
-
-    restore_gitlink() {
-        [ "$gitlink_needs_restore" -eq 1 ] || return 0
-        if gitlink_matches "$original_gitlink"; then
-            gitlink_needs_restore=0
-            return 0
-        fi
-        gitlink_matches "$private_gitlink" || return 1
-        gitlink_tmp="$(mktemp "$poller_wt/.git.merge-watch.XXXXXX")" || return 1
-        if ! cp "$original_gitlink" "$gitlink_tmp" \
-            || ! mv -f "$gitlink_tmp" "$poller_gitlink"; then
-            return 1
-        fi
-        gitlink_tmp=""
-        gitlink_needs_restore=0
-    }
-
-    restore_speculative_state() {
-        restore_poller || return 1
-        restore_gitlink || {
-            retain_lease=1
-            return 1
-        }
-    }
-
     cleanup() {
-        if ! restore_speculative_state; then
-            note "could not restore $poller_wt to $base and its shared Git administration; retaining private state at $lease for recovery"
-            return 1
+        if [ "$lease_registered" -eq 1 ]; then
+            python3 "$script_dir/verifier-worktree.py" recover "$common_dir" "$poller_wt" \
+                || { note "could not restore owned state; preserving $lease"; return 1; }
+            lease_registered=0
+            lease=""
+        elif [ -n "$lease" ] && lease_is_valid "$lease"; then
+            rm -rf "$lease" || return 1
+            lease=""
         fi
         if [ -n "$gitlink_tmp" ]; then
-            rm -f "$gitlink_tmp"
+            rm -f "$gitlink_tmp" || return 1
             gitlink_tmp=""
         fi
-        if [ -n "$lease" ]; then
-            if [ "$retain_lease" -eq 0 ] && lease_is_valid "$lease"; then
-                if rm -rf "$lease"; then
-                    lease=""
-                else
-                    retain_lease=1
-                    note "could not remove private-object lease at $lease; retaining it for recovery"
-                    return 1
-                fi
-            elif [ "$retain_lease" -eq 0 ]; then
-                note "refusing to remove an invalid private-object lease path: $lease"
-                retain_lease=1
-                return 1
-            fi
-        fi
-        return 0
     }
 
     on_signal() {
@@ -215,9 +161,10 @@ if [ "${1:-}" = "--speculative-run" ]; then
     trap 'on_signal INT' INT
     trap 'on_signal TERM' TERM
 
-    created_lease="$(mktemp -d "$lease_prefix"XXXXXX)" \
+    created_lease="$(python3 "$script_dir/verifier-worktree.py" allocate "$common_dir" "$poller_wt" "$base")" \
         || die "could not create private merge object storage"
     lease="$created_lease"
+    lease_registered=1
     canonical_lease="$(cd "$created_lease" && pwd -P)" \
         || die "could not resolve private merge object storage"
     lease="$canonical_lease"
@@ -262,11 +209,12 @@ if [ "${1:-}" = "--speculative-run" ]; then
         || die "could not stage the private poller Git link"
     cp "$private_gitlink" "$gitlink_tmp" \
         || die "could not stage the private poller Git link"
-    gitlink_needs_restore=1
+    python3 "$script_dir/verifier-worktree.py" register "$common_dir" "$poller_wt" "$lease" "$base" \
+        || die "could not record speculative recovery intent"
+    lease_registered=1
     mv -f "$gitlink_tmp" "$poller_gitlink" \
         || die "could not activate private per-worktree Git administration"
     gitlink_tmp=""
-    poller_needs_restore=1
     git_private -C "$poller_wt" checkout -q --detach "$merge_commit" \
         || die "could not check out the speculative merge"
 
@@ -308,7 +256,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u GITHUB_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
-            "$@"
+            python3 "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
     ) <&3 &
     child=$!
     exec 3<&-
@@ -316,11 +264,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
     command_status=$?
     child=""
 
-    if ! restore_speculative_state; then
-        die "the gate command finished, but the poller worktree could not be restored; private state was retained at $lease"
-    fi
     cleanup \
-        || die "the gate command finished, but its private-object lease could not be removed"
+        || die "the gate command finished, but the poller worktree could not be restored; recovery evidence was preserved"
     trap - EXIT HUP INT TERM
     if [ -n "${STORYHOOK_GATE_RESULT_FILE:-}" ]; then
         printf '%s\n' "$command_status" > "$STORYHOOK_GATE_RESULT_FILE" \
