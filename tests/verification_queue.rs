@@ -3299,16 +3299,11 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
     let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Merged {
-            tree: "abc123".into(),
-            detail: "landed".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "abc123".into(),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
