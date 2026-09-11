@@ -53,6 +53,9 @@ pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Resu
         ))
     };
     intent.certification.validate()?;
+    if tx.story_resets(intent.project)?.contains_key(&intent.story) {
+        return Err(refuse("workspace reset is reserved"));
+    }
     let project = tx
         .project(intent.project)?
         .ok_or_else(|| refuse("project cannot be removed"))?;

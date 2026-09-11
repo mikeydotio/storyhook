@@ -691,6 +691,10 @@ pub fn dispatch<S: Store>(
             comment,
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
+        Invocation::Reset { id, force, caller } => {
+            crate::service::reset::reset_story(ctx, &id, force, &caller)?;
+            ctx.story_view(&id)
+        }
         Invocation::Engine { action } => dispatch_engine(ctx, action),
         Invocation::Verifier { action } => dispatch_verifier(ctx, action),
         Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
@@ -2800,6 +2804,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Reset { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
@@ -3009,6 +3014,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
+        Invocation::Reset { .. } => "reset",
         Invocation::Engine { .. } => "engine",
         Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
@@ -4135,6 +4141,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Reset { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }

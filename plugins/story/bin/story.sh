@@ -1572,6 +1572,42 @@ surviving_dispatch_provider() {
 }
 
 # ---- subcommand: dispatch ---------------------------------------------------
+# Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
+# inherited by preparation children; no explicit unlock can strand an orphan.
+reserve_dispatch_workspace() {
+  [ -z "$DRY_RUN" ] || return 0
+  local common lock_path inherited="${STORY_WORKSPACE_LOCK_FD:-}"
+  common=$(git rev-parse --path-format=absolute --git-common-dir) || fail "cannot locate workspace lock directory"
+  mkdir -p "$common/storyhook/workspace-locks" || fail "cannot create workspace lock directory"
+  lock_path="$common/storyhook/workspace-locks/$id.lock"
+  if [ -n "$inherited" ]; then
+    case "$inherited" in *[!0-9]*) fail "invalid inherited workspace descriptor" ;; esac
+    eval "exec 9<&$inherited" || fail "workspace ownership descriptor is unavailable"
+  else
+    [ ! -L "$lock_path" ] || fail "workspace lock is a symbolic link"
+    exec 9>>"$lock_path" || fail "cannot open workspace lock"
+  fi
+  local lock_error
+  if ! lock_error=$(python3 - "$lock_path" 2>&1 <<'PYLOCK'
+import fcntl, os, stat, sys
+expected = os.stat(sys.argv[1], follow_symlinks=False)
+actual = os.fstat(9)
+if not stat.S_ISREG(expected.st_mode) or (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+    sys.exit("workspace lock identity changed")
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit("workspace is busy with reset, dispatch, or verification")
+PYLOCK
+  ); then
+    fail "$id: $lock_error"
+  fi
+  show_json=$(story_cli show "$id" --json) || fail "cannot revalidate $id after workspace admission"
+  [ "$(printf '%s' "$show_json" | jq -r '.story.reset // empty')" = "" ] \
+    || fail "$id has an unfinished reset; retry story reset before dispatch"
+  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+}
+
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
@@ -1720,6 +1756,7 @@ cmd_dispatch() {
   fi
   enter_checkout
   local dir="$PROJECT_ROOT"
+  if [ -n "$id" ]; then reserve_dispatch_workspace; fi
 
   # The provider, and everything composed from it. SH-650: a resume relaunches
   # the provider the abandoned dispatch recorded, unless the caller named one
@@ -1892,6 +1929,11 @@ cmd_dispatch() {
     id=$(printf '%s' "$next_json" | jq -r '.story.story.id')
     title=$(printf '%s' "$next_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$next_json" | jq -r '.story.story.state // ""')
+    if [ -z "$DRY_RUN" ]; then
+      local claimed_state="$state"
+      reserve_dispatch_workspace
+      [ "$state" = "$claimed_state" ] || fail "$id changed after claim; dispatch refused before preparing resources"
+    fi
     # Dry-run's `$next_json` came from the non-claiming read, so `.state` is
     # already the pre-claim value and `.claimed_from` was never asked for;
     # the real claim's `.claimed_from` is what the story actually came from.

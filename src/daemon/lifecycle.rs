@@ -1972,6 +1972,7 @@ pub fn served_deadline_for(invocation: &crate::cli::Invocation, cwd: &Path) -> D
         invocation,
         crate::cli::Invocation::Claim { dry_run: false, .. }
             | crate::cli::Invocation::Unclaim { dry_run: false, .. }
+            | crate::cli::Invocation::Reset { .. }
     ) {
         let allowance = crate::event_hooks::transition_pair_timeout(cwd).unwrap_or(Duration::ZERO);
         return SERVED_DEADLINE + allowance;

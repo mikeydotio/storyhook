@@ -229,6 +229,7 @@ Usage:
   story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>]
                      [--comment <text> | --no-comment] [--dry-run]
                                                     (take a story, atomically)
+  story reset <id> [--force]  Remove owned workspace and return to Todo
   story unclaim <id> [--comment <text> | --no-comment]
                      [--dry-run]                    (hand it back where it came from)
   story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
@@ -565,6 +566,16 @@ pub enum Invocation {
         comment: UnclaimComment,
         /// `--dry-run`: read for real, write symbolically.
         dry_run: bool,
+    },
+    /// Removes owned worktree resources and returns an open ordinary story to Todo.
+    Reset {
+        /// Terminal identity captured by the client.
+        #[serde(default)]
+        caller: crate::service::reset::ResetCaller,
+        /// Canonical or project-relative story identifier.
+        id: String,
+        /// Explicit permission to discard dirty or locked worktree contents.
+        force: bool,
     },
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
@@ -922,6 +933,7 @@ impl Invocation {
                 | ProjectAction::Settings(_) => {}
             },
             Self::Delete { force, .. } => *force = true,
+            Self::Reset { .. } => {}
             // Answers `ConfirmationRequired` too, and until SH-638 was never
             // forced on the re-run: `story archive-state` at a terminal
             // printed its plan twice and archived nothing.
@@ -1830,6 +1842,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         ],
     },
     VerbFlags {
+        verb: "reset",
+        subcommand: None,
+        flags: &[bare("force")],
+    },
+    VerbFlags {
         verb: "unclaim",
         subcommand: None,
         flags: &[value("comment"), bare("no-comment"), bare("dry-run")],
@@ -2357,6 +2374,23 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "next" => parse_next(args),
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
+        "reset" => {
+            let mut id = None;
+            let mut force = false;
+            for arg in &args[1..] {
+                match arg.as_str() {
+                    "--force" if !force => force = true,
+                    value if !value.starts_with('-') && id.is_none() => id = Some(value.to_owned()),
+                    _ => return Err(AppError::Usage("usage: story reset <id> [--force]".into())),
+                }
+            }
+            Ok(Invocation::Reset {
+                caller: crate::service::reset::ResetCaller::capture(),
+                id: id
+                    .ok_or_else(|| AppError::Usage("usage: story reset <id> [--force]".into()))?,
+                force,
+            })
+        }
         "engine" => parse_engine(args),
         "verifier" => parse_verifier(args),
         "cleanup" => parse_cleanup(args),

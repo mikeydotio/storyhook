@@ -271,6 +271,51 @@ fn committed_intent_refuses_new_blockers_and_submission_changes_but_allows_comme
 }
 
 #[test]
+fn reset_and_landing_reservations_exclude_each_other_in_both_orders() {
+    use storyhook::store::WriteOps;
+    for reset_first in [false, true] {
+        let f = ServiceFixture::new();
+        submitted(&f);
+        let intent = admit(&f);
+        if reset_first {
+            f.store()
+                .write(|tx| tx.remove_landing_intent(&intent))
+                .unwrap();
+            f.store()
+                .write(|tx| tx.put_story_reset(f.project(), intent.story, Some("{}")))
+                .unwrap();
+            let error = f
+                .store()
+                .write(|tx| tx.insert_landing_intent(&intent))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("reset"), "{error}");
+            assert!(
+                f.store()
+                    .read(|tx| tx.landing_intents())
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+        } else {
+            let error = f
+                .store()
+                .write(|tx| tx.put_story_reset(f.project(), intent.story, Some("{}")))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("landing"), "{error}");
+            assert!(
+                f.store()
+                    .read(|tx| tx.story_resets(f.project()))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(f.store().read(|tx| tx.landing_intents()).unwrap(), [intent]);
+        }
+    }
+}
+
+#[test]
 fn intent_survives_a_second_connection_and_cannot_be_replaced() {
     let f = ServiceFixture::new();
     submitted(&f);
