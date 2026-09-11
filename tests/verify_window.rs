@@ -349,6 +349,57 @@ fn journal_view_passes_binary_and_store_as_literal_arguments() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn journal_identity_works_with_system_python_and_rejects_unresolved_paths() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+    let fixture = Fixture::new(true);
+    symlink("/usr/bin/python3", fixture.tmux_dir().join("python3")).unwrap();
+    let store = fixture.root.path().join("store.db");
+    std::fs::write(&store, "").unwrap();
+    let alias = fixture.root.path().join("alias.db");
+    symlink(&store, &alias).unwrap();
+    let canonical = std::fs::canonicalize(&store).unwrap();
+    let digest = format!("{:x}", Sha256::digest(canonical.as_os_str().as_bytes()));
+    for path in [&store, &alias] {
+        let output = run_window(
+            &fixture.tmux_dir(),
+            &["logs", "/literal/story", path.to_str().unwrap()],
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    let targets: Vec<_> = calls
+        .iter()
+        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .map(|call| call.windows(2).find(|pair| pair[0] == "-t").unwrap()[1])
+        .collect();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0], targets[1]);
+    assert!(targets[0].ends_with(&digest));
+
+    let missing = fixture.root.path().join("missing.db");
+    let dangling = fixture.root.path().join("dangling.db");
+    symlink(&missing, &dangling).unwrap();
+    let cycle = fixture.root.path().join("cycle.db");
+    symlink(&cycle, &cycle).unwrap();
+    for path in [&missing, &dangling, &cycle] {
+        let output = run_window(
+            &fixture.tmux_dir(),
+            &["logs", "/literal/story", path.to_str().unwrap()],
+        );
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            !output.stderr.is_empty(),
+            "path failure must explain its cause"
+        );
+        assert_eq!(fixture.calls(), log, "unresolved paths must not reach tmux");
+    }
+}
+
+#[test]
 fn daemon_phases_have_a_project_view_and_still_emit_journal_banners() {
     let fixture = Fixture::new(true);
     let mut path = fixture.tmux_dir().into_os_string();

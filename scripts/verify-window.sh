@@ -126,8 +126,10 @@ import hashlib
 import os
 import re
 import sys
+from pathlib import Path
 
-store = os.path.realpath(sys.argv[1], strict=True)
+# Path.resolve preserves strict errors on the macOS system Python 3.9 too.
+store = Path(sys.argv[1]).resolve(strict=True)
 label = re.sub(r"[^A-Za-z0-9_-]", "-", os.path.basename(os.path.dirname(store)))
 digest = hashlib.sha256(os.fsencode(store)).hexdigest()
 print(f"activity-{label}-{digest}")
