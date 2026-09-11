@@ -81,8 +81,10 @@ request; the primer made none.
 | Existing flows | Resume, force/reused claims, launch overrides, lane budget, Auto/Full Auto and undelivered handoff tests |
 
 The impacted-test selector had no coverage map and conservatively returned ALL.
-Only new and directly impacted shell/Rust suites were run in this worktree; the
-central verifier owns full-suite validation and merge.
+Validation was limited to new and directly impacted shell/Rust suites. A global
+pre-tool hook unexpectedly started a broad gate on the first push attempt; it was
+cancelled after diagnosis, and the documented per-command test bypass was used.
+No full-suite result is claimed. The central verifier owns that validation and merge.
 
 Primary implementation references: Codex's
 [SessionStart turn handling](https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs)
