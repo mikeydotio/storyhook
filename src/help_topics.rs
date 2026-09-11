@@ -90,7 +90,7 @@ NOT TO BE CONFUSED WITH
 
 new
   Creates the project in storyhook's store with the states every
-  project must have (todo, in-progress, verifying, blocked, done, closed) and default
+  project must have (todo, in-progress, verifying, blocked, done, dropped) and default
   types, writes .storyhook.toml naming it, and generates an AGENTS.md
   if the repository has none.
 
@@ -666,7 +666,7 @@ Examples:
   story state add review --super OPEN --description "Waiting on a reviewer"
   story state set review --role active
   story state set review --no-description
-  story state reorder todo,in-progress,review,verifying,blocked,done,closed
+  story state reorder todo,in-progress,review,verifying,blocked,done,dropped
   story state remove review --move-stories-to todo
 
 Moving stories out of the way:
@@ -685,7 +685,7 @@ Rules:
   - Slugs are lowercase letters, digits, and single dashes ('in-review').
     They are typed as CLI arguments and appear in dashboard URLs.
   - Every project keeps 'todo', 'in-progress', 'verifying' and 'blocked'
-    as OPEN states, and 'done' and 'closed' as CLOSED states. They cannot be removed, and
+    as OPEN states, and 'done' and 'dropped' as CLOSED states. They cannot be removed, and
     their superstates cannot be changed; anything else you add is
     yours to arrange. A project that predates this rule reports it in
     'story doctor', and 'story doctor --fix' adds what is missing.
@@ -910,7 +910,7 @@ When to use:
 
   --fix is also how a project created before the required states
   existed gets them: it adds any of 'todo', 'in-progress', 'verifying',
-  'blocked', 'done' and 'closed' the project is missing, placing a new OPEN state at the
+  'blocked', 'done' and 'dropped' the project is missing, placing a new OPEN state at the
   end of the OPEN run so the state new stories land in does not move.
   It only ever adds. A project that already defines one of those slugs
   under the wrong superstate is reported rather than rewritten, because
@@ -2584,7 +2584,7 @@ Related:
             "close",
             r#"story close <id> "<reason>"
 
-Retire a story that will not be done. The story moves to the `closed`
+Retire a story that will not be done. The story moves to the `dropped`
 state — CLOSED superstate, so it stops counting as open, ready, or a
 blocker — and the reason is recorded as a comment on it.
 
@@ -2593,8 +2593,8 @@ labels and every relationship it has. That is the whole point. It is
 the record of a decision not to do something, which is worth as much
 as the record of doing it.
 
-`closed` behaves exactly like `done` in every other respect. The two
-differ in what they claim: `done` says the work was finished, `closed`
+`dropped` behaves exactly like `done` in every other respect. The two
+differ in what they claim: `done` says the work was finished, `dropped`
 says it was deliberately abandoned.
 
 Reopen one by moving it anywhere open — `story reopen <id>`, or

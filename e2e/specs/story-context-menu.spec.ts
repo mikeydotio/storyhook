@@ -180,7 +180,7 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
     "data-direction",
     "right",
   );
-  await expect(items.nth(6)).toHaveText("Close");
+  await expect(items.nth(6)).toHaveText("Drop");
   await expect(items.nth(7)).toHaveText("Delete");
   // Still 3, not 4: Set Priority joined the Set Status group rather than
   // adding a fourth rule -- this is what proves that.
