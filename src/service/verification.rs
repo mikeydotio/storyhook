@@ -144,7 +144,7 @@ pub struct VerificationCandidate {
     pub title: String,
     /// Stored priority that ordered the queue.
     pub priority: Priority,
-    /// Creation timestamp used as the first tie-break.
+    /// Creation timestamp used to break equal-priority ties during cleanup.
     pub created_at: String,
     /// When this story most recently entered [`VERIFYING_STATE`], read from
     /// its own `StoryStateChanged` history rather than `updated_at` (SH-524):
@@ -153,6 +153,8 @@ pub struct VerificationCandidate {
     /// `None` for a [`Self::pull_request`] read that predates this field
     /// (`next_cleanup`'s completed-story pass, where wait time is moot) or
     /// for the vanishingly unlikely case no such event survives.
+    /// Breaks equal-priority verification ties, oldest entry first. Missing
+    /// timestamps follow known timestamps, without inventing a queue age.
     pub verifying_since: Option<String>,
     /// Exact change-feed position of the latest transition into
     /// [`VERIFYING_STATE`]. Unlike a story id or timestamp, this cannot be
@@ -211,8 +213,8 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 
     /// Returns every submitted story across every project, in one global
-    /// order (SH-524): priority, then creation time, then project/story
-    /// identity. Each project's worker drains [`Self::ordered_for`]; this is
+    /// order (SH-651): priority, then oldest current verification entry, then
+    /// project/story identity. Each project's worker drains [`Self::ordered_for`]; this is
     /// the cross-project view.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
@@ -618,7 +620,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             for project in tx.projects()? {
                 candidates.extend(cleanup_candidates_for(tx, project.id)?);
             }
-            sort_candidates(&mut candidates);
+            sort_cleanup_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
@@ -634,7 +636,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = cleanup_candidates_for(tx, project)?;
-            sort_candidates(&mut candidates);
+            sort_cleanup_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
@@ -980,6 +982,23 @@ fn sort_candidates(candidates: &mut [VerificationCandidate]) {
     candidates.sort_by(|left, right| {
         left.priority
             .cmp(&right.priority)
+            // An unknown wait must not outrank a known wait at equal priority.
+            .then_with(|| {
+                left.verifying_since
+                    .is_none()
+                    .cmp(&right.verifying_since.is_none())
+            })
+            .then_with(|| left.verifying_since.cmp(&right.verifying_since))
+            .then_with(|| left.project_slug.cmp(&right.project_slug))
+            .then_with(|| left.story_id.cmp(&right.story_id))
+    });
+}
+
+// Completed stories carry no queue-entry time; retain their cleanup order.
+fn sort_cleanup_candidates(candidates: &mut [VerificationCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
             .then_with(|| left.created_at.cmp(&right.created_at))
             .then_with(|| left.project_slug.cmp(&right.project_slug))
             .then_with(|| left.story_id.cmp(&right.story_id))
@@ -989,6 +1008,60 @@ fn sort_candidates(candidates: &mut [VerificationCandidate]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate(
+        priority: Priority,
+        verifying_since: Option<&str>,
+        project: &str,
+        id: &str,
+    ) -> VerificationCandidate {
+        VerificationCandidate {
+            project: ProjectId::new(1),
+            project_slug: project.into(),
+            story_id: id.into(),
+            title: id.into(),
+            priority,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            verifying_since: verifying_since.map(str::to_string),
+            verifying_generation: None,
+            checkout: PathBuf::new(),
+            cleanup_lease: None,
+            pull_request: Err(VerificationProblem::MissingPullRequest),
+        }
+    }
+
+    #[test]
+    fn queue_order_handles_missing_times_and_all_identity_ties() {
+        let early = Some("2026-01-01T00:01:00Z");
+        let late = Some("2026-01-01T00:02:00Z");
+        let expected = [
+            candidate(Priority::High, None, "z", "Z-9"),
+            candidate(Priority::Medium, early, "a", "A-1"),
+            candidate(Priority::Medium, early, "a", "A-2"),
+            candidate(Priority::Medium, early, "b", "B-1"),
+            candidate(Priority::Medium, late, "a", "A-3"),
+            candidate(Priority::Medium, None, "a", "A-4"),
+            candidate(Priority::Medium, None, "a", "A-5"),
+            candidate(Priority::Medium, None, "b", "B-2"),
+            candidate(Priority::Low, early, "a", "A-6"),
+        ];
+
+        // Check every pair in both directions, including self-equality.
+        // This also prevents an unstable input order from deciding ties.
+        for left in 0..expected.len() {
+            for right in 0..expected.len() {
+                let mut actual = vec![expected[left].clone(), expected[right].clone()];
+                sort_candidates(&mut actual);
+                assert_eq!(
+                    actual,
+                    [
+                        expected[left.min(right)].clone(),
+                        expected[left.max(right)].clone()
+                    ]
+                );
+            }
+        }
+    }
 
     #[test]
     fn multiple_pr_diagnosis_names_every_ambiguous_link() {
