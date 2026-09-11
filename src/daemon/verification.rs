@@ -13,9 +13,14 @@ use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
 use crate::domain::github_remote::parse_github_url;
 use crate::domain::pr_url::parse_pr_url;
-use crate::domain::{CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt};
+use crate::domain::{
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
+    SubmissionRefusalClass, SubmittedPullRequest,
+};
 use crate::env::Environment;
-use crate::env::spawn_env::{apply_dispatch_allowlist, apply_verification_allowlist};
+use crate::env::spawn_env::{
+    apply_dispatch_allowlist, apply_submission_allowlist, apply_verification_allowlist,
+};
 use crate::error::AppError;
 use crate::process::{
     CaptureError, Captured, TerminationPolicy, TimeoutTermination,
@@ -27,7 +32,7 @@ use crate::service::engine::{
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationQueue,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
 };
 use crate::store::{
     EngineAgent, EngineLaneState, EngineSpeed, GlobalSeq, PrLink, ProjectId, ReadOps, Store,
@@ -214,6 +219,27 @@ pub enum VerificationOutcome {
     },
 }
 
+/// Why a leased submission did not leave one open pull request (SH-647).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmissionFailure {
+    /// The helper refused by name with something the agent has to fix — a
+    /// dirty worktree, a branch with nothing to submit, a rejected push. The
+    /// story is returned to the agent carrying `display`.
+    Refused {
+        /// The helper's refusal token, such as `dirty-worktree`.
+        reason: String,
+        /// The helper's own words, naming what to fix.
+        display: String,
+    },
+    /// GitHub, git, the helper process or its receipt failed independently
+    /// of the submitted code; retried unchanged, with the story still in
+    /// `verifying`.
+    Infrastructure {
+        /// Latest diagnosis.
+        detail: String,
+    },
+}
+
 /// How `story.sh notify` answered a remediation delivery (SH-650).
 ///
 /// SH-626's shape, one verb over: "no agent is there" is the helper's own
@@ -308,9 +334,15 @@ pub struct ResumePlan {
 
 /// The prefix of the story comment written before a resume re-dispatch.
 pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
-
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
+    /// Pushes the candidate's leased branch and leaves exactly one open pull
+    /// request for it, opened or adopted (SH-647). Idempotent: the daemon
+    /// calls it on every leased generation, linked pull request or not.
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure>;
     /// Verifies and, on green, lands one submitted PR.
     fn verify(
         &self,
@@ -633,6 +665,123 @@ impl ShellVerificationActuator {
         }
         Ok(())
     }
+
+    /// Runs `story.sh submit` from the lease and validates its receipt.
+    ///
+    /// Spawned like [`Self::reap_leased`] — cwd is the leased repository, the
+    /// lease rides [`CLEANUP_LEASE_ENV`], `STORY_BIN` names this daemon's own
+    /// binary — but under the **submission** allowlist, because this child is
+    /// the one helper that must reach GitHub. `GH_PROMPT_DISABLED`/
+    /// `GIT_TERMINAL_PROMPT` make a missing credential fail now rather than
+    /// block for the daemon's life.
+    ///
+    /// A receipt the daemon cannot trust is never a refusal: invalid JSON, an
+    /// `ok` that disagrees with the exit status, a lease or story that is not
+    /// the one asked about, a URL that does not parse as a pull request — all
+    /// are [`SubmissionFailure::Infrastructure`], since none of them is
+    /// anything an agent could repair.
+    fn submit_leased(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
+        let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
+            infrastructure(format!(
+                "story {} has no cleanup lease for its latest verification generation",
+                candidate.story_id
+            ))
+        })?;
+        let encoded = serde_json::to_string(lease)
+            .map_err(|error| infrastructure(format!("could not encode cleanup lease: {error}")))?;
+        let mut command = Command::new("bash");
+        apply_submission_allowlist(&mut command);
+        command
+            .arg(
+                self.helper_path()
+                    .map_err(|error| infrastructure(error.to_string()))?,
+            )
+            .arg("--project")
+            .arg(&candidate.project_slug)
+            .arg("submit")
+            .arg(&candidate.story_id)
+            .current_dir(&lease.repository_path)
+            .env_remove("STORY_AGENT")
+            .env("STORY_BIN", self.story_binary())
+            .envs(self.env.child_vars())
+            .env(CLEANUP_LEASE_ENV, encoded)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GH_PROMPT_DISABLED", "1")
+            .stdin(Stdio::null());
+        let output = self
+            .run_control_command(
+                command,
+                "verifier-submit",
+                &verification_request_id(candidate),
+                "leased story helper `submit`",
+            )
+            .map_err(|error| infrastructure(error.to_string()))?;
+
+        let receipt: SubmissionReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
+            infrastructure(format!(
+                "leased story helper `submit` returned invalid receipt: {}{}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+                if output.stdout.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; stdout: {}",
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    )
+                }
+            ))
+        })?;
+        if !receipt.ok {
+            return Err(match (receipt.class, receipt.reason) {
+                (Some(SubmissionRefusalClass::Repair), Some(reason)) => {
+                    SubmissionFailure::Refused {
+                        reason,
+                        display: receipt.display,
+                    }
+                }
+                _ => infrastructure(receipt.display),
+            });
+        }
+        if !output.status.success() {
+            return Err(infrastructure(format!(
+                "leased story helper `submit` claimed success but exited {}: {}",
+                output.status, receipt.display
+            )));
+        }
+        if receipt.receipt_version != CLEANUP_LEASE_VERSION {
+            return Err(infrastructure(format!(
+                "leased submit receipt uses unsupported version {}",
+                receipt.receipt_version
+            )));
+        }
+        if receipt.story_id != candidate.story_id || receipt.lease.as_ref() != Some(lease) {
+            return Err(infrastructure(
+                "leased submit receipt does not echo the requested story and lease".to_string(),
+            ));
+        }
+        let pull_request = receipt.pull_request.ok_or_else(|| {
+            infrastructure(format!(
+                "leased submit receipt claims success without a pull request: {}",
+                receipt.display
+            ))
+        })?;
+        let reference = parse_pr_url(&pull_request.url).map_err(|error| {
+            infrastructure(format!(
+                "leased submit receipt names an unusable URL: {error}"
+            ))
+        })?;
+        if reference.number != pull_request.number {
+            return Err(infrastructure(format!(
+                "leased submit receipt's URL `{}` and number {} disagree",
+                pull_request.url, pull_request.number
+            )));
+        }
+        Ok(pull_request)
+    }
 }
 
 impl VerificationActuator for ShellVerificationActuator {
@@ -860,6 +1009,13 @@ impl VerificationActuator for ShellVerificationActuator {
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         self.reap_leased(candidate)
+    }
+
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        self.submit_leased(candidate)
     }
 }
 
@@ -1094,6 +1250,9 @@ where
     let lifecycle_entry = inflight.enter();
     name_verification(&lifecycle_entry, &candidate, &started_at);
     let mut active = activity.acquire(&candidate, started_at);
+    // The generation this tick has already submitted, so the `continue` after
+    // recording a submission re-derives the candidate without pushing twice.
+    let mut submitted: Option<Option<GlobalSeq>> = None;
 
     loop {
         match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
@@ -1108,8 +1267,33 @@ where
             env.clone(),
         )
         .no_hooks(true);
+        if submission_due(&candidate, submitted) {
+            submitted = Some(candidate.verifying_generation);
+            match submit_candidate(&queue, &ctx, actuator, &candidate)? {
+                GenerationWrite::Applied(Some(result)) => return Ok(result),
+                // Recorded: the link is a store fact now. Re-derive rather than
+                // trust a PrLink built here, so whatever `ordered_candidates`
+                // makes of it (registered, single, open) is what gets verified.
+                GenerationWrite::Applied(None) | GenerationWrite::Superseded => continue,
+            }
+        }
         let pull_request = match &candidate.pull_request {
             Ok(pull_request) => pull_request.clone(),
+            Err(VerificationProblem::MissingPullRequest) if candidate.cleanup_lease.is_none() => {
+                match return_for_repair(&queue, &ctx, actuator, &candidate, UNLEASED_SUBMISSION)? {
+                    GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
+                    GenerationWrite::Superseded => match refresh_authority(
+                        &queue,
+                        &mut active,
+                        &lifecycle_entry,
+                        env,
+                        &mut candidate,
+                    )? {
+                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
+                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+                    },
+                }
+            }
             Err(problem) => {
                 match return_for_repair(&queue, &ctx, actuator, &candidate, &problem.message())? {
                     GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
@@ -1197,7 +1381,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the existing PR without rewriting published history, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;
@@ -1241,7 +1425,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Link the PR for this checkout's origin, push it, then move {} back to verifying.",
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; the verifier pushes and links the pull request.",
                         candidate.story_id
                     ),
                 )?;
@@ -1261,7 +1445,7 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the existing PR, run new and impacted tests, push, then move {} back to verifying.\n\n{detail}",
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
                 )?;
@@ -1285,6 +1469,102 @@ where
             AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
             AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
+    }
+}
+
+/// The diagnosis for a story that entered `verifying` with no lease (SH-647):
+/// the verifier has no branch to push, and the agent's own charter names the
+/// one thing that fixes it.
+const UNLEASED_SUBMISSION: &str = "verification could not submit this story: it entered \
+`verifying` from outside its dispatched worktree, so no cleanup lease names a branch to push \
+and no pull request is linked. From inside the story's worktree, commit the work and run \
+`story move <id> verifying` again; the verifier pushes the branch and opens the pull request.";
+
+/// Whether this tick owes the candidate a submission (SH-647): it is leased
+/// — so a branch is known — and its linked pull request is either absent or
+/// the single acceptable one. Every leased generation is submitted, linked or
+/// not, because after a RED return the agent only commits; the push is what
+/// carries the fix to the remote. A generation already submitted by this tick
+/// is not submitted again on the `continue` that re-derives it.
+fn submission_due(candidate: &VerificationCandidate, submitted: Option<Option<GlobalSeq>>) -> bool {
+    candidate.cleanup_lease.is_some()
+        && matches!(
+            candidate.pull_request,
+            Ok(_) | Err(VerificationProblem::MissingPullRequest)
+        )
+        && submitted != Some(candidate.verifying_generation)
+}
+
+/// Runs the actuator's submission and records what it left behind.
+///
+/// `Applied(None)` means the link and SUBMITTED comment are recorded and the
+/// caller should re-derive the candidate; `Applied(Some(result))` means this
+/// tick is over — the story was returned to its agent (a refusal, or an
+/// adopted pull request that is not the one the agent linked), or an
+/// infrastructure incident was recorded and the story waits in `verifying`
+/// for the next tick to re-run the same idempotent steps.
+fn submit_candidate<S: Store, A: VerificationActuator>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    actuator: &A,
+    candidate: &VerificationCandidate,
+) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
+    let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
+    let submitted = actuator.submit(candidate);
+    super::activity::emit(
+        if submitted.is_ok() { "INFO" } else { "ERROR" },
+        "verifier",
+        "event",
+        &activity_context,
+        &format!("submission outcome: {submitted:?}"),
+    );
+    match submitted {
+        Ok(pull_request) => {
+            if let Ok(linked) = &candidate.pull_request
+                && linked.number != pull_request.number
+            {
+                {
+                    let diagnosis = format!(
+                        "verification found pull request {} open for this story's branch, but the \
+                         story links {} instead; unlink one (`story unlink-pr`) or close it, then \
+                         run `story move {} verifying` again",
+                        pull_request.url, linked.url, candidate.story_id
+                    );
+                    return Ok(
+                        return_for_repair(queue, ctx, actuator, candidate, &diagnosis)?
+                            .map(|_| Some(TickResult::Returned)),
+                    );
+                }
+            }
+            match queue.record_generation_submitted(ctx, candidate, &pull_request) {
+                Ok(write) => Ok(write.map(|_| None)),
+                // The helper left a pull request on a repository this project
+                // has not registered: a configuration fault between the
+                // worktree's origin and the project's, which no retry and no
+                // agent can repair. Halt loudly rather than loop on it.
+                Err(AppError::Validation(detail)) => Ok(record_infrastructure_failure(
+                    queue,
+                    ctx,
+                    candidate,
+                    VerificationFailureDisposition::Permanent,
+                    &detail,
+                )?
+                .map(Some)),
+                Err(error) => Err(error),
+            }
+        }
+        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
+            queue, ctx, actuator, candidate, &display,
+        )?
+        .map(|_| Some(TickResult::Returned))),
+        Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
+            queue,
+            ctx,
+            candidate,
+            VerificationFailureDisposition::Retryable,
+            &detail,
+        )?
+        .map(Some)),
     }
 }
 
@@ -1321,7 +1601,10 @@ fn incident_matches(incident: &VerificationIncident, candidate: &VerificationCan
 }
 
 enum CandidateAuthority {
-    Current,
+    /// The same generation, re-derived from the store — its derived fields
+    /// (the linked pull request above all, SH-647) may have moved even
+    /// though its authority has not.
+    Current(Box<VerificationCandidate>),
     Superseded(Option<Box<VerificationCandidate>>),
 }
 
@@ -1336,13 +1619,11 @@ fn candidate_authority(
     candidate: &VerificationCandidate,
 ) -> Result<CandidateAuthority, AppError> {
     let current = queue.current_for(candidate)?;
-    if current
-        .as_ref()
-        .is_some_and(|current| current.verifying_generation == candidate.verifying_generation)
-    {
-        Ok(CandidateAuthority::Current)
-    } else {
-        Ok(CandidateAuthority::Superseded(current.map(Box::new)))
+    match current {
+        Some(current) if current.verifying_generation == candidate.verifying_generation => {
+            Ok(CandidateAuthority::Current(Box::new(current)))
+        }
+        other => Ok(CandidateAuthority::Superseded(other.map(Box::new))),
     }
 }
 
@@ -1354,7 +1635,12 @@ fn refresh_authority<S: Store>(
     candidate: &mut VerificationCandidate,
 ) -> Result<AuthorityRefresh, AppError> {
     match candidate_authority(queue, candidate)? {
-        CandidateAuthority::Current => Ok(AuthorityRefresh::Current),
+        CandidateAuthority::Current(current) => {
+            // Same generation, fresh derived facts: a submission recorded a
+            // moment ago is visible as the linked pull request from here on.
+            *candidate = *current;
+            Ok(AuthorityRefresh::Current)
+        }
         CandidateAuthority::Superseded(Some(resubmitted)) => {
             super::activity::emit(
                 "INFO",
