@@ -491,6 +491,46 @@ fn release_sh_installs_both_provider_plugins_owned_by_the_installed_binary() {
     );
 }
 
+/// `make install` finishes by reinstalling the registered provider plugins,
+/// through the binary it just installed — the only one that embeds the
+/// payload being installed — and never gates the install on it (SH-667).
+///
+/// The `||` fallback is the point, not a courtesy: `make install` is the
+/// recovery `StoreError::SchemaTooNew` prescribes and "stays ungated"
+/// (`docs/spec/release-lockstep.md`), and `scripts/release.sh` runs it under
+/// `set -e` between `daemon stop` and `daemon start` — a propagated failure
+/// there would leave the machine with no daemon at all. The fallback names
+/// the retry rather than staying silent.
+#[test]
+fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() {
+    let lines = dry_run("install");
+    let installed = lines
+        .iter()
+        .position(|l| l.starts_with("install -m 755 target/release/story "))
+        .unwrap_or_else(|| panic!("`make -n install` must install the binary:\n{lines:#?}"));
+    let destination = lines[installed]
+        .rsplit(' ')
+        .next()
+        .expect("the install line names its destination");
+    let reinstall = lines
+        .iter()
+        .position(|l| l.contains("plugin reinstall"))
+        .unwrap_or_else(|| panic!("`make -n install` must reinstall the plugins:\n{lines:#?}"));
+    assert!(
+        reinstall > installed,
+        "the reinstall must run AFTER the binary is in place:\n{lines:#?}"
+    );
+    let line = &lines[reinstall];
+    assert!(
+        line.starts_with(&format!("{destination} plugin reinstall")),
+        "the reinstall must run the binary just installed, not whatever is on PATH: {line}"
+    );
+    assert!(
+        line.contains("||") && line.contains("story plugin reinstall"),
+        "a failed reinstall must not fail the install, and must name the retry: {line}"
+    );
+}
+
 /// `--skip-gate` stays refused for a public release — provoked, not read.
 /// This die happens before any git/filesystem preflight, so it is safe to
 /// invoke from an arbitrary directory.
