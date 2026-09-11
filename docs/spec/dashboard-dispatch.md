@@ -528,8 +528,64 @@ SH-436. New argv and HTTP interfaces intentionally do not accept that alias.
 Installed helper resolution is provider-specific. Claude reads Claude Code's installed
 plugin registry; Codex asks `codex plugin list --json` for the authoritative enabled
 `story@storyhook` version and resolves that exact cache directory, rather than guessing
-among stale cached versions. The development-checkout fallback remains the shared
-`plugins/story/bin/story.sh`, and the optional flag does not change dispatch protocol 1.
+among stale cached versions. Behind both sits this binary's own release projection
+(SH-671, below), and behind that the development-checkout fallback, the shared
+`plugins/story/bin/story.sh`; the optional flag does not change dispatch protocol 1.
+
+## As built — SH-671 (the helper the daemon needed was already on disk)
+
+**What happened.** `story plugin install claude` succeeded at 19:51:39 on 2026-09-10.
+Within seconds Claude Code — 2.1.268, installed that evening while three 2.1.267 sessions
+were still running — rewrote `~/.claude/plugins/installed_plugins.json`, `settings.json`'s
+`enabledPlugins` and `known_marketplaces.json` without storyhook, and swept
+`~/.claude/plugins/cache/storyhook`. Its own changelog (2.1.232) names the class: "a
+startup race that could silently unregister a plugin marketplace due to concurrent writes
+to `known_marketplaces.json`". SH-640 had met the same loss on 2026-09-09, with the cache
+surviving that time. The dashboard's next Claude dispatch answered
+
+```
+could not find plugins/story/bin/story.sh for agent `claude` -- install it with
+`story plugin install claude` or set STORYHOOK_DISPATCH_SCRIPT
+```
+
+and, one layer up, `GET /api/dispatch-options` served the Claude slot as `{"ok":false}`,
+which the dialog rendered as a bare "Default" (SH-670). `/story do` kept working
+throughout: it launches `claude --plugin-dir <its own plugin root>` and never reads the
+registry. Only the daemon does — and the daemon's own candidates were the operator
+override (unset), that registry (rewritten), and the dev checkout (dead in a daemon that
+`chdir`s to `$HOME` and runs from `~/.local/bin/story`).
+
+**The fix is one more candidate, not a new source of truth.** `story plugin install` (for
+either provider) materializes this binary's embedded release at
+`<data dir>/plugins/<this version>/plugins/story/bin/story.sh`
+(`release_marketplace_root`, `src/plugin.rs`) and registers *that* directory with the
+provider; the provider's cache copy is a copy of it. `resolve_dispatch_script_from_for_agent`
+now tries the projection after the provider's registry and before the dev checkout, for
+Claude and Codex alike, under the same `DISPATCH_PROTOCOL` check as every other candidate.
+Ranked after the registry so a healthy machine keeps dispatching the same bytes its
+interactive sessions load; ranked before the checkout because it is version-locked to the
+running daemon where a checkout is whatever the tree holds today.
+
+**Not the thing SH-196 rejected.** SH-196 refused to prefer a *dev checkout* over a stale
+installed copy, so live edits never move the daemon out from under itself. The projection
+is the opposite kind of tree: immutable, cut by this exact binary, and the source the
+registry copy was installed from. Resolving it when the registry is gone changes nothing
+on a machine where the registry is intact.
+
+**What it does not do.** It does not put the registration back — a new interactive Claude
+session on that machine still has no `/story` until `story plugin install claude` is run
+again — and it does not gate the dialog on helper resolvability (SH-670's lane). The
+detector for the lost registration is `story doctor install`, whose SH-640 finding fires
+only when installed copies remain; a per-provider install receipt closes the swept-cache
+case (SH-671, second commit).
+
+**Tests.** `tests/dispatch_release_projection.rs` starts a real daemon with *no*
+`STORYHOOK_DISPATCH_SCRIPT` and a private HOME with no registry, plants a stub at the
+projection path, and proves both endpoints serve from it (a distinctive model id, and a
+202). Every other dispatch suite pins the override, which is why the per-provider branch
+had no coverage before. The unit tests in `src/api/dispatch.rs` pin the precedence on each
+side of the new candidate, the protocol check on it, the Codex branch, and the exact error
+text this story was filed with.
 
 ## As built — SH-571 (autonomous Codex hook binding)
 
