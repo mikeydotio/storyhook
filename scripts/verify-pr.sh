@@ -33,28 +33,20 @@ invalid_json() {
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die_json "not inside a git worktree"
 cd "$root" || die_json "cannot enter repository root $root"
-# Progress emission degrades to a no-op rather than a source failure: this
-# script runs against WHATEVER checkout the daemon has registered
-# (`current_dir(&candidate.checkout)`), and a disposable test fixture is a
-# real git worktree with no `scripts/` tree of its own copied into it.
-if [ -f "$root/scripts/gate-progress.sh" ]; then
-    # shellcheck source=gate-progress.sh
-    . "$root/scripts/gate-progress.sh"
-else
-    gate_progress_emit_item() { :; }
-    gate_progress_emit_case() { :; }
-fi
-# SH-545: the verifier tmux mirror. Same source-if-present shape as
-# gate-progress.sh above, and the same degrade-silently posture: a mirror
-# failure (missing tmux, a disposable test fixture with no scripts/ tree,
-# STORYHOOK_VERIFIER_MIRROR=0) must never affect verification's own result.
-if [ -f "$root/scripts/verify-window.sh" ]; then
-    # shellcheck source=verify-window.sh
-    . "$root/scripts/verify-window.sh"
-else
-    verifier_window_banner() { :; }
-    verifier_window_tail() { :; }
-fi
+# The progress journal (SH-524) and the verifier tmux mirror (SH-545) are
+# siblings of this file, never of the checkout: this script runs against
+# WHATEVER checkout the daemon has registered (`current_dir(&candidate.
+# checkout)`), from the bundle the daemon projected out of its own binary
+# (SH-654, src/daemon/verifier_bundle.rs). A missing sibling is a packaging
+# defect in that bundle and is refused by name, where the source-if-present
+# shape this replaced would have run the whole verification with no progress
+# and no mirror and said nothing.
+# shellcheck source=gate-progress.sh
+. "$script_dir/gate-progress.sh" \
+    || die_json "the verifier bundle at $script_dir is missing gate-progress.sh"
+# shellcheck source=verify-window.sh
+. "$script_dir/verify-window.sh" \
+    || die_json "the verifier bundle at $script_dir is missing verify-window.sh"
 command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
