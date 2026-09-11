@@ -531,6 +531,36 @@ fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() 
     );
 }
 
+/// The curl installer is the third path that replaces the binary, and it
+/// refreshes the registered plugins the same way `make install` does: through
+/// the binary it just installed, warning rather than failing, because a
+/// pinned `STORYHOOK_VERSION` older than SH-667 exits 2 on the verb after the
+/// install itself has already succeeded.
+#[test]
+fn install_sh_reinstalls_registered_plugins_through_the_installed_binary_ungated() {
+    let src = std::fs::read_to_string(checkout().join("install.sh")).expect("reading install.sh");
+    let line = src
+        .lines()
+        .find(|l| l.contains("plugin reinstall") && !l.trim_start().starts_with('#'))
+        .unwrap_or_else(|| panic!("install.sh must reinstall the registered plugins:\n{src}"));
+    assert!(
+        line.contains("\"${INSTALL_DIR}/${BINARY}\" plugin reinstall"),
+        "the reinstall must run the binary just installed, not whatever is on PATH: {line}"
+    );
+    let installed = src
+        .find("install -m 755 \"${TMPDIR}/${BINARY}\"")
+        .expect("install.sh installs the binary with install(1)");
+    let reinstall = src.find(line).expect("the line was found in src");
+    assert!(
+        reinstall > installed,
+        "the reinstall must run AFTER the binary is in place"
+    );
+    assert!(
+        src.contains("story plugin reinstall") && (line.contains("||") || line.starts_with("if ")),
+        "a failed reinstall must not fail the installer, and must name the retry: {line}"
+    );
+}
+
 /// `--skip-gate` stays refused for a public release — provoked, not read.
 /// This die happens before any git/filesystem preflight, so it is safe to
 /// invoke from an arbitrary directory.
