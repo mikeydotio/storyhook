@@ -10,6 +10,10 @@
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+if [ "${1:-}" = --landing ]; then
+    shift
+    exec bash "$script_dir/landing-intent.sh" "$@"
+fi
 # shellcheck source=activity-log.sh
 . "$script_dir/activity-log.sh"
 
@@ -302,7 +306,7 @@ require_certified_by_gate() {
         return 0
     fi
     gate_progress_emit_item "release gate" failed
-    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). The configured [verify] gate must certify the tree it ran on by ending in scripts/gate-receipt.sh postlude at tier gate or full — make test and make test-full do; make test-changed and a bare test runner do not. Gate log: $log"
+    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
 }
 
 # Posts the red verdict for the gate `run_verification_gate` just reported as
@@ -362,6 +366,10 @@ recover_merged() {
     esac
     if [ "$recovery_context" = "after landing refusal" ]; then
         gate_progress_emit_item "land pull request" passed
+    fi
+    if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+        jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+        exit 0
     fi
     jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
         '{result:"merged", tree:$tree, detail:$detail}'
@@ -724,6 +732,11 @@ case "$preflight_status" in
     die_json "merge preflight returned unexpected status $preflight_status: $preflight"
     ;;
 esac
+
+if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+    jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+    exit 0
+fi
 
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running

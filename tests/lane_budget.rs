@@ -1,26 +1,10 @@
-//! `story lane-budget` — the machine lane budget and the live agent windows
-//! counted against it (SH-655).
-//!
-//! The verb is store-free and daemon-free on purpose: `plugins/story/bin/
-//! story.sh`'s `cmd_dispatch` asks it BEFORE any claim, worktree or window
-//! exists, from inside the operator's own tmux, so the census has to come
-//! from the tmux server the caller's `$TMUX` names — the daemon may be on a
-//! different socket — and it must never start a daemon as a side effect.
-//!
-//! What a live agent session IS (SH-226/239: ask what a process is, never
-//! what it is spelled): a tmux window whose `@storyhook-agent` option is set
-//! — every `cmd_dispatch` sets it, engine and manual alike — and whose pane
-//! is not dead. `remain-on-exit on` keeps a finished session's window
-//! around, which is exactly why `pane_dead` is load-bearing here.
-//!
-//! An unanswered census is NO EVIDENCE (SH-626's three-valued probe), never
-//! zero: a caller that read "tmux could not be asked" as "no sessions" would
-//! dispatch past the budget precisely when the machine is least observable.
+//! The store-free, informational census reports live tagged tmux windows.
+//! SH-672: it never assigns a machine budget or dispatch permission. An
+//! unanswered census carries its diagnostic instead of inventing a count.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use storyhook::service::engine::ENGINE_LANE_BUDGET;
 use storyhook_test_support::TestEnv;
 use tempfile::TempDir;
 
@@ -136,8 +120,8 @@ fn it_counts_only_tagged_windows_whose_pane_is_alive() {
         serde_json::json!(["storyhook:SH-655", "storyhook:SH-643"]),
         "a dead pane and two untagged windows are not sessions: {json}"
     );
-    assert_eq!(json["budget"], ENGINE_LANE_BUDGET, "{json}");
-    assert_eq!(json["available"], true, "{json}");
+    assert!(json.get("budget").is_none(), "{json}");
+    assert!(json.get("available").is_none(), "{json}");
     assert!(
         fake.argv().contains("list-windows -a -F"),
         "the census must ask every session on the server, not the current one: {}",
@@ -146,16 +130,17 @@ fn it_counts_only_tagged_windows_whose_pane_is_alive() {
 }
 
 #[test]
-fn a_full_machine_reports_nothing_available() {
+fn six_live_sessions_report_a_count_without_a_budget() {
     let env = TestEnv::isolated();
-    let census: String = (0..ENGINE_LANE_BUDGET)
+    let census: String = (0..6)
         .map(|n| format!("storyhook:SH-{n}\tclaude\t0\n"))
         .collect();
     let fake = FakeTmux::answering(&census);
     let json = json_of(&run(&env, Some(&fake), &["lane-budget", "--json"]));
 
-    assert_eq!(json["live"], ENGINE_LANE_BUDGET, "{json}");
-    assert_eq!(json["available"], false, "{json}");
+    assert_eq!(json["live"], 6, "{json}");
+    assert!(json.get("available").is_none(), "{json}");
+    assert!(json.get("budget").is_none(), "{json}");
 }
 
 #[test]
@@ -166,7 +151,7 @@ fn an_empty_server_is_a_counted_zero_not_an_unanswered_probe() {
 
     assert_eq!(json["probe"], "counted", "{json}");
     assert_eq!(json["live"], 0, "{json}");
-    assert_eq!(json["available"], true, "{json}");
+    assert!(json.get("available").is_none(), "{json}");
 }
 
 #[test]
@@ -186,7 +171,7 @@ fn a_server_that_cannot_be_asked_is_unanswered_never_zero() {
             .contains("no server running"),
         "the probe's own words travel with the verdict: {json}"
     );
-    assert_eq!(json["budget"], ENGINE_LANE_BUDGET, "{json}");
+    assert!(json.get("budget").is_none(), "{json}");
 }
 
 #[test]
@@ -221,7 +206,7 @@ fn it_opens_no_store_and_starts_no_daemon() {
 }
 
 #[test]
-fn the_human_rendering_names_the_budget_and_every_live_window() {
+fn the_human_rendering_names_the_count_and_every_live_window() {
     let env = TestEnv::isolated();
     let fake = FakeTmux::answering(CENSUS);
     let out = run(&env, Some(&fake), &["lane-budget"]);
@@ -232,7 +217,8 @@ fn the_human_rendering_names_the_budget_and_every_live_window() {
     );
     let text = String::from_utf8_lossy(&out.stdout);
 
-    assert!(text.contains(&ENGINE_LANE_BUDGET.to_string()), "{text}");
+    assert!(text.contains("2 live agent sessions"), "{text}");
+    assert!(!text.contains("budget"), "{text}");
     assert!(text.contains("storyhook:SH-655"), "{text}");
     assert!(text.contains("storyhook:SH-643"), "{text}");
     assert!(

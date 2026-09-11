@@ -550,3 +550,48 @@ fn initialize_negotiates_before_any_tool_call() {
     assert_eq!(reply["result"]["serverInfo"]["name"], "storyhook");
     assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
 }
+
+#[test]
+fn story_context_obviation_returns_evidence_and_canonical_procedure() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let target = seed(&mut mcp, &slug, "Original work");
+    let candidate = seed(&mut mcp, &slug, "Possible replacement");
+    let moved = mcp.call(
+        "story_move",
+        json!({"project": slug, "id": candidate, "state": "in-progress"}),
+    );
+    assert_eq!(moved["isError"], false);
+    let result = mcp.call(
+        "story_context",
+        json!({"project": slug, "story": target, "format": "json"}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    let document: Value = serde_json::from_str(text_of(&result)).unwrap();
+    let review = &document["obviation_review"];
+    assert_eq!(review["target"]["story"]["id"], target);
+    assert_eq!(review["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(review["candidates"][0]["story"]["id"], candidate);
+    assert_eq!(
+        review["procedure"],
+        storyhook::help_topics::get_help_topic("obviation-review").unwrap()
+    );
+    let markdown = mcp.call("story_context", json!({"project": slug, "story": target}));
+    assert_eq!(markdown["isError"], false, "{markdown}");
+    let envelope: Value = serde_json::from_str(text_of(&markdown)).unwrap();
+    assert!(
+        envelope["message"]
+            .as_str()
+            .unwrap()
+            .contains(storyhook::help_topics::get_help_topic("obviation-review").unwrap())
+    );
+    let missing = mcp.call(
+        "story_context",
+        json!({"project": slug, "story": "SH-9999"}),
+    );
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert!(text_of(&missing).contains("SH-9999"));
+}

@@ -273,15 +273,16 @@ with a scrubbed environment. `make test` is the **gate** tier: the whole Rust
 suite over `/api/v1/invoke` and the plugin shell leg, with the browser leg
 deferred by design (SH-394); `make test-full` is the release tier, and a
 project that wants it names it as its gate. A green run mints an ordinary
-`gate` (or `full`) receipt through `gate-receipt.sh postlude`, so the tree the
+`gate` (or `full`) receipt through the portable `tree-receipt.sh postlude`
+(or StoryHook's `gate-receipt.sh` wrapper), so the tree the
 verifier just certified needs no second run anywhere else
 (`selective-testing.md`, `test-tiers.md`).
 
 **A gate must certify the tree it ran on.** Landing asks `merge-preflight.sh`
 for a `gate`/`full` receipt before it merges, and the receipt is minted by the
-suite itself, so a configured gate that does not end in `gate-receipt.sh
-postlude` (`make test-changed`, a bare test runner) exits 0 having certified
-nothing. `verify-pr.sh` re-asks `merge-preflight.sh` — the same reader, never
+suite itself. A gate with no postlude, or only a `changed` postlude
+(`make test-changed`), exits 0 without certifying a merge.
+`verify-pr.sh` re-asks `merge-preflight.sh` — the same reader, never
 a second parser of the receipt file — immediately after a green gate and
 refuses by name (`require_certified_by_gate`), rather than letting the refusal
 surface downstream from `reconcile_land_refusal` as "no longer has a
@@ -290,6 +291,33 @@ qualifying release-gate receipt" after GitHub had been asked again. What is
 (`gate` or `full`, never `changed` — a council decision on SH-429), and the
 verification allowlist of environment names the daemon lets through to the
 gate.
+
+**Foreign project integration (SH-665).** `merge-watch.sh` supplies
+`STORYHOOK_GATE_RECEIPT` as the absolute executable path to the portable
+writer in this daemon's bundle, overriding any inherited value. The bundle
+includes its `tracked-tree.sh` dependency. Neither file needs to exist in the
+project. The writer leaves Git hook configuration untouched, including custom
+hooks and repositories with no `.githooks` directory.
+
+For example, commit `ci/gate.sh` and configure `[verify] gate = "bash ci/gate.sh"`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+: "${STORYHOOK_GATE_RECEIPT:?Run this gate through the StoryHook verifier}"
+"$STORYHOOK_GATE_RECEIPT" preflight
+cargo test --workspace # Replace with this project's complete required checks.
+"$STORYHOOK_GATE_RECEIPT" postlude gate
+```
+
+The postlude must be reached only after every required check succeeds. Use
+`full` only when the project's full tier actually ran. Shell quoting belongs
+inside the script, not in the plain-argv `[verify].gate` value. The path is
+provided during verification; standalone local tests do not receive it.
+StoryHook's own Makefile continues to call `gate-receipt.sh`, which enforces
+its existing hook enrollment before delegating to the same portable core.
+Receipt format, shared project storage, private preflight state and objects,
+tree-drift refusal, tier ordering, and atomic publication are unchanged.
 
 ### Red
 
@@ -382,13 +410,10 @@ the SH-136 rule); the invariant here is only that it **survives**.
 
 ### What the verifier cannot do, stated rather than glossed
 
-- It **lands** only a project whose gate can mint a receipt. Since SH-654 the
-  verifier itself runs against any registered checkout (see "The verifier
-  runs from the daemon's bundle" under As built), but the receipt contract
-  SH-649 put on the gate can only be met by `gate-receipt.sh postlude`, and
-  that writer lives in this checkout and enrols this checkout's
-  `.githooks` — so a foreign project passes its gate and is then refused, by
-  name, at the certifies-nothing check. SH-665 owns that gap.
+- It **lands** only a project whose gate explicitly certifies its tree.
+  SH-665 supplies the portable writer to every project, but a bare test
+  command that exits zero still certifies nothing. Projects must integrate
+  the preflight and successful postlude described above.
 - It runs the gate tier, never the release tier, and so cannot find what only
   the browser suite finds (SH-416, SH-418, SH-622 are the precedents); the
   `browser-watch.sh` poller is what runs `make test-full` between releases.
@@ -510,7 +535,7 @@ directory and a fake `gh` answering a closed PR returns the PR's own verdict
 from the bundled script — mutation-checked by reverting the spawn to the
 checkout-relative literal, which reproduces the filed message exactly.
 
-**Limit, stated.** Verified is not landed. The receipt contract (SH-649)
+**Historical limit, resolved by SH-665 below.** Verified is not landed. The receipt contract (SH-649)
 still requires the gate to end in `gate-receipt.sh postlude`, and that writer
 is storyhook's alone — it enrols this checkout's `.githooks` and refuses
 without an executable `.githooks/pre-push`. A foreign project therefore
@@ -519,7 +544,31 @@ Filed as SH-665 rather than adopted: it is a separate mechanism (how a
 project-agnostic receipt writer reaches a foreign gate) with more than one
 defensible design.
 
+### SH-665 — a portable receipt writer supplied to foreign gates
+
+The approved split keeps hook enrollment in `gate-receipt.sh` and moves its
+receipt mechanics into `tree-receipt.sh`. `build.rs` embeds that core and
+`tracked-tree.sh`; `merge-watch.sh` sets `STORYHOOK_GATE_RECEIPT` at the gate's
+exec boundary. The verifier still neither brackets an arbitrary command nor
+promotes its exit status to certification. `merge-preflight.sh` remains the
+single merge-certification reader.
+
+`tests/portable_receipt.rs` drives the materialized bundle against foreign
+repositories and speculative merge worktrees with spaces in their paths.
+It proves gate/full acceptance, no hook enrollment or custom-policy changes,
+replacement of an inherited writer path, refusal without a complete bracket,
+failed-gate non-certification, changed-tier rejection, tree-drift refusal,
+project-local receipts, and successful worktree restoration. Existing push,
+merge, and lease tests exercise the same extracted core through its original
+wrapper. The bundle dependency fence derives the new transitive dependencies
+from the production scripts.
+
 ### SH-655 — D-B's "D14's lane budget bounds agents" was not true
+
+**Historical: SH-672 removes the session admission gates described below.**
+Engine limits are independent per run; manual concurrency belongs to the
+operator. The census remains informational, and the compiler bound remains
+machine-wide. See the SH-672 entry in `docs/spec/full-auto-engine.md`.
 
 D-B declined a machine-wide CPU cap as YAGNI on the grounds that D14's lane
 budget bounds agents. It bounded *engine* agents: the budget was enforced over
@@ -738,3 +787,37 @@ the proof that the inner `run-tests.sh` take is reentrant with the outer
 as owned; a halt in one leaves the other draining and is acknowledged only
 through its own route; a conflict hold in one does not hold the other; queue
 position counts one project; the supervisor follows the catalog).
+
+## Manual verifier controls — SH-668
+
+Each project stores admission permission separately from failure incidents.
+The default is running; an operator stop survives daemon restart. Stopping
+does not change queued stories, agent lanes, or another project's verifier.
+
+| Action | Contract |
+|---|---|
+| Let inflight verifications finish | Disable new admissions; finish the owned attempt, including its reconciliation hold. |
+| Stop inflight verifications | Disable admissions and latch cancellation on the owned attempt. The worker terminates and reaps its subprocess group, and releases reconciliation waits. |
+| Start verifier | Enable admission after stopped work has exited. Never acknowledge a failure implicitly. |
+| Leave verifier stopped | Validate and acknowledge the exact halted incident and disable admission in one transaction. |
+| Acknowledge and retry | Validate and acknowledge the exact halted incident, then permit another attempt. |
+
+The header displays stop while running or draining, allowing drain to escalate
+to cancellation. While cancelling it displays stopping; play becomes available
+once the worker has released ownership. A halted incident remains visible until
+explicit acknowledgement. Legacy CLI acknowledgement preserves manual permission.
+
+The council chose worker-owned cancellation over API-side signalling (decision
+and complete reasoning recorded on SH-668). The shared activity registry serializes
+admission and control mutations, always locking before store access. Only permission
+is durable; draining/stopping derive from live ownership and an attempt-scoped,
+monotonic token that survives reconciliation-generation replacement. No registry
+lock is held during subprocess work or waits. Cancellation is distinct from
+infrastructure failure; uncertain external merges are recovered on restart through
+the existing authoritative PR checks, never presumed absent because a child exited.
+
+REST: `POST /api/repos/{project}/verification/control` accepts `action` of
+`start`, `drain`, or `stop`. `/data` includes `verification_control` with its
+derived `state`. `/verification/ack` accepts optional `action`: `retry` or
+`leave-stopped`; omission retains the legacy acknowledgement contract. Mutations
+return confirmed state; the UI refreshes after failures or ambiguous transport.

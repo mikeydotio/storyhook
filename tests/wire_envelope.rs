@@ -1456,6 +1456,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Context {
             format: Some("json".to_string()),
+            story: Some("SH-1".to_string()),
         },
         Invocation::Handoff {
             since: Some("7d".to_string()),
@@ -1992,6 +1993,21 @@ fn older_next_wire_shapes_default_the_new_filters_to_absent() {
             phase: None,
             epic: None,
             exclude_label: None,
+        }
+    );
+}
+
+#[test]
+fn older_context_wire_shapes_keep_the_project_only_briefing() {
+    let decoded: Invocation = serde_json::from_value(serde_json::json!({
+        "Context": {"format": "json"}
+    }))
+    .expect("older clients can omit SH-673's story field");
+    assert_eq!(
+        decoded,
+        Invocation::Context {
+            format: Some("json".to_string()),
+            story: None
         }
     );
 }

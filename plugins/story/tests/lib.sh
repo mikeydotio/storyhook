@@ -306,17 +306,10 @@ if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
 fi
 
-# And the fake itself is on $PATH for EVERY test, for the same reason its
-# state is minted here (SH-655). Since the lane-budget gate, every dispatch --
-# dry-run included -- takes a census of the live agent windows on the tmux
-# server this shell is attached to, ahead of its claim. Fourteen test files
-# dispatched without the fake on their PATH, and every one of them turned
-# load-dependent the day the gate landed: green on a quiet machine, refused
-# (`lane-budget`) on one running its budget of agent sessions -- the exact
-# verdict SH-655 exists to remove from the merge gate, manufactured inside
-# the suite that tests it. A test file's own `PATH="$TESTS_DIR/fakes:$PATH"`
-# or private fake-bin directory still wins for the names it provides, and
-# nothing under fakes/ shadows `story`: only `tmux` lives there directly.
+# Keep every terminal operation on the fixture's server. SH-655 found
+# fourteen tests consulting the real server through the former census gate.
+# SH-672 removes that gate; recovery still probes panes, so isolation remains
+# necessary. Per-file fake directories may override individual programs.
 export PATH="$TESTS_DIR/fakes:$PATH"
 
 # mk_story_repo — build a temp git repo with a real storyhook project

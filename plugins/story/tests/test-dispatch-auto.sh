@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SH-62: `dispatch <id> --auto` swaps in the autonomous charter (plan
-# approval stays the ONE human interaction; the child resolves the rest
+# approval is automatic; the child resolves later decisions
 # itself) while leaving the attended path byte-identical. Mostly dry-run
 # (no tmux needed — every case here either refuses before the DRY_RUN branch
 # point or IS the dry-run branch), plus one real fake-tmux dispatch mirroring
@@ -33,7 +33,7 @@ dry() {
 # treats as special -- see tests/test-charter-inert.sh for the invariant and
 # why it has to be structural. The pin itself is unchanged in kind: it still
 # asserts the attended prompt byte-for-byte, which is what catches drift.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -60,6 +60,10 @@ esac
 out=$(STORY_COUNCIL=on dry --auto)
 assert_eq "$(jqf "$out" .ok)" "true" "auto: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto: auto:true"
+assert_contains "$(jqf "$out" .prompt)" "StoryHook approves it automatically" "auto: plan approval needs no human reply"
+case "$(jqf "$out" .prompt)" in
+  *"the user approves"*) fail_test "auto: charter still assigns approval to a human" ;;
+esac
 assert_eq "$(jqf "$out" .council)" "true" "auto+council-on: council:true"
 assert_eq "$(jqf "$out" .launch_source)" "builtin" "auto: builtin launch source"
 assert_eq "$(jqf "$out" .launch_overridden)" "false" "auto: builtin launch is not overridden"

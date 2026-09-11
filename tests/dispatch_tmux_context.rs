@@ -375,6 +375,8 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
     if let Some(result_path) = std::env::var_os(RESULT_ENV) {
         let env = TestEnv::isolated();
         let candidate = VerificationCandidate {
+            blocked_by: Vec::new(),
+            landing_pending: false,
             project: ProjectId::new(1),
             project_slug: "fixture".into(),
             story_id: "SH-CALLBACK-1".into(),

@@ -171,10 +171,13 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "activity-run.py",
     "gate-progress.sh",
     "land-pr.sh",
+    "landing-intent.sh",
     "machine-lock.sh",
     "merge-preflight.sh",
     "merge-watch.sh",
     "test_output.py",
+    "tracked-tree.sh",
+    "tree-receipt.sh",
     "verify-pr.sh",
     "verify-window.sh",
 ];

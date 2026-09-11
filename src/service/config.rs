@@ -41,7 +41,7 @@ use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps}
 
 use super::state_set::write_states;
 use super::story::state_transition_events;
-use super::{Ctx, append_and_fold, project_prefix, refold_story};
+use super::{Ctx, append_and_fold_maintenance, project_prefix, refold_story};
 
 /// A configured state together with how many stories sit in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -642,7 +642,7 @@ fn migrate_occupants(
                 Vec::new(),
             ));
         }
-        append_and_fold(
+        append_and_fold_maintenance(
             tx,
             project,
             row.story_no,
