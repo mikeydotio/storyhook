@@ -125,11 +125,14 @@ verification_failure_detail() {
     failed_count="$(printf '%s\n' "$failed_tests" \
         | awk 'NF { count += 1 } END { print count + 0 }')"
 
-    compiler_diagnostics="$(awk '
-        /^error(\[[^]]+\])?: / || /^error: / {
-            if ($0 !~ /^error: (test|doctest) failed/) print
-        }
-    ' "$failure_log" | awk 'NF && !seen[$0]++')"
+    # Test stdout/stderr may print any error text, even Cargo-shaped JSON.
+    # Only the build-only adapter owns this per-attempt evidence (SH-685).
+    compiler_problem=""
+    compiler_diagnostics="$(python3 "$script_dir/cargo_diagnostics.py" \
+        --summarize "$failure_log.compiler.jsonl" 2>&1)" || {
+        compiler_problem="$compiler_diagnostics"
+        compiler_diagnostics=""
+    }
     compiler_count="$(printf '%s\n' "$compiler_diagnostics" \
         | awk 'NF { count += 1 } END { print count + 0 }')"
 
@@ -147,6 +150,9 @@ verification_failure_detail() {
 
     printf 'Verification failure summary\n'
     printf 'The completed gate failed with exit status %s.\n' "$failure_status"
+    if [ -n "$compiler_problem" ]; then
+        printf 'Compiler diagnostic collection unavailable: %.500s\n' "$compiler_problem"
+    fi
     if [ "$failed_count" -gt 0 ]; then
         if [ "$failed_count" -gt 20 ]; then
             printf 'Failed tests (%s; showing first 20):\n' "$failed_count"
@@ -231,10 +237,13 @@ run_verification_gate() {
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
         || die_json "could not create per-attempt verification log"
+    : >"$log.compiler.jsonl" \
+        || die_json "could not create compiler diagnostic artifact for $log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
     verifier_window_tail "$log"
-    STORYHOOK_GATE_RESULT_FILE="$gate_result" \
+    STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
+        STORYHOOK_GATE_RESULT_FILE="$gate_result" \
         activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?

@@ -625,17 +625,21 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
     let fixture = Fixture::new();
     fixture.integration_test("progressing");
     fixture.fake_cargo(
-        "#!/bin/sh\nargs=\" $* \"\ncase \"$args\" in\n(*\" --list \"*)\n    case \"$args\" in\n    (*\" --ignored \"*) ;;\n    (*) printf 'proves_progress: test\\n' ;;\n    esac\n    ;;\n(*)\n    printf '     Running tests/progressing.rs (target/debug/deps/progressing-fixture)\\n'\n    printf 'test proves_progress ... ok\\n'\n    ;;\nesac\n",
+        "#!/bin/sh\n[ -z \"${STORYHOOK_COMPILER_DIAGNOSTICS:-}\" ] || exit 99\nargs=\" $* \"\ncase \"$args\" in\n(*\" --no-run \"*) printf '{\"reason\":\"build-finished\",\"success\":true}\\n' ;;\n(*\" --list \"*)\n    case \"$args\" in\n    (*\" --ignored \"*) ;;\n    (*) printf 'proves_progress: test\\n' ;;\n    esac\n    ;;\n(*)\n    printf '     Running tests/progressing.rs (target/debug/deps/progressing-fixture)\\n' >&2\n    printf 'error: intentional test output\\n'\n    printf 'test proves_progress ... ok\\n'\n    ;;\nesac\n",
     );
     let journal = fixture.path().join("gate-progress.ndjson");
+    let diagnostics = fixture.path().join("compiler.jsonl");
+    std::fs::write(&diagnostics, "").unwrap();
 
     let out = fixture
         .command(&["--only-no-doc", "progressing"])
         .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .env("STORYHOOK_COMPILER_DIAGNOSTICS", &diagnostics)
         .output()
         .expect("running the journalled suite");
 
     assert_eq!(code(&out), 0, "the journalled suite must pass: {out:?}");
+    assert_eq!(std::fs::read_to_string(diagnostics).unwrap(), "");
     assert!(
         stdout(&out).contains("test proves_progress ... ok"),
         "progress parsing must not remove raw test output from the full gate log: {out:?}"

@@ -12,6 +12,8 @@ build_identity	:(glob)**/*
 build_slots	.cargo/config.toml
 build_slots	scripts/machine-lock.sh
 build_slots	scripts/rustc-slot.py
+cargo_diagnostics	:(glob)scripts/*
+cargo_diagnostics	:(glob)tests/support/cargo_diagnostics.py
 checkout_path_readers	:(glob)**/*
 checkout_path_readers	:(glob)src/**/*.rs
 commit_identity	:(glob)**/*

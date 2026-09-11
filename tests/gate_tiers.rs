@@ -351,7 +351,7 @@ fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
         "cargo fmt --all -- --check",
         "cargo clippy --workspace --all-targets",
         "run-rust-battery.sh contracts",
-        "leg.sh --reuse build -- cargo build",
+        "leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build",
         "plugins/story/tests/run-tests.sh",
         "check-no-orphan-servers.sh preflight",
         "with-orphan-postlude.sh",
