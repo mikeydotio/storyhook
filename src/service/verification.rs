@@ -125,6 +125,48 @@ pub struct VerificationQueue<'a, S: Store> {
     store: &'a S,
 }
 
+/// Acknowledges exactly the halted verification incident `incident_id` for the
+/// project `ctx` selects, releasing the queue for another attempt (SH-573).
+///
+/// One function for both doors — `POST .../verification/ack` and
+/// `story verifier ack <incident-id>` (SH-666) — so their contract cannot
+/// drift (SH-136): the id must name the incident that is *current*, still
+/// halted rather than retrying, and this project's. A reader of a stale
+/// comment therefore cannot acknowledge a newer incident by accident, and an
+/// acknowledgement retries nothing by itself: the verifier's next tick does.
+pub fn acknowledge_verification_incident<S: Store>(
+    ctx: &Ctx<'_, S>,
+    incident_id: &str,
+) -> Result<VerificationIncident, AppError> {
+    let current = ctx.store().read(|tx| tx.verification_incident())?;
+    let Some(current) = current else {
+        return Err(AppError::Validation(
+            "no verification incident is active".into(),
+        ));
+    };
+    if !current.halted {
+        return Err(AppError::Validation(
+            "the verification incident is still retrying".into(),
+        ));
+    }
+    if current.incident_id != incident_id {
+        return Err(AppError::Validation(format!(
+            "verification incident `{incident_id}` is stale; current incident is `{}`",
+            current.incident_id
+        )));
+    }
+    if current.project != ctx.project() {
+        return Err(AppError::Validation(format!(
+            "verification incident `{incident_id}` belongs to another project"
+        )));
+    }
+    ctx.store().write(|tx| {
+        tx.clear_verification_incident(incident_id)?;
+        Ok(())
+    })?;
+    Ok(current)
+}
+
 impl<'a, S: Store> VerificationQueue<'a, S> {
     /// Creates a queue over every project in one daemon store.
     #[must_use]

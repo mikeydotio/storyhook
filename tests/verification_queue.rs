@@ -23,7 +23,7 @@ use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
-    VerificationProblem, VerificationQueue,
+    VerificationProblem, VerificationQueue, acknowledge_verification_incident,
 };
 use storyhook::store::{
     ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
@@ -2439,6 +2439,85 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
         TickResult::Halted,
         "acknowledgement must make the still-current candidate eligible again"
+    );
+}
+
+/// The CLI's `story verifier ack` and the dashboard's `POST .../verification/ack`
+/// are one function (SH-666, SH-136): it refuses when nothing is halted, when
+/// the incident is still retrying on its own, and when the id names an older
+/// incident than the current one — and clears exactly the one it was given.
+#[test]
+fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let head = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let ctx = fixture.ctx();
+
+    let none = acknowledge_verification_incident(&ctx, "2:1").unwrap_err();
+    assert!(
+        none.to_string()
+            .contains("no verification incident is active"),
+        "{none}"
+    );
+
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let incident_id = format!(
+        "{}:{}",
+        candidate.project.get(),
+        candidate.verifying_generation.unwrap().get()
+    );
+    let mut incident = VerificationIncident {
+        incident_id: incident_id.clone(),
+        project: candidate.project,
+        story: StoryNo::parse_id("SH", &head).unwrap(),
+        generation: candidate.verifying_generation.unwrap(),
+        disposition: VerificationFailureDisposition::Retryable,
+        halted: false,
+        attempts: 1,
+        detail: "could not read submitted pull request".into(),
+        first_failed_at: "2026-01-01T00:01:00Z".into(),
+        last_failed_at: "2026-01-01T00:01:00Z".into(),
+    };
+    fixture
+        .store()
+        .write(|tx| tx.put_verification_incident(&incident))
+        .unwrap();
+    let retrying = acknowledge_verification_incident(&ctx, &incident_id).unwrap_err();
+    assert!(
+        retrying.to_string().contains("still retrying"),
+        "{retrying}"
+    );
+
+    incident.halted = true;
+    incident.disposition = VerificationFailureDisposition::Permanent;
+    fixture
+        .store()
+        .write(|tx| tx.put_verification_incident(&incident))
+        .unwrap();
+    let stale = acknowledge_verification_incident(&ctx, "an-older-incident").unwrap_err();
+    assert!(stale.to_string().contains("is stale"), "{stale}");
+    assert!(stale.to_string().contains(&incident_id), "{stale}");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_some(),
+        "a stale acknowledgement must clear nothing"
+    );
+
+    let cleared = acknowledge_verification_incident(&ctx, &incident_id).unwrap();
+    assert_eq!(cleared.incident_id, incident_id);
+    assert_eq!(cleared.story.to_id("SH"), head);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none()
     );
 }
 

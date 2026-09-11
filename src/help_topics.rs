@@ -2702,6 +2702,34 @@ Examples:
         );
 
         m.insert(
+            "verifier",
+            r#"story verifier ack <incident-id>
+
+Release the centralized verifier after an infrastructure halt.
+
+  The verifier stops its whole queue when it cannot run at all -- its
+  script refused by name, the registered checkout unreadable, a gate that
+  cannot be spawned -- rather than reporting the same failure as a red
+  verdict on every story in turn. The halt is recorded as one incident,
+  named on the story it was first hit on and on every story waiting
+  behind it, with the incident id. No story is at fault for it.
+
+  ack names that exact incident and clears it, so the verifier's next
+  tick attempts the queue again. Acknowledging changes nothing about the
+  cause: fix what the halt comment names first, or the same incident
+  returns on the next attempt. A stale id (an older comment, a newer
+  incident) is refused rather than clearing whichever incident is
+  current; an incident still retrying on its own is refused too.
+
+  The dashboard's "Acknowledge and retry" button performs the same
+  acknowledgement.
+
+Examples:
+  story verifier ack 2:28821
+"#,
+        );
+
+        m.insert(
             "web",
             r#"story web start [--port <PORT>]
 story web stop
