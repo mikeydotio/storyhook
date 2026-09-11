@@ -117,7 +117,7 @@ test("Dispatch sits at the leading edge, before Close and Delete", async ({ page
   const footerButtons = page.locator("#drawer-footer button");
   await expect(footerButtons).toHaveCount(3);
   await expect(footerButtons.nth(0)).toHaveId("dispatch-btn");
-  await expect(footerButtons.nth(1)).toHaveText("Close");
+  await expect(footerButtons.nth(1)).toHaveText("Drop");
   await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 

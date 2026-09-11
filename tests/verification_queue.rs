@@ -898,7 +898,7 @@ fn recording_the_verified_merge_closes_the_story_and_the_pr_projection() {
                 "blocked",
                 "abandoned",
                 "done",
-                "closed",
+                "dropped",
             ]
             .map(str::to_string),
         )
@@ -4135,7 +4135,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
                 "shipped",
                 "abandoned",
                 "done",
-                "closed",
+                "dropped",
             ]
             .map(str::to_string),
         )

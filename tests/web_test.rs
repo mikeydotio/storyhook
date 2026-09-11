@@ -4443,7 +4443,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             "archived"
         ],
         "states must be in configured order, not alphabetical"
@@ -5396,14 +5396,14 @@ fn web_move_story_to_closed_with_comment_records_the_closing_reason() {
     let resp = post_json(
         &fixture,
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
-        r#"{"state":"closed","comment":"Superseded by SH-2"}"#,
+        r#"{"state":"dropped","comment":"Superseded by SH-2"}"#,
     )
     .unwrap();
     assert_eq!(resp.status(), 200);
 
     let json: serde_json::Value =
         serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&json, "state"), "closed");
+    assert_eq!(story_field(&json, "state"), "dropped");
     let comments = json["story"]["story"]["comments"].as_array().unwrap();
     assert!(
         comments
@@ -6506,7 +6506,7 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 
@@ -6543,7 +6543,7 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             "review"
         ]
     );
@@ -6661,7 +6661,7 @@ fn web_states_patch_reorders_the_collection() {
         patch_json(
             &fixture,
             &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
-            r#"{"order":["done","todo","verifying","blocked","in-progress","closed"]}"#,
+            r#"{"order":["done","todo","verifying","blocked","in-progress","dropped"]}"#,
         )
         .unwrap(),
     );
@@ -6673,7 +6673,7 @@ fn web_states_patch_reorders_the_collection() {
             "verifying",
             "blocked",
             "in-progress",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(slugs(&get_states(&fixture, port, repo_id)), slugs(&json));
@@ -6756,7 +6756,7 @@ fn web_states_delete_removes_and_migrates() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(json["states"][1]["open_count"], 1);

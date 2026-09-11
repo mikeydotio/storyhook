@@ -1773,7 +1773,7 @@ pub fn default_states() -> Vec<StateDef> {
             description: None,
         },
         StateDef {
-            slug: "closed".to_string(),
+            slug: "dropped".to_string(),
             super_state: SuperState::Closed,
             role: None,
             description: None,

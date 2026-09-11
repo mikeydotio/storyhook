@@ -156,7 +156,7 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
-SH-13 [closed] (low) [chore] Old approach: file-per-story
+SH-13 [dropped] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
 SH-15 [todo] (low) [epic] Track engine adoption (0/1)
 SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
@@ -174,7 +174,7 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
-SH-13 [closed] (low) [chore] Old approach: file-per-story
+SH-13 [dropped] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
 SH-15 [todo] (low) [epic] Track engine adoption (0/1)
 SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
@@ -192,7 +192,7 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
-SH-13 [closed] (low) [chore] Old approach: file-per-story
+SH-13 [dropped] (low) [chore] Old approach: file-per-story
 SH-14 [done] (medium) [spike] Prototype the archive format
 SH-15 [todo] (low) [epic] Track engine adoption (0/1)
 SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
