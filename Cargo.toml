@@ -10,7 +10,7 @@
 # `cargo publish` strips path-only dev-dependencies, so the cycle never reaches
 # a published manifest.
 [workspace]
-members = ["crates/storyhook-test-support"]
+members = ["crates/storyhook-test-support", "crates/ste-lint"]
 resolver = "3"
 
 [workspace.dependencies]
