@@ -4920,9 +4920,9 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// deliberately not completed, keeping it and everything it records.
 ///
 /// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
-/// it moves to is a real one ([`crate::domain::CLOSED_STATE_SLUG`]) and the
+/// it moves to is a real one ([`crate::domain::DROPPED_STATE_SLUG`]) and the
 /// reason is a real comment, so this needs no new event kind, no new snapshot
-/// field, no dispatch arm, and no MCP or wire surface — `story move <id> closed
+/// field, no dispatch arm, and no MCP or wire surface — `story move <id> dropped
 /// "<reason>"` does exactly the same thing and is the same story afterwards.
 ///
 /// What the sugar adds is the requirement: `move` takes an optional comment,
@@ -4944,7 +4944,7 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     }
     Ok(Invocation::SetState {
         id: args[1].clone(),
-        state: crate::domain::CLOSED_STATE_SLUG.to_string(),
+        state: crate::domain::DROPPED_STATE_SLUG.to_string(),
         comment: Some(reason),
         if_state: None,
         awaiting: None,

@@ -97,7 +97,7 @@ fn state_list_reflects_order() {
         .args([
             "state",
             "reorder",
-            "done,todo,blocked,verifying,in-progress,closed",
+            "done,todo,blocked,verifying,in-progress,dropped",
         ])
         .assert()
         .success();
@@ -517,7 +517,7 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
         .args([
             "state",
             "reorder",
-            "done,todo,blocked,verifying,in-progress,closed",
+            "done,todo,blocked,verifying,in-progress,dropped",
         ])
         .assert()
         .success()
@@ -534,7 +534,7 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
         ])
         .assert()
         .success()
@@ -553,7 +553,7 @@ fn state_reorder_changes_where_new_stories_land() {
         .args([
             "state",
             "reorder",
-            "in-progress,todo,verifying,blocked,done,closed",
+            "in-progress,todo,verifying,blocked,done,dropped",
         ])
         .assert()
         .success();
@@ -589,7 +589,7 @@ fn state_reorder_rejects_unknown_slugs() {
         .args([
             "state",
             "reorder",
-            "todo,in-progress,verifying,blocked,done,closed,nope",
+            "todo,in-progress,verifying,blocked,done,dropped,nope",
         ])
         .assert()
         .failure()

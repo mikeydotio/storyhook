@@ -171,7 +171,7 @@ fn check_closes_a_merged_story_into_done_not_the_first_closed_state() {
                 "shipped",
                 "abandoned",
                 "done",
-                "closed",
+                "dropped",
             ]
             .map(str::to_string),
         )

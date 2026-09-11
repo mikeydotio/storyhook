@@ -2359,7 +2359,6 @@ struct V18RequiredMetadataFixture {
 fn v18_store_with_legacy_metadata(dir: &Path) -> V18RequiredMetadataFixture {
     use storyhook::domain::provenance::Provenance;
     use storyhook::domain::{Priority, StoryEvent, TypeDef, fold_story};
-    use storyhook::service::project::default_states;
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
     let store = SqliteStore::open(dir.join("store.db")).unwrap();
@@ -2652,7 +2651,7 @@ fn migration_nineteen_repairs_every_legacy_shape_with_ordered_real_events() {
     assert_eq!(rows[6].snapshot.superstate.as_str(), "CLOSED");
     assert!(rows[6].archived);
     assert!(rows[7].archived);
-    assert_eq!(rows[7].snapshot.state, "closed");
+    assert_eq!(rows[7].snapshot.state, "dropped");
 
     let control_after = rows
         .iter()
@@ -2761,7 +2760,6 @@ fn migration_nineteen_preserves_dependents_constraints_trigger_and_doctor_agreem
 fn migration_nineteen_rolls_back_when_a_project_has_no_default_type() {
     use storyhook::domain::provenance::Provenance;
     use storyhook::domain::{Priority, StoryEvent, fold_story};
-    use storyhook::service::project::default_states;
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
     let dir = scratch_dir();
@@ -2851,7 +2849,6 @@ fn migration_nineteen_rolls_back_when_a_project_has_no_default_type() {
 fn migration_twenty_clears_existing_epic_state_and_drops_the_single_parent_index() {
     use storyhook::domain::provenance::Provenance;
     use storyhook::domain::{Priority, TypeDef, fold_story};
-    use storyhook::service::project::default_states;
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
     let dir = scratch_dir();
@@ -3214,7 +3211,6 @@ fn migration_twenty_one_leaves_an_undeleted_story_open() {
 fn migration_twenty_two_retracts_closed_blocker_edges_with_real_events() {
     use storyhook::domain::provenance::Provenance;
     use storyhook::domain::{Priority, TypeDef, fold_story};
-    use storyhook::service::project::default_states;
     use storyhook::store::rebuild::diff_read_model;
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
@@ -3624,7 +3620,6 @@ fn migration_twenty_nine_adds_a_nullable_cleanup_lease_without_rewriting_lanes()
 fn migration_thirty_normalizes_every_story_with_real_events() {
     use storyhook::domain::provenance::Provenance;
     use storyhook::domain::{Priority, StoryEvent, TypeDef, fold_story};
-    use storyhook::service::project::default_states;
     use storyhook::store::rebuild::diff_read_model;
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
@@ -3924,4 +3919,18 @@ fn migration_thirty_five_keys_the_incident_by_project_and_carries_the_singleton_
             .collect::<Vec<_>>(),
         ["1:7", "2:9"]
     );
+}
+
+/// Historical catalogs must not inherit state names introduced after the
+/// schema under test: migration 21 itself installs legacy `closed`.
+fn default_states() -> Vec<storyhook::domain::StateDef> {
+    storyhook::service::project::default_states()
+        .into_iter()
+        .map(|mut state| {
+            if state.slug == "dropped" {
+                state.slug = "closed".into();
+            }
+            state
+        })
+        .collect()
 }
