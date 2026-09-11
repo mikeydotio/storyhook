@@ -2676,7 +2676,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
         .unwrap();
     assert_eq!(row.state, COMPLETION_STATE_SLUG);
     assert!(row.archived);
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id.clone()]);
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
 
     // The cleanup pass reads the same answer: strip the completion marker the
     // reap wrote and the story is a cleanup candidate again, found by the
