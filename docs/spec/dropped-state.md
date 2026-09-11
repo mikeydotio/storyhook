@@ -38,6 +38,6 @@ The centralized verifier owns the full suite and merge.
 
 - [x] Post the exact approved plan on SH-663.
 - [x] Add regression tests and implement the rename and migration.
-- [ ] Fix reopen hook provenance in its own commit (in progress).
-- [ ] Validate, commit, push, and link one PR.
+- [x] Fix reopen hook provenance in its own commit.
+- [ ] Validate, commit, push, and link one PR (in progress).
 - [ ] Move SH-663 to verifying as the last action.

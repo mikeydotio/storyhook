@@ -2398,25 +2398,30 @@ fn a_rejected_operation_fires_no_hook() {
 }
 
 #[test]
-fn reopening_fires_a_state_change_hook_from_closed() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = StoryService::new(&ctx);
-    let story = new_story(&ctx, "reopened");
-    service
-        .set_state(&story.id, "done", None, None, None)
-        .unwrap();
-    record_all_hooks(&fixture);
-    service.reopen(&story.id).unwrap();
+fn reopening_fires_a_state_change_hook_from_the_actual_previous_state() {
+    for previous in ["done", "dropped", "wont-fix"] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        storyhook::service::ConfigService::new(&ctx)
+            .add_state("wont-fix", SuperState::Closed, None, None)
+            .unwrap();
+        let service = StoryService::new(&ctx);
+        let story = new_story(&ctx, "reopened");
+        service
+            .set_state(&story.id, previous, None, None, None)
+            .unwrap();
+        record_all_hooks(&fixture);
+        service.reopen(&story.id).unwrap();
 
-    let payload: serde_json::Value = serde_json::from_str(
-        std::fs::read_to_string(fixture.cwd().join("hooks.log"))
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(payload["from_state"], "closed");
-    assert_eq!(payload["to_state"], "todo");
+        let payload: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(fixture.cwd().join("hooks.log"))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["from_state"], previous);
+        assert_eq!(payload["to_state"], "todo");
+    }
 }
