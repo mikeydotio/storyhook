@@ -73,6 +73,8 @@ submitted=$(cat "$FAKE_TMUX_STATE/submitted" 2>/dev/null || printf '')
 assert_contains "$submitted" "resuming work already started" "prompt: names resumed work"
 assert_contains "$submitted" "previous agent" "prompt: names prior-agent uncertainty"
 assert_contains "$submitted" "Implement the approved work" "prompt: ordinary charter remains"
+assert_contains "$submitted" "story help obviation-review" "prompt: resumed work requires review"
+assert_contains "$submitted" "story load-context --story $id_wt" "prompt: review names resumed story"
 resume_comment=$(cd "$repo_wt" && story show "$id_wt" --json \
   | jq -r '.story.story.comments[-1].text')
 repo_wt_real=$(cd "$repo_wt" && pwd -P)

@@ -249,7 +249,7 @@ Usage:
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
   story store new <path>                           (create an empty store beside the default one)
   story store backup [--label <text>]              (safe, on-demand backup of the ambient store)
-  story load-context [--format markdown|json]
+  story load-context [--format markdown|json] [--story <id>]
   story handoff [--since <duration>]
   story phase list
   story phase show <N>
@@ -739,7 +739,10 @@ pub enum Invocation {
         dry_run: bool,
     },
     Context {
+        /// Output format; omission preserves the ordinary Markdown briefing.
         format: Option<String>,
+        /// Include complete obviation-review evidence relative to this story.
+        story: Option<String>,
     },
     Handoff {
         since: Option<String>,
@@ -2003,12 +2006,12 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "load-context",
         subcommand: None,
-        flags: &[value("format")],
+        flags: &[value("format"), value("story")],
     },
     VerbFlags {
         verb: "context",
         subcommand: None,
-        flags: &[value("format")],
+        flags: &[value("format"), value("story")],
     },
     VerbFlags {
         verb: "graph",
@@ -3800,8 +3803,9 @@ fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     let mut format = None;
+    let mut story = None;
     let mut index = 1;
-    let usage = "usage: story load-context [--format markdown|json]";
+    let usage = "usage: story load-context [--format markdown|json] [--story <id>]";
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
@@ -3811,12 +3815,20 @@ fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
                 format = Some(value.clone());
                 index += 2;
             }
+            "--story" if story.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                story = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
-    Ok(Invocation::Context { format })
+    Ok(Invocation::Context { format, story })
 }
 
 fn validate_phase_number(s: &str) -> Result<(), AppError> {

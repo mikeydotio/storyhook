@@ -439,7 +439,9 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # It had been true of neither half since the --auto charter landed. The ‘ ’
 # quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
+# One review pointer shared by attended and autonomous built-in charters.
+OBVIATION_REVIEW_CLAUSE="Before implementation, run ‘story help obviation-review’ and ‘story load-context --story <n>’, then follow the review procedure for every candidate. Repeat the review when resuming work."
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
 # which it can remind the model to persist the plan. Codex may surface the
 # compatibility event, but rejects its bare allow decision; the TUI watcher
@@ -478,7 +480,7 @@ RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a
 # charters can never drift on the obligations they share. STORY_AUTO_PROMPT
 # and STORY_AUTO_PROMPT_SOLO still let a caller override either wholesale, same
 # as STORY_PROMPT always has for the attended template.
-AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: nobody is available to answer questions. Investigate and present a complete implementation plan. StoryHook approves it automatically. Do not request a human approval reply. After approval, proceed autonomously and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>."
+AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE This is an AUTONOMOUS session: nobody is available to answer questions. Investigate and present a complete implementation plan. StoryHook approves it automatically. Do not request a human approval reply. After approval, proceed autonomously and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>."
 # SH-371: both decision clauses say WHEN, not just what — record the outcome
 # the moment it is reached, before resuming the work. A council writes its trail
 # into a directory relative to wherever the agent was standing, which for a
@@ -2881,7 +2883,7 @@ cmd_ensure_cli() {
      display:("[story] the CLI is installed (" + (if $version == "" then "version unknown" else $version end) + ").")}'
 }
 
-# cmd_context [--full] — `story load-context` already IS the "comprehensive
+# cmd_context [--full] [--story <id>] — `story load-context` already IS the "comprehensive
 # project overview" the skill used to assemble by hand from `story context`
 # plus a separate `story next --count 3 --json` call; it has covered both
 # since the CLI renamed `context` to `load-context` (see `story help
@@ -2891,17 +2893,24 @@ cmd_ensure_cli() {
 # here the CLI has no opinion on at all (`--stale` REQUIRES a value; there is
 # no default to drift from) rather than hard-coding it a second place.
 cmd_context() {
-  local full=""
+  local full="" review_story=""
+  local -a args=(load-context)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --full) full=1; shift ;;
-      *) fail "unknown argument \`$1\` — usage: story.sh context [--full]" ;;
+      --story)
+        [ -z "$review_story" ] || fail "--story may be given only once."
+        [ "$#" -ge 2 ] && [ -n "$2" ] || fail "--story needs a story id."
+        case "$2" in -*) fail "--story needs a story id." ;; esac
+        review_story="$2"; args+=(--story "$2"); shift 2 ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh context [--full] [--story <id>]" ;;
     esac
   done
   require_story
 
   local body
-  body=$(story_cli load-context 2>/dev/null) || true
+  # A failed evidence read must never be presented as a successful review.
+  body=$(story_cli "${args[@]}" 2>&1) || fail "story load-context: $body"
   [ -n "$body" ] || fail "story load-context produced no output."
 
   if [ -n "$full" ]; then
@@ -5208,5 +5217,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

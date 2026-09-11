@@ -2937,6 +2937,88 @@ mod tests {
         vars
     }
 
+    /// Validate literals and all referenced fragments without executing shell code.
+    fn charter_fragment_is_inert(script: &str, text: &str, visiting: &mut Vec<String>) -> bool {
+        let mut rest = text;
+        while let Some((literal, after)) = rest.split_once('$') {
+            if charter_inert_violation(literal) {
+                return false;
+            }
+            let end = after
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count();
+            let var = &after[..end];
+            if var.is_empty()
+                || var.as_bytes()[0].is_ascii_digit()
+                || visiting.iter().any(|ancestor| ancestor == var)
+            {
+                return false;
+            }
+            // Only the script's single-line, double-quoted fragment assignments
+            // are understood. Missing or ambiguous definitions fail closed.
+            let prefix = format!("{var}=\"");
+            let mut definitions = script.lines().filter_map(|line| line.strip_prefix(&prefix));
+            let Some(value) = definitions.next().and_then(|value| value.strip_suffix('"')) else {
+                return false;
+            };
+            if definitions.next().is_some() {
+                return false;
+            }
+            visiting.push(var.to_string());
+            let inert = charter_fragment_is_inert(script, value, visiting);
+            visiting.pop();
+            if !inert {
+                return false;
+            }
+            rest = &after[end..];
+        }
+        !charter_inert_violation(rest)
+    }
+
+    #[test]
+    fn charter_fragment_check_follows_nested_and_repeated_references() {
+        let script = "HEAD=\"Read $REVIEW and $REVIEW_EXTRA\"\n\
+                      REVIEW=\"$LEAF\"\n\
+                      REVIEW_EXTRA=\"$LEAF again\"\n\
+                      LEAF=\"story <n>\"";
+        assert!(charter_fragment_is_inert(
+            script,
+            "$HEAD then $REVIEW",
+            &mut Vec::new()
+        ));
+    }
+
+    #[test]
+    fn charter_fragment_check_rejects_unsafe_nested_content() {
+        for banned in CHARTER_INERT_BANNED.iter().copied().chain(['\n']) {
+            let script = format!("HEAD=\"$REVIEW\"\nREVIEW=\"before {banned} after\"");
+            assert!(
+                !charter_fragment_is_inert(&script, "$HEAD", &mut Vec::new()),
+                "nested {banned:?} must remain forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn charter_fragment_check_rejects_missing_cyclic_and_unsupported_definitions() {
+        for script in [
+            "HEAD=\"$MISSING\"",
+            "HEAD=\"$HEAD\"",
+            "HEAD=\"$REVIEW\"\nREVIEW=\"$HEAD\"",
+            "HEAD='unrecognized assignment'",
+            "HEAD=\"$(command)\"",
+            "HEAD=\"${UNKNOWN:-fallback}\"",
+            "HEAD=\"$REVIEW_suffix\"\nREVIEW=\"safe prefix\"",
+            "HEAD=\"safe\"\nHEAD=\"unsafe; command\"",
+        ] {
+            assert!(
+                !charter_fragment_is_inert(script, "$HEAD", &mut Vec::new()),
+                "unverifiable fragment must fail: {script}"
+            );
+        }
+    }
+
     /// The shipped defaults must themselves pass this check -- otherwise
     /// every UNMODIFIED dispatch (`STORY_PROMPT`/`STORY_AUTO_PROMPT` never
     /// set at all) would refuse itself the moment an operator's daemon
@@ -2949,7 +3031,8 @@ mod tests {
     fn the_shipped_default_templates_are_charter_inert() {
         let script = include_str!("../../plugins/story/bin/story.sh");
 
-        // PROMPT_TPL is still one "${STORY_PROMPT:-literal}" default.
+        // The default may reference shared fragments; the override wrapper
+        // itself is shell syntax rather than text delivered to the agent.
         let line = script
             .lines()
             .find(|l| l.starts_with("PROMPT_TPL="))
@@ -2959,17 +3042,15 @@ mod tests {
             .and_then(|rest| rest.strip_suffix("}\""))
             .expect("PROMPT_TPL's default-value shape changed -- update this extraction");
         assert!(
-            !charter_inert_violation(default),
+            charter_fragment_is_inert(script, default, &mut Vec::new()),
             "PROMPT_TPL's shipped default must itself be CHARTER-INERT"
         );
 
         // SH-219: AUTO_PROMPT_TPL and AUTO_PROMPT_SOLO_TPL are no longer
-        // single literals -- each composes several pieces, themselves plain
-        // literal assignments defined just above the composition. Checking
-        // each piece on its own (rather than the composed line, which by now
-        // names OTHER SHELL VARIABLES, not charter text) covers both
-        // rendered charters transitively: a single space joins clean pieces
-        // into a still-clean whole.
+        // single literals -- each composes several pieces. Follow each piece's
+        // own references too: SH-673 shares its review clause with both the
+        // attended default and AUTO_PROMPT_HEAD. Raw assignment syntax is not
+        // the rendered text checked by the production validator.
         //
         // The piece NAMES are derived from the composition lines themselves
         // rather than hand-listed here (SH-402): a hand-maintained list is
@@ -3018,7 +3099,7 @@ mod tests {
                     panic!("{var}'s literal-assignment shape changed -- update this extraction")
                 });
             assert!(
-                !charter_inert_violation(default),
+                charter_fragment_is_inert(script, default, &mut Vec::new()),
                 "{var}'s shipped text must itself be CHARTER-INERT"
             );
         }

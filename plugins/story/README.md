@@ -90,7 +90,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
 | `ensure-cli` | the CLI-availability check six standalone skills used to hand-roll in prose |
-| `context [--full]` | `/story-context` |
+| `context [--full] [--story <id>]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
 | `triage` | `/story-triage` |
