@@ -203,10 +203,10 @@ _test-full-body: _test-body
 _test-body:
 	@bash scripts/release-status.sh || true
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
+	bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build
 	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 
@@ -237,10 +237,10 @@ test-changed: check-no-orphan-servers
 _test-changed-body:
 	@bash scripts/release-status.sh || true
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
+	bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build
 	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
 

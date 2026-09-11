@@ -69,7 +69,7 @@ is_core_rust_target_path() {
 # silently reused.
 is_gate_contract() {
     case "$1" in
-    (Makefile | scripts/leg.sh | scripts/gate-leg-fingerprint.sh) return 0 ;;
+    (Makefile | scripts/leg.sh | scripts/gate-leg-fingerprint.sh | scripts/cargo_diagnostics.py) return 0 ;;
     (*) return 1 ;;
     esac
 }
