@@ -52,6 +52,7 @@ pub mod project;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub mod reset;
 pub mod session;
 pub mod settings;
 mod state_set;
@@ -61,6 +62,7 @@ pub mod templates;
 pub mod transfer;
 pub mod verification;
 pub mod verification_control;
+pub(crate) mod workspace_lock;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

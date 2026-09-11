@@ -228,7 +228,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Next { epic, .. } => epic.iter_mut().collect(),
         // `story unclaim 9` expands the same way (SH-483). It has only the
         // one form, so there is no arm that names no story.
-        Invocation::Unclaim { id, .. } => vec![id],
+        Invocation::Unclaim { id, .. } | Invocation::Reset { id, .. } => vec![id],
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
         Invocation::PrCheck { id } => id.iter_mut().collect(),
         Invocation::Context { story, .. } => story.iter_mut().collect(),

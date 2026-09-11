@@ -41,6 +41,8 @@ use crate::daemon::http1::Method;
 /// the router cannot answer a fourteenth action without adding it here first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoryAction {
+    /// Reset an open ordinary story and its owned workspace.
+    Reset,
     Move,
     Comment,
     Priority,
@@ -60,6 +62,7 @@ impl StoryAction {
     /// The action `slug` names, if it names one.
     fn parse(slug: &str) -> Option<StoryAction> {
         Some(match slug {
+            "reset" => StoryAction::Reset,
             "move" => StoryAction::Move,
             "comment" => StoryAction::Comment,
             "priority" => StoryAction::Priority,

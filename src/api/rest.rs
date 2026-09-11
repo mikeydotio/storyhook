@@ -234,6 +234,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryDelete { .. } => "delete",
         ProjectRoute::StoryAttachmentUpload { .. } => "attachment",
         ProjectRoute::StoryAction { action, .. } => match action {
+            StoryAction::Reset => "reset",
             StoryAction::Move => "move",
             StoryAction::Comment => "comment",
             StoryAction::Priority => "set-priority",
@@ -499,6 +500,28 @@ fn route_project<S: Store>(
             route_delete_story(ctx, id, b)
         }),
         ProjectRoute::StoryAction { id, action } => match action {
+            StoryAction::Reset => guarded(headers, trusted_hosts, body, |b| {
+                let result = (|| {
+                    let object = parse_json_object(b)?;
+                    let force = match object.get("force") {
+                        None => false,
+                        Some(serde_json::Value::Bool(value)) => *value,
+                        _ => return Err(AppError::Validation("force must be a boolean".into())),
+                    };
+                    dispatch(
+                        ctx,
+                        Invocation::Reset {
+                            id: id.to_owned(),
+                            force,
+                            caller: Default::default(),
+                        },
+                    )
+                })();
+                match result {
+                    Ok(response) => json_reply(200, render_response(&response, true, false)),
+                    Err(error) => error_reply(&error),
+                }
+            }),
             StoryAction::Move => guarded(headers, trusted_hosts, body, |b| {
                 route_move_story(ctx, id, b)
             }),

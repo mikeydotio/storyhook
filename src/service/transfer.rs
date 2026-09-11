@@ -722,6 +722,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     ReferencedBy::commits_only(row.snapshot.referenced_by_commits.clone());
                 let head_global_seq = row.head_global_seq;
                 views.push(StoryView {
+                    reset: None,
                     story: row.snapshot,
                     derived_relationships: Vec::new(),
                     referenced_by,

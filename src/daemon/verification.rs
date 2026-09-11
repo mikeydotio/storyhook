@@ -81,6 +81,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
     cancellation: Cancellation,
 }
@@ -150,6 +151,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                workspace: None,
                 active: active.clone(),
                 cancellation: cancellation.clone(),
             },
@@ -559,12 +561,15 @@ impl ShellVerificationActuator {
 
     fn run_control_command(
         &self,
-        command: Command,
+        mut command: Command,
         role: &str,
         request_id: &str,
         project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
+        if let Some(workspace) = self.activity.workspace_for(project) {
+            workspace.command(&mut command);
+        }
         run_captured_cancellable(
             command,
             self.control_timeout,
@@ -950,6 +955,9 @@ impl VerificationActuator for ShellVerificationActuator {
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal);
+        if let Some(workspace) = self.activity.workspace_for(candidate.project) {
+            workspace.command(&mut command);
+        }
         let request_id = verification_request_id(candidate);
         let captured = match run_captured_with_progress_and_registration(
             command,
@@ -1070,6 +1078,7 @@ impl VerificationActuator for ShellVerificationActuator {
             &options,
             &self.env,
             Some(&self.activity.cancellation_for(candidate.project)),
+            self.activity.workspace_for(candidate.project).as_deref(),
         )?;
         match outcome.state {
             DispatchOutcomeState::Ok => Ok(()),

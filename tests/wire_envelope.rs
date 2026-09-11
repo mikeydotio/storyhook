@@ -104,6 +104,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
 
 fn view(story: StorySnapshot) -> StoryView {
     StoryView {
+        reset: None,
         story,
         derived_relationships: Vec::new(),
         referenced_by: ReferencedBy::default(),
@@ -121,6 +122,7 @@ fn view(story: StorySnapshot) -> StoryView {
 /// would show up.
 fn maximal_view() -> StoryView {
     StoryView {
+        reset: None,
         story: StorySnapshot {
             assignee: Some("ada-lovelace".to_string()),
             awaiting: Some("SH-9 to land".to_string()),
@@ -1772,6 +1774,19 @@ fn invocation_corpus() -> Vec<Invocation> {
         // All three `UnclaimComment` states cross the wire, and `Default`
         // most of all: unlike a claim's, it is *meant* to arrive unresolved
         // and be composed by the store (SH-483).
+        Invocation::Reset {
+            id: "SH-42".into(),
+            force: false,
+            caller: Default::default(),
+        },
+        Invocation::Reset {
+            id: "SH-42".into(),
+            force: true,
+            caller: storyhook::service::reset::ResetCaller {
+                pane: Some("%4".into()),
+                socket: Some("/tmp/reset-socket".into()),
+            },
+        },
         Invocation::Unclaim {
             id: "SH-1".to_string(),
             comment: UnclaimComment::Default,
@@ -1861,6 +1876,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "Next",
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
+        Invocation::Reset { .. } => "Reset",
         Invocation::Engine { .. } => "Engine",
         Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
@@ -1933,7 +1949,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        70,
+        71,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

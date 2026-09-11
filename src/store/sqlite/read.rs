@@ -1420,3 +1420,32 @@ pub(super) fn verification_enabled(
         "reading verifier admission permission",
     )
 }
+
+/// Reads reset journals once per project rather than once per rendered card.
+pub(super) fn story_resets(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<BTreeMap<StoryNo, String>, StoreError> {
+    // Earlier migrations append real repair events through this same store.
+    // They cannot hold reservations before migration 38 creates the table.
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version < 38 {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement = sql(
+        conn.prepare("SELECT story_no, reservation FROM story_resets WHERE project_id = ?1"),
+        "preparing reset read",
+    )?;
+    let rows = sql(
+        statement.query_map([project.get()], |row| {
+            Ok((
+                StoryNo::new(row.get::<_, i64>(0)?),
+                row.get::<_, String>(1)?,
+            ))
+        }),
+        "reading reset reservations",
+    )?;
+    Ok(collect(rows, "decoding reset reservations")?
+        .into_iter()
+        .collect())
+}
