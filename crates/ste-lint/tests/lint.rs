@@ -70,6 +70,8 @@ fn contractions_include_curly_quotes_but_not_possessives() {
         "It isn’t ready.",
         "We're ready.",
         "It’s ready.",
+        "He's ready.",
+        "She’s ready.",
         "I'll start.",
         "They've stopped.",
     ] {
