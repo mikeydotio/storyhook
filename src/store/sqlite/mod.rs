@@ -30,6 +30,7 @@
 //! `:memory:` has no write-ahead log, no reopen, and no crash, which are the
 //! three things every guarantee in this module is about.
 
+mod landing;
 pub(crate) mod read;
 pub(crate) mod write;
 
@@ -616,6 +617,7 @@ impl<'a> SqliteWriteTx<'a> {
     }
 
     fn commit(mut self) -> Result<(), StoreError> {
+        crate::store::landing::validate_pending(&self)?;
         fire(FaultPoint::BeforeCommit)?;
         // `open` stays true until the COMMIT has succeeded, and that ordering
         // is load-bearing. `defer_foreign_keys` holds referential checks until
@@ -807,6 +809,9 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn landing_intents(&self) -> Result<Vec<crate::store::LandingIntent>, StoreError> {
+                landing::read(&self.conn)
+            }
             fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError> {
                 read::project(&self.conn, project)
             }
@@ -844,6 +849,10 @@ macro_rules! impl_read_ops {
                 project: ProjectId,
             ) -> Result<Option<VerificationIncident>, StoreError> {
                 read::verification_incident(&self.conn, project)
+            }
+
+            fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
+                read::verification_enabled(&self.conn, project)
             }
 
             fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
@@ -1018,6 +1027,19 @@ impl_read_ops!(SqliteReadTx);
 impl_read_ops!(SqliteWriteTx);
 
 impl WriteOps for SqliteWriteTx<'_> {
+    fn insert_landing_intent(
+        &mut self,
+        intent: &crate::store::LandingIntent,
+    ) -> Result<(), StoreError> {
+        landing::insert(&self.conn, intent)
+    }
+
+    fn remove_landing_intent(
+        &mut self,
+        intent: &crate::store::LandingIntent,
+    ) -> Result<bool, StoreError> {
+        landing::remove(&self.conn, intent)
+    }
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError> {
         write::create_project(&self.conn, project)
     }
@@ -1043,6 +1065,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         incident: &VerificationIncident,
     ) -> Result<(), StoreError> {
         write::put_verification_incident(&self.conn, incident)
+    }
+
+    fn put_verification_enabled(
+        &mut self,
+        project: ProjectId,
+        enabled: bool,
+    ) -> Result<(), StoreError> {
+        write::put_verification_enabled(&self.conn, project, enabled)
     }
 
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError> {

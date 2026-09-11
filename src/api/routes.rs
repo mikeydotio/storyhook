@@ -129,6 +129,8 @@ pub enum ProjectRoute<'a> {
     Data,
     /// `POST .../verification/ack` — acknowledge one exact halted incident.
     VerificationAck,
+    /// `POST .../verification/control` — manually start, drain or stop.
+    VerificationControl,
     /// `GET|POST|PATCH .../engine` — inspect, start, or configure Full Auto.
     Engine,
     /// `POST .../engine/{action}` — control one engine run.
@@ -307,6 +309,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Get => ProjectRoute::Data,
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["verification", "control"] => match method {
+            Method::Post => ProjectRoute::VerificationControl,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["verification", "ack"] => match method {
             Method::Post => ProjectRoute::VerificationAck,
             _ => ProjectRoute::MethodNotAllowed,
@@ -420,6 +426,7 @@ impl ProjectRoute<'_> {
         match self {
             ProjectRoute::Data => "Data",
             ProjectRoute::VerificationAck => "VerificationAck",
+            ProjectRoute::VerificationControl => "VerificationControl",
             ProjectRoute::Engine => "Engine",
             ProjectRoute::EngineAction { .. } => "EngineAction",
             ProjectRoute::EngineActionUnknown => "EngineActionUnknown",

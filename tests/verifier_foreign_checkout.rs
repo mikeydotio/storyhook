@@ -98,6 +98,8 @@ printf '%s\n' '{"number":7,"state":"CLOSED","isDraft":false,"isCrossRepository":
     unsafe { std::env::set_var("PATH", &path) };
 
     let candidate = VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "widgets".into(),
         story_id: "WG-1".into(),

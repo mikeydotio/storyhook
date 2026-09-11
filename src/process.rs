@@ -15,7 +15,9 @@ use wait_timeout::ChildExt;
 
 #[cfg(test)]
 mod activity_tests;
+mod cancellation;
 mod progress;
+pub(crate) use cancellation::Cancellation;
 
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
@@ -34,6 +36,7 @@ pub(crate) enum CaptureError {
     Wait(std::io::Error),
     Track(String),
     Timeout(TimeoutTermination),
+    Cancelled,
 }
 
 impl CaptureError {
@@ -42,6 +45,7 @@ impl CaptureError {
         match self {
             Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
             Self::Track(error) => error.clone(),
+            Self::Cancelled => "the operator cancelled verification".to_string(),
             Self::Timeout(_) => "the process timed out".to_string(),
         }
     }
@@ -90,9 +94,28 @@ pub(crate) fn run_captured_with_registration<G>(
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, register, || {
+    run_captured_until(command, termination, None, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
+}
+
+/// Runs a command with owner-observed cancellation and bounded group cleanup.
+pub(crate) fn run_captured_cancellable<G>(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    cancellation: &Cancellation,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        termination,
+        None,
+        Some(cancellation),
+        register,
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
 }
 
 /// Runs a command until its append-only journal stops advancing for `timeout`.
@@ -103,6 +126,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     timeout: Duration,
     termination: TerminationPolicy,
     journal: &std::path::Path,
+    cancellation: &Cancellation,
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let mut deadline =
@@ -110,9 +134,14 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     // Observe at least four times per idle window, capped to keep journal
     // activity responsive even for the production multi-minute budget.
     let poll = (timeout / 4).min(Duration::from_millis(100));
-    let captured = run_captured_until(command, termination, Some(poll), register, || {
-        deadline.remaining()
-    })?;
+    let captured = run_captured_until(
+        command,
+        termination,
+        Some(poll),
+        Some(cancellation),
+        register,
+        || deadline.remaining(),
+    )?;
     // A child can damage the journal and exit inside one poll interval. Check
     // once more after reaping so a fast successful result cannot hide that.
     deadline.remaining().map_err(CaptureError::Wait)?;
@@ -123,9 +152,21 @@ fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
     poll: Option<Duration>,
+    cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
 ) -> Result<Captured, CaptureError> {
+    if cancellation.is_some_and(Cancellation::is_cancelled) {
+        return Err(CaptureError::Cancelled);
+    }
+    let poll = if cancellation.is_some() {
+        Some(
+            poll.unwrap_or(Duration::from_millis(100))
+                .min(Duration::from_millis(100)),
+        )
+    } else {
+        poll
+    };
     let source = crate::daemon::activity::command_source(&command);
     crate::daemon::activity::configure(&mut command);
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
@@ -170,6 +211,10 @@ fn run_captured_until<G>(
         },
     };
     let status = loop {
+        if cancellation.is_some_and(Cancellation::is_cancelled) {
+            terminate_timed_out(&mut child, pid, termination);
+            return Err(CaptureError::Cancelled);
+        }
         let budget = match remaining() {
             Ok(budget) => budget,
             Err(error) => {

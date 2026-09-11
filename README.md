@@ -427,8 +427,8 @@ story summary
 story report [--html]
 story search <query>
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
-story context [--format markdown|json]
-story load-context [--format markdown|json]   # alias of context
+story context [--format markdown|json] [--story <id>]
+story load-context [--format markdown|json] [--story <id>]   # alias of context
 story handoff [--since <duration>]
 
 story export

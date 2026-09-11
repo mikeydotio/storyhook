@@ -374,6 +374,7 @@ fn build_set(args: &Map<String, Value>) -> Result<Vec<String>, String> {
 fn build_context(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     let mut argv = vec!["load-context".to_string()];
     push_opt(&mut argv, args, "format", "--format");
+    push_opt(&mut argv, args, "story", "--story");
     Ok(argv)
 }
 
@@ -819,12 +820,20 @@ const SET_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-const CONTEXT_FIELDS: &[FieldSpec] = &[FieldSpec {
-    name: "format",
-    kind: FieldKind::Str,
-    required: false,
-    description: "\"markdown\" or \"json\". Defaults to markdown.",
-}];
+const CONTEXT_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "format",
+        kind: FieldKind::Str,
+        required: false,
+        description: "\"markdown\" or \"json\". Defaults to markdown.",
+    },
+    FieldSpec {
+        name: "story",
+        kind: FieldKind::Str,
+        required: false,
+        description: "Assigned story ID. Includes full obviation-review evidence and procedure.",
+    },
+];
 
 /// The curated tool surface — the whole story, in one table.
 pub const TOOLS: &[ToolDef] = &[
@@ -949,7 +958,9 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "story_context",
         description: "A session-start context document: project summary, priorities, and \
-                      blockers.",
+                      blockers. Supply the assigned story before implementation and when \
+                      resuming; compare the obviation candidates and follow the included \
+                      review procedure.",
         fields: CONTEXT_FIELDS,
         build_argv: build_context,
     },

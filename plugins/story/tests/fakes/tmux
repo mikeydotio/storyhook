@@ -158,6 +158,7 @@
 #                                actually checks: the occupant stays a SHELL, not
 #                                claude/node, and the capture carries a
 #                                `command not found` line.
+#   $FAKE_TMUX_PANE_ID           Synthetic pane id returned by new-window (%1 by default).
 #   $FAKE_TMUX_PANE_COMMAND      Overrides the occupant absolutely, for cases with
 #                                no launch to derive from.
 #   $FAKE_TMUX_SHELL             The shell name a mangled launch leaves (zsh).
@@ -577,7 +578,7 @@ case "${1:-}" in
         esac
       done < "$STATE/window_options.log"
     fi
-    printf '%%1\n'
+    printf '%s\n' "${FAKE_TMUX_PANE_ID:-%1}"
     ;;
   respawn-pane)
     shift || true

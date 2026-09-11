@@ -44,6 +44,7 @@ pub mod github;
 pub mod grouping;
 pub mod history;
 pub mod integrity;
+pub mod landing;
 pub mod migrate;
 #[cfg(feature = "github-pr")]
 pub mod pr_check;
@@ -60,6 +61,7 @@ pub mod system;
 pub mod templates;
 pub mod transfer;
 pub mod verification;
+pub mod verification_control;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -498,9 +500,40 @@ pub(crate) fn append_and_fold(
 }
 
 /// Appends historical compensation without applying new authoring policy.
-/// Only undo may restore old text through this boundary; structural rules still apply.
+/// Undo restores old text, but its new transitions still obey blocker admission.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_restored_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
+    let stored = tx.events_for(project, story)?;
+    let (known, _) = partition_known(story, &stored);
+    let index = query::story_map(tx, project)?;
+    crate::domain::transition::validate_append(
+        &story.to_id(prefix),
+        &known,
+        events,
+        &tx.states(project)?,
+        &index,
+    )?;
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Folds deterministic maintenance without applying new workflow policy to history.
+///
+/// Only catalog migration and integrity repair may call this directly; the
+/// architectural admission regression enforces that boundary. Label validation
+/// and transactional storage still apply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_and_fold_maintenance(
     tx: &mut impl WriteOps,
     project: ProjectId,
     story: StoryNo,

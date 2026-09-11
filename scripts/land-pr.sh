@@ -180,6 +180,14 @@ if [ "${1:-}" = "--merge" ]; then
     base_remote_ref="$6"
     expected_tree="$STORYHOOK_CERTIFIED_MERGE_TREE"
 
+    if [ -n "${STORYHOOK_LANDING_ATTEMPT_MARKER:-}" ]; then
+        [ "$head_sha" = "${STORYHOOK_LANDING_HEAD:-}" ] || die "landing intent head changed before merge"
+        [ "$expected_tree" = "${STORYHOOK_LANDING_TREE:-}" ] || die "landing intent certified tree changed before merge"
+        # Written before sending: failure or interruption after this point is ambiguous.
+        (set -C; printf '%s\n' "$head_sha $expected_tree" > "$STORYHOOK_LANDING_ATTEMPT_MARKER") \
+            || die "cannot record a fresh landing attempt"
+    fi
+
     note "merging PR #$number at head $head_sha"
     gh pr merge "$number" --merge --match-head-commit "$head_sha" \
         || die "gh did not merge PR #$number"

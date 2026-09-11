@@ -243,4 +243,7 @@ fn the_project_settings_help_topic_documents_the_verify_table() {
     let topic = get_help_topic("project-settings").expect("the topic exists");
     assert!(topic.contains("[verify]"), "{topic}");
     assert!(topic.contains(GateCommand::DEFAULT), "{topic}");
+    assert!(topic.contains("STORYHOOK_GATE_RECEIPT"), "{topic}");
+    assert!(topic.contains("preflight"), "{topic}");
+    assert!(topic.contains("postlude gate"), "{topic}");
 }

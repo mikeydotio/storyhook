@@ -189,6 +189,9 @@ fn build_corpus() -> Project<'static> {
     run(&["relate", "SH-1", "parent-of", "SH-3"]);
     run(&["relate", "SH-1", "parent-of", "SH-4"]);
     run(&["relate", "SH-5", "blocks", "SH-9"]);
+    // SH-656 permits adding a blocker after work starts. This order preserves
+    // the corpus's blocked, in-progress story through valid live commands.
+    run(&["move", "SH-3", "in-progress"]);
     run(&["relate", "SH-2", "blocks", "SH-3"]);
 
     run(&["assign", "SH-2", "ada-lovelace"]);
@@ -212,7 +215,6 @@ fn build_corpus() -> Project<'static> {
 
     run(&["block", "SH-6", "waiting on the benchmark harness"]);
 
-    run(&["move", "SH-3", "in-progress"]);
     run(&["move", "SH-4", "review"]);
     run(&["move", "SH-8", "done"]);
     run(&["move", "SH-14", "done"]);

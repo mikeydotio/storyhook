@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# Fake `story` CLI for test-dispatch-lane-budget.sh: a binary from BEFORE
-# SH-655, which does not know the `lane-budget` verb. It proxies every other
-# invocation to the REAL binary (STORY_REAL_BIN, set by the test) and answers
-# `lane-budget` the way the real parser answers an unknown verb — an error
-# envelope on stdout and exit 2 — so the test can prove that version skew
-# between an installed plugin and its binary reads as "no evidence" (the
-# dispatch proceeds and says so on stderr), never as a refusal and never as
-# room. Global flags (`--project <slug>`, `--json`) are skipped before the
-# positional match, the `story-conflict` fake's own rule.
+# SH-672 tripwire: delegate production CLI operations, but record and refuse
+# any census consultation. Manual dispatch must not reach this branch.
 set -euo pipefail
 
 real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
@@ -24,6 +17,7 @@ is_lane_budget_call() {
 }
 
 if is_lane_budget_call "$@"; then
+  printf 'called\n' >>"${STORY_CENSUS_CALL_LOG:?census call log must be isolated}"
   printf '{"result":"error","message":"unknown command: lane-budget"}\n'
   exit 2
 fi
