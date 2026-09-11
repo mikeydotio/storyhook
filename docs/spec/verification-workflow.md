@@ -546,3 +546,66 @@ state such as `shipped` is refused by `story.sh reap` as `not-completion-state`
 and must be moved to `done` to be reaped — the refusal names that. The
 scaffolded `AGENTS.md` now always tells an agent the verifier lands work in
 `done`, which is true.
+
+### SH-666 — a halt is the verifier's own, and says so
+
+The incident on 2026-09-10/11 (`docs/rca/verifier-halt-read-as-a-story-block.md`)
+was a lockstep failure — an installed daemon older than the registered
+checkout's `verify-pr.sh`, refused by name at argument parsing — reported by
+this workflow as a story dependency: every waiting candidate carried "Verifier
+HALTED since T; blocked by SH-648: …", and the head story's comment said only
+that its code "was not classified red". It was filed as a soft block, and the
+dashboard's Acknowledge-and-retry was pressed seven times in six seconds
+against the same refusal because nothing named the cause's layer or the way
+out. The origin is SH-654's (the scripts are embedded in the binary, so the
+daemon runs the scripts it was built with — the sixth lockstep component,
+`release-lockstep.md`); what this entry settles is the report.
+
+**An infrastructure incident is the verifier's own.** Every permanent
+disposition — the script's `die_json` sites and the daemon's own — is a
+statement that the verifier could not run, never that a story is wrong; a
+story-scoped problem is `InvalidSubmission` and goes back to its implementer.
+So the halt policy of SH-573 stands, unchanged: continuing to the next
+candidate would have met the identical refusal (SH-627's one-dead-browser
+lesson, one tier over). The texts now say what the policy means. The waiting
+candidates' line names the incident as "an infrastructure failure of the
+verifier itself, first hit while verifying SH-N (SH-N is not at fault)", and
+the halted form names the release command; the head comment states that the
+halt stops the whole queue, that no story is at fault, and the same command.
+`VerificationBlocker` carries `incident_id` (additive on the wire) so both
+can print it. "Blocked by" does not appear in either, and
+`tests/verification_queue.rs` asserts that absence alongside the words.
+
+**The release path is reachable from where the halt is read.** `story verifier
+ack <incident-id>` is the CLI twin of `POST …/verification/ack`. One function,
+`service::acknowledge_verification_incident`, serves both doors so their
+contract cannot drift (SH-136): the id must be the *current* incident, still
+halted rather than retrying, and this project's — a reader of a stale comment
+cannot release a newer incident. The id is positional and required for the
+same reason; an acknowledgement retries nothing itself, the next tick does.
+
+**A base that moves during the gate is the story's CONFLICT, never a halt.**
+The story's own PR met the class a second time: a fetch elsewhere in the shared
+repository moved `refs/remotes/origin/dev` while the gate ran, and SH-649's
+post-gate certification check re-resolved that ref, computed a different
+merge, met a conflict, and halted the queue as "certified nothing" over a tree
+it had certified. `verify-pr.sh` now pins `base_commit`/`head_commit` right
+after `refresh_submission_refs` and hands those to the preflight, the gate and
+`require_certified_by_gate`, so the check asks exactly whether the gate
+certified the tree it ran on; a base that has moved is found by `land-pr.sh`
+under the merge lock and answered as the story's own conflict.
+
+**The rule this settles, by operator determination (2026-09-11).** A story
+under verification whose merge conflicts **holds the queue**: the implementer
+is notified, reconciles, and resubmits, and the verifier proceeds with its
+remaining steps for that story — the conflict queue-hold above, which exists so
+a story with conflicting changes is not bypassed by every later story each time
+it comes back up. **Every other story-scoped failure returns the story** to its
+implementer and the verifier proceeds to the next candidate (RED, invalid
+submission). A halt is reserved for the verifier's own inability to run.
+
+**Stated limits.** The receipt seam (an embedded `merge-preflight.sh` reading
+what a merge tree's `gate-receipt.sh` wrote) is the same contract shape one hop
+over and stays tolerated; repeated acknowledgements against an unfixed cause
+are not rate-limited, the message is the fix; an acknowledgement resets the
+incident's attempt count, so the journal is the history.
