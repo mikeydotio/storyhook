@@ -99,6 +99,7 @@ name = "story"
 path = "src/main.rs"
 
 [dependencies]
+ste-lint = { path = "crates/ste-lint" }
 chrono = { version = "0.4.42", features = ["clock", "serde"] }
 dialoguer = "0.12.0"
 fs4 = "0.8.4"

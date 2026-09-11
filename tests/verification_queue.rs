@@ -3769,7 +3769,7 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
     assert_eq!(row.state, "in-progress");
     let notified = actuator.notified.lock().unwrap();
     assert_eq!(notified.len(), 1);
-    assert!(notified[0].contains("no cleanup lease"), "{}", notified[0]);
+    assert!(notified[0].contains("No cleanup lease"), "{}", notified[0]);
     assert!(
         notified[0].contains("story move <id> verifying"),
         "{}",

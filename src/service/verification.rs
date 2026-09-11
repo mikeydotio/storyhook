@@ -112,7 +112,7 @@ impl VerificationProblem {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::MissingCheckout => "verification cannot run because this project has no registered checkout; run `story project link checkout <path>` from an operator session".to_string(),
+            Self::MissingCheckout => "Verification cannot run because this project has no registered checkout. Run `story project link checkout <path>` from an operator session.".to_string(),
             Self::MissingPullRequest => "verification needs exactly one open close-on-merge pull request linked with `story link-pr`; none is linked".to_string(),
             Self::MultiplePullRequests(urls) => format!(
                 "verification needs exactly one open close-on-merge pull request; found {}: {}",
@@ -561,7 +561,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             // form names the exact command that releases it (SH-666).
             let consequence = if incident.halted {
                 format!(
-                    "This halt stops the verifier's whole queue. No story is at fault: the verifier itself could not run, and {} is only where the failure was first hit. Fix the cause below, then release the queue with: story verifier ack {}",
+                    "This halt stops the verifier's whole queue. No story is at fault. The verifier could not run. The failure first occurred at {}. Fix the cause below. Release the queue with: `story verifier ack {}`.",
                     candidate.story_id, incident.incident_id
                 )
             } else {
@@ -572,7 +572,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 incident.attempts,
                 incident.first_failed_at,
                 incident.last_failed_at,
-                incident.detail
+                crate::text_lint::quote_evidence(&incident.detail)
             );
             let events = marked_comment_events(
                 &row,

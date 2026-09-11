@@ -491,6 +491,25 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
+    crate::text_lint::validate_events(&story.to_id(prefix), events)?;
+    append_restored_and_fold(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Appends historical compensation without applying new authoring policy.
+/// Only undo may restore old text through this boundary; structural rules still apply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_restored_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
     // Every producer of a `StoryLabelsSet` is expected to normalize through
     // `domain::normalize_labels` before it gets here; this is the backstop
     // for the one that forgets, so a comma-bearing or blank label (SH-164)

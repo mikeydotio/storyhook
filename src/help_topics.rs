@@ -14,6 +14,8 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
     || {
         let mut m = BTreeMap::new();
 
+        m.insert("ste", include_str!("help/ste.txt"));
+
         m.insert(
             "daemon",
             "\
@@ -1785,8 +1787,7 @@ reason without moving state at all, use `story block <id> "<text>"`.
 
 When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
-free-text comment, exactly like today, with no restrictions on its
-content.
+free-text comment. New comments must pass the checks in `story help ste`.
 
 When to use:
   To update the status of a story as you work on it, or to close
@@ -1935,6 +1936,9 @@ Related:
 
 Add a timestamped comment to a story. Comments are append-only and
 form part of the audit trail.
+
+New comments must pass the STE checks. Run `story help ste` for the rules.
+On failure, repair the text and submit the command again.
 
 When to use:
   To record progress notes, decisions, blockers, or context that
