@@ -44,6 +44,7 @@ pub mod github;
 pub mod grouping;
 pub mod history;
 pub mod integrity;
+pub mod landing;
 pub mod migrate;
 #[cfg(feature = "github-pr")]
 pub mod pr_check;

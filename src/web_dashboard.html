@@ -5321,6 +5321,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * an announcement every second (SH-549). */
   function verificationDescription(verification) {
     if (!verification) return "";
+    if (verification.status === "held") return "Verification held · open blockers: " + verification.blockers.join(", ");
+    if (verification.status === "landingpending") return "Landing pending · confirming merge outcome";
     if (verification.status === "queued") {
       var queued = ["Queued"];
       if (verification.wait_seconds !== undefined && verification.wait_seconds !== null) {
