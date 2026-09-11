@@ -65,7 +65,7 @@ presence; conflicting destinations are preserved and refused.
 
 | State | Action |
 |---|---|
-| Healthy canonical registration | Validate reciprocal pointers, common directory and ordinary ref/reflog resolution; reuse caches |
+| Healthy canonical registration | Validate reciprocal pointers, common directory and ordinary ref/reflog resolution; clear disposable inputs before the next attempt |
 | Owned suffixed registration, canonical free | Journal and rename administration; replace forward pointer; preserve HEAD, index, refs and reflogs |
 | Prior owned canonical registration with a stale duplicate backlink | Retain stale administration, then normalize the unique current reciprocal mapping |
 | Valid foreign canonical collision or ambiguous mapping | Refuse and name both mappings |
@@ -86,6 +86,39 @@ A gate completion record is written only after successful restoration and
 cleanup. Retention or uncertain supervision remains an infrastructure failure,
 including when the gate command itself exited zero. A receipt cannot turn
 failed restoration into a test verdict.
+
+## Clean startup — SH-684
+
+The canonical managed verifier starts each attempt with a clean detached
+checkout of the resolved base commit. Startup recovery runs first under the
+same lifecycle owner. Tracked or index changes, unreadable owned state, and
+unfinished Git operations trigger retention of the complete diagnostic unit
+before replacement. This includes accompanying untracked and ignored files.
+Replacement is bounded: a newly created checkout that is still damaged fails
+admission with its evidence intact instead of repeatedly creating archives.
+
+For healthy tracked state, startup records `startup_cleanup` with the pinned
+base in the existing state journal, runs `git clean -ffdx` without exclusions,
+and checks out that base. Both tracked comparisons, a dry-run clean including
+ignored files and nested repositories, and detached HEAD identity must pass
+before the intent is cleared. A deletion or checkout failure leaves the intent
+and a contextual diagnostic. Restart revalidates ownership, mappings and tracked
+damage before repeating cleanup; the journal never authorizes blind deletion.
+
+Untracked and ignored files in this dedicated checkout are disposable,
+including dependency directories, build caches, empty directories and nested
+repositories. Symlink entries are removed without following their targets.
+Caches may rebuild; routine outputs are not retained as diagnostic archives.
+This policy does not apply to generic pollers, foreign worktrees, logs, receipts,
+or recovery archives outside the verifier checkout. It does not authorize
+cleanup under a live or ambiguous owner. Post-gate recovery retains its existing
+contract: tracked damage or obstructed restoration invalidates that attempt.
+
+The unanimous startup-policy council verdict is recorded in `story show SH-684`
+(2026-09-11). It chose preservation of damaged units plus cleanup of disposable
+extras over archiving every successful run's generated files, which would grow
+without a retention mechanism. Git documents these force/ignore semantics in
+[git-clean](https://git-scm.com/docs/git-clean).
 
 ## Operator recovery
 
