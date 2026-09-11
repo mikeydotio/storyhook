@@ -2954,7 +2954,10 @@ Related:
 
 Update the story binary in place to the latest GitHub release. Downloads the
 release asset for your platform, verifies it runs, and atomically replaces the
-running executable.
+running executable — then reinstalls the plugin for every provider (Claude
+Code, Codex) that has the storyhook marketplace registered, from the binary
+just installed, so the plugins never need a separate update. A provider that
+was never installed is left alone.
 
 When to use:
   Periodically, to pick up new releases. Run 'story update --check' first to
@@ -2973,10 +2976,18 @@ Notes:
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
     the installer at https://github.com/mikeydotio/storyhook.
-  - Set STORYHOOK_GITHUB_TOKEN to raise the GitHub API rate limit (optional).
+  - If the binary was replaced but a plugin could not be reinstalled, the
+    update reports both and exits non-zero; 'story plugin reinstall' retries
+    the plugins alone. Start a new agent session afterwards so the host loads
+    the reinstalled plugin.
+  - The reinstall talks to the daemon, and a daemon of the old build stands
+    down for the new one, so a successful update leaves the daemon running
+    the new binary.
 
 Related:
-  story doctor  — Check project integrity
+  story plugin reinstall  — Reinstall the registered provider plugins by hand
+  story doctor install    — Report which release each provider's plugin is at
+  story doctor            — Check project integrity
 "#,
         );
 

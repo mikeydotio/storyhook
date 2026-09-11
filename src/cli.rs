@@ -275,6 +275,7 @@ Usage:
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <claude|codex>
+  story plugin reinstall                            (every provider that has it registered, from this binary)
   story plugin run codex -- <helper-command> [args...]  (internal stable Codex launcher)
   story show <id>
   story log <id>
@@ -1060,6 +1061,10 @@ pub enum PluginAction {
     Uninstall {
         target: String,
     },
+    /// Reinstall the plugin for every provider that has the storyhook
+    /// marketplace registered, from this binary's embedded release (SH-667).
+    /// Takes no target: the providers' own configurations say which.
+    Reinstall,
     /// Run the installed provider plugin's deterministic helper through the
     /// stable `story` binary. The Codex integration's unversioned launcher is
     /// the intended caller; handling this in the client keeps the helper's
@@ -4444,7 +4449,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin run codex -- <helper-command> [args...]";
+    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
     };
@@ -4459,6 +4464,10 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
             action: PluginAction::Uninstall {
                 target: args[2].clone(),
             },
+        }),
+        "reinstall" if args.len() != 2 => Err(AppError::Usage(USAGE.to_string())),
+        "reinstall" => Ok(Invocation::Plugin {
+            action: PluginAction::Reinstall,
         }),
         "run" if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
         "run" => Ok(Invocation::Plugin {
@@ -5385,6 +5394,24 @@ mod tests {
                     args: words(&["dispatch", "SH-9", "--agent=codex", "--auto"]),
                 }
             }
+        );
+    }
+
+    /// `reinstall` takes no target: the providers' own configurations say
+    /// which are installed (SH-667). A target would invite `story plugin
+    /// reinstall codex` to mean "install", which `install` already means.
+    #[test]
+    fn plugin_reinstall_takes_no_target() {
+        assert_eq!(
+            parse_invocation(&words(&["plugin", "reinstall"])).unwrap(),
+            Invocation::Plugin {
+                action: PluginAction::Reinstall
+            }
+        );
+        let error = parse_invocation(&words(&["plugin", "reinstall", "codex"])).unwrap_err();
+        assert!(
+            error.to_string().contains("usage: story plugin"),
+            "a stray target is a usage error, not a silent install: {error}"
         );
     }
 

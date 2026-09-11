@@ -56,6 +56,16 @@ install -m 755 "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 echo ""
 echo "Installed ${BINARY} to ${INSTALL_DIR}/${BINARY}"
 
+# Reinstall the plugin for every provider (Claude Code, Codex) that has the
+# storyhook marketplace registered, from the binary just installed: the plugin
+# travels inside the binary, so a new binary is a new plugin (SH-667). A
+# provider that was never installed is left alone. Not fatal: the binary is
+# already in place, and a pinned STORYHOOK_VERSION older than the verb exits 2
+# here -- name it and the retry rather than fail an install that succeeded.
+if ! "${INSTALL_DIR}/${BINARY}" plugin reinstall; then
+  echo "warning: the provider plugins were not reinstalled; run: story plugin reinstall" >&2
+fi
+
 # --- Interactive setup starts here ---
 
 # Detect if we can prompt interactively

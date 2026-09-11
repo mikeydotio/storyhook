@@ -155,6 +155,21 @@ skills; current Codex discovers the shared `hooks/hooks.json` by convention. A l
 non-managed plugin may ask you to review/trust those SessionStart, PostToolUse(Bash), and
 Stop hooks before they run.
 
+#### Upgrading
+
+The plugin travels inside the binary, so a new `story` carries a new plugin. Every path
+that replaces the binary — `make install`, `story update`, and the installer script —
+finishes by reinstalling the plugin for every provider that has the storyhook
+marketplace registered, from the binary just installed. A provider that was never
+installed is left alone. To do the same by hand, or after a failed refresh:
+
+```bash
+story plugin reinstall
+```
+
+`story doctor install` reports a provider still registered at an older release as
+`STALE RELEASE`; a reinstall clears it.
+
 #### Lifecycle router verbs
 
 The `story` skill covers a story end to end. In Claude, these are `/story` commands;
@@ -446,6 +461,7 @@ story pr-check [<id>]
 story github-auth login|status|logout
 story plugin install <target>
 story plugin uninstall <target>
+story plugin reinstall
 
 story web start [--port <PORT>]
 story web stop

@@ -417,3 +417,55 @@ been representable — exactly the plugin's original failure mode, one component
 over, and the reason the table at the top of this document now has six rows in
 spirit. SH-654 closed the origin; SH-666 owns the report, in
 `docs/spec/verification-workflow.md`'s SH-666 entry.
+
+## As built: replacing the binary reinstalls the registered plugins (SH-667)
+
+The plugin is part of the binary release (above), so a new binary carries a
+new plugin — and until SH-667 nothing but `scripts/release.sh` acted on that.
+`make install` and `story update` replaced the binary and left every provider
+registered at the previous release's projection: the `STALE RELEASE` row of
+`story doctor install`, and the state SH-584's RCA found on the filing machine
+(2.4.0 plugins under a 2.4.2 CLI). The lockstep this document is named for was
+being broken by the two most ordinary commands in the tool.
+
+**`story plugin reinstall`** is the one answer. It reinstalls the plugin for
+every provider whose own configuration registers the storyhook marketplace,
+from the binary running it. *Registered* is the whole test: the registration is
+the provider's statement of intent, read through the parser `story doctor
+install` already uses. Installed copies with no registration — SH-640's
+DEREGISTERED — are not intent and are not reinstalled; they are a warning naming
+`story plugin install <provider>`, the doctor's own remedy, because absence is
+never promoted to intent (SH-372). A configuration the parser cannot read is a
+warning that never blocks the other provider (the SH-404/SH-405 trap). Nothing
+registered is a success that says so. Every registered provider is attempted;
+one failure never costs the sibling its refresh, and the error names every
+outcome and the retry.
+
+Every binary-replacement path runs it:
+
+- **`make install`** runs `"$(INSTALL_DIR)/story" plugin reinstall` — the binary
+  just installed, never `story` on PATH — with `|| echo` on purpose. The target
+  is the `SchemaTooNew` recovery and stays ungated (rule above), and
+  `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+  start`; a refresh that failed the install would leave the machine with no
+  daemon. The failure is named with its retry.
+- **`story update`** runs `<new exe> plugin install <provider>` per registered
+  provider after the swap. The running process is the old binary and its
+  embedded payload is the one just replaced, so it may read the plan (provider
+  configurations are the providers' formats) but must not install. Per provider
+  through `plugin install <t>`, which every 2.x release understands, rather than
+  through the new verb, so a `--force` downgrade past SH-667 still works. A
+  failure is an error that states the binary *was* updated and names the retry;
+  the swap is not undone.
+- **`install.sh`** runs `plugin reinstall` after `install(1)`, warning on
+  failure, since a pinned `STORYHOOK_VERSION` older than SH-667 exits 2 there.
+
+`scripts/release.sh` keeps installing *both* providers unconditionally: that is
+the dogfooding choice this document opens with, and it is idempotent over the
+reinstall `make install` now performs first.
+
+One consequence is stated rather than hidden: the verb is daemon-routed, and
+`lifecycle::usable` requires the daemon to be this exact build (version, path,
+and mtime), so the new client never talks to the old daemon and `make install`
+and `story update` now reseat the daemon on the new binary — what
+`release.sh` did by hand.

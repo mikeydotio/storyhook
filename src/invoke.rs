@@ -571,13 +571,19 @@ pub fn dispatch<S: Store>(
         Invocation::Plugin { action } => {
             let service = SystemService::new(ctx);
             match action {
-                PluginAction::Install { target } => service.install_plugin(&target),
-                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Install { target } => {
+                    service.install_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Uninstall { target } => {
+                    service.uninstall_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Reinstall => {
+                    service.reinstall_plugins().map(plugin_reinstall_response)
+                }
                 PluginAction::Run { .. } => Err(AppError::Storage(
                     "internal: `story plugin run` reached the daemon".to_string(),
                 )),
             }
-            .map(Response::Message)
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
@@ -1865,6 +1871,18 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
     body
 }
 
+/// A reinstall's findings ride the warnings channel: what was *not* done —
+/// copies left behind without a registration, a config that could not be read
+/// — must reach the person, never be folded into the success text where a
+/// `--json` reader would have to grep for it.
+fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Response {
+    if report.warnings.is_empty() {
+        Response::Message(report.message)
+    } else {
+        Response::MessageWithWarnings(report.message, report.warnings)
+    }
+}
+
 /// `story update` — self-update, which touches no project data at all.
 ///
 /// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
@@ -1876,7 +1894,7 @@ fn update(check: bool, force: bool) -> Result<Response, AppError> {
 
     let outcome = crate::update::run(check, force)?;
     let is_terminal = std::io::stderr().is_terminal();
-    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced(_)) {
+    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced { .. }) {
         // `main` has already published a global `--store-path` into the
         // process environment, so resolving here inspects that store's own
         // agent without opening the store. This diagnostic is best-effort: an
@@ -1898,15 +1916,19 @@ fn update_response(
 ) -> Response {
     match outcome {
         crate::update::Outcome::Unchanged(message) => Response::Message(message),
-        crate::update::Outcome::Replaced(message) => {
-            let warning = if is_terminal {
-                health.and_then(crate::daemon::agent::warning)
+        crate::update::Outcome::Replaced {
+            message,
+            mut warnings,
+        } => {
+            // The plugin reinstall's own findings first (they are about what
+            // this update did), the agent's last (it is about the next login).
+            if is_terminal && let Some(warning) = health.and_then(crate::daemon::agent::warning) {
+                warnings.push(warning);
+            }
+            if warnings.is_empty() {
+                Response::Message(message)
             } else {
-                None
-            };
-            match warning {
-                Some(warning) => Response::MessageWithWarnings(message, vec![warning]),
-                None => Response::Message(message),
+                Response::MessageWithWarnings(message, warnings)
             }
         }
     }
@@ -1924,6 +1946,13 @@ mod update_response_tests {
         }
     }
 
+    fn replaced(message: &str) -> crate::update::Outcome {
+        crate::update::Outcome::Replaced {
+            message: message.to_string(),
+            warnings: Vec::new(),
+        }
+    }
+
     fn assert_message_only(response: Response) {
         assert!(
             matches!(response, Response::Message(_)),
@@ -1933,11 +1962,7 @@ mod update_response_tests {
 
     #[test]
     fn a_successful_replacement_at_a_terminal_reports_a_stale_agent() {
-        let response = update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            true,
-            Some(&stale()),
-        );
+        let response = update_response(replaced("updated"), true, Some(&stale()));
 
         let Response::MessageWithWarnings(message, warnings) = response else {
             panic!("a stale agent must travel as a structured warning")
@@ -1945,6 +1970,36 @@ mod update_response_tests {
         assert_eq!(message, "updated");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("/old/story"));
+    }
+
+    /// The reinstall's findings reach the person whether or not the agent
+    /// has anything to say, in every mode — they are about what this update
+    /// just did, not about a terminal.
+    #[test]
+    fn plugin_reinstall_warnings_travel_and_precede_the_agents() {
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(message, warnings) =
+            update_response(outcome, true, Some(&stale()))
+        else {
+            panic!("reinstall findings must travel as structured warnings")
+        };
+        assert_eq!(message, "updated");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], "Codex: copies remain");
+        assert!(warnings[1].contains("/old/story"), "{warnings:?}");
+
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(_, warnings) = update_response(outcome, false, None)
+        else {
+            panic!("reinstall findings must travel even away from a terminal")
+        };
+        assert_eq!(warnings, vec!["Codex: copies remain".to_string()]);
     }
 
     #[test]
@@ -1958,11 +2013,7 @@ mod update_response_tests {
 
     #[test]
     fn a_non_terminal_update_never_reports_the_agent() {
-        assert_message_only(update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            false,
-            Some(&stale()),
-        ));
+        assert_message_only(update_response(replaced("updated"), false, Some(&stale())));
     }
 
     #[test]
@@ -1977,11 +2028,7 @@ mod update_response_tests {
                 exe: PathBuf::from("/installed/story"),
             },
         ] {
-            assert_message_only(update_response(
-                crate::update::Outcome::Replaced("updated".to_string()),
-                true,
-                Some(&health),
-            ));
+            assert_message_only(update_response(replaced("updated"), true, Some(&health)));
         }
     }
 }
@@ -2493,13 +2540,19 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             })),
         },
         Invocation::Plugin { action } => match action {
-            PluginAction::Install { target } => system::install_plugin(&target, root),
-            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Install { target } => {
+                system::install_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Uninstall { target } => {
+                system::uninstall_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Reinstall => {
+                system::reinstall_plugins(root).map(plugin_reinstall_response)
+            }
             PluginAction::Run { .. } => Err(AppError::Storage(
                 "internal: `story plugin run` reached the daemon".to_string(),
             )),
-        }
-        .map(Response::Message),
+        },
         // Reached only when no project could be resolved. `claude-md` and
         // `cursor-rules` take nothing from a project at all; `agents-md` falls
         // back to the default prefix and `done`, which is exactly what the
