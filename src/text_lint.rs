@@ -79,8 +79,15 @@ fn display_finding(finding: &TextFinding) -> String {
 pub(crate) fn validate_events(story: &str, events: &[StoryEvent]) -> Result<(), AppError> {
     let mut all = Vec::new();
     for event in events {
-        if let StoryEvent::StoryCommentAdded { text, .. } = event {
-            all.extend(findings("comment", text));
+        match event {
+            StoryEvent::StoryCommentAdded { text, .. } => all.extend(findings("comment", text)),
+            StoryEvent::StoryCreated { title, .. } | StoryEvent::StoryTitleSet { title, .. } => {
+                all.extend(findings("title", title))
+            }
+            StoryEvent::StoryDescriptionSet { description, .. } => {
+                all.extend(findings("description", description))
+            }
+            _ => {}
         }
     }
     if all.iter().any(|f| f.diagnostic.severity == Severity::Error) {
@@ -94,12 +101,7 @@ pub(crate) fn validate_events(story: &str, events: &[StoryEvent]) -> Result<(), 
 }
 
 pub(crate) fn with_advice(mut response: Response, fields: &[(&str, &str)]) -> Response {
-    let advice: Vec<String> = fields
-        .iter()
-        .flat_map(|(field, text)| findings(field, text))
-        .filter(|f| f.diagnostic.severity == Severity::Advice)
-        .map(|f| display_finding(&f))
-        .collect();
+    let advice = advice(fields);
     if advice.is_empty() {
         return response;
     }
@@ -110,6 +112,35 @@ pub(crate) fn with_advice(mut response: Response, fields: &[(&str, &str)]) -> Re
         }
         Response::MessageWithWarnings(_, warnings) | Response::Stories { warnings, .. } => {
             warnings.extend(advice)
+        }
+        _ => {}
+    }
+    response
+}
+
+fn advice(fields: &[(&str, &str)]) -> Vec<String> {
+    fields
+        .iter()
+        .flat_map(|(field, text)| findings(field, text))
+        .filter(|f| f.diagnostic.severity == Severity::Advice)
+        .map(|f| display_finding(&f))
+        .collect()
+}
+
+pub(crate) fn story_advice(story: &crate::domain::StorySnapshot) -> Vec<String> {
+    advice(&[
+        ("title", &story.title),
+        ("description", story.description.as_deref().unwrap_or("")),
+    ])
+}
+
+pub(crate) fn with_story_advice(mut response: Response) -> Response {
+    match &mut response {
+        Response::Story(view) => view.warnings.extend(story_advice(&view.story)),
+        Response::Stories { views, .. } => {
+            for view in views {
+                view.warnings.extend(story_advice(&view.story));
+            }
         }
         _ => {}
     }
