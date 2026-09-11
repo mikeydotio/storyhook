@@ -290,6 +290,41 @@ pane_command() {
   tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || printf ''
 }
 
+# PANE_PROBE_FORMAT -- the one composite liveness question this plugin asks a
+# pane: its pid, its foreground command, whether tmux itself considers the
+# pane dead, and the window's last activity, tab-separated. The SAME spelling
+# the daemon's Full Auto reconciler asks (`WINDOW_PROBE_FORMAT`,
+# src/service/engine.rs) and the fake tmux answers in one arm, pinned equal by
+# tests/notify_reasons.rs rather than copied twice (SH-136). A second,
+# single-field `#{pane_dead}` spelling would be a third format for every
+# fixture to learn. Fields are read by POSITION, never as "the last one", so
+# the reconciler may widen the format again without moving the dead flag.
+PANE_PROBE_FORMAT='#{pane_pid}	#{pane_current_command}	#{pane_dead}	#{window_activity}'
+
+# pane_probe <pane> -- READ-ONLY. Echo the pane's PANE_PROBE_FORMAT answer, or
+# fail (empty) when tmux cannot be asked. Failure is distinct from "dead" on
+# purpose: a probe that could not run has not answered no (SH-626).
+pane_probe() {
+  tmux display-message -p -t "$1" "$PANE_PROBE_FORMAT" 2>/dev/null
+}
+
+# pane_is_dead <pane> -- READ-ONLY. Succeeds only when tmux reports the pane's
+# process has EXITED (`#{pane_dead}` is 1, which remain-on-exit preserves).
+#
+# Measured on tmux 3.7c (SH-650): once the process exits under remain-on-exit,
+# `#{pane_pid}` and `#{pane_current_command}` stay FROZEN at their last live
+# values -- so pane_runs still answers yes for a corpse, `paste-buffer` into it
+# fails with "target pane has exited", and `send-keys` to it silently exits 0.
+# Only this field tells a dead pane from a live one; nothing rendered does.
+# An unanswered probe is NOT death (returns 1 here), so a caller that wants to
+# refuse on death asks this and treats a failed pane_probe separately.
+pane_is_dead() {
+  local answer dead
+  answer=$(pane_probe "$1") || return 1
+  dead=$(printf '%s\n' "$answer" | cut -f 3)
+  [ "$dead" = 1 ]
+}
+
 # resolve_exe <command-word> — READ-ONLY. Echo the real path <command-word>
 # runs: PATH lookup, then every symlink followed to the file itself. Empty (and
 # non-zero) when it does not resolve to one.

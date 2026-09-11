@@ -22,9 +22,13 @@
 #                        sentinel model as new-window without creating or
 #                        logging a second window.
 #   display-message   -> print a window id (@1), exit 0
-#   set-window-option -> no-op, exit 0 as its own top-level call (nothing calls
-#                        it standalone any more); chained onto new-window it is
-#                        recorded instead — see below.
+#   set-window-option -> as its own top-level call (the respawn path in
+#                        story.sh re-pins the window options one call at a
+#                        time), record the segment and lift `@storyhook-agent`
+#                        into `$STATE/storyhook_agent` exactly as the chained
+#                        form does — a respawned window keeps its provider tag
+#                        on a real server (SH-650); chained onto new-window it
+#                        is recorded the same way — see below.
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
 #   list-windows      -> print the caller-seeded `$STATE/windows` inventory, or
 #                        `$STATE/agent_windows` when the format names
@@ -680,7 +684,13 @@ case "${1:-}" in
     [ -f "$STATE/storyhook_agent" ] || exit 1
     cat "$STATE/storyhook_agent"
     ;;
-  set-window-option) : ;;
+  set-window-option)
+    swo_args="$*"
+    printf '%s\n' "$swo_args" >> "$STATE/window_options.log" 2>/dev/null || true
+    case " $swo_args " in
+      *" @storyhook-agent "*) printf '%s' "${swo_args##* @storyhook-agent }" > "$STATE/storyhook_agent" ;;
+    esac
+    ;;
   send-keys)
     # Parse the two shapes issue.sh emits: `-t <pane> -l <text>` (literal paste)
     # and `-t <pane> Enter` (submit). Anything else is ignored.
@@ -770,6 +780,18 @@ case "${1:-}" in
       esac
       shift || true
     done
+    # Real tmux (3.7c, measured for SH-650) refuses to paste into a pane whose
+    # process has exited under remain-on-exit: "target pane has exited", exit 1.
+    # Answer the same way, BEFORE logging, so a test that counts pastes sees
+    # what a real server would have accepted -- a fixture that pastes into a
+    # corpse and reports success is the SH-263/SH-364 shape (the gate was
+    # right; the fixture lied to it). Only a pane that was spawned and has since
+    # died counts: a state with no pid at all has no process to be dead.
+    dead_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
+    if [[ "$dead_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$dead_pid" 2>/dev/null; then
+      printf 'target pane has exited\n' >&2
+      exit 1
+    fi
     bfile="$STATE/buf-${bname:-default}"
     content="$(cat "$bfile" 2>/dev/null || printf '')"
     printf '%s\n' "$content" >> "$STATE/pastes.log" 2>/dev/null || true
