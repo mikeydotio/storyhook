@@ -571,13 +571,19 @@ pub fn dispatch<S: Store>(
         Invocation::Plugin { action } => {
             let service = SystemService::new(ctx);
             match action {
-                PluginAction::Install { target } => service.install_plugin(&target),
-                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Install { target } => {
+                    service.install_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Uninstall { target } => {
+                    service.uninstall_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Reinstall => {
+                    service.reinstall_plugins().map(plugin_reinstall_response)
+                }
                 PluginAction::Run { .. } => Err(AppError::Storage(
                     "internal: `story plugin run` reached the daemon".to_string(),
                 )),
             }
-            .map(Response::Message)
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
@@ -1843,6 +1849,18 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
     body
 }
 
+/// A reinstall's findings ride the warnings channel: what was *not* done —
+/// copies left behind without a registration, a config that could not be read
+/// — must reach the person, never be folded into the success text where a
+/// `--json` reader would have to grep for it.
+fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Response {
+    if report.warnings.is_empty() {
+        Response::Message(report.message)
+    } else {
+        Response::MessageWithWarnings(report.message, report.warnings)
+    }
+}
+
 /// `story update` — self-update, which touches no project data at all.
 ///
 /// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
@@ -2471,13 +2489,19 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             })),
         },
         Invocation::Plugin { action } => match action {
-            PluginAction::Install { target } => system::install_plugin(&target, root),
-            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Install { target } => {
+                system::install_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Uninstall { target } => {
+                system::uninstall_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Reinstall => {
+                system::reinstall_plugins(root).map(plugin_reinstall_response)
+            }
             PluginAction::Run { .. } => Err(AppError::Storage(
                 "internal: `story plugin run` reached the daemon".to_string(),
             )),
-        }
-        .map(Response::Message),
+        },
         // Reached only when no project could be resolved. `claude-md` and
         // `cursor-rules` take nothing from a project at all; `agents-md` falls
         // back to the default prefix and `done`, which is exactly what the

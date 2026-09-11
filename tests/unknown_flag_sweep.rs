@@ -67,6 +67,7 @@ const SWALLOWERS: &[&[&str]] = &[
     &["import-project", "--zzz-not-a-flag"],
     &["hooks", "test", "--zzz-not-a-flag"],
     &["plugin", "install", "--zzz-not-a-flag"],
+    &["plugin", "reinstall", "--zzz-not-a-flag"],
     &["project", "new", "--zzz-not-a-flag"],
     // `link` and `unlink` declare an *empty* flag list, which is a different
     // statement from having no entry: it says the verb takes no flags, and

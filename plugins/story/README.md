@@ -19,6 +19,10 @@ stale the rule. The generated rule allows only `bash` plus the exact launcher pa
 verified with `codex execpolicy check`, and takes effect after Codex restarts. Bare `bash`
 is never allowlisted.
 
+Installing a new `story` binary (`make install`, `story update`, the installer script)
+reinstalls the plugin for every provider that has it registered, so the plugin never needs
+a separate update; `story plugin reinstall` does the same by hand.
+
 The former plugin target `claude-code` remains accepted for install and uninstall as a
 deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
 `codex`.
