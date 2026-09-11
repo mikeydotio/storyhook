@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
-    COMPLETION_STATE_SLUG, Priority, StateDef, StoryCleanupLease, StoryEvent, SuperState,
-    VERIFYING_STATE_SLUG, completion_state,
+    COMPLETION_STATE_SLUG, Priority, StateDef, StoryCleanupLease, StoryEvent, SubmittedPullRequest,
+    SuperState, VERIFYING_STATE_SLUG, completion_state,
 };
 use crate::error::AppError;
 use crate::store::{
@@ -65,6 +65,11 @@ pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLE
 /// Durable comment prefix for verifier infrastructure failures.
 pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
+/// Durable comment prefix recording that the verifier pushed a leased branch
+/// and opened or adopted its pull request (SH-647). One marked comment per
+/// generation: a resubmission that moves the branch replaces it.
+pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GenerationWrite<T> {
@@ -72,6 +77,16 @@ pub(crate) enum GenerationWrite<T> {
     Applied(T),
     /// A later state transition superseded the candidate before the write.
     Superseded,
+}
+
+impl<T> GenerationWrite<T> {
+    /// Maps the applied value, leaving a superseded write superseded.
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> GenerationWrite<U> {
+        match self {
+            GenerationWrite::Applied(value) => GenerationWrite::Applied(f(value)),
+            GenerationWrite::Superseded => GenerationWrite::Superseded,
+        }
+    }
 }
 
 /// A malformed verification submission that must return to its author.
@@ -291,6 +306,111 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 ctx.provenance(),
             )?;
             Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Atomically records a submission the verifier just made (SH-647): the
+    /// pull request link, `close_on_merge`, and one marked SUBMITTED comment,
+    /// only while `candidate` is current. Hands back the open link as the
+    /// store now folds it, so the caller proceeds on a store fact rather than
+    /// on a `PrLink` it assembled by hand.
+    ///
+    /// The cross-repository rule is `PrLinkService::link`'s: a project with
+    /// registered GitHub origins accepts only a pull request on one of them;
+    /// a project with none registered has nothing to check against. Re-linking
+    /// a URL the story already links upserts, which is what makes recording
+    /// the adopted pull request on every generation idempotent.
+    pub(crate) fn record_generation_submitted(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        pull_request: &SubmittedPullRequest,
+    ) -> Result<GenerationWrite<PrLink>, AppError> {
+        let reference = parse_pr_url(&pull_request.url)?;
+        let branch = candidate
+            .cleanup_lease
+            .as_ref()
+            .map(|lease| lease.branch.clone())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "story `{}` has no cleanup lease; nothing was submitted on its behalf",
+                    candidate.story_id
+                ))
+            })?;
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let registered =
+                super::pr_link::github_repos_from_remotes(&tx.project_remotes(project)?);
+            if !registered.is_empty()
+                && !registered.iter().any(|repo| {
+                    repo.host.eq_ignore_ascii_case(&reference.host)
+                        && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                        && repo.repo.eq_ignore_ascii_case(&reference.repo)
+                })
+            {
+                return Err(AppError::Validation(format!(
+                    "the verifier opened pull request `{}` on a repository this project has not registered ({}); refusing to link it",
+                    pull_request.url,
+                    registered
+                        .iter()
+                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .into());
+            }
+            let body = format!(
+                "{VERIFICATION_SUBMITTED_PREFIX} `{branch}` is on origin at {}; {} pull request {}.",
+                pull_request.head_oid,
+                if pull_request.adopted {
+                    "adopted open"
+                } else {
+                    "opened"
+                },
+                pull_request.url
+            );
+            let mut events = vec![StoryEvent::StoryPrLinked {
+                at: now.clone(),
+                url: pull_request.url.clone(),
+                owner: reference.owner.clone(),
+                repo: reference.repo.clone(),
+                number: reference.number,
+                close_on_merge: true,
+            }];
+            events.extend(marked_comment_events(
+                &row,
+                VERIFICATION_SUBMITTED_PREFIX,
+                &body,
+                &now,
+            ));
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            let link = tx
+                .open_pr_links_for_story(project, story_no)?
+                .into_iter()
+                .find(|link| link.close_on_merge && link.url == pull_request.url)
+                .ok_or_else(|| {
+                    StoreError::Corrupt(format!(
+                        "pull request `{}` was just linked to `{}` and does not read back open",
+                        pull_request.url, candidate.story_id
+                    ))
+                })?;
+            Ok(GenerationWrite::Applied(link))
         })?)
     }
 

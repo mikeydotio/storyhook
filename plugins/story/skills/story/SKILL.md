@@ -179,6 +179,15 @@ it. This is not a user route: never invoke it for an ordinary request or use it 
 durable story comment. A refusal means the verifier must leave the diagnostics on the story
 and block it for manual recovery.
 
+`bash "<story-helper>" submit <story-id>` is the daemon-owned submission step (SH-647): from
+the dispatch lease it pushes the leased branch to origin over HTTPS, then opens the pull
+request against the repository's default branch or adopts the one already open for that
+head, and answers with a typed receipt the daemon records as the PR link. It requires the
+lease in `STORYHOOK_REAP_LEASE_V1` and refuses without one. This is not a user or agent
+route: an agent commits its work and runs `story move <id> verifying` from inside its
+worktree as its last action, and never pushes, opens a pull request, or runs `story
+link-pr` itself.
+
 ## Shared notes
 
 - Every helper-backed verb requires the `story` CLI on `PATH`; provider dispatch may also

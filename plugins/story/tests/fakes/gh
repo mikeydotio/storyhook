@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# fake gh — the subset of GitHub's CLI that `story.sh submit` drives, modelled
+# as files under $FAKE_GH_STATE so a test can seed it and read it back:
+#   $STATE/prs.json     the open pull requests, an array of objects shaped like
+#                       `gh pr view --json number,url,baseRefName,headRefName,
+#                       headRefOid,isCrossRepository,state` (seed to adopt)
+#   $STATE/argv.log     one line per invocation, arguments tab-separated
+#   $STATE/next_number  the number the next `pr create` takes (default 100)
+# Knobs:
+#   FAKE_GH_REPO=owner/repo         the repository every URL names (acme/widgets)
+#   FAKE_GH_FAIL=<message>          every invocation exits 1 printing <message>
+#   FAKE_GH_FAIL_AFTER_CREATE=1     `pr create` records the PR, then exits 1
+#                                   without printing its URL — the crash-mid-
+#                                   submit shape a later run must adopt from
+# Refuses rather than defaults, and refuses rather than creates: this fake
+# STORES state, it does not own it (SH-263, the fake tmux's rule).
+set -u
+if [ -z "${FAKE_GH_STATE:-}" ]; then
+  printf 'fake gh: $FAKE_GH_STATE is unset — refusing to invent a shared state directory (SH-263). The test mints one.\n' >&2
+  exit 64
+fi
+if [ ! -d "$FAKE_GH_STATE" ]; then
+  printf 'fake gh: $FAKE_GH_STATE [%s] is not a directory — the caller mints it, this fake never does.\n' "$FAKE_GH_STATE" >&2
+  exit 64
+fi
+STATE="$FAKE_GH_STATE"
+REPO="${FAKE_GH_REPO:-acme/widgets}"
+printf '%s\n' "$(IFS=$'\t'; printf '%s' "$*")" >>"$STATE/argv.log"
+[ -f "$STATE/prs.json" ] || printf '[]\n' >"$STATE/prs.json"
+
+if [ -n "${FAKE_GH_FAIL:-}" ]; then
+  printf '%s\n' "$FAKE_GH_FAIL" >&2
+  exit 1
+fi
+
+# opt <name> <args...> — the value following --<name> (or --<name>=value).
+opt() {
+  local want="$1"; shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      "--$want") printf '%s' "${2:-}"; return 0 ;;
+      "--$want="*) printf '%s' "${1#--$want=}"; return 0 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+project_fields() {  # project_fields <fields-csv> — jq filter keeping those keys
+  local keys
+  keys=$(printf '%s' "$1" | jq -R 'split(",") | map("\"" + . + "\": .[\"" + . + "\"]") | join(", ")' -r)
+  printf '{%s}' "$keys"
+}
+
+case "${1:-} ${2:-}" in
+  "pr list")
+    shift 2
+    head=$(opt head "$@" || printf '')
+    base=$(opt base "$@" || printf '')
+    fields=$(opt json "$@" || printf 'number,url')
+    jq -c --arg head "$head" --arg base "$base" \
+      "[.[] | select(.state == \"OPEN\")
+             | select(\$head == \"\" or .headRefName == \$head)
+             | select(\$base == \"\" or .baseRefName == \$base)
+             | $(project_fields "$fields")]" "$STATE/prs.json"
+    ;;
+  "pr create")
+    shift 2
+    head=$(opt head "$@") || { printf 'fake gh: pr create needs --head\n' >&2; exit 1; }
+    base=$(opt base "$@") || { printf 'fake gh: pr create needs --base\n' >&2; exit 1; }
+    title=$(opt title "$@" || printf '')
+    body=$(opt body "$@" || printf '')
+    if jq -e --arg head "$head" --arg base "$base" \
+         '[.[] | select(.state == "OPEN" and .isCrossRepository == false and .headRefName == $head and .baseRefName == $base)] | length > 0' \
+         "$STATE/prs.json" >/dev/null; then
+      printf 'a pull request for branch "%s" into branch "%s" already exists\n' "$head" "$base" >&2
+      exit 1
+    fi
+    number=$(cat "$STATE/next_number" 2>/dev/null || printf '100')
+    printf '%s\n' "$((number + 1))" >"$STATE/next_number"
+    oid=$(git rev-parse --verify "refs/heads/$head^{commit}" 2>/dev/null || git rev-parse HEAD 2>/dev/null || printf '')
+    url="https://github.com/$REPO/pull/$number"
+    tmp=$(mktemp "$STATE/prs.XXXXXX")
+    jq --argjson n "$number" --arg url "$url" --arg head "$head" --arg base "$base" \
+       --arg oid "$oid" --arg title "$title" --arg body "$body" \
+       '. + [{number:$n, url:$url, headRefName:$head, baseRefName:$base, headRefOid:$oid,
+              isCrossRepository:false, state:"OPEN", title:$title, body:$body}]' \
+       "$STATE/prs.json" >"$tmp" && mv -f "$tmp" "$STATE/prs.json"
+    if [ -n "${FAKE_GH_FAIL_AFTER_CREATE:-}" ]; then
+      printf 'fake gh: connection reset after the pull request was created\n' >&2
+      exit 1
+    fi
+    printf '%s\n' "$url"
+    ;;
+  "pr view")
+    shift 2
+    target="${1:-}"; shift || true
+    fields=$(opt json "$@" || printf 'number,url')
+    jq -e -c --arg t "$target" \
+      "map(select(.url == \$t or (.number | tostring) == \$t)) | first // empty | $(project_fields "$fields")" \
+      "$STATE/prs.json" || { printf 'fake gh: no pull request matches %s\n' "$target" >&2; exit 1; }
+    ;;
+  *)
+    printf 'fake gh: unsupported invocation: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
