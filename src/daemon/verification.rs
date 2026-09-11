@@ -307,6 +307,7 @@ pub enum AgentPresence {
 /// its own — the SH-226 rule against typing into an unverified pane applies
 /// with more force to respawning over one. `pane-query-failed` is tmux not
 /// answering (SH-626: a probe that could not run has not answered no), and
+/// `pane-changed` is conflicting live identity, not proof of absence (SH-677).
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
 /// gate, so the agent is presumed live.
 pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 6] = [
@@ -314,7 +315,7 @@ pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 6] = [
     ("pane-unavailable", AgentPresence::Absent),
     ("pane-provider-unknown", AgentPresence::NotAbsent),
     ("pane-dead", AgentPresence::Absent),
-    ("pane-changed", AgentPresence::Absent),
+    ("pane-changed", AgentPresence::NotAbsent),
     ("delivery-failed", AgentPresence::NotAbsent),
 ];
 
@@ -564,6 +565,11 @@ impl ShellVerificationActuator {
             .stdin(Stdio::null());
         if let Some(extra) = extra {
             command.arg(extra);
+        }
+        if verb == "notify"
+            && let Some(lease) = &candidate.cleanup_lease
+        {
+            command.env("STORYHOOK_NOTIFY_LEASE_V1", serde_json::to_string(lease)?);
         }
         let output = self.run_control_command(
             command,
