@@ -963,6 +963,10 @@ jq -e --arg fields "$5" '
     /// on `PATH` and the same containment `verification_gate` applies. An
     /// empty `gate` omits the `--` entirely, which is the usage-refusal case.
     fn verify_public_with_gate(&self, gate: &[&str]) -> Output {
+        self.verify_phase(gate, false)
+    }
+
+    fn verify_phase(&self, gate: &[&str], certify_only: bool) -> Output {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let mut path = std::ffi::OsString::from(self.path().join("bin"));
         path.push(":");
@@ -978,6 +982,10 @@ jq -e --arg fields "$5" '
             .current_dir(self.path())
             .env("PATH", path)
             .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env(
+                "STORYHOOK_CERTIFY_ONLY",
+                if certify_only { "1" } else { "0" },
+            )
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .env("STORYHOOK_VERIFIER_MIRROR", "0")
@@ -3225,5 +3233,148 @@ fn a_configured_gate_that_certifies_through_the_production_writer_proceeds_to_la
     assert!(
         repo.fake_gh_calls() >= 2,
         "landing was attempted after the gate: {payload}"
+    );
+}
+
+impl MergeRepo {
+    /// Runs the production landing phase against local Git and a GitHub endpoint double.
+    fn landing_phase(&self, mode: &str, head: &str, tree: &str) -> Output {
+        let path = format!(
+            "{}:{}",
+            self.path().join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        Command::new("bash")
+            .arg(checkout().join("scripts/verify-pr.sh"))
+            .args([
+                "--landing",
+                mode,
+                "https://github.com/acme/widgets/pull/42",
+                head,
+                tree,
+            ])
+            .arg(self.path().join("landing.attempted"))
+            .current_dir(self.path())
+            .env("PATH", path)
+            .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap()
+    }
+
+    /// Adds the merge endpoint: performs GitHub's merge commit and exposes its metadata.
+    fn enable_fake_merge_endpoint(&self) {
+        let script = self.path().join("bin/gh");
+        let existing = fs::read_to_string(&script).unwrap();
+        let insert = r#"
+if [ "${1:-}" = pr ] && [ "${2:-}" = merge ]; then
+    [ "$6" = "$(jq -r .headRefOid "$state/pr.json")" ] || exit 77
+    base=$(jq -r .baseRefName "$state/pr.json")
+    tree=$(git merge-tree --write-tree "refs/remotes/origin/$base" "$6") || exit 78
+    oid=$(printf 'merge\n' | git commit-tree "$tree" -p "refs/remotes/origin/$base" -p "$6") || exit 79
+    # This fixture's origin is itself; update its server ref directly.
+    git update-ref "refs/heads/$base" "$oid" || exit 80
+    jq --arg oid "$oid" '.state="MERGED" | .mergedAt="2026-09-11T00:00:00Z" | .mergeCommit={oid:$oid}' "$state/pr.json" > "$state/merged.json"
+    mv "$state/merged.json" "$state/pr.json"
+    [ ! -e "$state/lose-response" ] || exit 81
+    exit 0
+fi
+"#;
+        let needle = "if [ \"${1:-}\" != pr ]";
+        fs::write(
+            script,
+            existing.replacen(needle, &format!("{insert}\n{needle}"), 1),
+        )
+        .unwrap();
+    }
+}
+
+fn certified_landing_fixture() -> (MergeRepo, String, String) {
+    let repo = MergeRepo::new();
+    let (_, head) = reconciled_feature(&repo);
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    converge_public_head(&repo, &head);
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{}' preflight && bash '{}' postlude\n",
+            checkout().join(".githooks").display(),
+            writer.display(),
+            writer.display()
+        ),
+    );
+    let certificate = public_payload(&repo.verify_phase(&["gate-bin"], true));
+    assert_eq!(certificate["result"], "certified", "{certificate}");
+    assert_eq!(certificate["head"], head);
+    let tree = certificate["tree"].as_str().unwrap().to_string();
+    let calls = fs::read_to_string(repo.path().join("fake-gh-state/argv")).unwrap();
+    assert!(
+        !calls.contains("pr merge"),
+        "certification cannot merge: {calls}"
+    );
+    (repo, head, tree)
+}
+
+#[test]
+fn durable_landing_phase_checks_admitted_head_and_tree_before_sending_a_merge() {
+    let (repo, head, tree) = certified_landing_fixture();
+    repo.enable_fake_merge_endpoint();
+    for (expected_head, expected_tree) in [
+        ("a".repeat(40), tree.clone()),
+        (head.clone(), "b".repeat(40)),
+    ] {
+        let payload =
+            public_payload(&repo.landing_phase("attempt", &expected_head, &expected_tree));
+        assert_eq!(payload["result"], "not-attempted", "{payload}");
+        assert!(!repo.path().join("landing.attempted").exists());
+        assert!(
+            !fs::read_to_string(repo.path().join("fake-gh-state/argv"))
+                .unwrap()
+                .contains("pr merge")
+        );
+    }
+    let payload = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(payload["result"], "merged", "{payload}");
+    assert!(repo.path().join("landing.attempted").exists());
+    let recovered = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(recovered["result"], "merged", "{recovered}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("fake-gh-state/argv"))
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("pr merge"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn durable_landing_recovery_never_resends_and_requires_exact_merged_evidence() {
+    let (repo, head, tree) = certified_landing_fixture();
+    let open = public_payload(&repo.landing_phase("recover", &head, &tree));
+    assert_eq!(open["result"], "uncertain", "{open}");
+    assert!(!repo.path().join("landing.attempted").exists());
+    repo.enable_fake_merge_endpoint();
+    fs::write(repo.path().join("fake-gh-state/lose-response"), "").unwrap();
+    let recovered_loss = public_payload(&repo.landing_phase("attempt", &head, &tree));
+    assert_eq!(recovered_loss["result"], "merged", "{recovered_loss}");
+    let wrong_tree = public_payload(&repo.landing_phase("recover", &head, &"b".repeat(40)));
+    assert_eq!(wrong_tree["result"], "uncertain", "{wrong_tree}");
+    let wrong_head = public_payload(&repo.landing_phase("recover", &"a".repeat(40), &tree));
+    assert_eq!(wrong_head["result"], "uncertain", "{wrong_head}");
+    assert_eq!(
+        fs::read_to_string(repo.path().join("fake-gh-state/argv"))
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("pr merge"))
+            .count(),
+        1
     );
 }

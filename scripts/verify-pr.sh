@@ -10,6 +10,10 @@
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+if [ "${1:-}" = --landing ]; then
+    shift
+    exec bash "$script_dir/landing-intent.sh" "$@"
+fi
 # shellcheck source=activity-log.sh
 . "$script_dir/activity-log.sh"
 
@@ -362,6 +366,10 @@ recover_merged() {
     esac
     if [ "$recovery_context" = "after landing refusal" ]; then
         gate_progress_emit_item "land pull request" passed
+    fi
+    if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+        jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+        exit 0
     fi
     jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
         '{result:"merged", tree:$tree, detail:$detail}'
@@ -724,6 +732,11 @@ case "$preflight_status" in
     die_json "merge preflight returned unexpected status $preflight_status: $preflight"
     ;;
 esac
+
+if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+    jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+    exit 0
+fi
 
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running

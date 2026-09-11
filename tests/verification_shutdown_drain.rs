@@ -47,6 +47,22 @@ struct BlockingActuator {
 }
 
 impl VerificationActuator for BlockingActuator {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn verify(
         &self,
         candidate: &VerificationCandidate,

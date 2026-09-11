@@ -367,6 +367,13 @@ pub const MIGRATIONS: &[Migration] = &[
         // existing lane is.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 35,
+        name: "landing_intents",
+        sql: include_str!("schema/0035_landing_intents.sql"),
+        // Operational authority only; no historical events or projections change.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

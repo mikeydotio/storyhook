@@ -26,8 +26,8 @@ use crate::service::engine::{
 };
 use crate::service::verification::GenerationWrite;
 use crate::service::{
-    Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationQueue,
+    Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VerificationCandidate,
+    VerificationQueue,
 };
 use crate::store::{
     EngineAgent, EngineLaneState, EngineSpeed, GlobalSeq, PrLink, ProjectId, ReadOps, Store,
@@ -184,8 +184,10 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
-    /// The exact merge tree passed and the guarded merge landed.
-    Merged {
+    /// The exact head and merge tree passed; no merge has been requested.
+    Certified {
+        /// Exact submitted commit certified by the gate.
+        head: String,
         tree: String,
         detail: String,
         /// The gate command that certified the tree, as one line (SH-649) —
@@ -212,6 +214,18 @@ pub enum VerificationOutcome {
         /// Whether retrying unchanged can recover.
         disposition: VerificationFailureDisposition,
     },
+}
+
+/// External outcome of one durably admitted merge attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case")]
+pub enum LandingOutcome {
+    /// GitHub's merge commit contains exactly the certified tree.
+    Merged { detail: String },
+    /// The supervised process exited before sending any merge request.
+    NotAttempted { detail: String },
+    /// The request may still complete; authority must remain fenced.
+    Uncertain { detail: String },
 }
 
 /// How `story.sh notify` answered a remediation delivery (SH-650).
@@ -311,12 +325,24 @@ pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
 
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
-    /// Verifies and, on green, lands one submitted PR.
+    /// Certifies one submitted PR without requesting a merge.
     fn verify(
         &self,
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
     ) -> VerificationOutcome;
+    /// Uses durable authority to request one exact merge.
+    fn land(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome;
+    /// Observes an uncertain attempt without sending another merge request.
+    fn recover_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome;
     /// Delivers remediation to the exact dispatched agent pane, or answers
     /// that no live agent is there to receive it.
     fn notify(
@@ -440,6 +466,80 @@ impl ShellVerificationActuator {
             return Ok(path.clone());
         }
         super::verifier_bundle::verify_script(&self.env)
+    }
+
+    fn run_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+        recover: bool,
+    ) -> LandingOutcome {
+        let run = || -> Result<LandingOutcome, AppError> {
+            let link = candidate
+                .pull_request
+                .as_ref()
+                .map_err(|problem| AppError::Validation(problem.message()))?;
+            if let Some(problem) = checkout_repository_problem(&intent.checkout, link) {
+                return Err(AppError::Validation(problem));
+            }
+            let script = self.verifier_script()?;
+            let journal = journal_path(&self.env, candidate);
+            let marker = journal.with_file_name(format!("landing-{}.attempted", intent.id));
+            let mut command = Command::new("bash");
+            apply_verification_allowlist(&mut command);
+            command
+                .arg(script)
+                .arg("--landing")
+                .arg(if recover { "recover" } else { "attempt" })
+                .arg(&intent.pull_request)
+                .arg(&intent.certification.head)
+                .arg(&intent.certification.tree)
+                .arg(marker)
+                .current_dir(&intent.checkout)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GH_PROMPT_DISABLED", "1")
+                .stdin(Stdio::null());
+            let request_id = verification_request_id(candidate);
+            let captured = if recover {
+                self.run_control_command(command, "verifier", &request_id, "landing recovery")?
+            } else {
+                command.env("STORYHOOK_GATE_PROGRESS", &journal);
+                run_captured_with_progress_and_registration(
+                    command,
+                    self.verification_idle_timeout,
+                    TerminationPolicy::TerminateThenKill {
+                        grace: self.termination_grace,
+                    },
+                    &journal,
+                    |pid| {
+                        self.owned_processes
+                            .register("verifier", pid, Some(&request_id))
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    AppError::Storage(format!(
+                        "landing process did not conclusively finish: {}",
+                        error.detail()
+                    ))
+                })?
+            };
+            if !captured.status.success() {
+                return Err(AppError::Storage(format!(
+                    "landing process failed: {}",
+                    String::from_utf8_lossy(&captured.stderr)
+                )));
+            }
+            serde_json::from_slice(&captured.stdout).map_err(|error| {
+                AppError::Storage(format!(
+                    "invalid landing outcome: {error}; {}",
+                    String::from_utf8_lossy(&captured.stderr)
+                ))
+            })
+        };
+        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+            detail: error.to_string(),
+        })
     }
 
     fn helper_path(&self) -> Result<PathBuf, AppError> {
@@ -636,6 +736,20 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    fn land(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, false)
+    }
+    fn recover_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, true)
+    }
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -725,7 +839,8 @@ impl VerificationActuator for ShellVerificationActuator {
                 "STORYHOOK_ACTIVITY_CONTEXT",
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
-            .env("STORYHOOK_GATE_PROGRESS", &journal);
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
+            .env("STORYHOOK_CERTIFY_ONLY", "1");
         let request_id = verification_request_id(candidate);
         let captured = match run_captured_with_progress_and_registration(
             command,
@@ -925,7 +1040,8 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
-    Merged {
+    Certified {
+        head: String,
         tree: String,
         detail: String,
     },
@@ -952,7 +1068,8 @@ impl WireOutcome {
     /// source, and the script only ever ran what it was handed.
     fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
         match self {
-            WireOutcome::Merged { tree, detail } => VerificationOutcome::Merged {
+            WireOutcome::Certified { head, tree, detail } => VerificationOutcome::Certified {
+                head,
                 tree,
                 detail,
                 gate: gate.display(),
@@ -1051,6 +1168,49 @@ where
 {
     let queue = VerificationQueue::new(store);
     let ordered = queue.ordered()?;
+    for intent in store.read(|tx| tx.landing_intents())? {
+        let Some(candidate) = ordered
+            .iter()
+            .find(|c| c.project == intent.project && c.story_id == intent.story_id)
+        else {
+            continue;
+        };
+        let lifecycle_entry = inflight.enter();
+        let started_at = env.now();
+        name_verification(&lifecycle_entry, candidate, &started_at);
+        let active = activity.acquire(candidate, started_at);
+        let outcome = actuator.recover_landing(candidate, &intent);
+        super::activity::emit(
+            if matches!(outcome, LandingOutcome::Merged { .. }) {
+                "INFO"
+            } else {
+                "ERROR"
+            },
+            "verifier",
+            "event",
+            &format!("project={} {}", candidate.project_slug, candidate.story_id),
+            &format!("landing {} recovery: {outcome:?}", intent.id),
+        );
+        if let LandingOutcome::Merged { detail } = outcome {
+            let ctx = Ctx::new(
+                store,
+                candidate.project,
+                candidate.checkout.clone(),
+                env.clone(),
+            )
+            .no_hooks(true);
+            queue.complete_landing(&ctx, &intent, &detail)?;
+            drop(active);
+            drop(lifecycle_entry);
+            match actuator.reap(candidate) {
+                Ok(()) => record_cleanup_complete(&ctx, candidate)?,
+                Err(error) => record_cleanup_required(&ctx, candidate, &error)?,
+            }
+            return Ok(TickResult::Completed);
+        }
+        // Even an OPEN response cannot exclude an earlier request still in flight.
+    }
+    let ordered = queue.ordered()?;
     let incident = store.read(|tx| tx.verification_incident())?;
     let incident_candidate = incident.as_ref().and_then(|incident| {
         ordered
@@ -1068,7 +1228,17 @@ where
             return Ok(TickResult::Halted);
         }
     }
-    let Some(mut candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
+    if incident_candidate
+        .as_ref()
+        .is_some_and(|c| !c.blocked_by.is_empty() || c.landing_pending)
+    {
+        return Ok(TickResult::RetryLater);
+    }
+    let Some(mut candidate) = incident_candidate.or_else(|| {
+        ordered
+            .into_iter()
+            .find(|c| c.blocked_by.is_empty() && !c.landing_pending)
+    }) else {
         let Some(candidate) = queue.next_cleanup()? else {
             return Ok(TickResult::Idle);
         };
@@ -1136,7 +1306,7 @@ where
         );
         let outcome = actuator.verify(&candidate, &pull_request);
         super::activity::emit(
-            if matches!(outcome, VerificationOutcome::Merged { .. }) {
+            if matches!(outcome, VerificationOutcome::Certified { .. }) {
                 "INFO"
             } else {
                 "ERROR"
@@ -1153,30 +1323,59 @@ where
             AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
 
+        if queue.ordered()?.iter().any(|c| {
+            c.project == candidate.project
+                && c.story_id == candidate.story_id
+                && !c.blocked_by.is_empty()
+        }) {
+            return Ok(TickResult::RetryLater);
+        }
         match outcome {
-            VerificationOutcome::Merged { tree, detail, gate } => {
-                let green_comment = format!(
-                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
-                    pull_request.url
-                );
-                if matches!(
-                    queue.record_generation_merged(
-                        &ctx,
-                        &candidate,
-                        &pull_request.url,
-                        &green_comment,
-                    )?,
-                    GenerationWrite::Superseded
-                ) {
-                    match refresh_authority(
-                        &queue,
-                        &mut active,
-                        &lifecycle_entry,
-                        env,
-                        &mut candidate,
-                    )? {
-                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
-                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+            VerificationOutcome::Certified {
+                head,
+                tree,
+                detail,
+                gate,
+            } => {
+                use crate::service::landing::{LandingAdmission, VerifiedSubmission};
+                let intent = match queue.begin_landing(
+                    &ctx,
+                    &candidate,
+                    &VerifiedSubmission { head, tree, gate },
+                )? {
+                    LandingAdmission::Admitted(intent) => intent,
+                    LandingAdmission::Held(_) | LandingAdmission::Pending(_) => {
+                        return Ok(TickResult::RetryLater);
+                    }
+                    LandingAdmission::Superseded => continue,
+                };
+                match actuator.land(&candidate, &intent) {
+                    LandingOutcome::Merged {
+                        detail: landing_detail,
+                    } => {
+                        queue.complete_landing(
+                            &ctx,
+                            &intent,
+                            &format!("{detail} {landing_detail}"),
+                        )?;
+                    }
+                    LandingOutcome::NotAttempted { detail } => {
+                        queue.release_unattempted_landing(&intent)?;
+                        StoryService::new(&ctx).comment(
+                            &candidate.story_id,
+                            &format!("CENTRAL LANDING RETRY — {detail}"),
+                        )?;
+                        return Ok(TickResult::RetryLater);
+                    }
+                    LandingOutcome::Uncertain { detail } => {
+                        StoryService::new(&ctx).comment(
+                            &candidate.story_id,
+                            &format!(
+                                "CENTRAL LANDING PENDING — intent {} remains fenced. {detail}",
+                                intent.id
+                            ),
+                        )?;
+                        return Ok(TickResult::RetryLater);
                     }
                 }
                 // Reaping is cleanup for work whose durable outcome is already
@@ -1336,10 +1535,12 @@ fn candidate_authority(
     candidate: &VerificationCandidate,
 ) -> Result<CandidateAuthority, AppError> {
     let current = queue.current_for(candidate)?;
-    if current
-        .as_ref()
-        .is_some_and(|current| current.verifying_generation == candidate.verifying_generation)
-    {
+    if current.as_ref().is_some_and(|current| {
+        current.verifying_generation == candidate.verifying_generation
+            && current.pull_request == candidate.pull_request
+            && current.checkout == candidate.checkout
+            && current.project_slug == candidate.project_slug
+    }) {
         Ok(CandidateAuthority::Current)
     } else {
         Ok(CandidateAuthority::Superseded(current.map(Box::new)))

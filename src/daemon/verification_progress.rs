@@ -29,6 +29,14 @@ use super::verification::{ActiveVerification, VerificationActivity, journal_path
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum VerificationStatus {
+    /// Open dependencies prevent execution while the submission remains visible.
+    Held {
+        /// Story IDs whose open state holds this submission.
+        blockers: Vec<String>,
+    },
+    /// An admitted merge awaits a conclusive outcome, including after restart.
+    LandingPending,
+
     /// Waiting work. Position counts waiting stories only; the active attempt
     /// is not a member of this queue.
     Queued {
@@ -164,7 +172,9 @@ pub fn status_snapshot_with_incident(
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
         .filter(|candidate| {
-            !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+            candidate.blocked_by.is_empty()
+                && !candidate.landing_pending
+                && !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
         })
         .collect();
 
@@ -175,7 +185,13 @@ pub fn status_snapshot_with_incident(
                 candidate.project == incident.project
                     && candidate.verifying_generation == Some(incident.generation)
             });
-            let status = if is_incident {
+            let status = if candidate.landing_pending {
+                VerificationStatus::LandingPending
+            } else if !candidate.blocked_by.is_empty() {
+                VerificationStatus::Held {
+                    blockers: candidate.blocked_by.clone(),
+                }
+            } else if is_incident {
                 let incident = incident.expect("incident presence established");
                 VerificationStatus::Stalled {
                     attempts: incident.attempts,
@@ -364,7 +380,16 @@ pub fn publish_once(
             env.clone(),
         )
         .no_hooks(true);
-        let body = if let VerificationStatus::Stalled {
+        let body = if let VerificationStatus::Held { blockers } = &status {
+            format!(
+                "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — HELD\nOpen blockers: {}. Submission remains in verifying and resumes when they resolve.\n",
+                blockers.join(", ")
+            )
+        } else if matches!(status, VerificationStatus::LandingPending) {
+            format!(
+                "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — LANDING PENDING\nDurable merge authority remains fenced until the certified merge is confirmed. Other eligible submissions can proceed.\n"
+            )
+        } else if let VerificationStatus::Stalled {
             attempts,
             first_failed_at,
             last_failed_at,
@@ -421,9 +446,11 @@ pub fn publish_once(
             let waiting: Vec<VerificationCandidate> = ordered
                 .iter()
                 .filter(|candidate| {
-                    !active
-                        .as_ref()
-                        .is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+                    candidate.blocked_by.is_empty()
+                        && !candidate.landing_pending
+                        && !active.as_ref().is_some_and(|held| {
+                            owns(candidate, held) || supersedes(candidate, held)
+                        })
                 })
                 .cloned()
                 .collect();

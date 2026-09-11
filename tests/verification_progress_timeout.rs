@@ -21,6 +21,22 @@ fn verify_with_preparation(
     idle: Duration,
     prepare: impl FnOnce(&Path, &Path),
 ) -> VerificationOutcome {
+    exercise(script, idle, prepare, |actuator, candidate, pr, _| {
+        actuator.verify(candidate, pr)
+    })
+}
+
+fn exercise<T>(
+    script: &str,
+    idle: Duration,
+    prepare: impl FnOnce(&Path, &Path),
+    action: impl FnOnce(
+        ShellVerificationActuator,
+        &VerificationCandidate,
+        &PrLink,
+        &ServiceFixture,
+    ) -> T,
+) -> T {
     let fixture = ServiceFixture::new();
     let checkout = scratch_dir();
     for args in [
@@ -55,6 +71,8 @@ fn verify_with_preparation(
     }
     assert!(!checkout.path().join("scripts").exists());
     let candidate = VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -81,7 +99,7 @@ fn verify_with_preparation(
         checkout.path(),
         &storyhook::daemon::verification::journal_path(fixture.env(), &candidate),
     );
-    let outcome = ShellVerificationActuator::with_paths_and_timing(
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
         fixture.env().clone(),
         checkout.path().join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
@@ -89,8 +107,8 @@ fn verify_with_preparation(
         idle,
         idle / 4,
     )
-    .with_verifier_script(tools.path().join("verify-pr.sh"))
-    .verify(&candidate, &pull_request);
+    .with_verifier_script(tools.path().join("verify-pr.sh"));
+    let outcome = action(actuator, &candidate, &pull_request, &fixture);
     assert!(!checkout.path().join("must-not-run").exists());
     outcome
 }
@@ -99,8 +117,7 @@ const IDLE: Duration = Duration::from_secs(1);
 /// How a fake reaches the real sibling beside it — the shape the shipped
 /// family uses, since the fake's directory is the bundle's stand-in.
 const SIBLING: &str = r#""$(dirname "${BASH_SOURCE[0]}")""#;
-const MERGED: &str =
-    r#"printf '%s\n' '{"result":"merged","tree":"verified-tree","detail":"completed"}'"#;
+const MERGED: &str = r#"printf '%s\n' '{"result":"certified","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
 
 #[test]
 fn progressing_verification_can_outlive_its_idle_budget() {
@@ -110,7 +127,7 @@ fn progressing_verification_can_outlive_its_idle_budget() {
     );
     let outcome = verify_script(&script, IDLE);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { .. }),
+        matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
     );
 }
@@ -156,7 +173,7 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
     );
     let outcome = verify_script(&script, idle);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { .. }),
+        matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
     );
 }
@@ -207,4 +224,62 @@ fn replacing_a_journal_cannot_renew_the_deadline() {
         matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("replaced")),
         "{outcome:?}"
     );
+}
+
+#[test]
+fn progressing_landing_outlives_the_control_budget_but_silence_keeps_authority_uncertain() {
+    use storyhook::daemon::verification::{LandingOutcome, journal_path};
+    use storyhook::domain::landing::VerifiedSubmission;
+    use storyhook::store::{GlobalSeq, LandingIntent, StoryNo};
+    for progressing in [true, false] {
+        let work = if progressing {
+            "for i in {1..12}; do gate_progress_emit_case 'landing/lock' pass; sleep 0.25; done"
+        } else {
+            "sleep 4"
+        };
+        let script = format!(
+            "set -eu\n. {SIBLING}/gate-progress.sh\n{work}\nprintf '%s\\n' '{{\"result\":\"merged\",\"detail\":\"confirmed\"}}'\n"
+        );
+        let outcome = exercise(
+            &script,
+            IDLE,
+            |_, journal| {
+                std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+                std::fs::write(journal, "").unwrap();
+            },
+            |actuator, candidate, pr, f| {
+                let mut candidate = candidate.clone();
+                candidate.pull_request = Ok(pr.clone());
+                assert!(journal_path(f.env(), &candidate).exists());
+                let intent = LandingIntent {
+                    id: "test-attempt".into(),
+                    project: candidate.project,
+                    story: StoryNo::parse_id("SH", "SH-1").unwrap(),
+                    story_id: candidate.story_id.clone(),
+                    project_slug: candidate.project_slug.clone(),
+                    generation: GlobalSeq::new(1),
+                    pull_request: pr.url.clone(),
+                    checkout: candidate.checkout.clone(),
+                    certification: VerifiedSubmission {
+                        head: "a".repeat(40),
+                        tree: "b".repeat(40),
+                        gate: "test gate".into(),
+                    },
+                    created_at: FIXTURE_NOW.into(),
+                };
+                actuator.land(&candidate, &intent)
+            },
+        );
+        if progressing {
+            assert!(
+                matches!(outcome, LandingOutcome::Merged { .. }),
+                "{outcome:?}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, LandingOutcome::Uncertain { .. }),
+                "{outcome:?}"
+            );
+        }
+    }
 }

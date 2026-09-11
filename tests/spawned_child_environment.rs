@@ -31,6 +31,8 @@ use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir, story_bin
 /// the helper is a stub and only its environment is under test.
 fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate {
     VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),

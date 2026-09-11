@@ -248,7 +248,10 @@ fn missing_and_closed_targets_and_obviation_keep_their_existing_semantics() {
             ))
         })
         .unwrap();
-    assert_eq!(open_blockers(&story, &index), [blocker.clone()]);
+    assert_eq!(
+        open_blockers(&story, &index),
+        std::slice::from_ref(&blocker)
+    );
     index.get_mut(&blocker).unwrap().superstate = SuperState::Closed;
     assert!(validate_transition(&story, "done", None, &states, &index).is_ok());
     index.remove(&blocker);

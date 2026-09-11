@@ -8,6 +8,9 @@ use crate::error::AppError;
 /// Live state admission, separate from historical event reconstruction.
 pub mod transition;
 
+/// Exact verification evidence preceding durable landing admission.
+pub mod landing;
+
 /// Validates one provider-defined model or effort token before it crosses a
 /// persistence or process boundary.
 ///
