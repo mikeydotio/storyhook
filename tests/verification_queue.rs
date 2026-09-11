@@ -2349,6 +2349,20 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         .unwrap();
     assert_eq!(incident.attempts, 1);
     assert_eq!(incident.story.to_id("SH"), id);
+    // SH-666: the halt says what it is (the verifier's), what it stops (the
+    // whole queue), who is at fault (nobody), and how it is released.
+    let halt = last_comment(&fixture, &id);
+    assert!(
+        halt.contains("Verification — HALTED") || halt.contains("INFRASTRUCTURE — HALTED"),
+        "{halt}"
+    );
+    assert!(halt.contains("stops the verifier's whole queue"), "{halt}");
+    assert!(halt.contains("No story is at fault"), "{halt}");
+    assert!(
+        halt.contains(&format!("story verifier ack {}", incident.incident_id)),
+        "{halt}"
+    );
+    assert!(!halt.contains("blocked by"), "{halt}");
     let reopened = SqliteStore::open(fixture.store().path()).unwrap();
     assert_eq!(
         reopened
@@ -2909,7 +2923,21 @@ fn a_durable_incident_marks_the_head_and_keeps_every_stalled_timestamp_fixed() {
     let head_first = last_comment(&fixture, &head);
     let tail_first = last_comment(&fixture, &tail);
     assert!(head_first.contains("Verification — HALTED"), "{head_first}");
-    assert!(tail_first.contains("blocked by SH-1"), "{tail_first}");
+    // SH-666: the tail names the incident as the verifier's own and the head
+    // as where it was first hit — never as a blocker — and how to release it.
+    assert!(
+        tail_first.contains("Verifier HALTED since 2026-01-01T00:01:00Z on an infrastructure failure of the verifier itself"),
+        "{tail_first}"
+    );
+    assert!(
+        tail_first.contains("first hit while verifying SH-1 (SH-1 is not at fault)"),
+        "{tail_first}"
+    );
+    assert!(
+        tail_first.contains(&format!("story verifier ack {}", incident.incident_id)),
+        "{tail_first}"
+    );
+    assert!(!tail_first.contains("blocked by"), "{tail_first}");
     assert!(head_first.contains("last evidence 2026-01-01T00:01:00Z"));
 
     assert!(
