@@ -1836,6 +1836,22 @@ Standing rules for every wave:
   budget; `plugins/story/tests/lib.sh` now puts the fake on `PATH` for every test, the
   SH-263 rule for its state. Design of record: `docs/spec/test-tiers.md` "The compile bound";
   `docs/spec/full-auto-engine.md`'s SH-655 As-built.
+- **A verifier halt is the verifier's own, never the story it was first hit on** (SH-666).
+  On 2026-09-10 the installed daemon (built from the SH-646 tree) invoked a
+  `scripts/verify-pr.sh` the registered checkout had been pulled past SH-649 — the
+  script refused by name, the queue halted as SH-573 designs, and every waiting story
+  then read "Verifier HALTED …; blocked by SH-648". That was filed as a story
+  soft-blocking the queue, and the dashboard's acknowledge was pressed seven times in
+  six seconds against the same refusal. Two facts to keep straight. **The scripts were
+  a sixth lockstep component** the SH-530 table never listed — read live from a
+  checkout, exactly the plugin's original failure — closed by SH-654 embedding them in
+  the binary. **The halt policy was right**: every permanent disposition is
+  verifier-scoped, so continuing to the next story meets the identical refusal
+  (SH-627 one tier over), and story-scoped problems already return as
+  `InvalidSubmission`. What SH-666 changed is the report — the halt names the
+  verifier, says no story is at fault, and prints `story verifier ack <incident-id>`,
+  the CLI twin of the dashboard's acknowledge through one shared service function —
+  and it left the policy alone. RCA: `docs/rca/verifier-halt-read-as-a-story-block.md`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - **This repository integrates on `dev` and publishes stable releases from `main`** (SH-595).

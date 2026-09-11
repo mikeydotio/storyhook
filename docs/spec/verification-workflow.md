@@ -390,3 +390,46 @@ N × 10 compile jobs. D-B's trade-off sentence deserves re-reading against
 that: the cap it declined now exists one layer down, on the resource that was
 actually saturating. Design of record: `docs/spec/full-auto-engine.md`'s
 SH-655 As-built entry and `docs/spec/test-tiers.md`, "The compile bound".
+
+### SH-666 — a halt is the verifier's own, and says so
+
+The incident on 2026-09-10/11 (`docs/rca/verifier-halt-read-as-a-story-block.md`)
+was a lockstep failure — an installed daemon older than the registered
+checkout's `verify-pr.sh`, refused by name at argument parsing — reported by
+this workflow as a story dependency: every waiting candidate carried "Verifier
+HALTED since T; blocked by SH-648: …", and the head story's comment said only
+that its code "was not classified red". It was filed as a soft block, and the
+dashboard's Acknowledge-and-retry was pressed seven times in six seconds
+against the same refusal because nothing named the cause's layer or the way
+out. The origin is SH-654's (the scripts are embedded in the binary, so the
+daemon runs the scripts it was built with — the sixth lockstep component,
+`release-lockstep.md`); what this entry settles is the report.
+
+**An infrastructure incident is the verifier's own.** Every permanent
+disposition — the script's `die_json` sites and the daemon's own — is a
+statement that the verifier could not run, never that a story is wrong; a
+story-scoped problem is `InvalidSubmission` and goes back to its implementer.
+So the halt policy of SH-573 stands, unchanged: continuing to the next
+candidate would have met the identical refusal (SH-627's one-dead-browser
+lesson, one tier over). The texts now say what the policy means. The waiting
+candidates' line names the incident as "an infrastructure failure of the
+verifier itself, first hit while verifying SH-N (SH-N is not at fault)", and
+the halted form names the release command; the head comment states that the
+halt stops the whole queue, that no story is at fault, and the same command.
+`VerificationBlocker` carries `incident_id` (additive on the wire) so both
+can print it. "Blocked by" does not appear in either, and
+`tests/verification_queue.rs` asserts that absence alongside the words.
+
+**The release path is reachable from where the halt is read.** `story verifier
+ack <incident-id>` is the CLI twin of `POST …/verification/ack`. One function,
+`service::acknowledge_verification_incident`, serves both doors so their
+contract cannot drift (SH-136): the id must be the *current* incident, still
+halted rather than retrying, and this project's — a reader of a stale comment
+cannot release a newer incident. The id is positional and required for the
+same reason; an acknowledgement retries nothing itself, the next tick does.
+
+**Stated limits.** The receipt seam (an embedded `merge-preflight.sh` reading
+what a merge tree's `gate-receipt.sh` wrote) is the same contract shape one hop
+over and stays tolerated; repeated acknowledgements against an unfixed cause
+are not rate-limited, the message is the fix; an acknowledgement resets the
+incident's attempt count, so the journal is the history.
