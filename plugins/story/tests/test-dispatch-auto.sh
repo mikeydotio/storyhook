@@ -162,6 +162,19 @@ case "$solo_prompt" in
   *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
 esac
 
+# SH-660: a verdict alone loses the question and the facts that led to it.
+# Exercise rendered council/solo charters so shared-head omissions fail both.
+for variant in "auto:$prompt" "solo:$solo_prompt"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  for needle in "every decision comment" "Context: the relevant facts and constraints" \
+                "Question: the question being answered" "Decision: the chosen answer" \
+                "Rationale: why it was chosen" "alternatives and trade-offs" \
+                "without this session or local files" \
+                "Record it immediately, before you resume the work"; do
+    assert_contains "$text" "$needle" "$label: decision record requires '$needle'"
+  done
+done
+
 # The verifier, not the child, owns completion and teardown in both charters.
 for variant in "auto:$prompt" "solo:$solo_prompt"; do
   label="${variant%%:*}"; text="${variant#*:}"

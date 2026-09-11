@@ -300,7 +300,10 @@ if tool in QUESTION_TOOLS:
             "unavailable to you, or the council aborts without a decision, do "
             "not stall: choose the one you can best defend. Either way, record "
             "the decision as a comment on %s the moment you make it, before you "
-            "resume the work." % target,
+            "resume the work. Include Context: the relevant facts and constraints. "
+            "Question: the question being answered. Decision: the chosen answer. "
+            "Rationale: why it was chosen, including alternatives and trade-offs "
+            "where relevant. Make each comment understandable without this session or local files." % target,
         )
     )
 
