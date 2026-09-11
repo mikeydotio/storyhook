@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "decision": {"type": "string", "enum": ["approve_plan", "other", "uncertain"]},
+    "evidence": {"type": "string"}
+  },
+  "required": ["decision", "evidence"]
+}

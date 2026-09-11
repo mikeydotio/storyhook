@@ -2040,7 +2040,9 @@ Codex 0.149.0 through 0.153.4 accepts `deny` for blocking, but reports a bare
 result. Storyhook had emitted that Claude decision for any `ExitPlanMode`
 payload, including Codex's provider-shaped envelope. The hook now recognizes
 Codex by its required `turn_id` extension and emits `{}` for that plan event;
-the existing exact-pane watcher remains the sole Codex plan-approval mechanism.
+the existing exact-pane watcher remains the Codex native-menu approval mechanism.
+SH-676 later supplements it with a guarded Stop continuation for prose approval
+requests; see [Codex autonomous plan continuation](codex-auto-plan-continuation.md).
 Claude's explicit `allow` and both providers' question denials are unchanged.
 
 ### SH-462 — operational state outside the event fold
