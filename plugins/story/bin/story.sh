@@ -3042,26 +3042,31 @@ _find_blocking_cycles() {
 # unambiguous CLI invocation with nothing to parse, and re-wrapping an
 # already-trivial call here would be complexity this story does not buy
 # anything with.
+# Every triage finding must rest on a successful, complete CLI response. A
+# transport failure or malformed envelope is never evidence of a clean backlog.
+triage_read() {
+  local out
+  if ! out=$(story_cli "$@" --json 2>&1); then
+    fail "triage: story $* failed: $out"
+  fi
+  if ! printf '%s' "$out" | jq -s -e '
+    length == 1 and (.[0] | type == "object" and .result == "ok"
+      and (.stories | type) == "array")
+  ' >/dev/null 2>&1; then
+    fail "triage: story $* returned an invalid response: $out"
+  fi
+  printf '%s\n' "$out"
+}
+
 cmd_triage() {
   [ "$#" -eq 0 ] || fail "usage: story.sh triage"
   require_story
 
   local stale="${STORY_STALE_THRESHOLD:-3d}"
   local list_json stale_json blocked_json
-  list_json=$(story_cli list --json 2>/dev/null) || true
-  [ -n "$list_json" ] || fail "story list produced no output."
-
-  # NOT defaulted to empty on failure: `--blocked` is a boolean flag that
-  # cannot itself be malformed, but `--stale` takes a value
-  # (STORY_STALE_THRESHOLD is env-overridable), and a bad one is a real,
-  # user-facing error the CLI already names clearly -- swallowing it into
-  # "no stale stories" would silently hide exactly the mistake a caller most
-  # needs to see. Mirrors _load_ready_stories' own "never a default" rule.
-  stale_json=$(story_cli list --stale "$stale" --json 2>/dev/null) || true
-  if [ "$(printf '%s' "$stale_json" | jq -r '.result // ""' 2>/dev/null)" != "ok" ]; then
-    fail "$(printf '%s' "$stale_json" | jq -r --arg stale "$stale" '.error // ("story list --stale " + $stale + " emitted no result")' 2>/dev/null)"
-  fi
-  blocked_json=$(story_cli list --blocked --json 2>/dev/null) || blocked_json='{"stories":[]}'
+  list_json=$(triage_read list) || { printf '%s\n' "$list_json"; return 1; }
+  stale_json=$(triage_read list --stale "$stale") || { printf '%s\n' "$stale_json"; return 1; }
+  blocked_json=$(triage_read list --blocked) || { printf '%s\n' "$blocked_json"; return 1; }
 
   local edges cycle_ids cycle_json
   edges=$(printf '%s' "$list_json" | jq -r '
