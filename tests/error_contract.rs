@@ -615,10 +615,6 @@ fn the_table_covers_every_variant() {
     }
 }
 
-/// Exhaustive over `AppError` **on purpose**: adding a variant breaks this
-/// match, which is what forces the new variant into the table above rather than
-/// letting it ship with an unpinned exit code.
-
 fn text_lint_error() -> AppError {
     let fixture = storyhook_test_support::ServiceFixture::new();
     let ctx = fixture.ctx();
@@ -634,6 +630,9 @@ fn text_lint_error() -> AppError {
         .unwrap_err()
 }
 
+/// Exhaustive over `AppError` **on purpose**: adding a variant breaks this
+/// match, which is what forces the new variant into the table above rather than
+/// letting it ship with an unpinned exit code.
 fn variant_name(error: &AppError) -> &'static str {
     match error {
         AppError::Usage(_) => "Usage",
