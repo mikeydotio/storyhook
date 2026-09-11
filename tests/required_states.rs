@@ -129,11 +129,13 @@ fn the_floor_is_six_states_and_their_superstates() {
             ("verifying", &SuperState::Open),
             ("blocked", &SuperState::Open),
             ("done", &SuperState::Closed),
-            // After `done`, and the order is load-bearing: two functions take
-            // the FIRST CLOSED state they find — `service::project::
-            // closed_state`, which names the state in every generated
-            // AGENTS.md, and `service::pr_check`, where a merged PR closes its
-            // story and abandonment would be a lie (SH-505).
+            // After `done`, deliberately: `default_states` mirrors this order
+            // into every new board, and completion should be the first CLOSED
+            // column a reader sees. Nothing resolves by this position — both
+            // CLOSED states are named (SH-505, SH-652); the two functions that
+            // once searched for "the first CLOSED state" now call
+            // `domain::completion_state`, and `tests/completion_state_search.rs`
+            // fences the search itself.
             ("closed", &SuperState::Closed),
         ]
     );
@@ -577,13 +579,14 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
 /// `default_states` claims, in its own doc comment, to be "exactly
 /// [`REQUIRED_STATES`], in that order". Nothing checked it.
 ///
-/// The claim is load-bearing in a way that is easy to miss: a project's catalog
-/// order is what `service::project::closed_state` and `service::pr_check` read
-/// when they take "the first CLOSED state", so a twin that drifted into listing
-/// `closed` before `done` would scaffold an AGENTS.md telling every agent to
-/// finish its work by abandoning the story, and would land every merged PR in
-/// the abandoned state — with the floor itself still correct and every test of
-/// the floor still green.
+/// The claim used to be load-bearing for a resolver: until SH-652
+/// `service::project::closed_state` and `service::pr_check` took "the first
+/// CLOSED state", so a twin that listed `closed` before `done` would have
+/// scaffolded an AGENTS.md telling every agent to abandon its work (and
+/// pr_check, reading a BTreeMap, did exactly that regardless). Both now call
+/// `domain::completion_state`, which names the slug; what this order still
+/// decides is every new project's board — completion before abandonment — and
+/// a twin that drifted would ship a board the floor's own tests never see.
 ///
 /// Two hand-written lists that must agree, with nothing checking they do, is
 /// the shape this project has already paid for in SH-136, SH-198, SH-258,

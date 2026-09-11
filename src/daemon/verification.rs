@@ -351,6 +351,7 @@ pub struct ShellVerificationActuator {
     owned_processes: super::lifecycle::OwnedProcesses,
     helper_path: Option<PathBuf>,
     story_binary: Option<PathBuf>,
+    verifier_script: Option<PathBuf>,
     verification_idle_timeout: Duration,
     control_timeout: Duration,
     termination_grace: Duration,
@@ -365,6 +366,7 @@ impl ShellVerificationActuator {
             env,
             helper_path: None,
             story_binary: None,
+            verifier_script: None,
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
@@ -383,6 +385,7 @@ impl ShellVerificationActuator {
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
+            verifier_script: None,
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
@@ -408,10 +411,35 @@ impl ShellVerificationActuator {
             env,
             helper_path: Some(helper_path),
             story_binary: Some(story_binary),
+            verifier_script: None,
             verification_idle_timeout,
             control_timeout,
             termination_grace,
         }
+    }
+
+    /// Runs `script` as the verifier instead of the bundle this binary
+    /// carries. The test seam for the process boundary, in the shape of
+    /// [`Self::with_paths`]: a fixture that stands in for `verify-pr.sh`
+    /// lives wherever the test put it, never inside the candidate checkout,
+    /// because the checkout is precisely what the production path no longer
+    /// reads a script from (SH-654).
+    #[must_use]
+    pub fn with_verifier_script(mut self, script: PathBuf) -> Self {
+        self.verifier_script = Some(script);
+        self
+    }
+
+    /// The `verify-pr.sh` this actuator spawns: the injected one, or the
+    /// bundle projected from this binary under the daemon's own state dir
+    /// (`super::verifier_bundle`). Never a path under the candidate
+    /// checkout — the checkout contributes its `[verify] gate` and its
+    /// receipt store, and nothing else.
+    fn verifier_script(&self) -> Result<PathBuf, AppError> {
+        if let Some(path) = &self.verifier_script {
+            return Ok(path.clone());
+        }
+        super::verifier_bundle::verify_script(&self.env)
     }
 
     fn helper_path(&self) -> Result<PathBuf, AppError> {
@@ -617,8 +645,8 @@ impl VerificationActuator for ShellVerificationActuator {
             return VerificationOutcome::InvalidSubmission { detail };
         }
         // The project's own merge gate (SH-649), read from the registered
-        // checkout's committed pointer — the same checkout this actuator
-        // already trusts for `scripts/verify-pr.sh` itself. A value that
+        // checkout's committed pointer — the one thing besides its receipt
+        // store the checkout contributes to verification. A value that
         // cannot be run is local configuration needing a person, so it is
         // refused here, before any journal or process exists, and never
         // handed back to the implementor as a red.
@@ -630,6 +658,19 @@ impl VerificationActuator for ShellVerificationActuator {
                         "the merge gate for registered checkout `{}` cannot be run: {error}",
                         candidate.checkout.display()
                     ),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
+        };
+        // The verifier's own mechanics travel with this daemon (SH-654): a
+        // bundle that cannot be projected describes this daemon's state
+        // directory, not the submission, so it is a permanent infrastructure
+        // failure in the same class as an unpreparable journal below.
+        let script = match self.verifier_script() {
+            Ok(script) => script,
+            Err(error) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!("could not prepare the verifier scripts: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
@@ -673,7 +714,7 @@ impl VerificationActuator for ShellVerificationActuator {
         let mut command = Command::new("bash");
         apply_verification_allowlist(&mut command);
         command
-            .arg("scripts/verify-pr.sh")
+            .arg(&script)
             .arg(&pull_request.url)
             .arg("--")
             .args(gate.argv())
@@ -702,25 +743,25 @@ impl VerificationActuator for ShellVerificationActuator {
             Ok(captured) => captured,
             Err(CaptureError::Stage(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
-                    detail: format!("could not stage scripts/verify-pr.sh output: {error}"),
+                    detail: format!("could not stage verify-pr.sh output: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Spawn(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
-                    detail: format!("could not start scripts/verify-pr.sh: {error}"),
+                    detail: format!("could not start verify-pr.sh: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Wait(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
-                    detail: format!("could not wait for scripts/verify-pr.sh: {error}"),
+                    detail: format!("could not wait for verify-pr.sh: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
             Err(CaptureError::Track(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
-                    detail: format!("could not track scripts/verify-pr.sh: {error}"),
+                    detail: format!("could not track verify-pr.sh: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
@@ -738,7 +779,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 };
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
-                        "scripts/verify-pr.sh made no progress for {:?}; {termination}",
+                        "verify-pr.sh made no progress for {:?}; {termination}",
                         self.verification_idle_timeout
                     ),
                     disposition: VerificationFailureDisposition::Permanent,
@@ -750,7 +791,7 @@ impl VerificationActuator for ShellVerificationActuator {
             Err(_) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
-                        "scripts/verify-pr.sh returned invalid JSON: {}",
+                        "verify-pr.sh returned invalid JSON: {}",
                         String::from_utf8_lossy(&captured.stderr).trim()
                     ),
                     disposition: VerificationFailureDisposition::Permanent,

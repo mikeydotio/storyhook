@@ -13,8 +13,8 @@ use storyhook::daemon::verification_progress::{VerificationStatus, publish_once,
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
+    CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, Priority, StoryCleanupLease, StoryEvent,
+    SuperState, TmuxCleanupTarget, fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -1897,9 +1897,12 @@ fn the_shell_actuator_times_out_the_whole_group_after_allowing_cleanup() {
         .output()
         .unwrap();
     assert!(origin.status.success());
-    std::fs::create_dir(checkout.path().join("scripts")).unwrap();
+    // The hanging verifier stands in for the bundle, from its own directory:
+    // the checkout holds no scripts at all (SH-654). Its cwd is still the
+    // checkout, which is where the cleanup witnesses land.
+    let tools = scratch_dir();
     std::fs::write(
-        checkout.path().join("scripts/verify-pr.sh"),
+        tools.path().join("verify-pr.sh"),
         r#"#!/bin/bash
 trap 'printf cleanup > cleanup-started; wait; exit 143' TERM
 sh -c 'trap "" TERM; printf "%s" "$$" > stubborn-child-pid; while :; do sleep 30; done' &
@@ -1940,7 +1943,8 @@ wait
         Duration::from_millis(500),
         Duration::from_secs(1),
         Duration::from_millis(100),
-    );
+    )
+    .with_verifier_script(tools.path().join("verify-pr.sh"));
 
     let outcome = thread::scope(|scope| {
         let running = scope.spawn(|| actuator.verify(&candidate, &pull_request));
@@ -3166,6 +3170,90 @@ fn a_green_attempt_closes_then_reaps_the_story() {
     }));
 }
 
+/// The SH-652 straddle: `shipped` is the positionally first CLOSED state and
+/// `abandoned` the alphabetically first, so either wrong search answers
+/// wrong. Green must land in the required `done`, reap must be asked, and the
+/// cleanup pass must find a green-but-unreaped story under this catalog —
+/// the three reads that have to agree for the actuator's `reap-leased`
+/// (which accepts only `done`) to succeed.
+#[test]
+fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
+    let fixture = ServiceFixture::new();
+    let config_ctx = fixture.ctx();
+    let config = ConfigService::new(&config_ctx);
+    config
+        .add_state("shipped", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .add_state("abandoned", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .reorder_states(
+            &[
+                "todo",
+                "in-progress",
+                "verifying",
+                "blocked",
+                "shipped",
+                "abandoned",
+                "done",
+                "closed",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator {
+        outcome: VerificationOutcome::Merged {
+            tree: "abc123".into(),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        },
+        notification_error: None,
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Completed
+    );
+    let story_no = StoryNo::parse_id("SH", &id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, COMPLETION_STATE_SLUG);
+    assert!(row.archived);
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+
+    // The cleanup pass reads the same answer: strip the completion marker the
+    // reap wrote and the story is a cleanup candidate again, found by the
+    // constant and not by whichever CLOSED state sorts first.
+    let ctx = fixture.ctx();
+    let unreaped = submitted(&fixture, "green, reap still owed", Priority::High, PR_TWO);
+    StoryService::new(&ctx)
+        .comment(
+            &unreaped,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `def456` passed `make test` and pull request {PR_TWO} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &unreaped, PR_TWO)
+        .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .expect("a done story with GREEN and no CLEANUP COMPLETE is owed a reap");
+    assert_eq!(candidate.story_id, unreaped);
+}
+
 #[test]
 fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     let fixture = ServiceFixture::new();
@@ -3546,10 +3634,11 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
 }
 
 /// A git-initialized scratch checkout with the origin the fixture PR belongs
-/// to, whose `scripts/verify-pr.sh` records its argv to `<checkout>/argv` and
-/// answers a merged verdict — the SH-649 seam: what reaches the script is the
-/// whole question.
-fn recording_checkout() -> tempfile::TempDir {
+/// to, and beside it a recording `verify-pr.sh` — in its own directory, the
+/// bundle's stand-in, since the checkout holds no verifier of its own (SH-654)
+/// — that writes its argv to `<checkout>/argv` and answers a merged verdict:
+/// the SH-649 seam, where what reaches the script is the whole question.
+fn recording_checkout() -> (tempfile::TempDir, tempfile::TempDir) {
     let checkout = scratch_dir();
     for args in [
         &["init", "-q"][..],
@@ -3570,14 +3659,14 @@ fn recording_checkout() -> tempfile::TempDir {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    std::fs::create_dir(checkout.path().join("scripts")).unwrap();
+    let tools = scratch_dir();
     std::fs::write(
-        checkout.path().join("scripts/verify-pr.sh"),
+        tools.path().join("verify-pr.sh"),
         "#!/bin/bash\nprintf '%s\\n' \"$@\" > argv\n\
          printf '{\"result\":\"merged\",\"tree\":\"t\",\"detail\":\"landed\"}\\n'\n",
     )
     .unwrap();
-    checkout
+    (checkout, tools)
 }
 
 fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhook::store::PrLink) {
@@ -3608,12 +3697,17 @@ fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhoo
     (candidate, pull_request)
 }
 
-fn shell_actuator(daemon_env: &Environment, checkout: &Path) -> ShellVerificationActuator {
+fn shell_actuator(
+    daemon_env: &Environment,
+    checkout: &Path,
+    tools: &Path,
+) -> ShellVerificationActuator {
     ShellVerificationActuator::with_paths(
         daemon_env.clone(),
         checkout.join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
     )
+    .with_verifier_script(tools.join("verify-pr.sh"))
 }
 
 /// The configured gate reaches `verify-pr.sh` as `<url> -- <argv…>`, one word
@@ -3621,7 +3715,7 @@ fn shell_actuator(daemon_env: &Environment, checkout: &Path) -> ShellVerificatio
 /// comments name what actually ran rather than a literal.
 #[test]
 fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() {
-    let checkout = recording_checkout();
+    let (checkout, tools) = recording_checkout();
     std::fs::write(
         checkout.path().join(".storyhook.toml"),
         "schema = 1\nuuid = \"291ea25f-3363-4b5d-9051-66636c1066f9\"\nprefix = \"SH\"\n\n\
@@ -3630,7 +3724,11 @@ fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() 
     .unwrap();
     let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
     let env_root = scratch_dir();
-    let actuator = shell_actuator(&Environment::at(env_root.path()), checkout.path());
+    let actuator = shell_actuator(
+        &Environment::at(env_root.path()),
+        checkout.path(),
+        tools.path(),
+    );
 
     let outcome = actuator.verify(&candidate, &pull_request);
     assert_eq!(
@@ -3653,10 +3751,14 @@ fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() 
 /// than left for it to assume — the script carries no default of its own.
 #[test]
 fn a_checkout_without_a_pointer_runs_the_default_gate() {
-    let checkout = recording_checkout();
+    let (checkout, tools) = recording_checkout();
     let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
     let env_root = scratch_dir();
-    let actuator = shell_actuator(&Environment::at(env_root.path()), checkout.path());
+    let actuator = shell_actuator(
+        &Environment::at(env_root.path()),
+        checkout.path(),
+        tools.path(),
+    );
 
     let outcome = actuator.verify(&candidate, &pull_request);
     assert!(
@@ -3673,7 +3775,7 @@ fn a_checkout_without_a_pointer_runs_the_default_gate() {
 /// never a red returned to the implementor as if the code were wrong.
 #[test]
 fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
-    let checkout = recording_checkout();
+    let (checkout, tools) = recording_checkout();
     std::fs::write(
         checkout.path().join(".storyhook.toml"),
         "schema = 1\nuuid = \"291ea25f-3363-4b5d-9051-66636c1066f9\"\nprefix = \"SH\"\n\n\
@@ -3683,7 +3785,7 @@ fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
     let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
     let env_root = scratch_dir();
     let daemon_env = Environment::at(env_root.path());
-    let actuator = shell_actuator(&daemon_env, checkout.path());
+    let actuator = shell_actuator(&daemon_env, checkout.path(), tools.path());
 
     let outcome = actuator.verify(&candidate, &pull_request);
     match outcome {
