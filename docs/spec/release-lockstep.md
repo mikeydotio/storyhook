@@ -381,3 +381,24 @@ pointed at never went away; and the plugin helper makes no marketplace call.
 That is a Claude Code marketplace refresh pruning the entry — a fact about the
 host, which makes the detector the whole of the fix. The no-rollback shape
 remains a real gap and is filed separately.
+
+## As built: the verifier scripts travel inside the binary (SH-654)
+
+The table above listed five components with their own paths to a machine.
+There was a sixth nobody had listed: the verifier script family
+(`scripts/verify-pr.sh` and the nine scripts it reaches through its own
+directory), which the daemon ran **from the registered project's checkout**
+— so it tracked whatever tree that checkout had, and existed at all only when
+the project was storyhook. SH-654 gives it the same arrival as the plugin:
+`build.rs` embeds it (`EMBEDDED_VERIFIER`, beside `EMBEDDED_MARKETPLACE`),
+and `src/daemon/verifier_bundle.rs` projects it through the same
+materializer — now `src/embedded.rs`, extracted so both payloads share one
+comparison, one staged write and one rename-with-rollback — under the
+daemon's own state directory, in a leaf named by the payload's digest.
+Lockstep with the daemon is therefore by construction: the bytes a
+verification runs are the bytes of the binary running it, and a different
+build writes a different leaf rather than rewriting one in use. The rule
+this adds to the list: **a script a shipped process invokes is part of the
+release, not of whichever checkout the process happens to be pointed at.**
+Design of record for the verifier side: `docs/spec/verification-workflow.md`'s
+SH-654 entry.
