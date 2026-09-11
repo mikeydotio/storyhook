@@ -59,9 +59,9 @@ being picked.
 **Superseded in part by SH-645 (2026-09-10).** The rows above are the record
 of what was decided, with D14 revised by SH-672; `docs/spec/verification-workflow.md`
 is now the design of record for everything from submission to reap, and three
-rows read differently against it. D4's "priority then age": the age that ships
-is story `created_at`, and SH-651 makes it the time the story entered
-`verifying`. D5's "serialize every project": what shipped for a year was one
+rows read differently against it. D4's "priority then age": since SH-651, age
+is the time the story most recently entered `verifying`. Resubmission resets
+that age. D5's "serialize every project": what shipped for a year was one
 global worker over one queue spanning every project; since SH-648 the worker,
 the queue, the incident halt and the conflict hold are per project. D14's
 "the locks in D4/D5 are sized against" a machine-wide budget: the `gate` and

@@ -46,7 +46,7 @@ What each step does today, and which child closes the gap:
 |---|---|---|---|
 | 1 | storyhook pushes and opens the PR | **done (SH-647):** the agent commits and moves the story to `verifying` from inside its worktree; the verifier runs `story.sh submit` from the lease — push over HTTPS, open or adopt the PR against the default branch, link it, comment — before it verifies | SH-647 (D-A) |
 | 2 | one verifier per project; suites serialize per project | **done** (SH-648): one worker per project (`VerificationActivity` is a per-project map, `ordered_for`), and `gate`/`merge` carry the project's canonical git common dir in their key — see "The queue" and "The locks" | done, SH-648 (D-B) |
-| 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
+| 2 | order by priority then queue age | priority → `verifying_since` → project slug → story id (`sort_candidates`); missing entry timestamps follow known timestamps within equal priority | done, SH-651 (D-F) |
 | 2 | not mergeable → instruct the agent and hold the queue | as stated; a dead pane is re-dispatched in place and the hold continues (SH-650) — see "The conflict queue-hold" | done (SH-650, D-E) |
 | 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
@@ -67,7 +67,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected: other projects have no gate of their own. | done, **outside this repository** — the hook lives in no tracked file, its verdict token is `delegated`, and nothing in this suite fences it. Proven both ways on the day: this repository → delegated, exit 0; a plain repository with a red `make test` → blocked. | done |
 | D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | done — see "SH-649" under As built for the receipt contract this put on the value |
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean |
-| D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
+| D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | done — see "SH-651" under As built |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | done — **built with different semantics**: the resolver is `domain::completion_state`, answering the required `done`, never the first CLOSED state, and `STORY_DONE_STATE` is refused rather than honoured; a council decision recorded on the story (`story show SH-652`) and under As built |
 | D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | open |
 
@@ -89,7 +89,7 @@ not, and each row names one.
 | The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | `~/.claude/hooks/pre-push-tests.sh` (untracked) | — | done (D-C) |
 | One global worker; a queue spanning every project | `VerificationActivity::acquire` (`src/daemon/verification.rs`); `ordered_candidates` (`src/service/verification.rs`) | 88-110; 650 | done (SH-648): `acquire` asserts per project, `poll_verification` supervises one `poll_project_verification` per project, `ordered_candidates_for` |
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | done (SH-648): `<name>.<hash of the canonical common dir>.lock`; `--held` |
-| Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | SH-651 |
+| Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | done (SH-651): verification sorts by latest entry time; cleanup retains creation order |
 | The conflict hold is released when the paste fails | `wait_for_reconciled_candidate`, `return_for_repair`; `tests/verification_queue.rs::a_failed_conflict_notification_releases_the_reservation` | 1246, 1190-1213; 1439 | done (SH-650) — the test is now `a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue` |
 | `make test` is a literal in the gate invocation and in the comment text | `run_verification_gate` call (`scripts/verify-pr.sh`); GREEN and RED format strings (`src/daemon/verification.rs`) | 673; 896, 996 | done (SH-649): `gate_command_for` (`src/service/gate_command.rs`), `verify-pr.sh <pr-url> -- <gate…>`, `{gate}` in both strings |
 | `scripts/verify-pr.sh` is a repo-relative literal in the daemon | `ShellVerificationActuator::verify` | 521 | SH-654 |
@@ -158,12 +158,15 @@ submission.
 
 `VerificationQueue::ordered_for(project)` (`src/service/verification.rs`)
 folds one project's stories in `verifying` into candidates and sorts them with
-`sort_candidates`: priority rank, then `created_at`, then project slug, then
+`sort_candidates`: priority rank, then `verifying_since`, then project slug, then
 story id (`ordered()` concatenates every project's for the cross-project
 surfaces). `verifying_since` is computed by `verifying_entry` from the story's
 own `StoryStateChanged` history rather than `updated_at` — the progress
-checklist rewrites `updated_at` on every publish (SH-524) — and is reported,
-but not sorted on (SH-651). The daemon runs **one worker per project**
+checklist rewrites `updated_at` on every publish (SH-524). Resubmission resets
+queue age (SH-651). Missing entry timestamps follow known timestamps within
+equal priority; project and story identity still resolve ties. Completed-story
+cleanup uses a separate sorter that retains priority, creation time, project,
+and story order. The daemon runs **one worker per project**
 (SH-648): `poll_verification` (`src/daemon/verification.rs`) is a supervisor
 that spawns `poll_project_verification` for every registered project, on
 start and on every catalog change, and a worker whose project is deleted
@@ -438,6 +441,19 @@ the SH-136 rule); the invariant here is only that it **survives**.
 Deviations from this document are recorded here, one entry per child, rather
 than in a second file. Each child lands with its own `### SH-N — <what
 changed>` entry and a status update in the decisions table above.
+
+### SH-651 — queue age follows the latest submission
+
+Verification uses priority, latest `verifying_since`, project slug, and story
+ID, in that order. Resubmission sends a story behind equal-priority peers
+that have waited longer. Comments do not change its position. Missing entry
+timestamps follow known timestamps within equal priority; identity resolves
+the remaining ties. Cleanup retains its separate creation-time order.
+
+`tests/verification_queue_order.rs` exercises reversed creation/submission
+order, repeated resubmission, comments, priority, equal-time identity ties,
+and cleanup through the store-backed service. Comparator unit tests cover
+missing timestamps and project/story ties in both input orders.
 
 ### SH-649 — `[verify] gate`, and the receipt contract it put on the value
 
