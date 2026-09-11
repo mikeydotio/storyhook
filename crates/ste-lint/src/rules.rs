@@ -53,6 +53,8 @@ fn contraction(word: &str) -> bool {
         || matches!(
             word,
             "it's"
+                | "he's"
+                | "she's"
                 | "that's"
                 | "there's"
                 | "here's"
