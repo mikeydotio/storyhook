@@ -1065,6 +1065,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="delete-confirmation""#));
     assert!(body.contains(r#"id="delete-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-error""#));
+    // SH-670: each launcher names why a provider's Model/Effort/Speed hold
+    // nothing but "Default" -- a degraded `{ok:false, reason}` catalog slot
+    // or a failed fetch used to be indistinguishable from "no options".
+    assert!(body.contains(r#"id="dispatch-options-notice" role="status" aria-live="polite""#));
+    assert!(body.contains(r#"id="engine-options-notice" role="status" aria-live="polite""#));
+    assert!(body.contains("function providerOptionsNotice"));
     assert!(body.contains(r#"id="close-modal""#));
     assert!(body.contains(r#"id="close-reason""#));
     assert!(body.contains(r#"id="close-modal-submit""#));
