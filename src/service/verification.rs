@@ -8,7 +8,10 @@
 use std::path::PathBuf;
 
 use crate::domain::pr_url::parse_pr_url;
-use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, Priority, StateDef, StoryCleanupLease, StoryEvent, SuperState,
+    VERIFYING_STATE_SLUG, completion_state,
+};
 use crate::error::AppError;
 use crate::store::{
     ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
@@ -221,17 +224,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 ))
                 .into());
             }
-            let ordered_states = tx.states(project)?;
-            let done = ordered_states
-                .iter()
-                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
-                .cloned()
-                .ok_or_else(|| {
-                    AppError::Validation(
-                        "project has no required CLOSED `done` state; run `story doctor --fix`"
-                            .to_string(),
-                    )
-                })?;
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
             let states = tx.state_map(project)?;
             clear_candidate_incident(tx, candidate)?;
             append_state_transition(
@@ -467,7 +460,8 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             for project in tx.projects()? {
                 let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
                 let links = tx.pr_links(project.id)?;
-                let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
+                let rows =
+                    tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
                 for row in rows {
                     let passed = row
                         .snapshot
@@ -548,17 +542,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 ))
                 .into());
             }
-            let ordered_states = tx.states(project)?;
-            let done = ordered_states
-                .iter()
-                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
-                .cloned()
-                .ok_or_else(|| {
-                    AppError::Validation(
-                        "project has no required CLOSED `done` state; run `story doctor --fix`"
-                            .to_string(),
-                    )
-                })?;
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
             let states = tx.state_map(project)?;
             let mut events = vec![StoryEvent::StoryPrMerged {
                 at: now.clone(),
@@ -593,6 +577,22 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?;
         Ok(())
     }
+}
+
+/// The state a green merge lands a story in, or the refusal that names the
+/// repair (SH-652).
+///
+/// One door for both writers so the verifier cannot disagree with itself, and
+/// a refusal rather than a fallback: a catalog with no CLOSED `done` is below
+/// the SH-125 floor, and writing verified work into any other CLOSED state
+/// would record the wrong business outcome — the reason SH-521 chose the
+/// required slug over "whichever CLOSED state sorts first" in the first place.
+fn completion_state_or_refuse(states: &[StateDef]) -> Result<StateDef, AppError> {
+    completion_state(states).ok_or_else(|| {
+        AppError::Validation(format!(
+            "project has no required CLOSED `{COMPLETION_STATE_SLUG}` state; run `story doctor --fix`"
+        ))
+    })
 }
 
 fn candidate_is_current(

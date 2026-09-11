@@ -587,10 +587,16 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Working|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
-# State `complete` closes a story into. Empty means "ask the CLI for the
-# project's state catalog and take the first CLOSED-superstate entry" — see
-# story_closed_state.
-DONE_STATE="${STORY_DONE_STATE:-}"
+# The completion state: what `complete` closes a story into, what `reap`
+# accepts as finished work, and what `<done-state>` renders as. Deliberately
+# NOT env-overridable and not read from the catalog (SH-652): it is the
+# REQUIRED `done` state the verifier writes after a green merge
+# (`domain::COMPLETION_STATE_SLUG`, pinned equal by tests/plugin_contract.rs),
+# spelled here the way `verifying` is spelled in the charters — a protocol
+# constant, not a preference. The old `STORY_DONE_STATE` override is refused
+# by name below the router, because a knob the daemon cannot see is a knob
+# that makes this helper disagree with the verifier about one store fact.
+COMPLETION_STATE="done"
 # `doctor`'s throwaway readiness probe: what it launches, and the scratch
 # window it launches into. Kept separate from LAUNCH_TPL so probing a build
 # never depends on a dispatch-time override.
@@ -2063,7 +2069,7 @@ cmd_dispatch() {
   local auto_marker="" full_auto_marker="" marker_tmux_args=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   if [ -n "$auto" ]; then
-    completion_state=$(story_closed_state)
+    completion_state=$(story_completion_state)
   fi
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
   if [ -n "$full_auto" ]; then
@@ -3580,17 +3586,15 @@ cmd_doctor() {
 # branch of every merged PR that closed the issue, and storyhook has no such
 # linkage — the worktree directory name is the sole story<->branch tie.
 
-# story_closed_state — the slug `complete` moves a story into: the first
-# CLOSED-superstate state the project defines, or $STORY_DONE_STATE.
+# story_completion_state — the slug `complete` moves a story into and `reap`
+# accepts: the required `done` (SH-652). One function rather than a bare
+# `$COMPLETION_STATE` at each site so every reader of the fact has one door.
 #
-# Not hard-coded to "done": the state set is user-editable (this very repo
-# defines five states, not the three `story project new` seeds). Read from
-# `story state list` rather than from a file — see story_state_list.
-story_closed_state() {
-  if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
-  story_state_list | awk -F' *\\(' '
-    /\(CLOSED[,)]/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }
-  '
+# Until SH-652 this scraped `story state list` for the first CLOSED state,
+# which disagreed with the verifier the moment a project ordered another
+# CLOSED state ahead of `done` — every green story then failed reap forever.
+story_completion_state() {
+  printf '%s' "$COMPLETION_STATE"
 }
 
 # _story_worktree_status <path> <caller-toplevel> — removable|current|locked|
@@ -3692,7 +3696,7 @@ _complete_prepare() {
   CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  CMP_DONE_STATE=$(story_closed_state)
+  CMP_DONE_STATE=$(story_completion_state)
 
   local wt_container wname
   wname=$(resolve_wname "$id")
@@ -3774,10 +3778,11 @@ _complete_prepare() {
     CMP_NOTE=" Nothing named \`$CMP_WNAME\` exists under $CMP_DIR — if $id was dispatched before \`project link checkout\` recorded that directory, its worktree is elsewhere and is not cleaned up here."
   fi
 
-  # Closing is an action only when the story is still open AND we resolved a
-  # state to close it into.
+  # Closing is an action only when the story is still open. The state it
+  # closes into is the constant; a project below the required-states floor
+  # is reported by `story move` itself when the close runs.
   CMP_NEEDS_CLOSE=false
-  if [ "$CMP_SUPER" != "CLOSED" ] && [ -n "$CMP_DONE_STATE" ]; then
+  if [ "$CMP_SUPER" != "CLOSED" ]; then
     CMP_NEEDS_CLOSE=true
   fi
 
@@ -3875,9 +3880,7 @@ cmd_complete_execute() {
   if [ -n "$no_close" ]; then
     skipped+=("close:$id(--no-close)")
   elif [ "$CMP_NEEDS_CLOSE" != true ]; then
-    if [ -z "$CMP_DONE_STATE" ]; then
-      close_note=" Could not close: this project defines no state with a CLOSED superstate."
-    fi
+    : # already CLOSED; nothing to move
   elif [ -n "$DRY_RUN" ]; then
     commands+=("story move $id $CMP_DONE_STATE")
     closed=true
@@ -4227,7 +4230,7 @@ cmd_reap_leased() {
     || refuse "cleanup-lease-story-mismatch" "story.sh reap: lease story \`$lease_story\` does not match requested story \`$canonical_id\`."
   state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  done_state=$(story_closed_state)
+  done_state=$(story_completion_state)
   [ "$super" = CLOSED ] \
     || refuse "not-closed" "story.sh reap: $canonical_id is not closed (state \`$state\`) -- refusing to reclaim a worktree for a story that isn't done."
   [ "$state" = "$done_state" ] \
@@ -4994,6 +4997,18 @@ done
 # --agent override.
 if [ "${1:-}" != "dispatch" ] && [ "${1:-}" != "capabilities" ]; then
   configure_agent "${STORY_AGENT:-claude}"
+fi
+
+# A knob that lands nowhere is refused, never dropped (SH-357). STORY_DONE_STATE
+# used to choose the completion state for `complete`, `reap` and `<done-state>`;
+# since SH-652 the completion state is the required `done`, so a value here
+# would be silently ignored — and a user who exported it per the old README
+# would read `done` as a bug rather than a decision. Checked ahead of every
+# verb because the variable reaches this helper two ways: the user's own shell,
+# and the daemon's environment by `STORY_*` prefix passthrough.
+if [ -n "${STORY_DONE_STATE+set}" ]; then
+  refuse "story-done-state-retired" \
+    "STORY_DONE_STATE is set (\`${STORY_DONE_STATE}\`), but the completion state is no longer configurable: verified work lands in the required \`$COMPLETION_STATE\` state, and \`complete\`/\`reap\` use the same one (SH-652). Unset STORY_DONE_STATE. To close a story into a different CLOSED state, run \`story move <id> <state>\` yourself; \`reap\` will then refuse it as not completed, by design."
 fi
 
 case "${1:-}" in

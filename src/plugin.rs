@@ -1,13 +1,9 @@
-use std::collections::BTreeSet;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
-
-use fs4::FileExt;
 
 use crate::env::spawn_env::apply_plugin_cli_allowlist;
 use crate::error::AppError;
@@ -24,11 +20,7 @@ const CODEX_RULE_MARKER: &str = "# storyhook-managed: codex-rules-v1";
 const CODEX_LAUNCHER_RELATIVE: &str = ".codex/storyhook/story.sh";
 const CODEX_RULE_RELATIVE: &str = ".codex/rules/storyhook.rules";
 
-struct EmbeddedFile {
-    relative_path: &'static str,
-    bytes: &'static [u8],
-    executable: bool,
-}
+use crate::embedded::EmbeddedFile;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
@@ -225,143 +217,18 @@ fn combined_output(out: &Output) -> String {
     text
 }
 
-fn embedded_file_set(root: &Path) -> Option<BTreeSet<PathBuf>> {
-    fn visit(root: &Path, directory: &Path, found: &mut BTreeSet<PathBuf>) -> Option<()> {
-        let mut entries: Vec<_> = fs::read_dir(directory)
-            .ok()?
-            .collect::<Result<_, _>>()
-            .ok()?;
-        entries.sort_by_key(fs::DirEntry::file_name);
-        for entry in entries {
-            let path = entry.path();
-            let metadata = fs::symlink_metadata(&path).ok()?;
-            if metadata.is_dir() {
-                visit(root, &path, found)?;
-            } else if metadata.is_file() {
-                found.insert(path.strip_prefix(root).ok()?.to_path_buf());
-            } else {
-                return None;
-            }
-        }
-        Some(())
-    }
-
-    let mut found = BTreeSet::new();
-    visit(root, root, &mut found)?;
-    Some(found)
-}
-
-fn release_marketplace_matches(root: &Path) -> bool {
-    let Some(found) = embedded_file_set(root) else {
-        return false;
-    };
-    let expected: BTreeSet<PathBuf> = EMBEDDED_MARKETPLACE
-        .iter()
-        .map(|file| PathBuf::from(file.relative_path))
-        .collect();
-    if found != expected {
-        return false;
-    }
-    EMBEDDED_MARKETPLACE.iter().all(|file| {
-        let path = root.join(file.relative_path);
-        let Ok(metadata) = fs::metadata(&path) else {
-            return false;
-        };
-        let executable = {
-            #[cfg(unix)]
-            {
-                metadata.permissions().mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        };
-        executable == file.executable && fs::read(path).is_ok_and(|bytes| bytes == file.bytes)
-    })
-}
-
-fn write_release_marketplace(root: &Path) -> Result<(), AppError> {
-    for file in EMBEDDED_MARKETPLACE {
-        let path = root.join(file.relative_path);
-        let parent = path.parent().ok_or_else(|| {
-            AppError::Storage(format!(
-                "embedded marketplace path `{}` has no parent",
-                file.relative_path
-            ))
-        })?;
-        fs::create_dir_all(parent)?;
-        fs::write(&path, file.bytes)?;
-        #[cfg(unix)]
-        {
-            let mode = if file.executable { 0o755 } else { 0o644 };
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
-        }
-    }
-    Ok(())
-}
-
+/// Projects this binary's marketplace under its versioned root (SH-538) —
+/// see [`crate::embedded::materialize`] for the reuse/stage/rename contract.
 fn materialize_release_marketplace() -> Result<PathBuf, AppError> {
     let releases = release_marketplaces_root()?;
-    fs::create_dir_all(&releases)?;
-    let lock_path = releases.join(".install.lock");
-    let lock = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "failed to open plugin installation lock `{}`: {error}",
-                lock_path.display()
-            ))
-        })?;
-    FileExt::lock_exclusive(&lock).map_err(|error| {
-        AppError::Storage(format!(
-            "failed to lock plugin installation at `{}`: {error}",
-            lock_path.display()
-        ))
-    })?;
-
     let destination = release_marketplace_root()?;
-    if release_marketplace_matches(&destination) {
-        return Ok(destination);
-    }
-
-    let staged = tempfile::Builder::new()
-        .prefix(".plugin-staging-")
-        .tempdir_in(&releases)?;
-    write_release_marketplace(staged.path())?;
-    if !release_marketplace_matches(staged.path()) {
-        return Err(AppError::Storage(
-            "the staged plugin marketplace did not match its embedded payload".to_string(),
-        ));
-    }
-
-    if destination.exists() || fs::symlink_metadata(&destination).is_ok() {
-        let backup = tempfile::Builder::new()
-            .prefix(".plugin-previous-")
-            .tempdir_in(&releases)?;
-        let previous = backup.path().join("marketplace");
-        fs::rename(&destination, &previous)?;
-        if let Err(error) = fs::rename(staged.path(), &destination) {
-            let restore = fs::rename(&previous, &destination);
-            return Err(AppError::Storage(match restore {
-                Ok(()) => format!(
-                    "failed to publish plugin marketplace at `{}`; restored the previous copy: {error}",
-                    destination.display()
-                ),
-                Err(restore_error) => format!(
-                    "failed to publish plugin marketplace at `{}` ({error}) and failed to restore its previous copy ({restore_error})",
-                    destination.display()
-                ),
-            }));
-        }
-    } else {
-        fs::rename(staged.path(), &destination)?;
-    }
-    Ok(destination)
+    crate::embedded::materialize(
+        EMBEDDED_MARKETPLACE,
+        &releases,
+        &destination,
+        ".install.lock",
+        "plugin marketplace",
+    )
 }
 
 fn remove_claude_plugin() -> Result<(), AppError> {
@@ -910,7 +777,7 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
         .iter()
         .map(|(relative, _)| PathBuf::from(relative))
         .collect();
-    if embedded_file_set(&enabled).as_ref() != Some(&expected_files) {
+    if crate::embedded::file_set(&enabled).as_ref() != Some(&expected_files) {
         return Err(fail(
             "missing, unexpected, or non-regular plugin files".to_string(),
         ));
