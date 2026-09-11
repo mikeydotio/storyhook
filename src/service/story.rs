@@ -1214,7 +1214,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 "story_id": id,
                 "timestamp": self.ctx.now(),
                 "story_title": &before.title,
-                "from_state": "closed",
+                "from_state": &before.state,
                 "to_state": &snapshot.state,
             }),
         );
