@@ -7,7 +7,7 @@ in-progress (OPEN, active) — 2 open
 verifying (OPEN)
 blocked (OPEN)
 done (CLOSED) — 2 archived
-closed (CLOSED) — 1 archived
+dropped (CLOSED) — 1 archived
 review (OPEN) — 1 open — Awaiting code review
 
 $ story type list

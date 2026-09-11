@@ -97,7 +97,7 @@ fn the_agents_template_names_the_completion_state_not_the_first_closed_state() {
             "blocked".to_string(),
             "shipped".to_string(),
             "done".to_string(),
-            "closed".to_string(),
+            "dropped".to_string(),
         ])
         .expect("putting `shipped` ahead of `done`");
 
@@ -132,7 +132,7 @@ fn a_default_project_tells_agents_to_finish_their_work_not_abandon_it() {
         .expect("scaffolding");
     assert!(rendered.contains("moves the story to `done`"), "{rendered}");
     assert!(
-        !rendered.contains("moves the story to `closed`"),
+        !rendered.contains("moves the story to `dropped`"),
         "the abandoned state must never be the one the template names: {rendered}"
     );
 }

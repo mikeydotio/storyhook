@@ -985,7 +985,7 @@ fn unblock_from_an_edge_that_is_not_there_is_a_no_op() {
 /// edge retraction, so changing only a constructed snapshot cannot pass.
 #[test]
 fn block_on_explanation_stops_blocking_when_the_last_dependency_closes() {
-    for closure in ["done", "closed"] {
+    for closure in ["done", "dropped"] {
         let fixture = ServiceFixture::new();
         let ctx = fixture.ctx();
         let worker = new_story(&ctx, "worker");

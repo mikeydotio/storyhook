@@ -525,7 +525,7 @@ fn export_import_export_is_byte_identical() {
         .assert()
         .success();
     story(source.path())
-        .args(["move", "API-4", "closed"])
+        .args(["move", "API-4", "dropped"])
         .assert()
         .success();
 

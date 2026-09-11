@@ -545,8 +545,8 @@ Nothing has been read or written. Re-run it naming the story's own project:
 ## States
 
 - Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
-- Every project has `todo`, `in-progress` and `blocked` as `OPEN` states and
-  `done` as a `CLOSED` one. Those four cannot be removed and their superstates
+- Every project has `todo`, `in-progress`, `verifying` and `blocked` as `OPEN`
+  states and `done` and `dropped` as `CLOSED` states. Those six cannot be removed and their superstates
   cannot be changed; anything else you add is yours to arrange. A project
   created before this rule reports it in `story doctor`, and
   `story doctor --fix` adds whatever is missing.
@@ -562,11 +562,22 @@ Nothing has been read or written. Re-run it naming the story's own project:
   commit *claims* (`Closes SH-1`), as opposed to merely names (`Refs SH-1`).
 - There is no rename: a slug is recorded in every state-change event ever
   written. Add the new state, migrate to it, and remove the old one — which is
-  therefore not a way around the four states every project must have.
+  therefore not a way around the six states every project must have.
 
 Configure states from the CLI (`story state …`), the dashboard
 (**Settings → Statuses**), or the TUI (press `s`) — all three go through the
 same operations.
+
+### Dropped status
+
+`done` records completed work; `dropped` records deliberately abandoned work. Both
+have the `CLOSED` superstate. `story close <id> "reason"` moves a story to
+`dropped` and records the reason. The dashboard calls this action **Drop**.
+
+Existing `closed`/CLOSED statuses are migrated to `dropped`, preserving history.
+Conflicting custom `dropped` definitions must be resolved with the previous
+binary before upgrading; the migration reports the project and leaves it intact.
+See [the migration contract](docs/spec/dropped-state.md).
 
 ### Editing a state that still holds stories
 

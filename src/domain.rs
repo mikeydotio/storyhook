@@ -83,6 +83,9 @@ pub mod provenance;
 /// layer, the store, and the CLI, none of which need anything else here.
 pub mod media_type;
 
+/// Compatibility for historical abandonment-state names.
+pub(crate) mod state_rename;
+
 use media_type::MediaType;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1462,13 +1465,6 @@ pub struct RequiredState {
     pub super_state: SuperState,
 }
 
-/// The state set every project must contain (SH-125).
-///
-/// A project may define as many further states as it likes, in any order —
-/// this is a floor, not the catalog. Deliberately silent about
-/// [`STATE_ROLE_ACTIVE`]: the one-active rule in
-/// [`validate_state_defs_for_write`] already governs roles, and a project is
-/// free to put `active` on a state of its own.
 /// The slug of the state a story lands in when it is deliberately abandoned
 /// (SH-505) — and the state a legacy `StoryDeleted` event now folds into.
 ///
@@ -1478,7 +1474,7 @@ pub struct RequiredState {
 /// is *which* CLOSED state a story rests in would be one edit away from
 /// silently reversing itself. [`UNCLAIM_FALLBACK_STATE`](crate::service::story::UNCLAIM_FALLBACK_STATE)
 /// is the same pattern for the same reason.
-pub const CLOSED_STATE_SLUG: &str = "closed";
+pub const DROPPED_STATE_SLUG: &str = "dropped";
 
 /// The reserved OPEN handoff state owned by centralized verification.
 pub const VERIFYING_STATE_SLUG: &str = "verifying";
@@ -1489,7 +1485,7 @@ pub const VERIFYING_STATE_SLUG: &str = "verifying";
 /// `story.sh reap` accepts as completion.
 ///
 /// Named rather than searched for, for the same reason as
-/// [`CLOSED_STATE_SLUG`]: a catalog is user-ordered and user-extended, so "the
+/// [`DROPPED_STATE_SLUG`]: a catalog is user-ordered and user-extended, so "the
 /// first CLOSED state" answers `abandoned` the moment somebody puts one ahead
 /// of `done`, and "the first CLOSED state in a `BTreeMap`" answered `closed`
 /// for every default catalog (`service::pr_check`, before SH-652) while three
@@ -1499,6 +1495,13 @@ pub const VERIFYING_STATE_SLUG: &str = "verifying";
 /// fences every other CLOSED-state search in `src/`.
 pub const COMPLETION_STATE_SLUG: &str = "done";
 
+/// The state set every project must contain (SH-125).
+///
+/// A project may define as many further states as it likes, in any order —
+/// this is a floor, not the catalog. Deliberately silent about
+/// [`STATE_ROLE_ACTIVE`]: the one-active rule in
+/// [`validate_state_defs_for_write`] already governs roles, and a project is
+/// free to put `active` on a state of its own.
 pub static REQUIRED_STATES: [RequiredState; 6] = [
     RequiredState {
         slug: "todo",
@@ -1529,7 +1532,7 @@ pub static REQUIRED_STATES: [RequiredState; 6] = [
     // `service::pr_check` proved that a positional search reads a `BTreeMap`
     // as readily as a `Vec` and answers `closed` when it does.
     RequiredState {
-        slug: CLOSED_STATE_SLUG,
+        slug: DROPPED_STATE_SLUG,
         super_state: SuperState::Closed,
     },
 ];
@@ -1545,24 +1548,19 @@ pub static REQUIRED_STATES: [RequiredState; 6] = [
 ///
 /// # The chain, and why every rung of it is load-bearing (SH-505)
 ///
-/// 1. [`CLOSED_STATE_SLUG`], when the catalog defines it CLOSED. This is the
+/// 1. [`DROPPED_STATE_SLUG`], when the catalog defines it CLOSED. This is the
 ///    answer for every conforming project, and it is named rather than searched
 ///    for — see that constant.
-/// 2. Otherwise the pre-SH-505 chain: `done` if the catalog defines it CLOSED,
-///    else the alphabetically first CLOSED state the catalog has.
-/// 3. Otherwise `None`, leaving the story's own slug in place with its
+/// 2. Legacy `closed`/CLOSED, for catalogs read before migration 36.
+/// 3. Otherwise `done` if the catalog defines it CLOSED, else the
+///    alphabetically first CLOSED state the catalog has.
+/// 4. Otherwise `None`, leaving the story's own slug in place with its
 ///    superstate forced CLOSED, so the fold stays total and the schema — not a
 ///    panic here — refuses the write.
 ///
-/// Rung 2 is not defensive padding. [`fold_story`] is not permitted to fail on
-/// its own history, and a catalog with no `closed` is reachable three ways: a
-/// legacy tree read through `storage::load_state_map`, a store not yet migrated
-/// past schema 21, and `service::migrate`'s pre-repair catalog. It is also what
-/// keeps a project that already owns an **OPEN** state called `closed` coherent:
-/// `with_required_states` refuses to reclassify one, migration 21 leaves those
-/// stories in `done`, and this answers `done` for them too — so the stored row
-/// and a fresh fold agree, and `story doctor` reports the catalog problem
-/// instead of an invented divergence.
+/// Legacy trees and pre-migration catalogs remain replayable. A custom OPEN
+/// state named `closed` is never used for abandonment; migration 36 adds
+/// `dropped` and moves surviving soft deletes there without rewriting events.
 fn resting_state_for_closure(states: &BTreeMap<String, StateDef>) -> Option<&StateDef> {
     let closed = |slug: &str| {
         states
@@ -1570,7 +1568,8 @@ fn resting_state_for_closure(states: &BTreeMap<String, StateDef>) -> Option<&Sta
             .filter(|def| def.super_state == SuperState::Closed)
     };
 
-    closed(CLOSED_STATE_SLUG)
+    closed(DROPPED_STATE_SLUG)
+        .or_else(|| closed("closed"))
         .or_else(|| closed(COMPLETION_STATE_SLUG))
         .or_else(|| {
             states
@@ -1608,6 +1607,7 @@ pub fn validate_required_states(states: &[StateDef]) -> Result<(), AppError> {
     }
 
     if missing.is_empty() {
+        state_rename::normalize_catalog(states)?;
         return Ok(());
     }
     // Worded for two readers: a user whose edit was refused, and `story doctor`
@@ -1648,9 +1648,11 @@ pub fn undefined_state_error(slug: &str, states: &BTreeMap<String, StateDef>) ->
     AppError::Validation(format!("state `{slug}` is not defined"))
 }
 
-/// `states` with any missing [`REQUIRED_STATES`] added.
+/// `states` with legacy abandonment renamed and missing required states added.
 ///
-/// The repair may only **add**. A required slug already present under the wrong
+/// SH-663 first renames `closed`/CLOSED to `dropped`, preserving metadata and
+/// refusing collisions. After that rename, repair only adds. A required slug
+/// already present under the wrong
 /// superstate is an error rather than something to correct, because the two
 /// candidate corrections are both destructive: a second row cannot carry the
 /// slug (it is a primary key), and flipping the superstate silently reclassifies
@@ -1667,7 +1669,7 @@ pub fn undefined_state_error(slug: &str, states: &BTreeMap<String, StateDef>) ->
 /// Idempotent: repairing an already-conforming set returns it unchanged, which
 /// is what makes it safe on a path that runs on every import.
 pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppError> {
-    let mut repaired = states.to_vec();
+    let mut repaired = state_rename::normalize_catalog(states)?;
     for (required_index, required) in REQUIRED_STATES.iter().enumerate() {
         if let Some(found) = repaired.iter().find(|state| state.slug == required.slug) {
             if found.super_state != required.super_state {
@@ -1711,7 +1713,7 @@ pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppErr
     Ok(repaired)
 }
 
-/// `` `todo`, `in-progress`, `verifying`, `blocked`, `done` and `closed` `` — for error
+/// `` `todo`, `in-progress`, `verifying`, `blocked`, `done` and `dropped` `` — for error
 /// messages.
 fn required_state_list() -> String {
     let slugs: Vec<String> = REQUIRED_STATES
@@ -1766,7 +1768,7 @@ pub fn fold_story(
                 title = Some(story_title.clone());
                 created_at = Some(at.clone());
                 updated_at = Some(at.clone());
-                state = Some(story_state.clone());
+                state = Some(state_rename::historical_slug(story_state, states).to_string());
             }
             // A pre-#18 git link masquerades as an ordinary comment — see
             // `git_link_sha` — so it is diverted into `referenced_by_commits`
@@ -1839,7 +1841,7 @@ pub fn fold_story(
                 at,
                 state: story_state,
             } => {
-                state = Some(story_state.clone());
+                state = Some(state_rename::historical_slug(story_state, states).to_string());
                 state_computed = false;
                 updated_at = Some(at.clone());
                 // Moving into an OPEN state is what *reopening* is, so it
@@ -1855,7 +1857,7 @@ pub fn fold_story(
                 // a story that folds today because legacy deletion forces its
                 // superstate cannot be made unfoldable by this rule.
                 if states
-                    .get(story_state)
+                    .get(state_rename::historical_slug(story_state, states))
                     .is_some_and(|def| def.super_state == SuperState::Open)
                 {
                     closed_at = None;
@@ -1972,7 +1974,7 @@ pub fn fold_story(
                 at,
                 state: story_state,
             } => {
-                state = Some(story_state.clone());
+                state = Some(state_rename::historical_slug(story_state, states).to_string());
                 state_computed = false;
                 updated_at = Some(at.clone());
                 // Symmetric with `StoryStateChanged` above, and SH-130 is why.
@@ -1990,7 +1992,7 @@ pub fn fold_story(
                 // and refusing to close would make a story that folds today
                 // stop folding tomorrow.
                 if !states
-                    .get(story_state)
+                    .get(state_rename::historical_slug(story_state, states))
                     .is_some_and(|def| def.super_state == SuperState::Open)
                 {
                     closed_at = Some(at.clone());
@@ -4263,7 +4265,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        CLOSED_STATE_SLUG, COMPLETION_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES,
+        COMPLETION_STATE_SLUG, DROPPED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES,
         STATE_ROLE_ACTIVE, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
         StorySnapshot, SuperState, TypeDef, VERIFYING_STATE_SLUG, active_state, completion_state,
         compute_display_state, compute_progress, default_type, derive_family_relationships,
@@ -4529,7 +4531,7 @@ mod tests {
                 "verifying",
                 "blocked",
                 "done",
-                "closed"
+                "dropped"
             ]
         );
         // `closed` comes AFTER `done`: `default_states` mirrors this order
@@ -4544,7 +4546,7 @@ mod tests {
                 .position(|r| r.slug == slug)
                 .unwrap_or_else(|| panic!("the floor names `{slug}`"))
         };
-        assert!(position(COMPLETION_STATE_SLUG) < position(CLOSED_STATE_SLUG));
+        assert!(position(COMPLETION_STATE_SLUG) < position(DROPPED_STATE_SLUG));
         // Every one of them is a slug the CLI and the web router can address.
         for required in &REQUIRED_STATES {
             validate_state_slug(required.slug).expect("a required slug must be addressable");
@@ -4559,7 +4561,7 @@ mod tests {
             state("verifying", SuperState::Open, None),
             state("blocked", SuperState::Open, None),
             state("done", SuperState::Closed, None),
-            state(CLOSED_STATE_SLUG, SuperState::Closed, None),
+            state(DROPPED_STATE_SLUG, SuperState::Closed, None),
         ];
         validate_required_states(&states).unwrap();
     }
@@ -4606,7 +4608,7 @@ mod tests {
         let repaired = with_required_states(&states).unwrap();
         assert_eq!(
             board(&repaired),
-            "todo|in-progress|review*|verifying|blocked|done|wont-fix|closed"
+            "todo|in-progress|review*|verifying|blocked|done|wont-fix|dropped"
         );
         validate_required_states(&repaired).unwrap();
     }
@@ -4622,7 +4624,7 @@ mod tests {
         let repaired = with_required_states(&states).unwrap();
         assert_eq!(
             board(&repaired),
-            "todo|in-progress|verifying|blocked|done|closed"
+            "todo|in-progress|verifying|blocked|done|dropped"
         );
         validate_required_states(&repaired).unwrap();
     }
@@ -5974,9 +5976,9 @@ mod tests {
     fn state_map_with_closed() -> BTreeMap<String, StateDef> {
         let mut states = state_map();
         states.insert(
-            CLOSED_STATE_SLUG.to_string(),
+            DROPPED_STATE_SLUG.to_string(),
             StateDef {
-                slug: CLOSED_STATE_SLUG.to_string(),
+                slug: DROPPED_STATE_SLUG.to_string(),
                 super_state: SuperState::Closed,
                 role: None,
                 description: None,
@@ -6010,7 +6012,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(story.state, CLOSED_STATE_SLUG);
+        assert_eq!(story.state, DROPPED_STATE_SLUG);
         assert_eq!(story.superstate, SuperState::Closed);
         assert_eq!(
             story.hidden_at.as_deref(),
@@ -6043,7 +6045,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(story.state, CLOSED_STATE_SLUG);
+        assert_eq!(story.state, DROPPED_STATE_SLUG);
         assert_eq!(story.hidden_at, None, "`story unarchive` must be effective");
     }
 
@@ -6165,9 +6167,9 @@ mod tests {
     fn fold_story_deleted_ignores_a_closed_state_the_project_defines_as_open() {
         let mut states = state_map();
         states.insert(
-            CLOSED_STATE_SLUG.to_string(),
+            DROPPED_STATE_SLUG.to_string(),
             StateDef {
-                slug: CLOSED_STATE_SLUG.to_string(),
+                slug: DROPPED_STATE_SLUG.to_string(),
                 super_state: SuperState::Open,
                 role: None,
                 description: None,
@@ -6990,7 +6992,7 @@ mod tests {
             state("shipped", SuperState::Closed, None),
             state("abandoned", SuperState::Closed, None),
             state(COMPLETION_STATE_SLUG, SuperState::Closed, None),
-            state(CLOSED_STATE_SLUG, SuperState::Closed, None),
+            state(DROPPED_STATE_SLUG, SuperState::Closed, None),
         ]
     }
 

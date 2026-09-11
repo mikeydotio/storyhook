@@ -154,7 +154,7 @@ test("a held upload stays owned by its original project", async ({ page }) => {
 test("closed stories refuse files and text drags never enter the upload path", async ({ page }) => {
   const id = await createStory(page, `SH-392 closed ${Date.now()}`);
   await openStory(page, id);
-  await page.locator("#drawer-footer").getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator("#drawer-footer").getByRole("button", { name: "Drop", exact: true }).click();
   await page.locator("#close-reason").fill("exercise closed attachment behavior");
   await page.locator("#close-modal-submit").click();
   await expect(page.locator("#close-modal")).not.toHaveClass(/open/);
