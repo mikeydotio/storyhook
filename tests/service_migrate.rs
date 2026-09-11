@@ -77,14 +77,14 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     }
     // The corpus has exactly one legacy soft-deleted story, SH-20. It was
     // `todo` while reading CLOSED; after the required-state repair it comes to
-    // rest in `closed`, so `todo` loses one and the repaired state gains one.
+    // rest in `dropped`, so `todo` loses one and the repaired state gains one.
     //
     // The CLOSED count above is deliberately unchanged at 44. That is the check
     // that this moved a *slug* and reclassified nothing: if the repair had
     // altered any story's superstate, these two assertions would disagree.
     assert_eq!(
         per_state,
-        BTreeMap::from([("closed", 1), ("done", 43), ("todo", 17)]),
+        BTreeMap::from([("dropped", 1), ("done", 43), ("todo", 17)]),
         "the frozen tree's stories land where they were, except the deleted one, \
          which now rests in a state that is genuinely CLOSED"
     );
@@ -789,7 +789,7 @@ fn archived_stories_and_legacy_deletions_land_archived() {
     assert_eq!(by_id["ADA-3"].snapshot.state, "wont-fix");
     assert_eq!(by_id["ADA-3"].snapshot.superstate, SuperState::Closed);
     assert!(by_id["ADA-4"].archived, "a legacy deletion stays archived");
-    assert_eq!(by_id["ADA-4"].snapshot.state, "closed");
+    assert_eq!(by_id["ADA-4"].snapshot.state, "dropped");
     assert!(by_id["ADA-4"].snapshot.hidden_at.is_some());
     assert!(!by_id["ADA-1"].archived);
 }
@@ -960,12 +960,12 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
         })
         .expect("reading");
 
-    // `verifying`, `blocked`, and `closed` are not in the legacy tree. All are added by the
+    // `verifying`, `blocked`, and `dropped` are not in the legacy tree. All are added by the
     // migration, which repairs a catalog below the required floor rather than
     // refusing it (SH-125) — a tree written before the floor existed must still
     // be movable, and the floor has grown since (SH-505, SH-521). The new OPEN
     // states land after `review`, so `todo` keeps position 0 and the state new
-    // stories open in does not change; `closed` lands at the very end, after
+    // stories open in does not change; `dropped` lands at the very end, after
     // the tree's own CLOSED states.
     assert_eq!(
         states.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(),
@@ -977,7 +977,7 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
             "blocked",
             "done",
             "wont-fix",
-            "closed"
+            "dropped"
         ],
         "configured order is user-visible — it drives the board columns"
     );

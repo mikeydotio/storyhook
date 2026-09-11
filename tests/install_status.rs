@@ -107,6 +107,33 @@ fn it_reports_the_installed_set_on_an_ordinary_machine() {
     }
 }
 
+/// The `binary` row used to answer `ok` whenever the `story` on `$PATH` was
+/// the one running — which the harness arranges by putting the build
+/// directory first on `$PATH`, exactly the SH-630 invocation. The binary under
+/// test has never left the directory cargo wrote it into, and the row says so
+/// rather than calling it installed.
+#[test]
+fn the_binary_row_flags_a_binary_still_in_its_build_directory() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+
+    let out = env
+        .story(project.path())
+        .args(["doctor", "install"])
+        .output()
+        .expect("running `story doctor install`");
+
+    assert!(out.status.success(), "{}", text(&out));
+    let report = text(&out);
+    let build_dir = storyhook::path_identity::build_dir()
+        .expect("a cargo-built test binary must carry STORYHOOK_BUILD_DIR");
+    assert!(
+        report.contains("not installed") && report.contains(&build_dir.display().to_string()),
+        "the binary row must say this build never left {}:\n{report}",
+        build_dir.display()
+    );
+}
+
 #[test]
 fn it_still_answers_when_the_store_is_from_a_newer_storyhook() {
     let env = TestEnv::isolated();
@@ -214,4 +241,274 @@ fn plugin_sources_distinguish_current_stale_unpinned_and_checkout_installations(
 
     let checkout = report_for_codex_source(Some("/Volumes/Code/storyhook"));
     assert!(checkout.contains("CHECKOUT"), "{checkout}");
+}
+
+/// The finding count the summary prints — the one number a flagged row moves.
+///
+/// A test build's `binary` row is always flagged (it never left cargo's build
+/// directory, SH-630), so `every component agrees.` is unreachable from this
+/// suite and cannot be asserted on directly. The summary is proven instead by
+/// the count it derives that line from: one row flagged is one more finding.
+fn finding_count(report: &str) -> usize {
+    report
+        .lines()
+        .find_map(|line| {
+            let (count, rest) = line.split_once(' ')?;
+            rest.starts_with("finding(s).")
+                .then(|| count.parse().ok())
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("the report must print `N finding(s).`:\n{report}"))
+}
+
+/// The row's own finding line: the `!` line directly beneath `label`, if any.
+fn finding_for(report: &str, label: &str) -> Option<String> {
+    let mut lines = report.lines();
+    lines.find(|line| line.starts_with(label))?;
+    let next = lines.next()?;
+    next.trim_start().strip_prefix("! ").map(str::to_string)
+}
+
+fn doctor_install(env: &TestEnv) -> String {
+    let project = env.project().build();
+    text(
+        &env.story(project.path())
+            .args(["doctor", "install"])
+            .output()
+            .expect("running `story doctor install`"),
+    )
+}
+
+/// What a Claude Code install leaves behind that a lost registration does not
+/// take with it: the plugin cache — the exact directory that survived on the
+/// filing machine (SH-640).
+fn plant_claude_cache(env: &TestEnv) -> std::path::PathBuf {
+    let cache = env
+        .home()
+        .join(".claude/plugins/cache/storyhook/story/2.4.2");
+    std::fs::create_dir_all(&cache).unwrap();
+    env.home().join(".claude/plugins/cache/storyhook")
+}
+
+fn plant_codex_cache(env: &TestEnv) -> std::path::PathBuf {
+    let cache = env
+        .home()
+        .join(".codex/plugins/cache/storyhook/story/2.4.2");
+    std::fs::create_dir_all(&cache).unwrap();
+    env.home().join(".codex/plugins/cache/storyhook")
+}
+
+fn write_claude_config_without_storyhook(env: &TestEnv) {
+    let plugins = env.home().join(".claude/plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(
+        plugins.join("known_marketplaces.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "claude-plugins-official": {
+                "source": { "source": "git", "url": "git@github.com:anthropics/claude-plugins-official.git" },
+                "installLocation": env.home().join(".claude/plugins/marketplaces/claude-plugins-official"),
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// The incident as filed: `known_marketplaces.json` rewritten without its
+/// `storyhook` key while the plugin cache survived. The row used to read
+/// `not registered` unflagged, and the summary `every component agrees.`
+#[test]
+fn a_claude_registration_that_was_lost_is_flagged_not_reported_ok() {
+    let control = doctor_install(&TestEnv::isolated());
+    assert!(
+        finding_for(&control, "claude plugin").is_none(),
+        "positive control: an untouched machine's claude row carries no finding:\n{control}"
+    );
+
+    let env = TestEnv::isolated();
+    let residue = plant_claude_cache(&env);
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+
+    let finding = finding_for(&report, "claude plugin")
+        .unwrap_or_else(|| panic!("the claude row must carry a finding:\n{report}"));
+    assert!(
+        finding.contains("DEREGISTERED"),
+        "the finding must name the condition:\n{report}"
+    );
+    assert!(
+        finding.contains(&residue.display().to_string()),
+        "the finding must name the surviving copies:\n{report}"
+    );
+    assert!(
+        finding.contains("story plugin install claude"),
+        "the finding must name the remedy:\n{report}"
+    );
+    assert_eq!(
+        finding_count(&report),
+        finding_count(&control) + 1,
+        "the summary must count the flagged row — it cannot read `every component \
+         agrees` over it:\n{report}"
+    );
+}
+
+/// The same loss with the whole configuration file gone, not just the key.
+#[test]
+fn a_claude_registration_lost_with_its_config_file_is_flagged() {
+    let env = TestEnv::isolated();
+    plant_claude_cache(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "claude plugin")
+        .unwrap_or_else(|| panic!("the claude row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+}
+
+/// A machine that never had the provider is the reason the quiet row exists,
+/// and it must stay quiet: no residue, no registration, no finding.
+#[test]
+fn a_provider_that_was_never_installed_stays_quiet() {
+    let env = TestEnv::isolated();
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    assert!(
+        report.contains("claude plugin"),
+        "the row must still be printed:\n{report}"
+    );
+    assert!(
+        finding_for(&report, "claude plugin").is_none(),
+        "a never-installed provider is not a finding:\n{report}"
+    );
+    assert!(
+        finding_for(&report, "codex plugin").is_none(),
+        "a never-installed provider is not a finding:\n{report}"
+    );
+}
+
+/// The receipt `story plugin install <target>` leaves in storyhook's own data
+/// directory — the evidence that survives when the provider sweeps every
+/// copy it made (SH-671).
+fn plant_install_receipt(env: &TestEnv, target: &str) -> std::path::PathBuf {
+    let receipt = env.data_dir().join("provider-installs").join(target);
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    std::fs::write(
+        &receipt,
+        "version 2.4.2\ninstalled_at 2026-09-11T02:51:39Z\n",
+    )
+    .unwrap();
+    receipt
+}
+
+/// The 2026-09-10 loss (SH-671): Claude Code 2.1.268 rewrote its registry
+/// without storyhook AND swept `~/.claude/plugins/cache/storyhook`, so no
+/// residue survived and the SH-640 detector read the machine as
+/// never-installed — `claude plugin  not registered`, `every component
+/// agrees`, exit 0 — while dashboard dispatch was broken. storyhook's own
+/// install receipt is what tells the two apart now.
+#[test]
+fn a_claude_registration_lost_with_its_cache_swept_is_still_flagged() {
+    let control = doctor_install(&TestEnv::isolated());
+    let env = TestEnv::isolated();
+    let receipt = plant_install_receipt(&env, "claude");
+    write_claude_config_without_storyhook(&env);
+    assert!(
+        !env.home().join(".claude/plugins/cache/storyhook").exists(),
+        "premise: no residue at all"
+    );
+    let report = doctor_install(&env);
+
+    let finding = finding_for(&report, "claude plugin")
+        .unwrap_or_else(|| panic!("the claude row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+    assert!(
+        finding.contains(&receipt.display().to_string()),
+        "the finding must name the receipt it read:\n{report}"
+    );
+    assert!(finding.contains("2026-09-11T02:51:39Z"), "{report}");
+    assert!(finding.contains("story plugin install claude"), "{report}");
+    assert!(
+        !finding.contains("installed copies remain"),
+        "no copies survived, so none may be claimed:\n{report}"
+    );
+    assert_eq!(
+        finding_count(&report),
+        finding_count(&control) + 1,
+        "the summary must count the flagged row:\n{report}"
+    );
+}
+
+/// Same rule, other provider: the receipt is per target, so a Codex receipt
+/// flags the Codex row and leaves the Claude row quiet.
+#[test]
+fn a_codex_registration_lost_with_its_cache_swept_is_still_flagged() {
+    let env = TestEnv::isolated();
+    plant_install_receipt(&env, "codex");
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "codex plugin")
+        .unwrap_or_else(|| panic!("the codex row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+    assert!(finding.contains("story plugin install codex"), "{report}");
+    assert!(
+        finding_for(&report, "claude plugin").is_none(),
+        "a Codex receipt says nothing about Claude:\n{report}"
+    );
+}
+
+/// The Codex row has the identical shape and the identical defect.
+#[test]
+fn a_codex_registration_that_was_lost_is_flagged_with_or_without_its_config() {
+    let without_config = TestEnv::isolated();
+    let residue = plant_codex_cache(&without_config);
+    let report = doctor_install(&without_config);
+    let finding = finding_for(&report, "codex plugin")
+        .unwrap_or_else(|| panic!("the codex row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+    assert!(finding.contains(&residue.display().to_string()), "{report}");
+    assert!(finding.contains("story plugin install codex"), "{report}");
+
+    let with_config = TestEnv::isolated();
+    plant_codex_cache(&with_config);
+    std::fs::create_dir_all(with_config.home().join(".codex")).unwrap();
+    std::fs::write(
+        with_config.home().join(".codex/config.toml"),
+        "[marketplaces.other]\nsource_type = \"local\"\nsource = \"/elsewhere\"\n",
+    )
+    .unwrap();
+    let report = doctor_install(&with_config);
+    let finding = finding_for(&report, "codex plugin")
+        .unwrap_or_else(|| panic!("the codex row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+}
+
+/// A file storyhook writes is storyhook's only while it carries the marker
+/// storyhook wrote it with — `story plugin uninstall codex` preserves an
+/// unmarked file at the same path as the user's, and the detector must read
+/// it the same way, or a user-authored launcher reads as a lost install.
+#[test]
+fn codex_residue_counts_a_managed_file_by_its_marker_not_its_name() {
+    let marked = TestEnv::isolated();
+    let launcher = marked.home().join(".codex/storyhook/story.sh");
+    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    std::fs::write(
+        &launcher,
+        "# storyhook-managed: codex-launcher-v1\nexec story \"$@\"\n",
+    )
+    .unwrap();
+    let report = doctor_install(&marked);
+    let finding = finding_for(&report, "codex plugin")
+        .unwrap_or_else(|| panic!("a marked launcher is storyhook's residue:\n{report}"));
+    assert!(
+        finding.contains(&launcher.display().to_string()),
+        "{report}"
+    );
+
+    let unmarked = TestEnv::isolated();
+    let launcher = unmarked.home().join(".codex/storyhook/story.sh");
+    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    std::fs::write(&launcher, "#!/bin/sh\necho mine\n").unwrap();
+    let report = doctor_install(&unmarked);
+    assert!(
+        finding_for(&report, "codex plugin").is_none(),
+        "an unmarked file at a managed path is the user's, not residue:\n{report}"
+    );
 }

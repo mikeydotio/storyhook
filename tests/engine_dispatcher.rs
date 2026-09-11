@@ -4,13 +4,24 @@ use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTar
 use storyhook::env::Environment;
 use storyhook::service::engine::{
     DispatchOutcome, DispatchOutcomeState, DispatchRequest, Dispatcher, ShellDispatcher,
-    UnclaimRequest,
+    UnclaimRequest, WindowProbe,
 };
 use storyhook::store::{EngineAgent, EngineSpeed};
 use storyhook_test_support::{DispatcherCall, DispatcherStep, FakeDispatcher, scratch_dir};
 
 fn write_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write dispatcher fixture");
+}
+
+/// The `XDG_STATE_HOME` a child must be handed to resolve `env`'s own state
+/// home: the parent of `<...>/storyhook`, which is how `Environment` reads the
+/// variable back (`$XDG_STATE_HOME/storyhook`).
+fn xdg_state_home_of(env: &Environment) -> String {
+    env.state_home()
+        .parent()
+        .expect("a state home has a parent")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn request() -> DispatchRequest {
@@ -94,10 +105,11 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","future":{"nested":true},"cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH""#,
+        r#"printf '{"ok":true,"argv":"%s","session":"%s","create":"%s","store":"%s","state_home":"%s","future":{"nested":true},"cleanup_lease":{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{"socket_path":"/tmp/tmux-original/default"}}}\n' "$*" "$STORY_TARGET_SESSION" "$STORY_CREATE_SESSION" "$STORYHOOK_STORE_PATH" "${XDG_STATE_HOME:-unset}""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
+    let expected_state_home = xdg_state_home_of(&env);
     let outcome = ShellDispatcher::new(&script, env)
         .dispatch(request())
         .unwrap();
@@ -110,6 +122,9 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     assert_eq!(outcome.payload["session"], "alpha");
     assert_eq!(outcome.payload["create"], "1");
     assert_eq!(outcome.payload["store"], expected_store);
+    // SH-633: a child told the store but not the state home found no daemon
+    // under its own state home and started a second one for the same store.
+    assert_eq!(outcome.payload["state_home"], expected_state_home);
     assert_eq!(outcome.payload["future"]["nested"], true);
 }
 
@@ -179,10 +194,11 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     let script = root.path().join("story.sh");
     write_script(
         &script,
-        r#"printf '{"ok":true,"argv":"%s","store":"%s","closed_window":true,"worktree_status":"dirty","lease_env":%s,"cleanup":{"lease":%s,"postconditions":{"tmux_story_windows_absent":true}}}\n' "$*" "$STORYHOOK_STORE_PATH" "$STORYHOOK_REAP_LEASE_V1" "$STORYHOOK_REAP_LEASE_V1""#,
+        r#"printf '{"ok":true,"argv":"%s","store":"%s","state_home":"%s","closed_window":true,"worktree_status":"dirty","lease_env":%s,"cleanup":{"lease":%s,"postconditions":{"tmux_story_windows_absent":true}}}\n' "$*" "$STORYHOOK_STORE_PATH" "${XDG_STATE_HOME:-unset}" "$STORYHOOK_REAP_LEASE_V1" "$STORYHOOK_REAP_LEASE_V1""#,
     );
     let env = Environment::at(&home);
     let expected_store = env.store_path().to_string_lossy().to_string();
+    let expected_state_home = xdg_state_home_of(&env);
 
     let outcome = ShellDispatcher::new(&script, env)
         .unclaim(unclaim_request())
@@ -191,6 +207,7 @@ fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
     assert_eq!(outcome.state, DispatchOutcomeState::Ok);
     assert_eq!(outcome.payload["argv"], "--project alpha unclaim ALPHA-7");
     assert_eq!(outcome.payload["store"], expected_store);
+    assert_eq!(outcome.payload["state_home"], expected_state_home);
     assert_eq!(outcome.payload["closed_window"], true);
     assert_eq!(outcome.payload["worktree_status"], "dirty");
     assert_eq!(
@@ -254,7 +271,7 @@ fn fake_dispatcher_scripts_calls_in_order_and_records_them() {
 
     assert_eq!(fake.dispatch(request()).unwrap(), refused);
     assert_eq!(fake.unclaim(unclaim_request()).unwrap(), refused);
-    assert!(!fake.window_alive("@7"));
+    assert!(matches!(fake.probe_window("@7"), WindowProbe::Gone { .. }));
     fake.kill_window("@7").unwrap();
     assert_eq!(
         fake.calls(),
@@ -264,5 +281,35 @@ fn fake_dispatcher_scripts_calls_in_order_and_records_them() {
             DispatcherCall::WindowAlive("@7".to_string()),
             DispatcherCall::KillWindow("@7".to_string()),
         ]
+    );
+}
+
+/// SH-657: an engine lane runs under the tool-call ceiling its own stall
+/// clock is derived from. The daemon tells the helper the number in
+/// milliseconds; the helper puts it on the lane's window as
+/// `BASH_MAX_TIMEOUT_MS`. One constant, two consumers — the alternative is a
+/// ceiling that cites a host default the operator's own settings can raise.
+#[test]
+fn shell_dispatcher_hands_every_engine_lane_the_tool_call_ceiling() {
+    use storyhook::service::engine::{HOST_TOOL_CALL_CEILING_SECS, LANE_TOOL_CEILING_ENV};
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        &format!(
+            r#"printf '{{"ok":true,"ceiling":"%s","cleanup_lease":{{"version":1,"project_slug":"alpha","story_id":"ALPHA-7","repository_path":"/repos/original","worktree_path":"/repos/original/.codex/worktrees/ALPHA-7","branch":"worktree-ALPHA-7","tmux":{{"socket_path":"/tmp/tmux-original/default"}}}}}}\n' "${{{LANE_TOOL_CEILING_ENV}:-unset}}""#
+        ),
+    );
+
+    let outcome = ShellDispatcher::new(&script, Environment::at(home))
+        .dispatch(request())
+        .unwrap();
+
+    assert_eq!(
+        outcome.payload["ceiling"],
+        (HOST_TOOL_CALL_CEILING_SECS * 1000).to_string(),
+        "the helper receives the engine's own ceiling, in milliseconds"
     );
 }

@@ -37,6 +37,15 @@
 //! The standalone identity tests explicitly remove `OUT_DIR`, so they
 //! exercise only the stamp contract they were built to isolate.
 //!
+//! # Embedded verifier scripts
+//!
+//! SH-654 makes the verifier script family part of the binary the same way
+//! ([`VERIFIER_SCRIPTS`], written as a second table with paths relative to
+//! `scripts/`). The daemon used to spawn `scripts/verify-pr.sh` relative to
+//! the registered project's checkout, so only a storyhook checkout could ever
+//! be verified; `src/daemon/verifier_bundle.rs` now projects this table under
+//! the daemon's own state directory and runs it from there.
+//!
 //! # Resolution order
 //!
 //! 1. `$STORYHOOK_BUILD_ID`, verbatim (first line, trimmed) — the deliberate
@@ -53,6 +62,28 @@
 //!    that is unexpected, so a [`cargo::warning`] is emitted (but the build
 //!    still succeeds) — the SH-306 doctrine that a gate's silence must never
 //!    be mistaken for "nothing needed reporting."
+//!
+//! # Where the artifact was written
+//!
+//! SH-630: the write-side migration guard (`src/migration_guard.rs`) and the
+//! login-agent install guard (`src/daemon/install_guard.rs`) both asked one
+//! question — *is this the `story` `$PATH` runs?* — and `$PATH` is the
+//! caller's own claim about itself. `PATH="$PWD/target/debug:$PATH" story …`
+//! made a worktree's debug binary "installed" in its own eyes and migrated
+//! the production store past what the real installed release understood.
+//! [`STORYHOOK_BUILD_DIR`] is the fact neither caller can rewrite: the
+//! directory cargo wrote this binary into, `OUT_DIR`'s third ancestor
+//! (`<profile dir>/build/<pkg>-<hash>/out`). A binary still inside it has
+//! not been installed by any mechanism this tree knows — `make install`,
+//! `story update` and `cargo install` all *copy out* — and both guards refuse
+//! it whatever `$PATH` says. Stamped verbatim, never canonicalized: the
+//! directory need not exist when this script runs, and the reader
+//! canonicalizes against the filesystem it actually has. An `OUT_DIR` of a
+//! shape this script does not understand stamps nothing and says so with a
+//! [`cargo::warning`]: guessing an ancestor would name a directory the
+//! binary does not land in, which turns the guard's refusal into a permit.
+//! No `OUT_DIR` at all (the standalone `tests/build_identity.rs` runner)
+//! stamps nothing, silently.
 //!
 //! # Why no `rerun-if-*` directive
 //!
@@ -85,11 +116,18 @@ fn main() {
     if let Err(error) = write_embedded_marketplace() {
         panic!("could not embed the StoryHook plugin marketplace: {error}");
     }
+    if let Err(error) = write_embedded_verifier() {
+        panic!("could not embed the StoryHook verifier scripts: {error}");
+    }
 
     let build_id = resolve_build_id();
 
     if let Some(id) = build_id {
         println!("cargo::rustc-env=STORYHOOK_BUILD_ID={id}");
+    }
+
+    if let Some(dir) = resolve_build_dir() {
+        println!("cargo::rustc-env=STORYHOOK_BUILD_DIR={}", dir.display());
     }
 
     // Deliberately no cargo::rerun-if-changed or cargo::rerun-if-env-changed
@@ -98,7 +136,7 @@ fn main() {
     // rerun trigger rather than add to it.
 }
 
-/// Generates the source table consumed by `src/plugin.rs`.
+/// Generates the marketplace table consumed by `src/plugin.rs`.
 ///
 /// The standalone build-script tests intentionally remove `OUT_DIR`; only
 /// Cargo asks for an embedded artifact. A real Cargo build fails if any
@@ -108,20 +146,79 @@ fn write_embedded_marketplace() -> io::Result<()> {
     let Some(output_dir) = std::env::var_os("OUT_DIR") else {
         return Ok(());
     };
-    let manifest_dir =
-        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "CARGO_MANIFEST_DIR is not set")
-        })?);
+    let manifest_dir = manifest_dir()?;
     let mut files = vec![
         manifest_dir.join(".agents/plugins/marketplace.json"),
         manifest_dir.join(".claude-plugin/marketplace.json"),
     ];
     collect_regular_files(&manifest_dir.join("plugins/story"), &mut files)?;
-    files.sort();
+    write_embedded_table(
+        &PathBuf::from(output_dir).join("embedded_marketplace.rs"),
+        "EMBEDDED_MARKETPLACE",
+        &manifest_dir,
+        files,
+    )
+}
 
-    let generated = PathBuf::from(output_dir).join("embedded_marketplace.rs");
-    let mut output = fs::File::create(&generated)?;
-    writeln!(output, "const EMBEDDED_MARKETPLACE: &[EmbeddedFile] = &[")?;
+/// The verifier script family — everything `scripts/verify-pr.sh` reaches
+/// through its own directory, transitively (SH-654). Listed by name rather
+/// than derived from a directory because the family shares `scripts/` with
+/// forty unrelated scripts; `tests/verifier_bundle.rs` derives the closure
+/// from the scripts themselves and fails when a referenced sibling is
+/// missing here, so the list cannot drift silently.
+const VERIFIER_SCRIPTS: &[&str] = &[
+    "activity-log.sh",
+    "activity-run.py",
+    "gate-progress.sh",
+    "land-pr.sh",
+    "machine-lock.sh",
+    "merge-preflight.sh",
+    "merge-watch.sh",
+    "test_output.py",
+    "verify-pr.sh",
+    "verify-window.sh",
+];
+
+/// Generates the verifier table consumed by `src/daemon/verifier_bundle.rs`,
+/// with paths relative to `scripts/` so the projection is the directory the
+/// scripts already expect to find each other in.
+fn write_embedded_verifier() -> io::Result<()> {
+    let Some(output_dir) = std::env::var_os("OUT_DIR") else {
+        return Ok(());
+    };
+    let scripts = manifest_dir()?.join("scripts");
+    let files = VERIFIER_SCRIPTS
+        .iter()
+        .map(|name| scripts.join(name))
+        .collect();
+    write_embedded_table(
+        &PathBuf::from(output_dir).join("embedded_verifier.rs"),
+        "EMBEDDED_VERIFIER",
+        &scripts,
+        files,
+    )
+}
+
+fn manifest_dir() -> io::Result<PathBuf> {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "CARGO_MANIFEST_DIR is not set"))
+}
+
+/// Writes `const <const_name>: &[EmbeddedFile] = &[...]` to `generated`, one
+/// entry per file with its path relative to `base`, its bytes via
+/// `include_bytes!`, and its executable bit. Every entry must be a regular
+/// file beneath `base` with only normal path components; anything else
+/// fails the build rather than producing a binary missing part of a payload.
+fn write_embedded_table(
+    generated: &Path,
+    const_name: &str,
+    base: &Path,
+    mut files: Vec<PathBuf>,
+) -> io::Result<()> {
+    files.sort();
+    let mut output = fs::File::create(generated)?;
+    writeln!(output, "const {const_name}: &[EmbeddedFile] = &[")?;
     for file in files {
         let metadata = fs::symlink_metadata(&file)?;
         if !metadata.is_file() {
@@ -130,10 +227,10 @@ fn write_embedded_marketplace() -> io::Result<()> {
                 format!("{} is not a regular file", file.display()),
             ));
         }
-        let relative = file.strip_prefix(&manifest_dir).map_err(|_| {
+        let relative = file.strip_prefix(base).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("{} escapes the package root", file.display()),
+                format!("{} escapes {}", file.display(), base.display()),
             )
         })?;
         validate_relative_path(relative)?;
@@ -191,8 +288,42 @@ fn validate_relative_path(path: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("embedded marketplace path is unsafe: {}", path.display()),
+            format!("embedded path is unsafe: {}", path.display()),
         ))
+    }
+}
+
+/// The directory cargo writes this package's binaries into, from `OUT_DIR`'s
+/// documented shape — see the module doc's "Where the artifact was written".
+///
+/// `None` with no warning when `OUT_DIR` is unset (a standalone run); `None`
+/// with a `cargo::warning` when it is set but is not `…/build/<pkg>-<hash>/out`,
+/// because a guessed ancestor is worse than no stamp.
+fn resolve_build_dir() -> Option<PathBuf> {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR")?);
+    let mut ancestors = out_dir.ancestors();
+    let leaf_is_out = ancestors
+        .next()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "out");
+    // `<pkg>-<hash>`: any name; its parent is what identifies the shape.
+    let _package = ancestors.next();
+    let under_build = ancestors
+        .next()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "build");
+    let profile_dir = ancestors.next();
+    match (leaf_is_out && under_build, profile_dir) {
+        (true, Some(dir)) if !dir.as_os_str().is_empty() => Some(dir.to_path_buf()),
+        _ => {
+            println!(
+                "cargo::warning=STORYHOOK_BUILD_DIR not stamped: OUT_DIR ({}) is not of the \
+                 form <profile dir>/build/<pkg>-<hash>/out, so the directory this binary \
+                 lands in cannot be named",
+                out_dir.display()
+            );
+            None
+        }
     }
 }
 

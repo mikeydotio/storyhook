@@ -131,8 +131,9 @@ before the versioned release projection is registered and installed. This
 order is necessary because neither provider promises that adding an existing
 marketplace name changes its source. The Codex launcher and sandbox rule remain
 unversioned; they still resolve the provider's exact enabled cache version at
-call time. The local release workflow delegates to the newly installed
-binary's `story plugin install claude` instead of registering its checkout.
+call time. The local release workflow delegates both `story plugin install
+claude` and `story plugin install codex` to the newly installed binary instead
+of registering its checkout, so neither provider retains an older release.
 
 This deliberately chooses binary/plugin lockstep over plugin-only releases.
 The rejected fifth release asset would preserve independent plugin delivery,
@@ -162,6 +163,82 @@ release, unpinned Git source, or checkout.
   make the store's own advice a dead end — the trap SH-404's module doc
   documented and SH-405 was filed for.
 
+## As built: a failed registration is rolled back (SH-641)
+
+Both provider installs are remove-then-add, for the reason the section above
+gives: neither provider promises that adding an existing marketplace name
+changes its source. Until SH-641 nothing stood between the two removes and a
+later failure — `add marketplace`, `add plugin`, Codex's payload verification
+or its sandbox rule — so the provider was left with no storyhook marketplace
+and no plugin. SH-640's `story doctor install` names that state
+(DEREGISTERED), but naming it still cost the operator a session with no
+`/story` until they reinstalled by hand. The two siblings in `src/plugin.rs`
+already rolled back (`materialize_release_marketplace` renames the previous
+projection aside and restores it on a failed publish; the Codex sandbox step
+snapshots and restores its two files); the registration was the odd one out.
+
+`plugin::registration` (`src/plugin/registration.rs`) is the fix, and the one
+parser `story doctor install` already used moved there with it:
+
+- **Snapshot before the removes**, from the provider's own config file
+  (`known_marketplaces.json`, `config.toml`), never by invoking the provider.
+  Three named states: `Registered(source)`, `Unregistered` (no file, or no
+  storyhook key — a fresh install), `Unreadable(reason)`.
+- **Everything after the removes is one closure.** On failure, `undo` removes
+  whatever the failed run added (the same tolerant `remove_*` verbs the
+  install uses, prefixed "while restoring the previous registration" so the
+  install-phase wording cannot contradict the message), then re-registers the
+  previous source and re-adds the plugin from it. For Codex the closure
+  includes payload verification **and** the sandbox step: a plugin whose
+  skills exec a launcher that was just rolled back is half-installed, and
+  because that step restores its own files the two rollbacks compose — files
+  first, then registration — into exactly the previous state.
+- **The error says which happened**, appended to the original failure, never
+  in place of it: *re-registered the previous marketplace at `<source>`*;
+  *re-registered the same release source … not verified* when the previous
+  source is the release this run just failed to install (the same commands
+  that failed are what put it back, and verification is a claim about this
+  release's payload, so it is not re-run); *removed the partial registration*
+  when nothing was registered before; *nothing restored: `<reason>`* when the
+  config could not be read. A restore that fails reports **both** errors
+  (SH-578: a diagnosis downstream of an unchecked failure names the wrong
+  layer).
+- **A failing remove still stops before anything is destroyed**, with no
+  restore — the pre-existing behaviour, still pinned.
+
+Two decisions taken on the way, and the reasoning kept:
+
+- **An unreadable config never blocks the install.** A parser narrower than
+  the provider's own format must not turn `story plugin install` into a dead
+  end — the SH-404/SH-405 trap. `Unreadable` proceeds with nothing to put back
+  and says why in any failure message (SH-372: absence states nothing and is
+  never promoted to "there was nothing").
+- **"Re-registered", never "restored".** Restore puts back the *source*; a
+  git or checkout source may serve a different version now than the
+  provider's cache held before. The note says what was actually done.
+
+**Stated limit:** signals are not deferred across the window. SIGKILL between
+the removes and the add is unrecoverable in-process, and SIGINT/SIGTERM are
+not masked: doing so needs the provider children reset to default dispositions
+so a hung provider stays interruptible, and its only test is a process-group
+signal race that is load-sensitive (SH-347, SH-394). The window is sub-second
+against a local directory source, SH-640's detector names the state it
+leaves, and the next `story plugin install` *is* the restore.
+
+**How it is proven** (`tests/plugin_install.rs`): the fake `claude` and
+`codex` CLIs record a registration in the provider's real config shape on
+`marketplace add` and clear it on `marketplace remove`, so the installer's
+read of the previous registration is exercised against what it reads in
+production (SH-364). Fail-once modes, backed by a marker file, break one step
+after the removes exactly once, which is what makes a successful restore
+observable; the pre-existing global fail modes double as the restore-also-
+failed case. The matrix runs both providers over every step after the removes
+with a previous registration seeded at a real directory, and the invocation
+log is asserted in order: removes, add(new), removes, add(previous), plugin.
+The success-path control counts each verb exactly once, so a restore that ran
+on success would be caught. The note phrasings and the `undo` sequencing are
+unit-tested over substituted verbs without a provider.
+
 ## As built: launcher dispatch preserves the installation (SH-588)
 
 The installed-artifact guard distinguishes edits to the installation from
@@ -187,3 +264,222 @@ The observed machine also had a stale 2.4.0 plugin with its 2.4.2 CLI. Updating
 that projection alone cannot repair the checkout's dispatch refusal. Ship the
 corrected hook in a release, then install its packaged plugin; do not patch a
 cache file or create an installed-edit override.
+
+## As built: the plugin's own helper is admitted by identity (SH-632)
+
+SH-588's door was the byte-verified Codex launcher, and only that. Every other
+host is told by `references/helper-command.md` to run
+`<plugin-root>/bin/story.sh` directly — and `<plugin-root>` is always under a
+managed prefix (`~/.claude/plugins/cache/storyhook/story/<ver>` for a user-scope
+install, the release projection or the Codex cache when a session is launched
+with `--plugin-dir`, which is what dispatch passes). So on Claude Code the
+router's own `/story do`, `view`, `list`, `capture` and `doctor` were refused
+before execution: the skill said run X, the hook said X is forbidden.
+
+The helper is now a second admitted entry point with the same argv contract,
+identified by **where the hook itself was loaded from**. A host runs one copy
+of a plugin's hooks per session — Claude Code's own binary states that a
+`--plugin-dir` plugin "overrides installed version" — so the `<plugin-root>` the
+skill resolved and the hook's own `../` are one directory; `session-start.sh`
+derives the same fact for the dispatch sentinel. The check, in the launcher's
+shape but without a byte compare (the helper's bytes are trusted exactly as the
+hook's own are — same installer, same directory): the spelled path is a proper
+path beneath a managed prefix; it resolves to the `bin/story.sh` beside the
+hook; no component below `HOME` (or, outside it, below the managed prefix's
+parent) is a symlink — the launcher's own redirect rule; and it opens
+`O_NOFOLLOW` as a regular file. Nothing is executed to classify. The root is
+derived after the substring prefilter, so the inert path still pays for no
+subshell, and assigned unconditionally, so an exported variable cannot name a
+root on the hook's behalf (SH-411).
+
+**Why not a stable Claude launcher.** The Codex launcher exists because Codex's
+command rules match exact argv prefixes and the cache path is versioned; Claude
+has no such rule. A Claude analogue would also need an identity for "the
+enabled plugin", and the only record — `installed_plugins.json` — names the
+user-scope cache while a dispatched session runs from the Codex cache via
+`--plugin-dir`: keyed on that record, the door would refuse every dispatched
+session, including the one that filed SH-632.
+
+**Verbs.** `capture <id>` and `doctor` join the contract: one reads a pane, the
+other runs `story doctor --json` (never `--fix`) plus a tmux probe window —
+terminal and domain operations, never an installed file, the distinction
+SH-588 drew for dispatch. Both adapters drop their `STORY_AGENT=<provider>`
+prefix: an environment assignment is not an admitted form, and Codex's
+`prefix_rule` would not match it either. `story plugin run codex` sets
+`STORY_AGENT=codex` for the helper it runs when the caller did not, since the
+launcher is Codex's own.
+
+**Readers.** `ls`, `find`, `wc`, `stat`, `diff` and `cmp` join the inspection
+vocabulary — the adapter table says "load the matching file from
+`<plugin-root>/adapters/`", which needs a directory listing. `find`'s writing
+and executing primaries are refused by name. `bash -c '…'` stays refused: it is
+a second shell program, and the plain form is what the adapter needs.
+
+**Tests.** `plugin_install::protect_helper` runs an *installed copy* of the
+hook — written from the tracked tree by the fixture, because the door's whole
+claim is about the hook's own location — from three roots under three managed
+prefixes, and proves the tracked hook and every other root's hook refuse the
+same helper even with identical bytes. The argv vocabularies are shared items
+so both doors are tested against one grammar. Mutation-checked in both
+directions: removing the own-root comparison fails two tests, removing the
+redirect check fails one, removing `-delete` from `find`'s refusals fails one.
+
+## As built: a lost registration is not "never installed" (SH-640)
+
+`story doctor install` — the check `protect-install.sh`'s own header calls
+authoritative — printed `claude plugin  not registered` and then `every
+component agrees.` Both exits of `provider_row` that found no `storyhook`
+marketplace (the provider's configuration file absent, or present without the
+key) returned an unflagged row, so a provider whose registration had been
+destroyed read identically to a machine that never had that provider. On
+2026-09-09 that hid a lost Claude Code registration for about two hours across
+eight autonomous sessions: a new session of that provider gets no `/story` at
+all, and the one check built to say so said the opposite — SH-306's shape, a
+gate's silence read as an all-clear.
+
+**The evidence is what the install left on disk, not the manifest.** The story
+proposed reading the managed-path manifest, whose Claude entries would prove a
+Claude install had happened. They would not: `managed_paths()` names *both*
+providers' prefixes and `record_managed_paths()` runs before the target is
+dispatched, so a Codex-only machine's manifest names the Claude prefixes too,
+and that rule would have flagged every such machine. What actually survived
+the incident was the provider's own plugin cache —
+`~/.claude/plugins/cache/storyhook/story/<six versions>` — while
+`known_marketplaces.json`, `installed_plugins.json` and
+`marketplaces/storyhook` all lost their storyhook entries.
+`plugin::install_residue(target)` lists the storyhook-owned artifacts present
+under that provider's home: for Claude the cache, the marketplace install
+directory and the legacy layout, by existence; for Codex the cache by
+existence, and the launcher and rule only while they carry the marker
+storyhook wrote them with — an unmarked file at the same path is the user's,
+exactly as `remove_managed_file` already reads it. Residue present is a
+flagged `DEREGISTERED` row naming the copies and `story plugin install
+<target>`; residue absent stays the quiet `not registered` the row exists for.
+This is SH-372's rule for absence, one subsystem over: an absent key states
+nothing on its own and is resolved against what the reader already holds.
+
+**One definition, both ways.** `managed_paths()` now derives its provider
+directories from the same per-provider list the doctor probes, so the hook
+cannot protect a prefix the doctor is blind to; a unit test pins the file half
+and any prefix added by hand.
+
+**A deliberate uninstall must leave the doctor quiet**, or every machine that
+ever uninstalled reads `DEREGISTERED` for ever and the flag stops meaning
+anything. Claude Code's own `plugin uninstall` leaves its cache behind (six
+versions had accumulated on the filing machine), and the fake Codex `plugin
+remove` mirrors the real one. `story plugin uninstall` for either provider
+now sweeps the residue *directories* the doctor reads; the Codex launcher and
+rule keep their own marker-checked removal that preserves a user's file.
+
+**The evidence must be storyhook's own (SH-671).** Residue is the provider's
+leftovers, and a provider can take those too: on 2026-09-10 Claude Code 2.1.268
+rewrote its registry without storyhook *and* swept `~/.claude/plugins/cache/
+storyhook`, so `install_residue` found nothing, the row read the quiet `not
+registered`, and the report closed `every component agrees` over a machine
+whose dashboard dispatch was broken. `story plugin install <target>` now
+leaves a receipt at `<data dir>/provider-installs/<target>` — written only
+after the provider's own registration succeeded, never on a failed reinstall
+(an earlier install keeps being one), removed by `story plugin uninstall
+<target>` — and `unregistered` flags on residue *or* receipt. The receipt is
+per target, which the managed-path manifest is not, and lives in storyhook's
+own directory, which no provider rewrites. A machine that never installed the
+provider has neither and stays quiet.
+
+**What caused the loss is recorded as evidence, not settled.** The candidate
+the story named — `install_claude`'s remove-then-add with no rollback — did
+not run: `~/.claude/plugins/marketplaces/` and its `claude-plugins-official`
+entry share the exact mtime `18:04:04`, twenty seconds before the first
+`/story do` in that session's history; `installed_plugins.json` and the
+`2.4.2` cache entry share `18:22:12`; the release root the registration
+pointed at never went away; and the plugin helper makes no marketplace call.
+That is a Claude Code marketplace refresh pruning the entry — a fact about the
+host, which makes the detector the whole of the fix. The no-rollback shape
+remains a real gap and is filed separately.
+
+## As built: the verifier scripts travel inside the binary (SH-654)
+
+The table above listed five components with their own paths to a machine.
+There was a sixth nobody had listed: the verifier script family
+(`scripts/verify-pr.sh` and the nine scripts it reaches through its own
+directory), which the daemon ran **from the registered project's checkout**
+— so it tracked whatever tree that checkout had, and existed at all only when
+the project was storyhook. SH-654 gives it the same arrival as the plugin:
+`build.rs` embeds it (`EMBEDDED_VERIFIER`, beside `EMBEDDED_MARKETPLACE`),
+and `src/daemon/verifier_bundle.rs` projects it through the same
+materializer — now `src/embedded.rs`, extracted so both payloads share one
+comparison, one staged write and one rename-with-rollback — under the
+daemon's own state directory, in a leaf named by the payload's digest.
+Lockstep with the daemon is therefore by construction: the bytes a
+verification runs are the bytes of the binary running it, and a different
+build writes a different leaf rather than rewriting one in use. The rule
+this adds to the list: **a script a shipped process invokes is part of the
+release, not of whichever checkout the process happens to be pointed at.**
+Design of record for the verifier side: `docs/spec/verification-workflow.md`'s
+SH-654 entry.
+
+## As built: the incident that found the sixth component (SH-666)
+
+The section above records the mechanism; this one records the measurement that
+made it urgent (`docs/rca/verifier-halt-read-as-a-story-block.md`). On
+2026-09-10 the installed daemon was `build 89f604316fa5`, the tree of the
+SH-646 merge; SH-649 merged five hours later and made `verify-pr.sh` require
+`<pr-url> -- <gate…>`; the main checkout was pulled past it that afternoon;
+the next verification was refused by name and the queue halted for the night,
+reporting itself on every waiting story as "blocked by" the story it was first
+hit on. The refusal was the correct detection of a skew that should never have
+been representable — exactly the plugin's original failure mode, one component
+over, and the reason the table at the top of this document now has six rows in
+spirit. SH-654 closed the origin; SH-666 owns the report, in
+`docs/spec/verification-workflow.md`'s SH-666 entry.
+
+## As built: replacing the binary reinstalls the registered plugins (SH-667)
+
+The plugin is part of the binary release (above), so a new binary carries a
+new plugin — and until SH-667 nothing but `scripts/release.sh` acted on that.
+`make install` and `story update` replaced the binary and left every provider
+registered at the previous release's projection: the `STALE RELEASE` row of
+`story doctor install`, and the state SH-584's RCA found on the filing machine
+(2.4.0 plugins under a 2.4.2 CLI). The lockstep this document is named for was
+being broken by the two most ordinary commands in the tool.
+
+**`story plugin reinstall`** is the one answer. It reinstalls the plugin for
+every provider whose own configuration registers the storyhook marketplace,
+from the binary running it. *Registered* is the whole test: the registration is
+the provider's statement of intent, read through the parser `story doctor
+install` already uses. Installed copies with no registration — SH-640's
+DEREGISTERED — are not intent and are not reinstalled; they are a warning naming
+`story plugin install <provider>`, the doctor's own remedy, because absence is
+never promoted to intent (SH-372). A configuration the parser cannot read is a
+warning that never blocks the other provider (the SH-404/SH-405 trap). Nothing
+registered is a success that says so. Every registered provider is attempted;
+one failure never costs the sibling its refresh, and the error names every
+outcome and the retry.
+
+Every binary-replacement path runs it:
+
+- **`make install`** runs `"$(INSTALL_DIR)/story" plugin reinstall` — the binary
+  just installed, never `story` on PATH — with `|| echo` on purpose. The target
+  is the `SchemaTooNew` recovery and stays ungated (rule above), and
+  `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+  start`; a refresh that failed the install would leave the machine with no
+  daemon. The failure is named with its retry.
+- **`story update`** runs `<new exe> plugin install <provider>` per registered
+  provider after the swap. The running process is the old binary and its
+  embedded payload is the one just replaced, so it may read the plan (provider
+  configurations are the providers' formats) but must not install. Per provider
+  through `plugin install <t>`, which every 2.x release understands, rather than
+  through the new verb, so a `--force` downgrade past SH-667 still works. A
+  failure is an error that states the binary *was* updated and names the retry;
+  the swap is not undone.
+- **`install.sh`** runs `plugin reinstall` after `install(1)`, warning on
+  failure, since a pinned `STORYHOOK_VERSION` older than SH-667 exits 2 there.
+
+`scripts/release.sh` keeps installing *both* providers unconditionally: that is
+the dogfooding choice this document opens with, and it is idempotent over the
+reinstall `make install` now performs first.
+
+One consequence is stated rather than hidden: the verb is daemon-routed, and
+`lifecycle::usable` requires the daemon to be this exact build (version, path,
+and mtime), so the new client never talks to the old daemon and `make install`
+and `story update` now reseat the daemon on the new binary — what
+`release.sh` did by hand.

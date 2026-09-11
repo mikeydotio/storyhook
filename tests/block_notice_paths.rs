@@ -45,10 +45,13 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         // `state_transition_events` only clears `awaiting` on a close.
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
+        | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }

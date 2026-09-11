@@ -16,7 +16,7 @@ mod store_support;
 
 use storyhook::service::engine::{
     BREAKER_TRIPPED, EngineService, HardStopKind, LaneClassification, LaneObservation,
-    ReconcilePass, STALL_CEILING_SECS, StartRequest, classify,
+    ReconcilePass, STALL_CEILING_SECS, StartRequest, WindowProbe, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -40,11 +40,15 @@ fn progressing() -> LaneObservation {
         story_closed: false,
         story_verifying: false,
         agent_blocked: false,
-        window_alive: true,
+        window: WindowProbe::Alive {
+            last_output_at: None,
+        },
         head_global_seq: Some(200),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
+        seconds_since_output: None,
         awaiting_reason: None,
+        returned_for_repair: false,
     }
 }
 
@@ -54,7 +58,9 @@ fn progressing() -> LaneObservation {
 #[test]
 fn a_dead_window_at_restart_is_interrupted() {
     let observation = LaneObservation {
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -69,7 +75,9 @@ fn a_dead_window_at_restart_is_interrupted() {
 #[test]
 fn the_identical_dead_window_under_steady_is_still_window_gone() {
     let observation = LaneObservation {
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -84,7 +92,9 @@ fn the_identical_dead_window_under_steady_is_still_window_gone() {
 fn a_closed_story_wins_over_a_dead_window_at_restart() {
     let observation = LaneObservation {
         story_closed: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -100,7 +110,9 @@ fn a_closed_story_wins_over_a_dead_window_at_restart() {
 fn the_verifying_handoff_wins_over_a_dead_window_at_restart() {
     let observation = LaneObservation {
         story_verifying: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -117,7 +129,9 @@ fn the_verifying_handoff_wins_over_a_dead_window_at_restart() {
 fn an_agent_block_wins_over_a_dead_window_at_restart() {
     let observation = LaneObservation {
         agent_blocked: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(

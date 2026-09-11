@@ -10,9 +10,9 @@
 
 use std::path::Path;
 
-use storyhook::domain::SuperState;
+use storyhook::domain::{COMPLETION_STATE_SLUG, SuperState};
 use storyhook::service::project::{
-    DEFAULT_PREFIX, ProjectPointer, closed_state, pointer_path, read_pointer,
+    DEFAULT_PREFIX, ProjectPointer, completion_state_slug, pointer_path, read_pointer,
 };
 use storyhook::service::{Clock, InitOptions, ProjectService};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
@@ -93,7 +93,7 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(states[0].super_state, SuperState::Open);
@@ -424,29 +424,38 @@ fn agents_md_is_generated_by_default_and_names_this_projects_prefix() {
     assert!(content.contains("story move QQ-<n> <state>"), "{content}");
 }
 
+/// The scaffolded AGENTS.md is documentation: on a catalog below the SH-125
+/// floor (no CLOSED `done` at all) it still names the completion state the
+/// verifier will require, rather than failing to render or naming whichever
+/// CLOSED state exists — a reader can add the state; a missing file helps
+/// nobody (SH-652).
 #[test]
-fn agents_md_names_the_projects_own_closed_state() {
+fn agents_md_names_the_completion_state_even_below_the_floor() {
     let fixture = Fixture::new();
     let outcome = fixture.init(&bare());
     fixture
         .store
         .write(|tx| {
             let mut states = tx.states(outcome.project)?;
-            let closed = states
+            let done = states
                 .iter()
-                .position(|state| state.super_state == SuperState::Closed)
-                .expect("a CLOSED state");
-            states[closed].slug = "shipped".to_string();
+                .position(|state| state.slug == COMPLETION_STATE_SLUG)
+                .expect("the required `done` state");
+            states[done].slug = "shipped".to_string();
             tx.put_states(outcome.project, &states)
         })
-        .expect("renaming the closed state");
+        .expect("renaming the completion state away");
     std::fs::remove_file(fixture.root().canonicalize().unwrap().join("AGENTS.md")).ok();
 
     fixture.init(&InitOptions::default());
     let content = std::fs::read_to_string(fixture.root().canonicalize().unwrap().join("AGENTS.md"))
         .expect("reading AGENTS.md");
     assert!(
-        content.contains("moves the story to `shipped`"),
+        content.contains(&format!("moves the story to `{COMPLETION_STATE_SLUG}`")),
+        "{content}"
+    );
+    assert!(
+        !content.contains("moves the story to `shipped`"),
         "{content}"
     );
 }
@@ -528,8 +537,8 @@ fn a_project_with_no_closed_state_still_renders_a_template() {
 
     let done = fixture
         .store
-        .read(|tx| Ok(closed_state(tx, outcome.project)?))
-        .expect("reading the closed state");
+        .read(|tx| Ok(completion_state_slug(tx, outcome.project)?))
+        .expect("reading the completion state");
     assert_eq!(done, "done", "the template must still render");
 }
 
@@ -574,7 +583,11 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
     let root = fixture.root().canonicalize().expect("canonicalizing");
     let mut text = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
     text.push_str("\n[hooks]\ntimeout_seconds = \"not a number\"\nnonsense = [1, 2]\n");
-    std::fs::write(pointer_path(&root), text).expect("breaking the hooks table");
+    // SH-649: the verifier reads `[verify]` strictly at the point of use, and
+    // that strictness must stay the verifier's alone — a gate nobody could
+    // run must not stop `story list` knowing which project it is in.
+    text.push_str("\n[verify]\ngate = \"make test && rm -rf /\"\ngaet = 3\n");
+    std::fs::write(pointer_path(&root), text).expect("breaking the hooks and verify tables");
 
     let pointer = read_pointer(&root)
         .expect("a pointer with an odd hooks table must still parse")
@@ -586,6 +599,7 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
         .expect("the project exists");
     assert_eq!(pointer.uuid, record.uuid);
     assert!(pointer.hooks.is_some());
+    assert!(pointer.verify.is_some());
 }
 
 #[test]

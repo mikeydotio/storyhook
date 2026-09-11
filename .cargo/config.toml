@@ -1,0 +1,16 @@
+# The machine-wide bound on concurrent rustc processes (SH-655).
+#
+# Every cargo invocation in every checkout of this repository -- `make test`,
+# a bare `cargo test --test foo` in an agent's tmux pane, rust-analyzer, a
+# release build, the Lima guest -- runs rustc through this wrapper, which
+# takes one of K flock slots (K = the performance-core count, derived) and
+# then execs rustc in place. The wrapper's own header carries the design;
+# `docs/spec/test-tiers.md`, "The compile bound", is the design of record.
+#
+# `RUSTC_WRAPPER` / `CARGO_BUILD_RUSTC_WRAPPER` in the environment override
+# this key -- cargo's own precedence -- and `tests/build_slots.rs` refuses a
+# tracked file that sets either. Landing this key changed every crate's
+# fingerprint once: the first build after it in each target directory is a
+# full cold rebuild.
+[build]
+rustc-wrapper = "scripts/rustc-slot.py"

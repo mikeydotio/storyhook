@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants (`--model`/`--effort`/`--speed`/`--resume` are not supported there and refuse); without `--auto` the helper refuses because the epic has no actionable steps. `--force` only reuses an active claim; `--resume` reconstructs a named non-epic dispatch from surviving resources. |
+| `do <id> [--auto] [--force] [--resume] [--over-budget] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants (`--model`/`--effort`/`--speed`/`--resume` are not supported there and refuse); without `--auto` the helper refuses because the epic has no actionable steps. `--force` only reuses an active claim; `--resume` reconstructs a named non-epic dispatch from surviving resources. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -52,6 +52,11 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 | Anything else | Show a one-line usage summary of the supported routes, then stop. |
 
 ## List → Pick
+
+Write comments, story titles, and descriptions in ASD-STE100. Read `story help ste`
+for the supported checks. If a write fails with `text_lint`, use its field, rule,
+and repair guidance to revise the text. Preserve the meaning, then retry the failed
+command. Do not put ordinary prose in code blocks to avoid a check.
 
 1. Run `bash "<story-helper>" list`. If `ok` is `false`, show `display` and stop.
 2. If `count` is `0`, show `display` and stop without asking a question.
@@ -163,6 +168,13 @@ An affirmative answer reruns the identical dispatch with `--resume`; a negative 
 without changing anything. No other refusal is retried or turned into a question. `--resume`
 cannot be combined with `--next`, `--force`, or an epic.
 
+`--over-budget` is explicit permission to open one more agent session than the machine lane
+budget allows. A helper result whose `reason` is `lane-budget` means the live sessions
+(`lane_budget.windows`) already fill the budget (`lane_budget.budget`): show `display` and stop.
+Do not retry with `--over-budget` on your own — pass it only when the user asked for it, the
+same rule as `--resume`. The budget is `story lane-budget`'s; an unmeasurable census never
+refuses, it dispatches and says so on stderr.
+
 ### Central verifier callback
 
 `bash "<story-helper>" notify <story-id> "<message>"` is the daemon-owned callback for
@@ -171,6 +183,15 @@ window's recorded provider and live process before pasting the literal message a
 it. This is not a user route: never invoke it for an ordinary request or use it instead of a
 durable story comment. A refusal means the verifier must leave the diagnostics on the story
 and block it for manual recovery.
+
+`bash "<story-helper>" submit <story-id>` is the daemon-owned submission step (SH-647): from
+the dispatch lease it pushes the leased branch to origin over HTTPS, then opens the pull
+request against the repository's default branch or adopts the one already open for that
+head, and answers with a typed receipt the daemon records as the PR link. It requires the
+lease in `STORYHOOK_REAP_LEASE_V1` and refuses without one. This is not a user or agent
+route: an agent commits its work and runs `story move <id> verifying` from inside its
+worktree as its last action, and never pushes, opens a pull request, or runs `story
+link-pr` itself.
 
 ## Shared notes
 
@@ -185,6 +206,9 @@ and block it for manual recovery.
   be combined with the helper-only `dispatch --next` mode.
 - `do <id> --resume` preserves valid existing work, rebuilds only missing resources, and
   replaces an existing story-pane occupant only after that explicit permission.
+- `do <id> --over-budget` dispatches past the machine lane budget (`story lane-budget`). A
+  dispatch that would open a new window past it is refused with `reason: lane-budget`
+  before any claim; a resume that reuses its surviving pane adds no session and is not gated.
 - A fresh named dispatch records its intended tmux window in the claim transaction. A
   `dispatch --next`, forced, or resumed handoff records the tmux window, worktree, and
   branch afterward. Rollback records the correcting unclaim; dispatch has no quiet mode.

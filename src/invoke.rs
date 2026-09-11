@@ -30,7 +30,7 @@ use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
+    StoreAction, TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -40,12 +40,12 @@ use crate::help_topics;
 use crate::output::{ConfirmationPlan, EngineRunView, Response, render_html_report};
 use crate::service::engine::{EngineService, ShellDispatcher, StartRequest, StoreOnlyDispatcher};
 use crate::service::{
-    AttachmentService, CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits,
-    GitService, GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService,
-    ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService,
-    ReadyQueueFilters, RelationOutcome, RelationService, SessionService, SetPrefixOutcome,
-    SettingsService, StateListing, StoryService, SystemService, TransferService, migrate, session,
-    system, transfer,
+    AttachmentService, CatalogService, CleanupService, Clock, ConfigService, Ctx, DeleteOutcome,
+    FieldEdits, GitService, GroupingService, ImportBatch, InitOptions, InitOutcome,
+    IntegrityService, ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService,
+    QueryService, ReadyQueueFilters, RelationOutcome, RelationService, SessionService,
+    SetPrefixOutcome, SettingsService, StateListing, StoryService, SystemService, TransferService,
+    migrate, session, system, transfer,
 };
 use crate::store::{EngineLaneState, EngineScope, ProjectId, ReadOps, Store};
 
@@ -175,42 +175,13 @@ impl InvokeRequest {
         self
     }
 
-    /// The same request, with its confirmation already given.
-    ///
-    /// The second half of the two-step a destructive command runs: the first
-    /// invocation answers [`Response::ConfirmationRequired`] and writes
-    /// nothing, the client asks the user, and this is what it sends back. The
-    /// invocation is otherwise untouched — the *same* target, resolved the
-    /// same way — so the thing that gets destroyed is the thing that was
-    /// described.
-    ///
-    /// A request with nothing to confirm is returned unchanged, which is what
-    /// makes this safe to call unconditionally.
-    ///
-    /// # Why the `Project` arm is exhaustive
-    ///
-    /// It used to be `ProjectAction::Deinit { force, .. }` beside a `_ => {}`,
-    /// and a destructive project verb added later would have fallen through it
-    /// silently — the client would ask the user, get a yes, re-send a request
-    /// that is still unforced, and be answered with the same question forever.
-    /// A confirmation loop with no error and no compile failure. Listing every
-    /// variant means the next one is a compile error here instead.
+    /// The same request, with its confirmation already given —
+    /// [`Invocation::forced`] applied to this request's invocation, with the
+    /// rest of the request untouched so the re-run resolves the same target
+    /// the same way.
     #[must_use]
     pub fn forced(mut self) -> Self {
-        match &mut self.invocation {
-            Invocation::Project { action } => match action {
-                ProjectAction::Delete { force } => *force = true,
-                ProjectAction::SetPrefix { force, .. } => *force = true,
-                ProjectAction::New(_)
-                | ProjectAction::List
-                | ProjectAction::Show
-                | ProjectAction::Link(_)
-                | ProjectAction::Unlink(_)
-                | ProjectAction::Settings(_) => {}
-            },
-            Invocation::Delete { force, .. } => *force = true,
-            _ => {}
-        }
+        self.invocation = self.invocation.forced();
         self
     }
 }
@@ -400,7 +371,9 @@ pub fn dispatch<S: Store>(
                 draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
-            ctx.story_view(&story.id)
+            Ok(crate::text_lint::with_story_advice(
+                ctx.story_view(&story.id)?,
+            ))
         }
         Invocation::Publish { id } => {
             StoryService::new(ctx).publish(&id)?;
@@ -408,7 +381,10 @@ pub fn dispatch<S: Store>(
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
-            ctx.story_view(&id)
+            Ok(crate::text_lint::with_advice(
+                ctx.story_view(&id)?,
+                &[("comment", &text)],
+            ))
         }
         Invocation::Assign { id, member } => {
             StoryService::new(ctx).assign(&id, &member)?;
@@ -429,7 +405,7 @@ pub fn dispatch<S: Store>(
                 view.warnings.extend(crate::block_notice::warnings(
                     ctx,
                     &id,
-                    awaiting.as_deref(),
+                    view.story.awaiting.as_deref(),
                     &view.story.relationships,
                 ));
             }
@@ -517,7 +493,7 @@ pub fn dispatch<S: Store>(
                         )
                 });
             let message = StoryService::new(ctx).set_fields(&id, &edits)?;
-            let warnings = if touches_awaiting {
+            let mut warnings = if touches_awaiting {
                 match ctx.story_view(&id)? {
                     Response::Story(view) => crate::block_notice::warnings(
                         ctx,
@@ -530,6 +506,16 @@ pub fn dispatch<S: Store>(
             } else {
                 Vec::new()
             };
+            let touches_text = edits.title.is_some()
+                || edits.description.is_some()
+                || edits.json.as_deref().is_some_and(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|value| {
+                        value.get("title").is_some() || value.get("description").is_some()
+                    })
+                });
+            if touches_text && let Response::Story(view) = ctx.story_view(&id)? {
+                warnings.extend(crate::text_lint::story_advice(&view.story));
+            }
             Ok(if warnings.is_empty() {
                 Response::Message(message)
             } else {
@@ -600,13 +586,19 @@ pub fn dispatch<S: Store>(
         Invocation::Plugin { action } => {
             let service = SystemService::new(ctx);
             match action {
-                PluginAction::Install { target } => service.install_plugin(&target),
-                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Install { target } => {
+                    service.install_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Uninstall { target } => {
+                    service.uninstall_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Reinstall => {
+                    service.reinstall_plugins().map(plugin_reinstall_response)
+                }
                 PluginAction::Run { .. } => Err(AppError::Storage(
                     "internal: `story plugin run` reached the daemon".to_string(),
                 )),
             }
-            .map(Response::Message)
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
@@ -700,6 +692,10 @@ pub fn dispatch<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
+        Invocation::Verifier { action } => dispatch_verifier(ctx, action),
+        Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
+            .run(dry_run)
+            .map(|report| Response::Cleanup(Box::new(report))),
         Invocation::Summary => query(ctx, |service| service.summary())
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
@@ -895,11 +891,11 @@ pub fn dispatch<S: Store>(
                 return Ok(Response::Message("no stories to import".to_string()));
             }
             let batch = TransferService::new(ctx).import(&stories)?;
-            Ok(Response::Stories {
+            Ok(crate::text_lint::with_story_advice(Response::Stories {
                 views: batch.views,
                 message: None,
                 warnings: Vec::new(),
-            })
+            }))
         }
         Invocation::Decompose {
             file,
@@ -916,11 +912,11 @@ pub fn dispatch<S: Store>(
             }
             let batch = TransferService::new(ctx).import(&stories)?;
             let summary = decompose_summary(&batch);
-            Ok(Response::Stories {
+            Ok(crate::text_lint::with_story_advice(Response::Stories {
                 views: batch.views,
                 message: Some(summary),
                 warnings: Vec::new(),
-            })
+            }))
         }
         // The `project` arms that name a project rather than creating,
         // destroying or enumerating them, so the only ones answered here.
@@ -946,6 +942,7 @@ pub fn dispatch<S: Store>(
         | Invocation::Daemon { .. }
         | Invocation::Token { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Store { .. }
@@ -966,6 +963,27 @@ pub fn dispatch<S: Store>(
             invocation,
             ctx.stdin(),
         ),
+    }
+}
+
+/// `story verifier ack <incident-id>`: the CLI door onto the same
+/// acknowledgement `POST .../verification/ack` performs (SH-666).
+fn dispatch_verifier<S: Store>(
+    ctx: &Ctx<'_, S>,
+    action: VerifierAction,
+) -> Result<Response, AppError> {
+    match action {
+        VerifierAction::Ack { incident_id } => {
+            let incident = crate::service::acknowledge_verification_incident(ctx, &incident_id)?;
+            let prefix = ctx
+                .store()
+                .read(|tx| crate::service::project_prefix(tx, ctx.project()))?;
+            Ok(Response::Message(format!(
+                "acknowledged verification incident {} (first hit while verifying {}); the verifier retries on its next tick",
+                incident.incident_id,
+                incident.story.to_id(&prefix)
+            )))
+        }
     }
 }
 
@@ -1685,6 +1703,17 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
                 info.pid
             )))
         }
+        DaemonAction::Restart => {
+            let restarted = crate::daemon::commands::restart(&env)?;
+            crate::daemon::commands::note_tailnet_pending(&restarted.running);
+            Ok(Response::Message(format!(
+                "storyhook daemon {} restarted at {} (PID {} -> {})",
+                restarted.running.version,
+                restarted.running.dashboard_url(),
+                restarted.stopped.pid,
+                restarted.running.pid
+            )))
+        }
         DaemonAction::Stop { force } => {
             crate::daemon::commands::stop(&env, force).map(Response::Message)
         }
@@ -1696,6 +1725,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             crate::daemon::commands::uninstall(&env).map(login_agent_response)
         }
         DaemonAction::Token => crate::daemon::commands::token(&env).map(Response::Message),
+        DaemonAction::Gc { force } => Ok(crate::daemon::commands::gc(&env, force)),
         DaemonAction::Serve { .. } | DaemonAction::Logs { .. } => Err(AppError::Usage(
             "daemon serve/log streaming is handled before dispatch".to_string(),
         )),
@@ -1856,6 +1886,18 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
     body
 }
 
+/// A reinstall's findings ride the warnings channel: what was *not* done —
+/// copies left behind without a registration, a config that could not be read
+/// — must reach the person, never be folded into the success text where a
+/// `--json` reader would have to grep for it.
+fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Response {
+    if report.warnings.is_empty() {
+        Response::Message(report.message)
+    } else {
+        Response::MessageWithWarnings(report.message, report.warnings)
+    }
+}
+
 /// `story update` — self-update, which touches no project data at all.
 ///
 /// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
@@ -1867,7 +1909,7 @@ fn update(check: bool, force: bool) -> Result<Response, AppError> {
 
     let outcome = crate::update::run(check, force)?;
     let is_terminal = std::io::stderr().is_terminal();
-    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced(_)) {
+    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced { .. }) {
         // `main` has already published a global `--store-path` into the
         // process environment, so resolving here inspects that store's own
         // agent without opening the store. This diagnostic is best-effort: an
@@ -1889,15 +1931,19 @@ fn update_response(
 ) -> Response {
     match outcome {
         crate::update::Outcome::Unchanged(message) => Response::Message(message),
-        crate::update::Outcome::Replaced(message) => {
-            let warning = if is_terminal {
-                health.and_then(crate::daemon::agent::warning)
+        crate::update::Outcome::Replaced {
+            message,
+            mut warnings,
+        } => {
+            // The plugin reinstall's own findings first (they are about what
+            // this update did), the agent's last (it is about the next login).
+            if is_terminal && let Some(warning) = health.and_then(crate::daemon::agent::warning) {
+                warnings.push(warning);
+            }
+            if warnings.is_empty() {
+                Response::Message(message)
             } else {
-                None
-            };
-            match warning {
-                Some(warning) => Response::MessageWithWarnings(message, vec![warning]),
-                None => Response::Message(message),
+                Response::MessageWithWarnings(message, warnings)
             }
         }
     }
@@ -1915,6 +1961,13 @@ mod update_response_tests {
         }
     }
 
+    fn replaced(message: &str) -> crate::update::Outcome {
+        crate::update::Outcome::Replaced {
+            message: message.to_string(),
+            warnings: Vec::new(),
+        }
+    }
+
     fn assert_message_only(response: Response) {
         assert!(
             matches!(response, Response::Message(_)),
@@ -1924,11 +1977,7 @@ mod update_response_tests {
 
     #[test]
     fn a_successful_replacement_at_a_terminal_reports_a_stale_agent() {
-        let response = update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            true,
-            Some(&stale()),
-        );
+        let response = update_response(replaced("updated"), true, Some(&stale()));
 
         let Response::MessageWithWarnings(message, warnings) = response else {
             panic!("a stale agent must travel as a structured warning")
@@ -1936,6 +1985,36 @@ mod update_response_tests {
         assert_eq!(message, "updated");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("/old/story"));
+    }
+
+    /// The reinstall's findings reach the person whether or not the agent
+    /// has anything to say, in every mode — they are about what this update
+    /// just did, not about a terminal.
+    #[test]
+    fn plugin_reinstall_warnings_travel_and_precede_the_agents() {
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(message, warnings) =
+            update_response(outcome, true, Some(&stale()))
+        else {
+            panic!("reinstall findings must travel as structured warnings")
+        };
+        assert_eq!(message, "updated");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], "Codex: copies remain");
+        assert!(warnings[1].contains("/old/story"), "{warnings:?}");
+
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(_, warnings) = update_response(outcome, false, None)
+        else {
+            panic!("reinstall findings must travel even away from a terminal")
+        };
+        assert_eq!(warnings, vec!["Codex: copies remain".to_string()]);
     }
 
     #[test]
@@ -1949,11 +2028,7 @@ mod update_response_tests {
 
     #[test]
     fn a_non_terminal_update_never_reports_the_agent() {
-        assert_message_only(update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            false,
-            Some(&stale()),
-        ));
+        assert_message_only(update_response(replaced("updated"), false, Some(&stale())));
     }
 
     #[test]
@@ -1968,11 +2043,7 @@ mod update_response_tests {
                 exe: PathBuf::from("/installed/story"),
             },
         ] {
-            assert_message_only(update_response(
-                crate::update::Outcome::Replaced("updated".to_string()),
-                true,
-                Some(&health),
-            ));
+            assert_message_only(update_response(replaced("updated"), true, Some(&health)));
         }
     }
 }
@@ -2301,6 +2372,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorInstall
+            | Invocation::LaneBudget
             | Invocation::DoctorAbandoned { .. }
             | Invocation::DoctorCrashes { .. }
             | Invocation::Store {
@@ -2369,6 +2441,16 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // it. Store-free, because "the store will not open" is the single most
         // important thing it can report.
         Invocation::DoctorInstall => Ok(Response::Message(crate::install_status::report()?)),
+        // SH-655: the machine lane budget against the caller's own tmux
+        // server. Answered here, client-side, because the census must come
+        // from the server the caller's `$TMUX` names — a daemon may sit on
+        // another socket — and must never start a daemon to ask. The RPC
+        // route can still reach this arm, like `DoctorInstall`; a daemon
+        // answering it reports its own socket's census, which is the engine's
+        // view rather than the operator's.
+        Invocation::LaneBudget => Ok(Response::LaneBudget(Box::new(
+            crate::lane_budget::LaneBudgetView::measure(),
+        ))),
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // The same shape as `DoctorAbandoned` immediately above, and for the
         // same reason (SH-287).
@@ -2473,13 +2555,19 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             })),
         },
         Invocation::Plugin { action } => match action {
-            PluginAction::Install { target } => system::install_plugin(&target, root),
-            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Install { target } => {
+                system::install_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Uninstall { target } => {
+                system::uninstall_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Reinstall => {
+                system::reinstall_plugins(root).map(plugin_reinstall_response)
+            }
             PluginAction::Run { .. } => Err(AppError::Storage(
                 "internal: `story plugin run` reached the daemon".to_string(),
             )),
-        }
-        .map(Response::Message),
+        },
         // Reached only when no project could be resolved. `claude-md` and
         // `cursor-rules` take nothing from a project at all; `agents-md` falls
         // back to the default prefix and `done`, which is exactly what the
@@ -2710,10 +2798,13 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
+        | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
@@ -2916,6 +3007,8 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Engine { .. } => "engine",
+        Invocation::Verifier { .. } => "verifier",
+        Invocation::Cleanup { .. } => "cleanup",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -2961,6 +3054,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Daemon { .. } => "daemon",
         Invocation::Token { .. } => "token",
         Invocation::DoctorInstall => "doctor-install",
+        Invocation::LaneBudget => "lane-budget",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::DoctorCrashes { .. } => "doctor-crashes",
         Invocation::Store { .. } => "store",
@@ -3005,6 +3099,11 @@ pub struct HttpInvoker {
     hook_depth: u32,
     announce_waits: bool,
 }
+
+// Large enough for the current project and one maximum-size attachment after
+// its worst-case JSON expansion, but still a finite defence against a broken
+// or hostile peer exhausting the client's memory (SH-608).
+const MAX_DAEMON_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 impl HttpInvoker {
     /// An invoker that runs commands from `cwd` through `env`'s daemon.
@@ -3071,9 +3170,30 @@ impl HttpInvoker {
     /// waiting for the command to finish, and how long that may legitimately
     /// take is not a property of the socket. [`Self::send`] bounds it from the
     /// daemon's own published record instead.
+    ///
+    /// # Why the proxy is switched off
+    ///
+    /// `config_builder()` starts from [`ureq::config::Config::default()`], and
+    /// ureq documents its proxy setting as "Picked up from environment when
+    /// using `Config::default()`". So without `.proxy(None)` this agent hands a
+    /// request for `127.0.0.1` to whatever `HTTPS_PROXY` names.
+    ///
+    /// On a managed corporate network that proxy cannot route to loopback, so
+    /// every command failed with `timeout: connect` while the daemon answered
+    /// `curl` on the same address in 2 ms. The reported cause was the daemon,
+    /// and the daemon was healthy — which is the expensive part, because it
+    /// sends the reader to the store, the portfile and the crash logs.
+    ///
+    /// This agent only ever talks to a daemon on loopback, so there is no case
+    /// where a proxy is wanted. `NO_PROXY` would be a weaker fix: it depends on
+    /// the user setting it, and its parsing is a convention rather than a
+    /// specification. `src/github/client.rs` and `src/update.rs` reach the
+    /// public internet and deliberately keep inheriting the proxy.
     fn agent() -> ureq::Agent {
         use std::time::Duration;
         ureq::Agent::config_builder()
+            // Loopback only. Never through a proxy — see above.
+            .proxy(None)
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_recv_body(Some(Duration::from_secs(30)))
             .build()
@@ -3211,10 +3331,7 @@ impl HttpInvoker {
             .header("Content-Type", "application/json")
             .send(body)
             .map_err(Transport::from)?;
-        let envelope: crate::api::wire::WireResponse = response
-            .into_body()
-            .read_json()
-            .map_err(|e| Transport::Sent(format!("the daemon's answer was unreadable: {e}")))?;
+        let envelope = decode_daemon_response(response, MAX_DAEMON_RESPONSE_BYTES)?;
         // Recorded on THIS side of the hop, so `main` can print them to the
         // terminal the command was typed into. The daemon collected them; only
         // the client can show them (SH-530).
@@ -3222,6 +3339,174 @@ impl HttpInvoker {
             crate::store_notice::push(notice.clone());
         }
         Ok(envelope.into_result())
+    }
+}
+
+fn decode_daemon_response(
+    response: ureq::http::Response<ureq::Body>,
+    max_bytes: u64,
+) -> Result<crate::api::wire::WireResponse, Transport> {
+    let declared = response.body().content_length();
+    if let Some(bytes) = declared
+        && bytes > max_bytes
+    {
+        return Err(Transport::Sent(format!(
+            "the daemon declared a {bytes}-byte answer in Content-Length, over StoryHook's \
+             {max_bytes}-byte response limit"
+        )));
+    }
+
+    // ureq's limit raises before asking the underlying reader for EOF. One
+    // sentinel byte therefore lets an exactly-at-limit document prove it is
+    // complete while still refusing the first byte beyond the logical cap.
+    let reader_limit = max_bytes.saturating_add(1);
+    response
+        .into_body()
+        .into_with_config()
+        .limit(reader_limit)
+        .read_json()
+        .map_err(|error| daemon_response_read_error(error, declared, max_bytes))
+}
+
+fn daemon_response_read_error(
+    error: ureq::Error,
+    declared: Option<u64>,
+    max_bytes: u64,
+) -> Transport {
+    let detail = match &error {
+        ureq::Error::Json(json)
+            if json.is_eof() || json.io_error_kind() == Some(std::io::ErrorKind::UnexpectedEof) =>
+        {
+            match declared {
+                Some(bytes) => format!(
+                    "the daemon's answer was truncated before its declared {bytes}-byte \
+                     Content-Length: {error}"
+                ),
+                None => format!("the daemon's answer ended before its JSON was complete: {error}"),
+            }
+        }
+        ureq::Error::Json(json) if json.is_syntax() || json.is_data() => {
+            format!("the daemon's answer contained malformed JSON: {error}")
+        }
+        _ => format!(
+            "the daemon's answer could not be read within StoryHook's {max_bytes}-byte \
+             response limit: {error}"
+        ),
+    };
+    Transport::Sent(detail)
+}
+
+#[cfg(test)]
+mod agent_proxy_tests {
+    use super::*;
+
+    /// The invoker only ever talks to a daemon on `127.0.0.1`, so it must never
+    /// inherit the environment's proxy.
+    ///
+    /// `Agent::config_builder()` starts from `Config::default()`, whose own
+    /// source reads `proxy: Proxy::try_from_env()`. Without `.proxy(None)` every
+    /// command hands a loopback request to whatever `HTTPS_PROXY` names. On a
+    /// managed corporate network that proxy cannot route to loopback, so every
+    /// command failed with `timeout: connect` while the daemon answered `curl`
+    /// on the same address in 2 ms.
+    ///
+    /// The misreported cause is what made this expensive. "The daemon stopped
+    /// answering" sends the reader to the store, the portfile and the crash
+    /// logs, and none of them is at fault.
+    ///
+    /// Asserted against the config rather than by setting an environment
+    /// variable and making a request. Environment variables are process-global
+    /// and Rust runs tests in parallel, so a test that set one would flake
+    /// against every other test in this binary.
+    #[test]
+    fn the_invoker_agent_never_uses_a_proxy() {
+        assert!(
+            HttpInvoker::agent().config().proxy().is_none(),
+            "the invoker must never be proxied: it only ever reaches loopback"
+        );
+    }
+}
+
+#[cfg(test)]
+mod http_response_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn envelope() -> Vec<u8> {
+        serde_json::to_vec(&crate::api::wire::WireResponse::new(
+            "request-1".to_string(),
+            Ok(Response::Message("complete".to_string())),
+        ))
+        .expect("serializing a wire response")
+    }
+
+    fn response(body: ureq::Body) -> ureq::http::Response<ureq::Body> {
+        ureq::http::Response::builder()
+            .status(200)
+            .body(body)
+            .expect("building a response")
+    }
+
+    fn sent_message(result: Result<crate::api::wire::WireResponse, Transport>) -> String {
+        match result.expect_err("the body must be refused") {
+            Transport::Sent(message) => message,
+            Transport::NotDelivered(message) => {
+                panic!("a received response was delivered: {message}")
+            }
+        }
+    }
+
+    #[test]
+    fn http_response_accepts_a_valid_envelope_exactly_at_the_limit() {
+        let bytes = envelope();
+        let limit = bytes.len() as u64;
+        let decoded = decode_daemon_response(response(ureq::Body::builder().data(bytes)), limit)
+            .expect("a body exactly at the configured limit must fit");
+
+        assert_eq!(decoded.request_id, "request-1");
+    }
+
+    #[test]
+    fn http_response_rejects_an_advertised_body_over_the_limit_before_reading() {
+        let limit = 128;
+        let declared = limit + 1;
+        let body = ureq::Body::builder().limit(declared).data(Vec::<u8>::new());
+        let message = sent_message(decode_daemon_response(response(body), limit));
+
+        assert!(message.contains(&declared.to_string()), "{message}");
+        assert!(message.contains(&limit.to_string()), "{message}");
+        assert!(message.contains("Content-Length"), "{message}");
+    }
+
+    #[test]
+    fn http_response_rejects_an_unadvertised_body_that_crosses_the_limit() {
+        let bytes = envelope();
+        let limit = (bytes.len() - 1) as u64;
+        let body = ureq::Body::builder().reader(Cursor::new(bytes));
+        let message = sent_message(decode_daemon_response(response(body), limit));
+
+        assert!(message.contains(&limit.to_string()), "{message}");
+        assert!(message.contains("limit"), "{message}");
+    }
+
+    #[test]
+    fn http_response_names_malformed_json() {
+        let body = ureq::Body::builder().data(b"not json".to_vec());
+        let message = sent_message(decode_daemon_response(response(body), 128));
+
+        assert!(message.contains("malformed JSON"), "{message}");
+    }
+
+    #[test]
+    fn http_response_names_a_body_truncated_before_its_content_length() {
+        let mut bytes = envelope();
+        let declared = bytes.len() as u64;
+        bytes.pop().expect("the envelope has a closing brace");
+        let body = ureq::Body::builder().limit(declared).data(bytes);
+        let message = sent_message(decode_daemon_response(response(body), declared));
+
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.contains(&declared.to_string()), "{message}");
     }
 }
 
@@ -3848,10 +4133,13 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
+        | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }

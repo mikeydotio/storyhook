@@ -23,6 +23,42 @@ use storyhook_test_support::TestEnv;
 /// `at` for injected events: fixed, so a rendering never depends on the clock.
 const AT: &str = "2026-03-11T00:00:01Z";
 
+/// The legacy edge is gone after closing its target, but prose still hides
+/// the worker from the queue. Both doctor surfaces must expose it safely.
+#[test]
+fn doctor_reports_stale_awaiting_without_automatically_clearing_it() {
+    let project = TestEnv::shared()
+        .project()
+        .seed_story("worker")
+        .seed_story("blocker")
+        .build();
+    project
+        .run(&["relate", "SH-1", "blocked-by", "SH-2"])
+        .success();
+    project.run(&["block", "SH-1", "needs SH-2"]).success();
+    project.run(&["move", "SH-2", "done"]).success();
+    project
+        .run(&["doctor"])
+        .success()
+        .stdout(contains("possibly stale awaiting"));
+    project
+        .run(&["doctor", "--json"])
+        .success()
+        .stdout(contains("possibly stale awaiting").and(contains("story unblock SH-1")));
+    project
+        .run(&["doctor", "--fix"])
+        .success()
+        .stdout(contains("possibly stale awaiting"));
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(contains("SH-1").not());
+    project
+        .run(&["show", "SH-1"])
+        .success()
+        .stdout(contains("needs SH-2"));
+}
+
 #[test]
 fn doctor_reports_a_relation_only_one_end_records() {
     let env = TestEnv::shared();

@@ -53,7 +53,24 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::service::Clock;
 
+pub(crate) use store_location::KEY_HEX;
 pub use store_location::{StoreLocation, StoreOrigin, StoreVars, canonical_ish};
+
+/// The file names inside a store's [`Environment::daemon_state_dir`], stated
+/// once so the accessors below and `story daemon gc` — which reads a
+/// directory it has no `Environment` for — cannot spell them apart (SH-638).
+pub(crate) mod runtime_file {
+    /// [`super::Environment::daemon_file`].
+    pub const PORTFILE: &str = "daemon.json";
+    /// [`super::Environment::daemon_pidfile`].
+    pub const PIDFILE: &str = "daemon.pid";
+    /// [`super::Environment::daemon_spawn_lock`].
+    pub const SPAWN_LOCK: &str = "daemon.spawn.lock";
+    /// [`super::Environment::daemon_log`].
+    pub const LOG: &str = "daemon.log";
+    /// [`super::Environment::daemon_log_rotated`].
+    pub const LOG_ROTATED: &str = "daemon.log.1";
+}
 
 /// The port the daemon prefers, and the one the dashboard bookmark names.
 ///
@@ -226,6 +243,50 @@ impl Environment {
         &self.home
     }
 
+    /// The variables a child that will run `story` needs in order to resolve
+    /// **this** environment rather than its own process's (SH-633).
+    ///
+    /// Two facts, because two facts decide where a client looks for a daemon:
+    /// the store (`STORYHOOK_STORE_PATH`) and the state home its runtime
+    /// directory hangs under (`XDG_STATE_HOME`). Four spawn sites used to
+    /// publish only the first. A child handed the store but not the state
+    /// home resolved the latter from whatever `HOME` it had — the developer's
+    /// real one, in every harness that cannot redirect `HOME` around `npm` or
+    /// `cargo` (see `test_environment`'s scope on that parameter) — looked for
+    /// the store's daemon under `~/.local/state/storyhook/daemons/<key>`,
+    /// found nothing, and started a second daemon for the same store there.
+    /// One store, one daemon (SH-113) held only as long as parent and child
+    /// agreed about both halves of the path.
+    ///
+    /// `XDG_STATE_HOME` is the parent of [`Self::state_home`] rather than a
+    /// stored field because both constructors build the state home as
+    /// `<XDG_STATE_HOME>/storyhook` — [`Self::from_process`] from the
+    /// variable or `$HOME/.local/state`, [`Self::at`] from the given home —
+    /// and [`Self::with_store`] leaves it alone; there is no third way to
+    /// make one. It is the lever the resolver already reads and the one
+    /// `test_environment::TEST_ENVIRONMENT` names, so no second variable is
+    /// invented for a fact that has one.
+    ///
+    /// Deliberately **not** here: `HOME`, which may only be redirected on a
+    /// storyhook process and these children run `git` and `gh`; and
+    /// `STORYHOOK_DAEMON_ADDR`, because a client finds a daemon by its
+    /// portfile, never by the preferred port, and the harness owns that
+    /// variable through `daemon_containment()`.
+    ///
+    /// Pass to `Command::envs` **after** any allowlist has cleared the
+    /// child's environment, since `env_clear` discards what preceded it.
+    pub fn child_vars(&self) -> Vec<(&'static str, PathBuf)> {
+        let xdg_state_home = self
+            .state_home
+            .parent()
+            .expect("a state home is <XDG_STATE_HOME>/storyhook and always has a parent")
+            .to_path_buf();
+        vec![
+            ("STORYHOOK_STORE_PATH", self.store_path().to_path_buf()),
+            ("XDG_STATE_HOME", xdg_state_home),
+        ]
+    }
+
     /// The current time, from this environment's clock.
     pub fn now(&self) -> String {
         self.clock.now()
@@ -285,19 +346,26 @@ impl Environment {
     /// stand down the daemon holding store B, because it never looks in that
     /// directory at all.
     pub fn daemon_state_dir(&self) -> PathBuf {
-        self.state_home.join("daemons").join(self.store.key())
+        self.daemons_dir().join(self.store.key())
+    }
+
+    /// The directory every store's [`Self::daemon_state_dir`] hangs under:
+    /// `daemons/` in the state home. One entry per store this state home has
+    /// ever served, and the only place `story daemon gc` looks (SH-638).
+    pub fn daemons_dir(&self) -> PathBuf {
+        self.state_home.join("daemons")
     }
 
     /// The daemon's portfile: `{pid, port, version, protocol, exe, exe_mtime,
     /// started_at, token, store_path}`, mode 0600.
     pub fn daemon_file(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.json")
+        self.daemon_state_dir().join(runtime_file::PORTFILE)
     }
 
     /// The file the daemon holds a lock on for its whole life. Holding the lock
     /// *is* the liveness signal, so this is not merely where a pid is written.
     pub fn daemon_pidfile(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.pid")
+        self.daemon_state_dir().join(runtime_file::PIDFILE)
     }
 
     /// The daemon-owned process-group registry used by forced shutdown.
@@ -312,7 +380,7 @@ impl Environment {
     /// The lock a client takes while it decides to spawn a daemon, held through
     /// the spawn and the child's portfile write.
     pub fn daemon_spawn_lock(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.spawn.lock")
+        self.daemon_state_dir().join(runtime_file::SPAWN_LOCK)
     }
 
     /// Where a client that held the spawn lock leaves the verdict of its
@@ -334,7 +402,7 @@ impl Environment {
 
     /// Where a daemon started in the background writes its diagnostics.
     pub fn daemon_log(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.log")
+        self.daemon_state_dir().join(runtime_file::LOG)
     }
 
     /// The previous daemon's [`Self::daemon_log`], one spawn old (SH-287).
@@ -346,7 +414,7 @@ impl Environment {
     /// and only once: it moves whatever it finds into
     /// [`Self::crash_logs_dir`] before this file can be rotated away again.
     pub fn daemon_log_rotated(&self) -> PathBuf {
-        self.daemon_state_dir().join("daemon.log.1")
+        self.daemon_state_dir().join(runtime_file::LOG_ROTATED)
     }
 
     /// Where this store's daemon persists its finished
@@ -854,6 +922,71 @@ mod tests {
         }
         assert!(keyed.starts_with(env.state_home()));
         assert!(keyed.ends_with(env.store().key()));
+    }
+
+    /// What a child is told is what the table says a child reads (SH-633).
+    ///
+    /// Derived in both directions over `test_environment::TEST_ENVIRONMENT`:
+    /// every name [`Environment::child_vars`] publishes is a table parameter,
+    /// and for a root-relative one its value is exactly what the table renders
+    /// for the same root — so the in-process constructor and the process-level
+    /// isolation cannot disagree about where a child's store or state home is.
+    /// The table is the definition of what a storyhook process resolves from;
+    /// a name published here that the table does not know is a fact the child
+    /// would ignore, and a value that differs is a child resolving somewhere
+    /// its parent is not looking.
+    #[test]
+    fn child_vars_agree_with_the_test_environment_table() {
+        use test_environment::{Disposition, Scope, TEST_ENVIRONMENT};
+
+        let root = Path::new("/private/tmp/storyhook-env-test-root");
+        let env = Environment::at(root.join("home"));
+        let published = env.child_vars();
+        assert!(!published.is_empty(), "a child is told something");
+
+        let rendered = test_environment::resolve(root, 0, Scope::Anywhere);
+        for (name, value) in &published {
+            let parameter = TEST_ENVIRONMENT
+                .iter()
+                .find(|parameter| parameter.name == *name)
+                .unwrap_or_else(|| {
+                    panic!("child_vars publishes `{name}`, which the test-environment table does not know")
+                });
+            assert!(
+                matches!(parameter.disposition, Disposition::Root(_)),
+                "`{name}` is not root-relative in the table, so its value cannot be derived from an environment"
+            );
+            let expected = rendered
+                .iter()
+                .find(|setting| setting.name == *name)
+                .and_then(|setting| setting.value.clone())
+                .expect("a root-relative parameter has a value");
+            assert_eq!(
+                value.as_os_str(),
+                expected.as_os_str(),
+                "`{name}`: child_vars says {} and the table says {}",
+                value.display(),
+                Path::new(&expected).display()
+            );
+        }
+    }
+
+    /// A child is told the state home its parent resolved, not only the store
+    /// (SH-633) — and nothing else that another mechanism already owns.
+    #[test]
+    fn child_vars_name_the_store_and_the_state_home_and_nothing_else() {
+        let env = Environment::at("/private/tmp/storyhook-env-test");
+        let names: Vec<&str> = env.child_vars().iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["STORYHOOK_STORE_PATH", "XDG_STATE_HOME"]);
+
+        // The store moves with `with_store`; the state home does not, which is
+        // what `with_store`'s own doc promises.
+        let other = StoreLocation::for_home(Path::new("/private/tmp/storyhook-env-other"));
+        let moved = env.clone().with_store(other.clone());
+        let vars: std::collections::BTreeMap<&str, PathBuf> =
+            moved.child_vars().into_iter().collect();
+        assert_eq!(vars["STORYHOOK_STORE_PATH"], other.path());
+        assert_eq!(vars["XDG_STATE_HOME"], env.state_home().parent().unwrap());
     }
 
     /// Two stores must not be able to name one another's runtime files — which

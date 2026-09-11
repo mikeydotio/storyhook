@@ -5,6 +5,8 @@ import {
   openProject,
   projectSlug,
   seedToken,
+  settledBoundingBox,
+  THEMES,
 } from "./support";
 
 /**
@@ -83,6 +85,65 @@ async function createStory(
   return card;
 }
 
+test("the visible card actions button matches right-click without opening the drawer", async ({
+  page,
+}) => {
+  const title = "SH-600 visible card actions";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+  const icon = actions.locator('[data-emoji="actions"]');
+
+  await expect(actions).toBeVisible();
+  await expect(actions).toHaveAccessibleName(/^Actions for [A-Z]+-\d+$/);
+  await expect(icon).toHaveText("🛠️");
+  await expect(icon).toHaveAttribute("aria-hidden", "true");
+  const dimensions = await actions.evaluate(() => ({
+    tapMin: Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    ),
+  }));
+  const actionsBox = await settledBoundingBox(card, actions);
+  expect(dimensions.tapMin).toBe(24);
+  expect(actionsBox.width).toBeGreaterThanOrEqual(dimensions.tapMin);
+  expect(actionsBox.height).toBeGreaterThanOrEqual(dimensions.tapMin);
+  const iconBox = await icon.boundingBox();
+  expect(iconBox).not.toBeNull();
+  expect(iconBox!.width).toBeGreaterThan(0);
+  expect(iconBox!.height).toBeGreaterThan(0);
+
+  await card.click({ button: "right" });
+  const rightClickItems = await page.locator(".ctxmenu-item").allTextContents();
+  expect(rightClickItems.length).toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+
+  await actions.click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  expect(await page.locator(".ctxmenu-item").allTextContents()).toEqual(
+    rightClickItems,
+  );
+  await page.keyboard.press("Escape");
+  await deleteStory(page, title);
+});
+
+test("the card actions emoji stays present in every theme", async ({ page }) => {
+  const title = "SH-620 card actions emoji";
+  const card = await createStory(page, title);
+  const actions = card.locator(".card-actions-btn");
+  const emoji = actions.locator('[data-emoji="actions"]');
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    await expect(emoji, theme.name).toHaveText("🛠️");
+    const box = await emoji.boundingBox();
+    expect(box, theme.name).not.toBeNull();
+    expect(box!.width, theme.name).toBeGreaterThan(0);
+    expect(box!.height, theme.name).toBeGreaterThan(0);
+  }
+
+  await deleteStory(page, title);
+});
+
 test("right-click a card shows Copy ID, Copy URL, Copy Description, in that order", async ({
   page,
 }) => {
@@ -105,10 +166,12 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
   await expect(items.nth(1)).toHaveText("Copy URL");
   await expect(items.nth(2)).toHaveText("Copy Description");
   await expect(items.nth(3)).toHaveText("Dispatch");
-  // SH-447's submenu chevron is a decorative SVG, so the accessible label
-  // and text content are now exactly the action name.
-  await expect(items.nth(4)).toHaveText("Set Status");
-  await expect(items.nth(5)).toHaveText("Set Priority");
+  // SH-620's submenu emoji is decorative, so it does not change either
+  // menu item's accessible name.
+  await expect(items.nth(4)).toHaveAccessibleName("Set Status");
+  await expect(items.nth(5)).toHaveAccessibleName("Set Priority");
+  await expect(items.nth(4).locator(".ctxmenu-arrow")).toHaveText("➡️");
+  await expect(items.nth(5).locator(".ctxmenu-arrow")).toHaveText("➡️");
   await expect(items.nth(4).locator(".ctxmenu-arrow")).toHaveAttribute(
     "data-direction",
     "right",
@@ -117,7 +180,7 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
     "data-direction",
     "right",
   );
-  await expect(items.nth(6)).toHaveText("Close");
+  await expect(items.nth(6)).toHaveText("Drop");
   await expect(items.nth(7)).toHaveText("Delete");
   // Still 3, not 4: Set Priority joined the Set Status group rather than
   // adding a fourth rule -- this is what proves that.

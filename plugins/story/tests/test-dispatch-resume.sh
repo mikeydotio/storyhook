@@ -132,6 +132,69 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || p
 [ ! -f "$FAKE_TMUX_STATE/new_window_args.log" ] \
   || fail_test "window: opened a competing window"
 
+# SH-650: a resume relaunches the provider the surviving window records.
+# `@storyhook-agent` on the window is a fact about the thing being resumed;
+# `STORY_AGENT` is the caller's own convention (SH-630), and only an explicit
+# `--agent=` outranks the record. Without this a Codex story whose pane died
+# was respawned as Claude, its window option silently rewritten, and its
+# worktree looked for in Claude's container. The fixture is a Codex dispatch:
+# the Codex container (`.codex/worktrees/`) and a window tagged codex.
+provider_case() {
+  local label="$1"
+  shift
+  fresh_tmux_state
+  repo=$(mk_story_repo RPV)
+  id=$(new_story "$repo" "Provider adoption: $label")
+  (cd "$repo" \
+    && git worktree add -q --no-track -b "worktree-$id" ".codex/worktrees/$id" HEAD \
+    && story move "$id" in-progress >/dev/null)
+  export FAKE_TMUX_PANES="$id	1	%7"
+  printf 'codex' > "$FAKE_TMUX_STATE/storyhook_agent"
+  out=$(dispatch_real "$repo" "$id" --resume "$@")
+}
+assert_codex_resumed() {
+  local label="$1"
+  assert_eq "$(jqf "$out" .ok)" "true" "provider ($label): resume succeeds"
+  assert_eq "$(jqf "$out" .window_reused)" "true" "provider ($label): pane reused"
+  assert_eq "$(jqf "$out" .agent)" "codex" "provider ($label): the recorded provider is relaunched"
+  assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || printf '')" \
+    " codex " "provider ($label): respawn launches codex"
+  assert_contains "$(jqf "$out" .worktree_path)" "/.codex/worktrees/$id" \
+    "provider ($label): resumed in the codex container"
+}
+provider_case "bare"
+assert_codex_resumed "bare"
+STORY_AGENT=claude provider_case "STORY_AGENT=claude"
+assert_codex_resumed "STORY_AGENT=claude"
+# The explicit flag outranks the record. It cannot make a Claude resume of a
+# Codex dispatch work -- the worktree lives in the other container -- but the
+# refusal is loud and names the conflict, never a silent fallback to the
+# record the caller overrode.
+provider_case "--agent=claude" --agent=claude
+assert_eq "$(jqf "$out" .ok)" "false" "provider (--agent=claude): the override is honoured, and fails loudly"
+assert_contains "$(jqf "$out" .display)" "already used by worktree" \
+  "provider (--agent=claude): the refusal names the container conflict"
+unset STORY_AGENT
+
+# The window gone entirely, only the worktree left: its container names the
+# provider that created it (`.codex/worktrees/`), and a resume that guessed
+# claude would look in `.claude/worktrees/`, find only the branch, and fail to
+# reattach it. mk_dispatched builds the claude container, so build codex's by
+# hand.
+fresh_tmux_state
+unset FAKE_TMUX_PANES
+repo_container=$(mk_story_repo RPC)
+id_container=$(new_story "$repo_container" "Provider from the worktree container")
+(cd "$repo_container" \
+  && git worktree add -q --no-track -b "worktree-$id_container" ".codex/worktrees/$id_container" HEAD \
+  && story move "$id_container" in-progress >/dev/null)
+container=$(STORY_AGENT=claude dispatch_real "$repo_container" "$id_container" --resume)
+assert_eq "$(jqf "$container" .ok)" "true" "container: resume succeeds"
+assert_eq "$(jqf "$container" .agent)" "codex" "container: provider read from the worktree container"
+assert_eq "$(jqf "$container" .worktree_reused)" "true" "container: the codex worktree is the one reused"
+assert_contains "$(jqf "$container" .worktree_path)" "/.codex/worktrees/$id_container" \
+  "container: resumed in the codex container"
+
 # A pane can outlive both git resources. Resume creates a fresh branch and
 # worktree, then reuses that exact pane instead of opening a competitor.
 fresh_tmux_state

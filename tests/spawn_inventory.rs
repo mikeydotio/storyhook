@@ -106,10 +106,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
-    // `.output()`, which reads the child's stdout to EOF. `git` reads files,
-    // spawns nothing of its own and touches no network, so the
-    // descendant-holds-the-pipe hazard this column exists for has nothing to
-    // attach to.
+    // `.output()`, which reads the child's stdout to EOF. Callers that can
+    // reach a remote must add a deadline: workspace cleanup routes this same
+    // command through shared file-backed, process-group-bounded capture.
     ("src/env/git_env.rs", "\"git\"", Kind::Reads),
     // `event_hooks::fire_hook` — a user's shell command. `Waited` since SH-141:
     // it spawns, waits, and reads a *file*. The hook is handed unlinked
@@ -124,6 +123,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    // Cleanup's tmux probe uses shared file-backed, process-group-bounded
+    // capture, so neither a server nor a descendant can retain an output pipe.
+    ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
+    // The lane census (SH-655): `tmux list-windows` through the same
+    // file-backed, group-bounded `run_captured` the engine's probe uses, on
+    // the caller's own PATH and environment so a client verb asks the server
+    // its `$TMUX` names. A descendant has no pipe to hold.
+    ("src/lane_budget.rs", "\"tmux\"", Kind::Waited),
     // `install_status::installed_binary` — the `story` on this machine's own
     // `$PATH`, asked for its version so the report can say whether the build
     // answering you is the build this machine runs (SH-530). `Reads`, because
@@ -151,6 +158,15 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
+    // `update::reinstall_plugins_via` — the executable just swapped in, run as
+    // `plugin install <provider>` once per registered provider (SH-667).
+    // `Reads`: both streams are captured so the provider's exact outcome can
+    // be folded into the update's own result rather than interleaved with
+    // it. What the child leaves behind is bounded: its provider CLIs are
+    // `Reads` children of its own that finish before it does, and the only
+    // thing it may leave alive is a daemon, which `lifecycle::spawn_child`
+    // starts with nothing inherited — so no descendant holds this pipe.
+    ("src/update.rs", "exe", Kind::Reads),
     // `clipboard::pipe_to_command` — `pbcopy`/`xclip`/`wl-copy`, or whatever
     // `$STORYHOOK_CLIPBOARD_CMD` names. `Waited`: stdout and stderr are both
     // `Stdio::null()`, so there is no pipe for a descendant to hold, and the

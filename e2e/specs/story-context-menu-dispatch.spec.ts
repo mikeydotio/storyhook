@@ -78,7 +78,7 @@ test("Dispatch is present for a todo story with a checkout", async ({
 
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
-  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  const dispatch = menu.getByRole("menuitem", { name: "Dispatch", exact: true });
   await expect(dispatch).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
@@ -156,7 +156,7 @@ test("Dispatch is absent for a story with no checkout, and no stray separator is
   await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Status" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Priority" })).toBeVisible();
-  await expect(menu.locator(".ctxmenu-item", { hasText: "Close" })).toBeVisible();
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Drop" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Delete" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
 
@@ -249,7 +249,7 @@ test("Dispatch remembers submitted Codex and auto mode", async ({ page }) => {
   await deleteStory(page, nextTitle);
 });
 
-test("the item is aria-disabled while a dispatch for this story is in flight", async ({
+test("an in-flight dispatch disables the item with a warning and explanation", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
@@ -288,9 +288,24 @@ test("the item is aria-disabled while a dispatch for this story is in flight", a
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  await expect(
-    menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }),
-  ).toHaveAttribute("aria-disabled", "true");
+  const dispatch = menu.getByRole("menuitem", { name: "Dispatch", exact: true });
+  await expect(dispatch).toHaveAttribute("aria-disabled", "true");
+  await expect(dispatch).toHaveAttribute(
+    "title",
+    "A dispatch is already in progress for this story",
+  );
+  const warning = dispatch.locator(".ctxmenu-disabled-warning");
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveAttribute("aria-hidden", "true");
+  await expect(warning).toHaveAttribute("data-emoji", "warning");
+  await expect(warning).toHaveText("⚠️");
+  const warningBox = await warning.boundingBox();
+  expect(warningBox).not.toBeNull();
+  expect(warningBox!.width).toBeGreaterThan(0);
+  expect(warningBox!.height).toBeGreaterThan(0);
+  await dispatch.click({ force: true });
+  await expect(menu).toBeVisible();
+  await expect(page.locator("#dispatch-modal")).not.toHaveClass(/open/);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
   await page.keyboard.press("Escape");
@@ -298,5 +313,17 @@ test("the item is aria-disabled while a dispatch for this story is in flight", a
   await expect(page.locator("#toast-stack .toast.success")).toBeVisible({
     timeout: 10_000,
   });
+
+  await card.click({ button: "right" });
+  const enabledDispatch = page.getByRole("menuitem", {
+    name: "Dispatch",
+    exact: true,
+  });
+  await expect(enabledDispatch).not.toHaveAttribute("aria-disabled", "true");
+  await expect(enabledDispatch).not.toHaveAttribute("title");
+  await expect(
+    enabledDispatch.locator(".ctxmenu-disabled-warning"),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await deleteStory(page, title);
 });

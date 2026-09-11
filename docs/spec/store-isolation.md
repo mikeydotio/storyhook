@@ -396,3 +396,122 @@ default there instead. `StoreLocation::is_default_for_home` now owns the shared 
 for both stable-port selection and the launch-agent identity fixed in SH-414: only the
 store a process with the same `HOME` and no store-location overrides would open gets 3456;
 all other stores request an OS-assigned port.
+
+### Later amendment — a child is told both halves of the daemon's path (SH-633)
+
+The rule above says a daemon's identity is its store's, and the layout keys its runtime
+directory as `<state home>/daemons/<store key>`. That is two independently resolved
+roots joined in one expression, and the invariant held only while a parent and every
+child it spawned agreed about both. They did not. `src/env/spawn_env.rs`'s dispatch
+allowlist cleared a `story.sh` child's environment and restored `HOME` and every
+`STORYHOOK_*` name but no `XDG_*` one, and the four sites that spawn from an
+`Environment` — dispatch, unclaim, the verifier's `notify` and `reap` — published only
+`STORYHOOK_STORE_PATH`. A `story` run inside such a child kept the store, resolved its
+state home from the child's own `HOME`, found no portfile there for that store, and
+started a **second daemon for one store**, publishing its pidfile, backups and activity
+journal under the developer's real `~/.local/state/storyhook/daemons/<key>` where
+nothing ever stands it down.
+
+Measured when fixed: 1,199 such directories on the filing machine — every browser-tier
+run since August (the harness itself was correct: `run-e2e.sh` exports `XDG_STATE_HOME`
+and cannot redirect `HOME` around `npm`), the Rust suite's real-helper reap test (an
+in-process `Environment::at` fixture, whose state home was never in any process
+environment at all), and ~45 hand runs the SH-426 amendment above sanctions.
+
+As built, two mechanisms, because each covers a case the other cannot:
+
+- The three XDG base directories travel with `HOME` on the common allowlist. They refine
+  `HOME` and are not separable from it; none is a credential. This covers a state home
+  the parent *process* had. Derived fence: every `TEST_ENVIRONMENT` parameter must
+  satisfy `dispatch_permits`, so an isolation parameter added to the table and dropped by
+  the allowlist fails the build.
+- `Environment::child_vars` is the one door through which a child is handed an
+  environment: `STORYHOOK_STORE_PATH` and `XDG_STATE_HOME`, the latter the parent of
+  `state_home` (exact, since both constructors build `<XDG_STATE_HOME>/storyhook` and
+  `with_store` leaves it alone). This covers a state home the parent *environment* has.
+  Derived fence: no `src/` file but the door's may set `STORYHOOK_STORE_PATH` on a
+  `Command`. `HOME` is deliberately not published (`StoryhookProcessOnly`; these children
+  run `git` and `gh`), nor is `STORYHOOK_DAEMON_ADDR` (a client finds a daemon by
+  portfile, and the test harness owns that variable).
+
+The regression tests are behavioural at every door — stub helpers echo what they were
+handed, the real-helper reap test asserts its daemon lands under the fixture's own state
+home and stands it down there, and the real binary's `story daemon status` inside the
+verifier's child is asked where it believes the daemon lives. Under mutation that last
+test answered with the developer's own home, which is the leak stated as an assertion.
+
+Declined: the refusal SH-633 itself proposed, a temporary store under a durable state
+home. The SH-426 amendment's own refusal text sanctions exactly that shape for a session
+(`story --store-path <tmp> daemon start`), and the defect was never temp-versus-durable
+— it was parent-versus-child. Runtime directories for stores that no longer exist were
+still never reaped, for the reason SH-426 gives (an absent store may be an offline
+volume); the conservative sweeper is the next amendment.
+
+### Later amendment — runtime directories are reclaimed, conservatively (SH-638)
+
+`story daemon gc` is the sweeper the amendments above deferred. Measured when it was
+built: 1,207 directories under the filing machine's `daemons/` (442 MB), three whose
+store still existed — 910 from browser-tier runs, 191 from the Rust suite, ~45 from the
+sanctioned hand runs, which keep accruing at the rate agents try builds by hand.
+
+**The identity is read from inside the directory and then proved.** The key is one-way,
+so a directory's store is read from what its daemon left behind — the portfile's
+`store_path` (structured, but deleted on a clean exit), else the `holding` line the daemon
+writes to its log before anything else (which is not always line 1: a backup notice or
+the tailnet banner precedes it in 484 of 1,203). The parsed path is read to the end of its
+line, never to its first space (SH-493's rule), and must hash back to the directory's own
+name through `StoreLocation::key_for_path`, or the directory is kept as
+`identity_mismatch`: a mis-parse cannot reap. 1,203 of 1,203 on the filing machine round-
+tripped; the four that carry no identity at all (a lone zero-byte pidfile from `is_live`'s
+create-on-probe) are kept as `unidentified` and counted rather than hidden.
+
+**The offline-volume objection is answered by the temp-root gate, not by a heuristic.**
+Only a store under a temp root (`service::project::is_under_temp`, the same predicate the
+SH-426 amendment uses) is ever reclaimed, and that check runs before the store is even
+stat-ed. The operator chose that root, and SH-426 already treats such a store as
+session-scoped. A store anywhere durable — `/Volumes`, a home directory — is kept as
+`not_under_temp` whether or not it currently exists, and the plan names the `rm -rf` the
+operator may run by hand once they know it is gone for good.
+
+**A non-default store's backups live inside the directory being removed** (As-built item
+2 above), so reclaiming destroys the last copy of that store's data. The story did not
+say this; the plan does, out loud — each candidate line carries its snapshot count and
+the plan says how many hold one. The gate is what makes it right: the data was throwaway
+by the operator's own choice of root.
+
+**The rest is liveness, done without side effects.** In order, after the exclusions
+(`this_store`, and `default_store` for both the `$XDG_DATA_HOME`-aware default and the
+bare-`HOME` one a launchd agent would open): the store still exists; a login agent still
+names it (`login_agent`, because launchd would recreate the directory at login — the
+remedy is `daemon uninstall`, not `rm`); the directory changed less than
+`RECLAIM_AGE_FLOOR` ago (`too_young`, derived as `SPAWN_LOCK_DEADLINE`: the longest a
+client may spend between creating the directory and holding a lock in it or giving up —
+checked *before* the locks are probed, so a spawn mid-creation is never touched); and the
+pidfile or spawn lock is held (`daemon_live`, `spawn_in_progress`). The probe opens with
+`create(false)`, because `lifecycle::is_live` creates the pidfile and its directory on the
+way to probing, which on a foreign key would resurrect what was just removed; a lock file
+that cannot be opened for any reason but absence is `unprobeable` and kept, the same
+fail-closed bias `is_live` has.
+
+**Report before remove**, through the confirmation door `story project delete` uses:
+`ConfirmationPlan::RuntimeGc`, a `[y/N]` at a terminal (one keystroke, the data being
+throwaway by construction, the same weight as the bulk archive), and a refusal naming
+`--force` with the whole plan attached anywhere a prompt cannot be asked. The store-free
+dispatch path in `main.rs` gained that door for this; until then nothing on it could
+answer `ConfirmationRequired`. Reclaiming takes both locks and re-checks the store's
+absence and the directory's age under them, then `remove_dir_all`; a directory taken in
+between is kept as `raced`. **Accepted residual**: a client that opened the spawn-lock
+inode just before the unlink proceeds on an unlinked inode, and `claim_pidfile`'s own
+flock is what still prevents two daemons. `story daemon status` names the reclaimable
+count at every branch, because a tool nobody runs proves nothing (SH-418).
+
+Pinned by `tests/daemon_gc.rs`: one test per reason code, the lock cases holding the
+`flock` in-process (a daemon left serving a deleted store is a shape the standing rule
+forbids and `check-no-orphan-servers.sh` would reap mid-test), `not_under_temp` through
+`non_temporary_dir`, a path with a space read whole, the `holding` line found below a
+banner, the portfile preferred over the log, and one real daemon started, stopped and
+its store deleted, reclaimed by the same predicate the planted fixtures exercise. Found
+on the way and fixed in its own commit: `story archive-state` at a terminal was never
+forced on its confirmation re-run — `InvokeRequest::forced` kept the top-level wildcard
+its own doc warns about — so it printed its plan twice and archived nothing.
+`Invocation::forced` is now exhaustive at every level.

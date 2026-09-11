@@ -32,7 +32,7 @@ fn security_header_frame() -> Header {
 /// response (via [`finish`]) and the hand-rolled `GET /api/events` response
 /// head, which bypasses `finish` entirely (see [`write_sse_head`]) — so the
 /// two paths can never drift apart.
-pub const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
+pub const CSP: &str = "default-src 'self'; img-src 'self' blob: https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
 
 /// A legitimate same-origin dashboard request keeps sending `Referer`
 /// (SH-319's cookie-borne-read fallback,
@@ -68,9 +68,8 @@ enum Caching {
     /// reusing it. Right for dynamic content.
     NoCache,
     /// `no-store` — the browser may not write it down at all. Right for the
-    /// one reply in this daemon that carries a credential
-    /// ([`crate::api::handoff`]); `no-cache` would permit exactly the durable
-    /// copy that reply exists to avoid.
+    /// replies carrying credentials or authenticated attachment bytes;
+    /// `no-cache` would permit a durable copy of that sensitive content.
     NoStore,
 }
 
@@ -86,9 +85,11 @@ enum Caching {
 /// attempt was wrong.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
+    /// The HTTP status sent with this reply.
     pub status: u16,
     content_type: &'static str,
-    body: String,
+    body: Vec<u8>,
+    same_origin_resource: bool,
     caching: Caching,
     retry_after: Option<u32>,
     /// A pre-formatted `Set-Cookie` header value, verbatim. This module knows
@@ -100,11 +101,18 @@ pub struct Reply {
 }
 
 impl Reply {
+    /// Constructs a UTF-8 text reply.
     pub fn new(status: u16, content_type: &'static str, body: impl Into<String>) -> Self {
+        Self::from_bytes(status, content_type, body.into().into_bytes())
+    }
+
+    /// Constructs a reply without interpreting its bytes as text.
+    pub fn from_bytes(status: u16, content_type: &'static str, body: Vec<u8>) -> Self {
         Reply {
             status,
             content_type,
-            body: body.into(),
+            body,
+            same_origin_resource: false,
             caching: Caching::Unset,
             retry_after: None,
             cookie: None,
@@ -120,10 +128,8 @@ impl Reply {
 
     /// Marks this reply as one the browser must not write down at all.
     ///
-    /// Stronger than [`Self::no_cache`], and reserved for a reply carrying a
-    /// credential: `no-cache` still permits a stored copy that is revalidated
-    /// before reuse, and a stored copy is precisely what a credential must not
-    /// leave behind.
+    /// Stronger than [`Self::no_cache`]: sensitive replies, including credentials
+    /// and authenticated attachment bytes, must not leave a cached copy behind.
     #[must_use]
     pub fn no_store(mut self) -> Self {
         self.caching = Caching::NoStore;
@@ -137,8 +143,20 @@ impl Reply {
     /// not contain the master token" are both claims about the body, and the
     /// alternative — picking them out of a `Debug` rendering — would be a test
     /// that passes or fails on how `String` chooses to escape itself.
-    pub fn body(&self) -> &str {
+    pub fn body(&self) -> &[u8] {
         &self.body
+    }
+
+    /// Interprets a text response without silently replacing invalid UTF-8.
+    pub fn text_body(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.body)
+    }
+
+    /// Restricts browser embedding of this resource to the same origin.
+    #[must_use]
+    pub fn same_origin_resource(mut self) -> Self {
+        self.same_origin_resource = true;
+        self
     }
 
     /// Advises the client to retry after `secs` seconds (used for 409
@@ -179,7 +197,7 @@ pub fn html_reply(body: impl Into<String>) -> Reply {
 
 /// Attaches the shared security headers to `reply` and sends it on `request`.
 pub fn finish(request: Request, reply: Reply) {
-    let mut resp = Response::from_string(reply.body)
+    let mut resp = Response::from_bytes(reply.body)
         .with_status_code(reply.status)
         .with_header(content_type_header(reply.content_type))
         .with_header(security_header_nosniff())
@@ -194,6 +212,11 @@ pub fn finish(request: Request, reply: Reply) {
         Caching::NoStore => {
             resp = resp.with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
         }
+    }
+    if reply.same_origin_resource {
+        resp = resp.with_header(
+            Header::from_bytes("Cross-Origin-Resource-Policy", "same-origin").unwrap(),
+        );
     }
     if let Some(secs) = reply.retry_after {
         resp = resp.with_header(Header::from_bytes("Retry-After", secs.to_string()).unwrap());
@@ -230,7 +253,7 @@ pub fn path_segments(path: &str) -> Vec<&str> {
 pub fn status_for(error: &AppError) -> u16 {
     match error {
         AppError::Usage(_) => 400,
-        AppError::Validation(_) => 422,
+        AppError::Validation(_) | AppError::TextLint(_) => 422,
         AppError::NotFound(_) => 404,
         AppError::LockTimeout(_) => 409,
         // Client-originated: the daemon never constructs this. If it crosses
@@ -610,6 +633,16 @@ fn proxy_hosts_from_env() -> Vec<String> {
 
 // --- Request body reading and parsing ---
 
+/// A fully acquired request body. Only the classified attachment-upload route
+/// may produce binary bytes; all other routes retain UTF-8 validation.
+#[derive(Debug)]
+pub(crate) enum RequestBody {
+    /// An ordinary UTF-8 request, bounded by `MAX_BODY_BYTES`.
+    Text(String),
+    /// An image upload bounded by the attachment service's limit.
+    Binary(Vec<u8>),
+}
+
 /// Maximum request body size accepted from a mutation route. Well above any
 /// legitimate story field (titles, comments, label lists), while bounding
 /// how much a single request can force the server to buffer.
@@ -738,6 +771,24 @@ pub fn carries_body(method: &Method) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_reply_preserves_bytes_and_refuses_invalid_utf8() {
+        let bytes = vec![0, 255, 254, 13, 10];
+        let reply = Reply::from_bytes(200, "image/png", bytes.clone());
+        assert_eq!(reply.body(), bytes);
+        assert!(reply.text_body().is_err());
+        let text = text_reply(200, "café");
+        assert_eq!(text.body(), "café".as_bytes());
+        assert_eq!(text.text_body().unwrap(), "café");
+    }
+
+    #[test]
+    fn csp_allows_staged_blob_images_without_relaxing_other_resource_types() {
+        assert!(CSP.contains("img-src 'self' blob:"));
+        assert!(!CSP.contains("data:"));
+        assert_eq!(CSP.matches("blob:").count(), 1);
+    }
 
     /// DeadlineExceeded is a client-side condition. If it ever reaches the
     /// daemon's HTTP renderer, expose the invariant breach rather than using

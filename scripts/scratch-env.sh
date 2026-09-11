@@ -189,11 +189,21 @@ binary_dir="$(cd "$(dirname "$binary")" && pwd)"
 # running `make test` from inside a scratch shell is a reasonable thing to do,
 # and a nested run that inherited an outer verification run's journal path would
 # write its own counts into it.
+#
+# `--uninstalled-build`: a scratch store belongs to THIS build, on purpose. The
+# binary never leaves its build directory, which is the fact the SH-630
+# migration guard and the SH-634 seat guard both refuse on, and this root
+# persists across sessions -- so the first schema bump after a scratch store was
+# created would otherwise refuse every command in here, and so would the first
+# command after a `cargo build` in this shell, which changes the binary's mtime
+# and makes the daemon still serving the root "another build". The shared
+# isolation owns the re-arming (after its own table clears both variables);
+# this script only states the intent.
 if [ "$print_only" -eq 1 ]; then
     if [ -n "$isolate_home" ]; then
-        storyhook_isolate_print "$isolate_home" "$root"
+        storyhook_isolate_print --uninstalled-build "$isolate_home" "$root"
     else
-        storyhook_isolate_print "$root"
+        storyhook_isolate_print --uninstalled-build "$root"
     fi
     printf "export PATH='%s':\"\$PATH\"\n" "$binary_dir"
     printf 'unset STORYHOOK_GATE_PROGRESS\n'
@@ -201,9 +211,9 @@ if [ "$print_only" -eq 1 ]; then
 fi
 
 if [ -n "$isolate_home" ]; then
-    storyhook_isolate "$isolate_home" "$root"
+    storyhook_isolate --uninstalled-build "$isolate_home" "$root"
 else
-    storyhook_isolate "$root"
+    storyhook_isolate --uninstalled-build "$root"
 fi
 export PATH="$binary_dir:$PATH"
 unset STORYHOOK_GATE_PROGRESS

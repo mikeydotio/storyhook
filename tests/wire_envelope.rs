@@ -17,13 +17,16 @@
 //! `tests/error_contract.rs` pins exit codes and stream placement. This one
 //! pins that a hop through JSON changes neither.
 
+use std::path::PathBuf;
+
 use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
     HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
     PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, WebAction,
+    UnclaimComment, VerifierAction, WebAction,
 };
+use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
     CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
@@ -37,6 +40,7 @@ use storyhook::output::{
     StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome, render_error,
     render_response,
 };
+use storyhook::service::{CleanupFailure, CleanupRemoval, CleanupReport, CleanupSkip};
 use storyhook::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, GlobalSeq, PrLink,
 };
@@ -376,12 +380,42 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
                     elapsed_seconds: Some(61),
+                    quiet_seconds: Some(7),
+                    probe_detail: Some("tmux exited 1: unbound variable".to_string()),
                     outcome: None,
                     outcome_detail: None,
                 }],
                 needs_human: vec![EngineNeedsHumanView {
                     id: "SH-11".to_string(),
                     title: "Approve the rollout".to_string(),
+                }],
+            })),
+        ),
+        (
+            "cleanup",
+            Response::Cleanup(Box::new(CleanupReport {
+                project: "fixture".to_string(),
+                dry_run: false,
+                candidates: 3,
+                reclaimed_bytes: 4096,
+                removed: vec![CleanupRemoval {
+                    story_id: "SH-7".to_string(),
+                    worktree: "/repo/SH-7".into(),
+                    branch: "worktree-SH-7".to_string(),
+                    removed_worktree: true,
+                    removed_local_branch: true,
+                    removed_remote_branch: true,
+                    reclaimed_bytes: 4096,
+                }],
+                skipped: vec![CleanupSkip {
+                    story_id: "SH-8".to_string(),
+                    reason: "dirty-worktree".to_string(),
+                    detail: "/repo/SH-8".to_string(),
+                }],
+                failed: vec![CleanupFailure {
+                    story_id: "SH-9".to_string(),
+                    reason: "fetch-failed".to_string(),
+                    detail: "authentication required".to_string(),
                 }],
             })),
         ),
@@ -527,6 +561,26 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "raw_json",
             Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
+        ),
+        (
+            "lane_budget_counted",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Counted {
+                        windows: vec!["storyhook:SH-655".to_string()],
+                    },
+                ),
+            )),
+        ),
+        (
+            "lane_budget_unanswered",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Unanswered {
+                        detail: "no server running — ünïcödé".to_string(),
+                    },
+                ),
+            )),
         ),
         (
             "project_snapshot_empty",
@@ -681,6 +735,30 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 relationships: 12,
             }))),
         ),
+        (
+            "confirmation_required_runtime_gc",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::RuntimeGc(RuntimeGcPlan {
+                daemons_dir: PathBuf::from("/Users/ada/.local/state/storyhook/daemons"),
+                candidates: vec![Candidate {
+                    key: "000427cc0cff49bd".to_string(),
+                    path: PathBuf::from(
+                        "/Users/ada/.local/state/storyhook/daemons/000427cc0cff49bd",
+                    ),
+                    store_path: PathBuf::from("/private/tmp/storyhook-e2e.bze1JG/data/store.db"),
+                    bytes: 421_888,
+                    snapshots: 1,
+                }],
+                kept: vec![Kept {
+                    key: "eab76ca58d086ca4".to_string(),
+                    path: PathBuf::from(
+                        "/Users/ada/.local/state/storyhook/daemons/eab76ca58d086ca4",
+                    ),
+                    store_path: Some(PathBuf::from("/Users/ada/.local/share/storyhook/store.db")),
+                    reason: KeepReason::DefaultStore,
+                    detail: "the default store's own runtime directory".to_string(),
+                }],
+            }))),
+        ),
     ]
 }
 
@@ -792,6 +870,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Unclaimed(..) => "unclaimed",
             Response::Stories { .. } => "stories",
             Response::EngineRun(_) => "engine_run",
+            Response::Cleanup(_) => "cleanup",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",
@@ -799,6 +878,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::ProjectSettings(_) => "project_settings",
             Response::RawJson(_) => "raw_json",
             Response::ProjectSnapshot(_) => "project_snapshot",
+            Response::LaneBudget(_) => "lane_budget",
             Response::StoryHistory(_) => "story_history",
             Response::StoryLog { .. } => "story_log",
             Response::ConfirmationRequired(_) => "confirmation_required",
@@ -806,7 +886,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 18] = [
+    const EVERY_VARIANT: [&str; 20] = [
         "message",
         "message_with_warnings",
         "story",
@@ -814,6 +894,7 @@ fn the_response_corpus_covers_every_variant() {
         "unclaimed",
         "stories",
         "engine_run",
+        "cleanup",
         "summary",
         "graph",
         "issues",
@@ -821,6 +902,7 @@ fn the_response_corpus_covers_every_variant() {
         "project_settings",
         "raw_json",
         "project_snapshot",
+        "lane_budget",
         "story_history",
         "story_log",
         "confirmation_required",
@@ -856,11 +938,16 @@ fn engine_run_renders_elapsed_as_human_time_and_json_data() {
         .expect("engine run corpus row");
     let human = render_response(&response, false, false);
     assert!(human.contains("1m 1s"), "{human}");
+    assert!(
+        human.contains("quiet") && human.contains("1m 1s       7s"),
+        "the lane's quiet time is shown beside its elapsed time (SH-657): {human}"
+    );
     assert!(human.contains("needs a human (no-auto)"), "{human}");
 
     let json: serde_json::Value =
         serde_json::from_str(&render_response(&response, true, false)).unwrap();
     assert_eq!(json["run"]["lanes"][0]["elapsed_seconds"], 61);
+    assert_eq!(json["run"]["lanes"][0]["quiet_seconds"], 7);
     assert_eq!(json["run"]["needs_human"][0]["id"], "SH-11");
 }
 
@@ -919,6 +1006,7 @@ fn error_corpus() -> Vec<AppError> {
     vec![
         AppError::Usage("unknown flag `--typo`".to_string()),
         AppError::Validation("invalid priority `urgent`".to_string()),
+        text_lint_error(),
         AppError::NotFound("story `SH-99` not found".to_string()),
         AppError::LockTimeout("another process holds the project lock".to_string()),
         AppError::DeadlineExceeded(
@@ -967,6 +1055,21 @@ fn error_corpus() -> Vec<AppError> {
     ]
 }
 
+fn text_lint_error() -> AppError {
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = storyhook::service::StoryService::new(&ctx);
+    let story = service
+        .create(&storyhook::service::NewStoryInput {
+            title: "Test text checks".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    service
+        .comment(&story.id, "Do not utilize it.")
+        .unwrap_err()
+}
+
 /// An exhaustive `match`, so a further `AppError` variant stops this file
 /// compiling until it has a wire form and a corpus row. The same guard
 /// `tests/error_contract.rs` uses for the exit-code table.
@@ -974,6 +1077,7 @@ fn variant_name(error: &AppError) -> &'static str {
     match error {
         AppError::Usage(_) => "Usage",
         AppError::Validation(_) => "Validation",
+        AppError::TextLint(_) => "TextLint",
         AppError::NotFound(_) => "NotFound",
         AppError::LockTimeout(_) => "LockTimeout",
         AppError::DeadlineExceeded(_) => "DeadlineExceeded",
@@ -995,7 +1099,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        11,
+        12,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -1085,6 +1189,7 @@ fn error_variants_travel_under_a_kind_tag() {
         vec![
             "usage",
             "validation",
+            "text_lint",
             "not_found",
             "lock_timeout",
             "deadline_exceeded",
@@ -1560,6 +1665,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Version,
         Invocation::ProjectSnapshot,
+        Invocation::LaneBudget,
         Invocation::History {
             action: HistoryAction::Read {
                 id: "SH-7".to_string(),
@@ -1597,6 +1703,9 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Daemon {
             action: DaemonAction::Status,
+        },
+        Invocation::Daemon {
+            action: DaemonAction::Restart,
         },
         Invocation::Daemon {
             action: DaemonAction::Stop { force: true },
@@ -1727,6 +1836,12 @@ fn invocation_corpus() -> Vec<Invocation> {
                 run: Some("run-1".to_string()),
             },
         },
+        Invocation::Verifier {
+            action: VerifierAction::Ack {
+                incident_id: "2:28821".to_string(),
+            },
+        },
+        Invocation::Cleanup { dry_run: true },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1764,6 +1879,8 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Engine { .. } => "Engine",
+        Invocation::Verifier { .. } => "Verifier",
+        Invocation::Cleanup { .. } => "Cleanup",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1816,6 +1933,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
         Invocation::ProjectSnapshot => "ProjectSnapshot",
+        Invocation::LaneBudget => "LaneBudget",
         Invocation::History { .. } => "History",
         Invocation::Migrate { .. } => "Migrate",
         Invocation::Attachment { .. } => "Attachment",
@@ -1832,7 +1950,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        67,
+        70,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

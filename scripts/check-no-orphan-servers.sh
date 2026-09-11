@@ -101,7 +101,22 @@ esac
 # daemon carries `--store-path <file>` ahead of its verb (SH-113), so a pattern
 # anchored on `story daemon --serve` stopped matching the very processes this
 # guard exists to find -- and a guard that matches nothing passes.
-pattern="${repo_root}/target/debug/(deps/(web_test|daemon_lifecycle|daemon_invoke|storyhook_test_support)-|story ([^ ]+ )*(daemon|web) --serve)"
+#
+# The optional lease directory is not decoration either (SH-635). Since SH-532
+# the Rust suite runs `story` from a PID-owned hard link under
+# `target/debug/.storyhook-test-binaries/<pid>-<nonce>/`, since SH-635 so
+# does the browser runner, and since SH-639 so does every plugin shell test --
+# so a daemon of THIS checkout is spelled
+# `.../target/debug/.storyhook-test-binaries/<pid>-<nonce>/story ...` at least as
+# often as `.../target/debug/story ...`. A pattern anchored on the bare artifact
+# alone could see only the daemons that had never been leased; every leaked
+# suite daemon fell through to the abandoned class below and was collected
+# only once its fixture directory was gone. The directory name is read from
+# `binary-lease.sh`, the one place it is spelled in shell (SH-136).
+# shellcheck source=binary-lease.sh
+. "${repo_root}/scripts/binary-lease.sh"
+lease_dir_re="${STORYHOOK_BINARY_LEASE_DIR//./\\.}"
+pattern="${repo_root}/target/debug/(deps/(web_test|daemon_lifecycle|daemon_invoke|storyhook_test_support)-|(${lease_dir_re}/[^/ ]+/)?story ([^ ]+ )*(daemon|web) --serve)"
 
 matches() {
     pgrep -f "$pattern" || true
@@ -193,9 +208,10 @@ reap() {
 
 # --- the second class: a daemon serving a store that is gone (SH-493) --------
 #
-# `pattern` above is anchored at THIS checkout, which is what makes a match
-# safe to act on -- and is also why it structurally cannot see the population
-# SH-493 counted. `tests/plugin_install.rs` copies the binary into its own
+# `pattern` above is anchored at THIS checkout (its `target/debug/`, whether
+# the binary is Cargo's own artifact or a lease of it), which is what makes a
+# match safe to act on -- and is also why it structurally cannot see the
+# population SH-493 counted. `tests/plugin_install.rs` copies the binary into its own
 # fixture and runs `<fixture>/package/story`, on purpose, to prove path
 # resolution from an installed layout; 672 of those were alive on one machine
 # across three days, invisible to both ends of this bracket while the four

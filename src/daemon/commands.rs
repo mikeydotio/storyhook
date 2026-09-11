@@ -23,6 +23,7 @@ use std::process::Output;
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
 use crate::error::AppError;
+use crate::output::{ConfirmationPlan, Response};
 
 /// Starts a daemon in the background, or reports the one already running.
 ///
@@ -30,18 +31,27 @@ use crate::error::AppError;
 /// *starts*; it does not move an already-running one, because a request to start
 /// something that is already started is not a request to restart it.
 ///
-/// Deliberately nothing more than [`lifecycle::ensure`] with that override.
-/// `ensure` already returns a matching daemon untouched and replaces one that
-/// does not match, and an earlier version of this function short-circuited on
-/// "something is running" *before* that check — so `story daemon start` happily
-/// reported a daemon serving a different build as though it were the right one.
-/// Pinned by `a_daemon_from_another_build_is_replaced_rather_than_reused`.
+/// Deliberately nothing more than [`lifecycle::start`] with that override.
+/// `start` serializes explicit lifecycle operations, returns a matching daemon
+/// untouched, and replaces one that does not match. An earlier version of this
+/// function short-circuited on "something is running" *before* the build check,
+/// so `story daemon start` happily reported a daemon serving a different build
+/// as though it were the right one. Pinned by
+/// `a_daemon_from_another_build_is_replaced_rather_than_reused`.
 pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppError> {
     let env = match port {
         Some(port) => env.clone().daemon_port(port),
         None => env.clone(),
     };
-    lifecycle::ensure(&env)
+    lifecycle::start(&env)
+}
+
+/// Gracefully replaces the running daemon while preserving its loopback port.
+///
+/// The lifecycle layer owns serialization, draining, and replacement health;
+/// this command surface deliberately adds no force or port override.
+pub fn restart(env: &Environment) -> Result<lifecycle::RestartedDaemon, AppError> {
+    lifecycle::restart(env)
 }
 
 /// Notes, on stderr, that `info`'s tailnet bind is not known yet.
@@ -106,18 +116,32 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
 /// reader who came to look is owed the whole answer.
 pub fn status(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
-        return Ok(format!(
-            "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
-            lifecycle::describe_paths(env),
-            crate::daemon::backup::describe(env),
-            crate::daemon::backup::describe_maintenance(env),
-            agent::report(env)
+        return Ok(with_reclaimable(
+            env,
+            format!(
+                "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
+                lifecycle::describe_paths(env),
+                crate::daemon::backup::describe(env),
+                crate::daemon::backup::describe_maintenance(env),
+                agent::report(env)
+            ),
         ));
     }
     match lifecycle::read_info(env) {
         Some(info) => {
             let staleness = if info.is_this_binary() {
                 String::new()
+            } else if super::seat_guard::would_refuse(env, &info) {
+                // The promise below would be a lie from an uninstalled build:
+                // the seat guard refuses it the replacement (SH-634), and the
+                // person reading this is about to type that next command.
+                format!(
+                    "\n  serving storyhook {}, which is not the build you are running — \
+                     and the next command from this binary will be refused rather than \
+                     restart it: this binary is still where cargo built it. {}",
+                    info.version,
+                    super::seat_guard::remedies()
+                )
             } else {
                 // Worth saying out loud rather than leaving to be discovered:
                 // the next command will restart it, and a user watching the pid
@@ -128,26 +152,65 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                     info.version
                 )
             };
-            Ok(format!(
-                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
-                info.version,
-                info.dashboard_url(),
-                info.pid,
-                staleness,
-                lifecycle::describe_paths(env),
-                crate::daemon::backup::describe(env),
-                crate::daemon::backup::describe_maintenance(env),
-                agent::report(env)
+            Ok(with_reclaimable(
+                env,
+                format!(
+                    "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
+                    info.version,
+                    info.dashboard_url(),
+                    info.pid,
+                    staleness,
+                    lifecycle::describe_paths(env),
+                    crate::daemon::backup::describe(env),
+                    crate::daemon::backup::describe_maintenance(env),
+                    agent::report(env)
+                ),
             ))
         }
         // The lock is held by something that published nothing. Say so plainly
         // rather than reporting "not running", which would be false.
-        None => Ok(format!(
-            "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
-            lifecycle::describe_paths(env),
-            agent::report(env)
+        None => Ok(with_reclaimable(
+            env,
+            format!(
+                "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
+                lifecycle::describe_paths(env),
+                agent::report(env)
+            ),
         )),
     }
+}
+
+/// `status`'s body plus the one line naming reclaimable runtime directories,
+/// when there are any (SH-638). One function for all three branches, for the
+/// reason [`agent::report`] is: a machine-wide fact reported at one branch
+/// and silently dropped at another is SH-418's shape.
+fn with_reclaimable(env: &Environment, body: String) -> String {
+    let reclaimable = crate::daemon::gc::describe(env);
+    if reclaimable.is_empty() {
+        body
+    } else {
+        format!("{body}\n{reclaimable}")
+    }
+}
+
+/// `story daemon gc [--force]`: surveys the runtime directories under this
+/// state home and reclaims those of stores that no longer exist (SH-638).
+///
+/// Unforced, and with something to remove, it answers with the plan and
+/// asks — the same two-step `story project delete` runs, confirmed in the
+/// process that has a terminal. With nothing to remove it reports what it
+/// kept and why, forced or not: there is no question to ask.
+#[must_use]
+pub fn gc(env: &Environment, force: bool) -> Response {
+    let plan = crate::daemon::gc::survey(env);
+    if plan.candidates.is_empty() {
+        return Response::Message(plan.render().trim_end().to_string());
+    }
+    if !force {
+        return Response::ConfirmationRequired(Box::new(ConfirmationPlan::RuntimeGc(plan)));
+    }
+    let report = crate::daemon::gc::reclaim(plan);
+    Response::MessageWithWarnings(report.message(), report.warnings())
 }
 
 /// Prints the running daemon's bearer token.
@@ -708,6 +771,7 @@ mod tests {
         install_guard::Inputs {
             uid: 501,
             running: story.clone(),
+            build_dir: None,
             installed_story: Some(story),
             this_binary: false,
         }

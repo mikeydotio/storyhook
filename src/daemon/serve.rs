@@ -36,7 +36,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::api::http::{
-    Reply, TrustedHosts, carries_body, finish, path_segments, read_body, request_path,
+    Reply, RequestBody, TrustedHosts, carries_body, finish, path_segments, read_body, request_path,
     request_query, text_reply,
 };
 use crate::api::rest::{self, Changed};
@@ -170,9 +170,10 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
-    /// The exact verification generation currently owned by the serialized
-    /// verifier (SH-549). Shared with the progress publisher and REST board;
-    /// queue ordering alone cannot answer this once priorities change.
+    /// The exact verification generation each project's verifier currently
+    /// owns (SH-549; one worker per project since SH-648). Shared with the
+    /// progress publisher and REST board; queue ordering alone cannot answer
+    /// this once priorities change.
     verification_activity: crate::daemon::verification::VerificationActivity,
     /// Engine controls are answered on per-connection workers, never the
     /// fixed store-dispatch pool. This controller owns the persistent store
@@ -314,6 +315,10 @@ where
     // unbounded channel, because back-pressure here would reintroduce the
     // deadlock this lane exists to remove.
     let (nested_tx, nested_rx) = mpsc::channel::<Job>();
+    // The engine may claim work on its first steady pass. Hold that pass until
+    // every server thread exists and `ready()` has fired; restart
+    // reconciliation already ran before portfile publication.
+    let (engine_start_tx, engine_start_rx) = mpsc::channel::<()>();
 
     // Every background thread lives inside this scope, which is what lets the
     // change-token poller and every dispatcher borrow the store rather than
@@ -369,15 +374,23 @@ where
                 )
             });
         }
-        // The Full Auto engine trigger (SH-466): a restart sweep once, then
-        // the ordinary reconcile pass on every bus wake or coarse tick. One
-        // thread, sequential, so nothing else can race the restart sweep
-        // over the same lane rows.
+        // Steady Full Auto reconciliation starts only after `ready()` below,
+        // and stops scheduling as soon as shutdown enters draining state.
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
             let bus = bus.clone();
-            scope.spawn(move || crate::daemon::engine::poll_engine(store, &env, &bus, &stop));
+            let draining = &serving.draining;
+            scope.spawn(move || {
+                if engine_start_rx.recv().is_ok() {
+                    crate::daemon::engine::poll_engine(store, &env, &bus, &stop, draining);
+                }
+            });
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            scope.spawn(move || crate::daemon::cleanup::poll_cleanup(store, &env, &stop));
         }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
@@ -413,6 +426,7 @@ where
         }
 
         ready();
+        let _ = engine_start_tx.send(());
 
         // One-shot, not a loop like the threads above — files whatever
         // crashes the startup harvest found, then ends. After `ready()` so a
@@ -915,7 +929,7 @@ struct Job {
     method: Method,
     path: String,
     headers: Vec<Header>,
-    body: String,
+    body: RequestBody,
     loopback: bool,
     reply: mpsc::Sender<Verdict>,
 }
@@ -1240,9 +1254,24 @@ fn worker(
         return;
     }
 
-    let body = if carries_body(&method) {
+    let upload = matches!(
+        crate::api::routes::classify(&segments, &method),
+        crate::api::routes::Route::Project {
+            route: crate::api::routes::ProjectRoute::StoryAttachmentUpload { .. },
+            ..
+        }
+    );
+    let body = if upload {
+        match crate::api::upload::read(&mut request) {
+            Ok(bytes) => RequestBody::Binary(bytes),
+            Err(reply) => {
+                finish(request, reply);
+                return;
+            }
+        }
+    } else if carries_body(&method) {
         match read_body(&mut request) {
-            Some(b) => b,
+            Some(b) => RequestBody::Text(b),
             None => {
                 finish(
                     request,
@@ -1252,28 +1281,30 @@ fn worker(
             }
         }
     } else {
-        String::new()
+        RequestBody::Text(String::new())
     };
 
     // Engine controls can synchronously run `story.sh unclaim`, whose own
     // `story` calls return through `/api/v1/invoke`. Intercept after admission
     // and body acquisition, but before a `Job` can occupy the fixed store
     // pool, so that nested work always has a dispatcher available.
-    if let Some(reply) = crate::api::engine::intercept(
-        &segments,
-        &method,
-        query.as_deref(),
-        &headers,
-        &body,
-        trusted_hosts,
-        token,
-        engine,
-        inflight,
-        &bus,
-        tokens,
-        cookie_name,
-        chrono::Utc::now(),
-    ) {
+    if let RequestBody::Text(text) = &body
+        && let Some(reply) = crate::api::engine::intercept(
+            &segments,
+            &method,
+            query.as_deref(),
+            &headers,
+            text,
+            trusted_hosts,
+            token,
+            engine,
+            inflight,
+            &bus,
+            tokens,
+            cookie_name,
+            chrono::Utc::now(),
+        )
+    {
         finish(request, reply);
         return;
     }
@@ -1285,7 +1316,7 @@ fn worker(
     // other. `hook_depth` caps nesting at one, so this lane can never
     // recurse — structurally deadlock-free, the same move `GET /api/events`
     // and the dispatch-endpoint intercept above already make (SH-173).
-    let nested = is_nested_invoke(&path, &body);
+    let nested = matches!(&body, RequestBody::Text(text) if is_nested_invoke(&path, text));
 
     let (reply_tx, reply_rx) = mpsc::channel::<Verdict>();
     let job = Job {
@@ -1445,14 +1476,16 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         entry: &entry,
     };
     let segments = path_segments(&job.path);
-    if let Some(answer) = rpc::route(
-        &surface,
-        &segments,
-        &job.method,
-        &job.headers,
-        &job.body,
-        job.loopback,
-    ) {
+    if let RequestBody::Text(text) = &job.body
+        && let Some(answer) = rpc::route(
+            &surface,
+            &segments,
+            &job.method,
+            &job.headers,
+            text,
+            job.loopback,
+        )
+    {
         // Named ahead of the match, which consumes `answer`: the shutdown
         // arm below publishes `Change::Reload` itself and the daemon is on
         // its way out, so it is the one case that skips the ordinary notice
@@ -1521,7 +1554,14 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         serving.store,
         &serving.env,
         &serving.verification_activity,
-        rest::RouteRequest::new(&job.method, &job.path, &job.headers, &job.body),
+        match &job.body {
+            RequestBody::Text(text) => {
+                rest::RouteRequest::new(&job.method, &job.path, &job.headers, text)
+            }
+            RequestBody::Binary(bytes) => {
+                rest::RouteRequest::binary(&job.method, &job.path, &job.headers, bytes)
+            }
+        },
         &trusted_hosts,
     );
     drop(trusted_hosts);

@@ -129,7 +129,7 @@ pub enum ProjectRoute<'a> {
     Data,
     /// `POST .../verification/ack` — acknowledge one exact halted incident.
     VerificationAck,
-    /// `GET|POST .../engine` — inspect or start Full Auto.
+    /// `GET|POST|PATCH .../engine` — inspect, start, or configure Full Auto.
     Engine,
     /// `POST .../engine/{action}` — control one engine run.
     EngineAction { action: EngineAction },
@@ -139,10 +139,14 @@ pub enum ProjectRoute<'a> {
     StoryCreate,
     /// `GET .../story/{id}`
     StoryShow { id: &'a str },
+    /// `GET .../story/{id}/attachments/{attachment_id}` — stored image bytes.
+    StoryAttachment { id: &'a str, attachment_id: &'a str },
     /// `PATCH .../story/{id}`
     StoryPatch { id: &'a str },
     /// `DELETE .../story/{id}`
     StoryDelete { id: &'a str },
+    /// `POST .../story/{id}/attachments` — one binary image upload.
+    StoryAttachmentUpload { id: &'a str },
     /// `POST .../story/{id}/{action}`, for an action that exists.
     StoryAction { id: &'a str, action: StoryAction },
     /// `POST .../story/{id}/{action}` for an action that does not exist.
@@ -308,7 +312,7 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["engine"] => match method {
-            Method::Get | Method::Post => ProjectRoute::Engine,
+            Method::Get | Method::Post | Method::Patch => ProjectRoute::Engine,
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["engine", action] => match (method, EngineAction::parse(action)) {
@@ -324,6 +328,14 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Get => ProjectRoute::StoryShow { id },
             Method::Patch => ProjectRoute::StoryPatch { id },
             Method::Delete => ProjectRoute::StoryDelete { id },
+            _ => ProjectRoute::MethodNotAllowed,
+        },
+        ["story", id, "attachments"] => match method {
+            Method::Post => ProjectRoute::StoryAttachmentUpload { id },
+            _ => ProjectRoute::MethodNotAllowed,
+        },
+        ["story", id, "attachments", attachment_id] => match method {
+            Method::Get => ProjectRoute::StoryAttachment { id, attachment_id },
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["story", id, "dispatch"] => match method {
@@ -413,8 +425,10 @@ impl ProjectRoute<'_> {
             ProjectRoute::EngineActionUnknown => "EngineActionUnknown",
             ProjectRoute::StoryCreate => "StoryCreate",
             ProjectRoute::StoryShow { .. } => "StoryShow",
+            ProjectRoute::StoryAttachment { .. } => "StoryAttachment",
             ProjectRoute::StoryPatch { .. } => "StoryPatch",
             ProjectRoute::StoryDelete { .. } => "StoryDelete",
+            ProjectRoute::StoryAttachmentUpload { .. } => "StoryAttachmentUpload",
             ProjectRoute::StoryAction { .. } => "StoryAction",
             ProjectRoute::StoryActionUnknown => "StoryActionUnknown",
             ProjectRoute::Dispatch { .. } => "Dispatch",
@@ -550,6 +564,17 @@ mod tests {
             Route::Project {
                 id: "p",
                 route: ProjectRoute::MethodNotAllowed
+            }
+        );
+    }
+
+    #[test]
+    fn the_engine_collection_accepts_patch_for_live_configuration() {
+        assert_eq!(
+            at("/api/repos/p/engine", &Method::Patch),
+            Route::Project {
+                id: "p",
+                route: ProjectRoute::Engine
             }
         );
     }

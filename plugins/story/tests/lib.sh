@@ -60,6 +60,27 @@ _cleanup() {
   local status=$? cleanup_failed=0 d session session_status
   trap - EXIT
 
+  # The daemon this test owns is stood down BEFORE its home is deleted, the
+  # rule `TestEnv::stop_daemon` already states for the Rust suite ("a test
+  # that asks about bytes on disk must stand the daemon down first"). Deleting
+  # the home first left a live daemon holding an unlinked store; it noticed its
+  # parent had gone up to one SHUTDOWN_CHECK (250ms) later, and its exit
+  # journal recreated the directory it was writing into -- 77 resurrected
+  # fixture roots in /tmp on the machine that filed SH-631, and the exact
+  # window the gate postlude reports as "a daemon serving a store that no
+  # longer exists". Only the process that MINTED the home owns the daemon; a
+  # nested `bash -c 'source lib.sh'` shares its caller's and must not stop it.
+  # `--force`: a stop that waits for ever on a wedged daemon is a wedged suite
+  # (SH-528), and a daemon that cannot be stopped is a leak -- reported as a
+  # failed test rather than left for the next run to find (SH-306).
+  if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
+    if ! story daemon stop --force >/dev/null 2>&1; then
+      printf 'failed to stop the test daemon under %s before deleting it\n' \
+        "$STORYHOOK_TEST_HOME" >&2
+      cleanup_failed=1
+    fi
+  fi
+
   if [ "${#_TMP_TMUX_SESSIONS[@]}" -gt 0 ]; then
     # The engine can still be between claiming a lane and creating its terminal.
     # Stop it before reaping the registered sessions so cleanup cannot race a
@@ -132,27 +153,27 @@ trap _cleanup EXIT
 # written before the store landed, while the variables were still unread,
 # because adding it afterwards would have been adding it too late.
 #
-# run-tests.sh exports these for the whole run and refuses to start if they
-# are wrong; this block is what makes a single `bash test-foo.sh` just as
-# safe. STORYHOOK_REAL_HOME survives so a test can assert the real data home
-# was left alone.
+# This block is the ONE isolation every test gets, under run-tests.sh and on
+# its own alike (SH-631): a root of its own, a daemon of its own, and
+# STORYHOOK_PARENT_PID = this process, so the daemon dies with the test by
+# construction rather than with the run. run-tests.sh isolates only itself and
+# deliberately leaves $STORYHOOK_TEST_HOME unset so this branch runs for every
+# test; the variable being set means an OUTER lib.sh instance owns the home --
+# a nested `bash -c 'source lib.sh'` (test-temp-cleanup.sh) shares its caller's
+# store and daemon and must not mint, stop or delete anything of its own.
+# STORYHOOK_REAL_HOME survives so a test can assert the real data home was
+# left alone; an inherited value wins, because run-tests.sh has already
+# rewritten $HOME by the time this runs.
 if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
-  export STORYHOOK_REAL_HOME="$HOME"
+  export STORYHOOK_REAL_HOME="${STORYHOOK_REAL_HOME:-$HOME}"
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
+  _STORYHOOK_OWNS_TEST_HOME=1
   _TMP_REPOS+=("$STORYHOOK_TEST_HOME")
 
   # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
   # header carries the parameters and the reason for each. `--home` IS passed:
   # this suite runs nothing but `story` and `git`.
-  #
-  # Sourcing one implementation is what finally ends the duplication
-  # `run-tests.sh` used to document as deliberate. It was deliberate for a real
-  # reason -- this branch is SKIPPED when run-tests.sh has already set
-  # $STORYHOOK_TEST_HOME, so a block written only here left the whole-suite run
-  # with no isolation at all, which is how the leaked daemons were found -- and
-  # that reason is answered by both call sites calling the same function rather
-  # than by both carrying the same twenty lines.
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
@@ -178,11 +199,44 @@ fi
 # which names a state, a project and a store -- and not the one thing that was
 # actually wrong.
 #
-# `make test` has always supplied this (`Makefile`'s plugin leg prepends
-# `target/debug`), which is exactly why it went unnoticed: the gate was right
-# and the standalone path was silently testing something else. This is the
-# SH-226 shape one layer over -- what a process IS, rather than what a `$PATH`
-# happens to resolve.
+# `make test` used to supply this too (`Makefile`'s plugin leg prepended
+# `target/debug` until SH-639), which is exactly why it went unnoticed: the
+# gate was right and the standalone path was silently testing something else.
+# This is the SH-226 shape one layer over -- what a process IS, rather than
+# what a `$PATH` happens to resolve. The artifact is resolved HERE, from the
+# checkout, and never read off `$PATH`; `make test` and a hand-typed
+# `bash test-foo.sh` are one code path (SH-631).
+#
+# WHAT GOES ON `$PATH` IS A LEASE OF THE ARTIFACT, NEVER THE ARTIFACT (SH-639).
+# Cargo replaces `target/debug/story` by writing a new inode and renaming it
+# over the entry, and a daemon's identity is `(version, exe, exe_mtime)`
+# (`DaemonInfo::is_this_binary`) -- so with the bare artifact on `$PATH`, any
+# `cargo build|test|check` in the checkout landing mid-test changed the
+# identity of the test's own daemon, and the next `story` call stood it down
+# and restarted it on a fresh port, silently. `scripts/binary-lease.sh` (the
+# shell rendering of SH-532's `story_binary()`, given to the browser runner by
+# SH-635) hard-links the artifact into `<artifact dir>/.storyhook-test-binaries/
+# <pid>-<nonce>/story`, so the inode this test started with stays alive and
+# unchanged for as long as the link does. The owner is `$$` -- this test --
+# for the reason its daemon is (SH-631): the lease dies with the test, and the
+# sweeper reclaims one whose owner is provably gone.
+#
+# ONLY THE INSTANCE THAT OWNS THE HOME LEASES. A nested `bash -c 'source
+# lib.sh'` (test-temp-cleanup.sh) shares its caller's store AND daemon, and
+# identity is a PATH compare: a second lease of the same inode at a second
+# path would make the nested instance's first `story` call stand the shared
+# daemon down -- the very restart this block exists to prevent. The nested
+# instance changes nothing about `$PATH`: it runs whichever `story` its caller
+# arranged -- the outer lease, or a harness's own installed copy
+# (`tests/plugin_install.rs` sources this file under an inherited home with a
+# fixture `bin/story` first on `$PATH`, a distinct inode the rebuild cannot
+# touch). What it refuses, by name, is the one shape that IS the defect: the
+# artifact's own inode reached at a path outside the lease root, which is the
+# bare `target/debug/story` or a symlink to it.
+#
+# The lease directory is registered for `_cleanup`, which removes it AFTER
+# `story daemon stop --force`: the stop needs `story` on `$PATH`, so the lease
+# must outlive the daemon, never the other way round.
 #
 # Prepended rather than replacing `$PATH`: the suite needs `git`, `jq` and the
 # fake tmux, and a test file's own `PATH="$TESTS_DIR/fakes:$PATH"` still wins
@@ -196,7 +250,37 @@ if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "  first, or \`make test\`, which does." >&2
   exit 1
 fi
-export PATH="$_STORY_TARGET_DIR/debug:$PATH"
+# shellcheck source=../../../scripts/binary-lease.sh
+. "$TESTS_DIR/../../../scripts/binary-lease.sh"
+if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
+  _STORY_LEASE="$(storyhook_lease_binary "$_STORY_TARGET_DIR/debug/story")" || exit 1
+  _STORY_LEASE_DIR="$(dirname "$_STORY_LEASE")"
+  _TMP_REPOS+=("$_STORY_LEASE_DIR")
+  export PATH="$_STORY_LEASE_DIR:$PATH"
+  unset _STORY_LEASE _STORY_LEASE_DIR
+else
+  _STORY_INHERITED="$(command -v story || true)"
+  if [ -z "$_STORY_INHERITED" ]; then
+    echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
+    echo "  so it shares its caller's daemon and runs the caller's \`story\`," >&2
+    echo "  but nothing on \$PATH resolves that name." >&2
+    exit 1
+  fi
+  if [ "$_STORY_INHERITED" -ef "$_STORY_TARGET_DIR/debug/story" ]; then
+    case "$_STORY_INHERITED" in
+      "$_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR"/*/story) : ;;
+      *)
+        echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME," >&2
+        echo "  so it shares its caller's daemon, but \`story\` resolves to the BARE" >&2
+        echo "  Cargo artifact [$_STORY_INHERITED] rather than a lease of it under" >&2
+        echo "  $_STORY_TARGET_DIR/debug/$STORYHOOK_BINARY_LEASE_DIR/. A rebuild" >&2
+        echo "  would replace it under the shared daemon (SH-639)." >&2
+        exit 1
+        ;;
+    esac
+  fi
+  unset _STORY_INHERITED
+fi
 unset _STORY_TARGET_DIR
 
 # --- fake-tmux state isolation ---------------------------------------------
@@ -221,6 +305,19 @@ if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   export FAKE_TMUX_STATE
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
 fi
+
+# And the fake itself is on $PATH for EVERY test, for the same reason its
+# state is minted here (SH-655). Since the lane-budget gate, every dispatch --
+# dry-run included -- takes a census of the live agent windows on the tmux
+# server this shell is attached to, ahead of its claim. Fourteen test files
+# dispatched without the fake on their PATH, and every one of them turned
+# load-dependent the day the gate landed: green on a quiet machine, refused
+# (`lane-budget`) on one running its budget of agent sessions -- the exact
+# verdict SH-655 exists to remove from the merge gate, manufactured inside
+# the suite that tests it. A test file's own `PATH="$TESTS_DIR/fakes:$PATH"`
+# or private fake-bin directory still wins for the names it provides, and
+# nothing under fakes/ shadows `story`: only `tmux` lives there directly.
+export PATH="$TESTS_DIR/fakes:$PATH"
 
 # mk_story_repo — build a temp git repo with a real storyhook project
 # initialized (`story project new`), and a LOCAL bare origin so dispatch's `git

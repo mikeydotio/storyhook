@@ -903,6 +903,11 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
     std::fs::create_dir_all(root.join("scripts")).unwrap();
     std::fs::create_dir_all(root.join("bin")).unwrap();
     std::fs::copy(
+        repo_root().join("scripts/branch-policy.sh"),
+        root.join("scripts/branch-policy.sh"),
+    )
+    .unwrap();
+    std::fs::copy(
         repo_root().join("scripts/release.sh"),
         root.join("scripts/release.sh"),
     )
@@ -947,7 +952,7 @@ exit 2
     );
 
     for args in [
-        ["init", "-q", "-b", "main"].as_slice(),
+        ["init", "-q", "-b", "dev"].as_slice(),
         ["config", "user.email", "release@test"].as_slice(),
         ["config", "user.name", "release-test"].as_slice(),
         ["add", "-A"].as_slice(),

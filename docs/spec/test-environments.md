@@ -17,6 +17,7 @@ The defences existed, and each was added where its incident happened:
 | `TestEnv` | `crates/storyhook-test-support/src/env.rs` | the test files that use it |
 | `is_test_build()`'s refusal | `src/env/mod.rs` | a bare `cargo test` with **nothing** naming a store |
 | `migration_guard`, `install_guard` | `src/migration_guard.rs`, `src/daemon/install_guard.rs` | a schema advance, a launchd enthronement |
+| `seat_guard` (SH-634, later) | `src/daemon/seat_guard.rs` | the default store's daemon seat — replacing its daemon, or starting one at all |
 | derived scans | `tests/store_isolation.rs` | drift in three named variables |
 
 What did **not** exist was a statement, anywhere, of what a storyhook test
@@ -267,6 +268,89 @@ the call is spelled.
   a process **is**, not what a name happens to resolve to. `lib.sh` prepends the
   checkout's own `target/debug` and **refuses** when that binary is absent,
   because a fallback here is precisely the silent substitution being fixed.
+
+## Every shell test owns its daemon, and stands it down before deleting its home
+
+Settled on SH-631 (2026-09-09), by user determination between two containment
+models. `plugins/story/tests/run-tests.sh` used to isolate **once** and export
+one `STORYHOOK_TEST_HOME` for the whole run — the variable `lib.sh` reads as
+"already isolated" — so 74 tests shared one store, one daemon and
+`STORYHOOK_PARENT_PID` = the runner, while a standalone `bash test-foo.sh`
+minted its own. Two renderings of one harness, in the exact shape this document
+exists to end. Now the runner isolates only *itself* (a root nothing writes
+into, kept so the runner can never reach a real store by accident and so the
+`tests/store_isolation.rs` containment scan still sees it) and leaves
+`STORYHOOK_TEST_HOME` unset, so `lib.sh`'s mint branch runs for every test:
+own root, own daemon, `STORYHOOK_PARENT_PID` = the test's own pid. A daemon
+dies with its test by construction, and a daemon that wedges in test K costs
+test K rather than every test after it — which is what 33 of 74 failures on
+the filing night were. A nested `bash -c 'source lib.sh'` still inherits its
+caller's home and shares its daemon; only the process that minted the home
+owns it, tracked by `_STORYHOOK_OWNS_TEST_HOME`.
+
+The defect the evidence actually proved was narrower than the one filed. The
+shared-home suite **passed 74/74** on the tree the story named, and the plugin
+leg had a real (not reused) green receipt for that exact fingerprint from the
+night before — but 77 fixture roots were sitting in `/tmp`, each holding
+nothing but a daemon journal reading "parent process N is gone; exiting".
+Teardown deleted the home under a live daemon; the daemon noticed its parent
+had died up to one `SHUTDOWN_CHECK` (250ms) later, and its exit journal
+(`Journal::append` → `create_dir_all`) recreated the directory it was writing
+into. That window is also exactly what `check-no-orphan-servers.sh` reports as
+"a daemon serving a store that no longer exists". So `lib.sh`'s `_cleanup` now
+runs `story daemon stop --force` **before** the `rm -rf` — the rule
+`TestEnv::stop_daemon` already states for the Rust suite — and a stop that
+fails fails the test: a daemon that could not be stopped is a leak, reported
+where it happened rather than left for the next run's preflight to refuse over
+(SH-306). `--force` rather than graceful because a stop that waits for ever on
+a wedged daemon is a wedged suite (SH-528).
+
+`plugins/story/tests/test-daemon-containment.sh` pins both halves behaviourally:
+this process is its daemon's parent and its home was minted, not inherited;
+and a child test process's daemon is dead the instant the child is, with its
+home neither surviving nor reappearing after four `SHUTDOWN_CHECK`s. Mutation
+checked: with the teardown stop disabled the second half is red again. The cost
+is one daemon spawn and stop per test, measured on the PR rather than assumed,
+on a leg `leg.sh --reuse plugin` fingerprint-reuses whenever its inputs are
+unchanged. The wedge itself — a daemon that answered its shutdown and never
+released the pidfile lock, under two concurrent plugin suites and a night of
+daemon churn — did not reproduce and is deliberately not claimed fixed; what is
+fixed is its blast radius, and any recurrence now names one test.
+
+## As built — the seat guard (SH-634)
+
+The hazard this document opens with — `./target/debug/story list`, typed in a
+worktree, resolves the real store and the real daemon — was still true after
+`make scratch` gave a person somewhere else to type it. On 2026-09-09 it was
+observed rather than described: a `PATH=target/debug:$PATH story list` from a
+checkout stood down the installed daemon on the production store and seated a
+worktree debug build in its place; the next installed `story` seated the
+installed build back; four custodians in one hour. SH-630 stopped the migration
+that build then ran. `src/daemon/seat_guard.rs` stops the seating.
+
+The rule: **an uninstalled build never becomes the default store's daemon.** A
+binary whose canonical executable sits inside the directory `build.rs` stamped
+is refused, before the shutdown request, from replacing a live daemon of
+another build on the default store (`StoreLocation::is_default`), and is refused
+a daemon at all when nothing named the store (`StoreOrigin::XdgDefault`). Both
+clauses permit under `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1`; the parameter table
+above clears it beside the migration override, and `--uninstalled-build`
+re-arms both. Why the two clauses key on different facts, where the guard sits
+in `spawn_locked` and why that ordering is a contract, and what it deliberately
+does not cover are on the module. The alternative the story offered — refuse the
+stand-down but let the uninstalled client talk to the incumbent — was rejected:
+since SH-114 the service runs inside the daemon, so a worktree build talking to
+the installed daemon would exercise none of the worktree's changes while looking
+exactly as though it had.
+
+What this changes for the scratch environment: the re-arm of the seat override
+is load-bearing, not tidy. A `cargo build` inside a scratch shell changes the
+binary's mtime, so the daemon still serving the root reads as "another build"
+and the next command would meet the first clause. Proven end to end in
+`tests/seat_guard.rs` with the same installed-copy fixture
+`tests/migration_guard.rs` uses (`storyhook_test_support::installed_copy`, shared
+now rather than copied): the control for "an installed binary replaces a stale
+daemon" is what `make install` produces, never the incident.
 
 ## Deliberately out of scope
 

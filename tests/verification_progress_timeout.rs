@@ -38,17 +38,22 @@ fn verify_with_preparation(
             .unwrap();
         assert!(output.status.success(), "{output:?}");
     }
-    std::fs::create_dir(checkout.path().join("scripts")).unwrap();
-    std::fs::write(checkout.path().join("scripts/verify-pr.sh"), script).unwrap();
+    // The fake verifier lives beside the real siblings it sources, in a
+    // directory of its own — never inside the checkout, which since SH-654
+    // contributes nothing the actuator runs. A checkout with no scripts tree
+    // is the ordinary shape of a registered project now.
+    let tools = scratch_dir();
+    std::fs::write(tools.path().join("verify-pr.sh"), script).unwrap();
     for name in ["machine-lock.sh", "gate-progress.sh"] {
         std::os::unix::fs::symlink(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
                 .join(name),
-            checkout.path().join("scripts").join(name),
+            tools.path().join(name),
         )
         .unwrap();
     }
+    assert!(!checkout.path().join("scripts").exists());
     let candidate = VerificationCandidate {
         project: fixture.project(),
         project_slug: "fixture".into(),
@@ -84,19 +89,23 @@ fn verify_with_preparation(
         idle,
         idle / 4,
     )
+    .with_verifier_script(tools.path().join("verify-pr.sh"))
     .verify(&candidate, &pull_request);
     assert!(!checkout.path().join("must-not-run").exists());
     outcome
 }
 
 const IDLE: Duration = Duration::from_secs(1);
+/// How a fake reaches the real sibling beside it — the shape the shipped
+/// family uses, since the fake's directory is the bundle's stand-in.
+const SIBLING: &str = r#""$(dirname "${BASH_SOURCE[0]}")""#;
 const MERGED: &str =
     r#"printf '%s\n' '{"result":"merged","tree":"verified-tree","detail":"completed"}'"#;
 
 #[test]
 fn progressing_verification_can_outlive_its_idle_budget() {
     let script = format!(
-        "set -eu\n. scripts/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{MERGED}\n",
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
@@ -109,7 +118,7 @@ fn progressing_verification_can_outlive_its_idle_budget() {
 #[test]
 fn silence_after_progress_still_times_out() {
     let script = format!(
-        "set -eu\n. scripts/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{MERGED}\n",
         (IDLE * 4).as_secs()
     );
     let outcome = verify_script(&script, IDLE);
@@ -139,10 +148,11 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
     let idle = IDLE * 3;
     let script = format!(
         "set -eu\nexport STORYHOOK_LOCK_DIR=\"$PWD/locks\"\nunset STORYHOOK_MACHINE_LOCKS\n\
-         bash scripts/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
-         for i in {{1..100}}; do [ ! -f locks/gate.lock/pid ] || break; sleep 0.01; done\n\
-         test -f locks/gate.lock/pid\n\
-         bash scripts/machine-lock.sh gate -- true\nwait \"$holder\"\n{MERGED}\n",
+         lock=\"$(bash {SIBLING}/machine-lock.sh --plan gate -- true | sed -n 's/^lock=//p')\"\n\
+         bash {SIBLING}/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
+         for i in {{1..100}}; do [ ! -f \"$lock/pid\" ] || break; sleep 0.01; done\n\
+         test -f \"$lock/pid\"\n\
+         bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{MERGED}\n",
         (idle * 2).as_secs()
     );
     let outcome = verify_script(&script, idle);

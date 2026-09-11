@@ -30,8 +30,9 @@ use crate::error::AppError;
 use crate::output::render_error;
 use crate::service::Ctx;
 use crate::service::engine::{
-    DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher, EngineService,
-    MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
+    ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher,
+    EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
+    WindowProbe,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -92,6 +93,21 @@ impl EngineController {
         let ctx = self.context(project)?;
         let run = run.map(str::to_string);
         EngineService::new(&ctx, &NoopDispatcher).status(run.as_ref())
+    }
+
+    fn configure(&self, project: &str, body: &str) -> Result<RunView, AppError> {
+        let request: ConfigureBody = parse_body(body, "engine configure")?;
+        let ctx = self.context(project)?;
+        EngineService::new(&ctx, &NoopDispatcher).configure(
+            &request.run,
+            ConfigureRequest {
+                lanes: request.lanes,
+                agent: request.agent.into(),
+                model: request.model.map(|value| value.as_str().to_string()),
+                effort: request.effort.map(|value| value.as_str().to_string()),
+                speed: request.speed,
+            },
+        )
     }
 
     fn action(
@@ -253,6 +269,15 @@ pub(crate) fn intercept(
                 Err(error) => error_reply(&error),
             }
         }
+        (Method::Patch, ["api", "repos", _, "engine"]) => {
+            if !content_type_is_json(headers) {
+                return Some(text_reply(415, "Content-Type must be application/json"));
+            }
+            match controller.configure(project, body) {
+                Ok(run) => success_reply(200, RunEnvelope::new(run)),
+                Err(error) => error_reply(&error),
+            }
+        }
         (Method::Post, ["api", "repos", _, "engine", action]) => {
             let Some(action) = EngineAction::parse(action) else {
                 return Some(text_reply(404, "Not found"));
@@ -276,7 +301,7 @@ pub(crate) fn intercept(
 }
 
 fn publish_success(method: &Method, project: &str, status: u16, bus: &ChangeBus) {
-    if matches!(method, Method::Post) && (200..300).contains(&status) {
+    if matches!(method, Method::Post | Method::Patch) && (200..300).contains(&status) {
         bus.publish(Change::Project(project.to_string()));
     }
 }
@@ -357,6 +382,20 @@ struct StartBody {
     #[serde(default = "default_lanes")]
     lanes: u32,
     #[serde(default)]
+    agent: AgentBody,
+    #[serde(default)]
+    model: Option<OptionToken>,
+    #[serde(default)]
+    effort: Option<OptionToken>,
+    #[serde(default)]
+    speed: Option<EngineSpeed>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureBody {
+    run: String,
+    lanes: u32,
     agent: AgentBody,
     #[serde(default)]
     model: Option<OptionToken>,
@@ -499,6 +538,18 @@ struct HttpLaneView {
     worktree: Option<String>,
     dispatched_at: Option<String>,
     last_observed_at: String,
+    /// When the lane last showed observed activity — its story moving, or
+    /// its pane writing to the terminal (SH-657) — seeded by the first
+    /// steady pass that finds the lane alive, `null` until then. This is the
+    /// only positive evidence that a reconcile pass observed a lane and left
+    /// it working: `last_observed_at` says only that the reconciler looked,
+    /// and at one-second resolution it cannot be ordered against
+    /// `dispatched_at` (SH-336), which is what the browser suite needed in
+    /// SH-626 to tell "observed alive" from "not yet observed".
+    last_progress_at: Option<String>,
+    /// What the liveness probe last said when it did not say "alive"
+    /// (SH-626): `null` while tmux answers, otherwise the probe's own words.
+    probe_detail: Option<String>,
     outcome: Option<String>,
     outcome_detail: Option<String>,
 }
@@ -513,6 +564,8 @@ impl From<EngineLaneRecord> for HttpLaneView {
             worktree: value.worktree_path,
             dispatched_at: value.dispatched_at,
             last_observed_at: value.last_observed_at,
+            last_progress_at: value.last_progress_at,
+            probe_detail: value.probe_detail,
             outcome: value.outcome,
             outcome_detail: value.outcome_detail,
         }
@@ -536,8 +589,16 @@ impl Dispatcher for NoopDispatcher {
         ))
     }
 
-    fn window_alive(&self, _window: &str) -> bool {
-        false
+    fn probe_window(&self, _window: &str) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: "engine HTTP reached a window probe without a shell dispatcher".to_string(),
+        }
+    }
+
+    fn census(&self) -> crate::lane_budget::WindowCensus {
+        crate::lane_budget::WindowCensus::Unanswered {
+            detail: "engine HTTP reached a window census without a shell dispatcher".to_string(),
+        }
     }
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
@@ -561,6 +622,40 @@ mod tests {
             .iter()
             .map(|(name, value)| Header::from_bytes(*name, *value).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_lane_view_carries_its_progress_seed_verbatim() {
+        let mut lane = EngineLaneRecord {
+            run_id: "run-1".to_string(),
+            lane_index: 0,
+            state: crate::store::EngineLaneState::Working,
+            story_id: Some("P-1".to_string()),
+            pane_id: Some("%1".to_string()),
+            window_name: Some("P-1".to_string()),
+            worktree_path: None,
+            cleanup_lease: None,
+            dispatched_at: Some("2026-01-01T00:00:00Z".to_string()),
+            last_observed_at: "2026-01-01T00:00:00Z".to_string(),
+            last_progress_seq: None,
+            last_progress_at: None,
+            outcome: None,
+            outcome_detail: None,
+            probe_detail: None,
+        };
+        let unobserved = serde_json::to_value(HttpLaneView::from(lane.clone())).unwrap();
+        assert!(
+            unobserved["last_progress_at"].is_null(),
+            "a lane no pass has found alive reports null, never a fabricated time: {unobserved}"
+        );
+        lane.last_progress_seq = Some(crate::store::GlobalSeq::new(7));
+        lane.last_progress_at = Some("2026-01-01T00:00:01Z".to_string());
+        lane.probe_detail = Some("tmux exited 1: unbound variable".to_string());
+        let observed = serde_json::to_value(HttpLaneView::from(lane)).unwrap();
+        assert_eq!(observed["last_progress_at"], "2026-01-01T00:00:01Z");
+        assert_eq!(observed["last_observed_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(observed["probe_detail"], "tmux exited 1: unbound variable");
+        assert!(unobserved["probe_detail"].is_null());
     }
 
     #[test]
@@ -657,9 +752,15 @@ mod tests {
 
         publish_success(&Method::Get, "p", 200, &bus);
         publish_success(&Method::Post, "p", 422, &bus);
+        publish_success(&Method::Patch, "p", 422, &bus);
         assert_eq!(subscription.recv(std::time::Duration::ZERO), None);
 
         publish_success(&Method::Post, "p", 200, &bus);
+        assert_eq!(
+            subscription.recv(std::time::Duration::ZERO),
+            Some(Change::Project("p".to_string()))
+        );
+        publish_success(&Method::Patch, "p", 200, &bus);
         assert_eq!(
             subscription.recv(std::time::Duration::ZERO),
             Some(Change::Project("p".to_string()))

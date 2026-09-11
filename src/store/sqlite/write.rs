@@ -136,11 +136,17 @@ pub(super) fn update_engine_run(
 ) -> Result<(), StoreError> {
     let updated = sql(
         conn.execute(
-            "UPDATE engine_runs SET state = ?2, consecutive_hard_stops = ?3, \
-                 stop_reason = ?4, acknowledged_at = ?5, updated_at = ?6, \
-                 recent_quarantines_json = ?7 WHERE id = ?1",
+            "UPDATE engine_runs SET lanes = ?2, agent = ?3, model = ?4, effort = ?5, \
+                 speed = ?6, state = ?7, consecutive_hard_stops = ?8, \
+                 stop_reason = ?9, acknowledged_at = ?10, updated_at = ?11, \
+                 recent_quarantines_json = ?12 WHERE id = ?1",
             params![
                 run.id,
+                run.lanes,
+                run.agent.as_str(),
+                run.model,
+                run.effort,
+                run.speed.map(|speed| speed.as_str()),
                 run.state.as_str(),
                 run.consecutive_hard_stops,
                 run.stop_reason,
@@ -177,8 +183,9 @@ pub(super) fn put_engine_lane(
             "INSERT INTO engine_lanes \
                  (run_id, lane_index, state, story_id, window_name, worktree_path, \
                   dispatched_at, last_observed_at, outcome, outcome_detail, \
-                  last_progress_seq, last_progress_at, pane_id, cleanup_lease_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+                  last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
+                  probe_detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
              ON CONFLICT (run_id, lane_index) DO UPDATE SET \
                  state = excluded.state, story_id = excluded.story_id, \
                  window_name = excluded.window_name, worktree_path = excluded.worktree_path, \
@@ -188,7 +195,8 @@ pub(super) fn put_engine_lane(
                  last_progress_seq = excluded.last_progress_seq, \
                  last_progress_at = excluded.last_progress_at, \
                  pane_id = excluded.pane_id, \
-                 cleanup_lease_json = excluded.cleanup_lease_json",
+                 cleanup_lease_json = excluded.cleanup_lease_json, \
+                 probe_detail = excluded.probe_detail",
             params![
                 lane.run_id,
                 lane.lane_index,
@@ -204,9 +212,25 @@ pub(super) fn put_engine_lane(
                 lane.last_progress_at,
                 lane.pane_id,
                 cleanup_lease,
+                lane.probe_detail,
             ],
         ),
         "writing an engine lane",
+    )?;
+    Ok(())
+}
+
+pub(super) fn delete_engine_lane(
+    conn: &Connection,
+    run_id: &str,
+    lane_index: u32,
+) -> Result<(), StoreError> {
+    sql(
+        conn.execute(
+            "DELETE FROM engine_lanes WHERE run_id = ?1 AND lane_index = ?2",
+            params![run_id, lane_index],
+        ),
+        "deleting an engine lane",
     )?;
     Ok(())
 }
@@ -216,9 +240,9 @@ pub(super) fn put_verification_incident(
     incident: &VerificationIncident,
 ) -> Result<(), StoreError> {
     sql(conn.execute(
-        "INSERT INTO verification_incident (singleton, incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
-         ON CONFLICT(singleton) DO UPDATE SET incident_id=excluded.incident_id, project_id=excluded.project_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
+        "INSERT INTO verification_incident (incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT(project_id) DO UPDATE SET incident_id=excluded.incident_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
         params![incident.incident_id, incident.project.get(), incident.story.get(), incident.generation.get(),
             incident.disposition.as_str(), if incident.halted { "halted" } else { "retrying" },
             incident.attempts, incident.detail, incident.first_failed_at, incident.last_failed_at],
@@ -232,7 +256,7 @@ pub(super) fn clear_verification_incident(
 ) -> Result<bool, StoreError> {
     Ok(sql(
         conn.execute(
-            "DELETE FROM verification_incident WHERE singleton = 1 AND incident_id = ?1",
+            "DELETE FROM verification_incident WHERE incident_id = ?1",
             params![incident_id],
         ),
         "clearing the verification incident",
@@ -1392,14 +1416,19 @@ pub(super) fn put_settings(
     sql(
         conn.execute(
             "INSERT INTO project_settings (project_id, sync_auto_transition, \
-                 doctor_stale_threshold) VALUES (?1, ?2, ?3) \
+                 doctor_stale_threshold, cleanup_auto, cleanup_interval) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT (project_id) DO UPDATE SET \
                  sync_auto_transition = excluded.sync_auto_transition, \
-                 doctor_stale_threshold = excluded.doctor_stale_threshold",
+                 doctor_stale_threshold = excluded.doctor_stale_threshold, \
+                 cleanup_auto = excluded.cleanup_auto, \
+                 cleanup_interval = excluded.cleanup_interval",
             params![
                 project.get(),
                 settings.sync_auto_transition,
                 settings.doctor_stale_threshold,
+                settings.cleanup_auto,
+                settings.cleanup_interval,
             ],
         ),
         "writing project settings",

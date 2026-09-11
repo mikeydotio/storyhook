@@ -19,6 +19,10 @@
 //!
 //! # Why this is not [`crate::migration_guard`] with different arguments
 //!
+//! (A third, [`crate::daemon::seat_guard`], refuses the same uninstalled
+//! binary the default store's daemon seat — SH-634 — and, like this one,
+//! shares the facts and not the judgement.)
+//!
 //! The two guards ask the same question of the machine and reach **opposite**
 //! conclusions from a missing answer, which is why they share
 //! [`crate::path_identity`] and nothing else.
@@ -55,6 +59,22 @@
 //! store-scoped gate would still be answering the wrong question: which store
 //! an install is *for* has never been what this gate refuses over.
 //!
+//! # A binary still in its build directory is refused, flag or no flag (SH-630)
+//!
+//! `PATH="$PWD/target/debug:$PATH" story daemon install` used to pass the
+//! agreement check below — `$PATH` is the caller's own claim about itself, and
+//! the caller had just made it — and enthrone a worktree build, which is this
+//! module's own incident recurring through one shell line. `build.rs` now
+//! stamps the directory cargo wrote the binary into
+//! ([`crate::path_identity::build_dir`]), and a binary still inside it is
+//! [`Refusal::InBuildDirectory`] ahead of the comparison and ahead of the
+//! flag. Not overridable, deliberately: `--this-binary` exists for a binary
+//! the gate *cannot confirm* is installed (a shim manager, a fixed location
+//! with no `$PATH` entry), and a binary sitting where cargo left it is
+//! confirmably *not* installed. The way through is the one the message
+//! names — install it, which is a copy out of that directory — and it is one
+//! command.
+//!
 //! # Why the override is a flag
 //!
 //! `--this-binary`, not an environment variable. `migration_guard`'s override
@@ -82,6 +102,9 @@ pub struct Inputs {
     pub uid: u32,
     /// This process's own executable, in both spellings.
     pub running: InstalledStory,
+    /// The directory cargo wrote this binary into, canonicalized — `build.rs`'s
+    /// stamp — or `None` for a build that carried none.
+    pub build_dir: Option<PathBuf>,
     /// The `story` `$PATH` resolves, or `None` when it names none.
     pub installed_story: Option<InstalledStory>,
     /// Whether `--this-binary` was written.
@@ -109,6 +132,12 @@ pub struct Verdict {
 pub enum Refusal {
     /// Running as root. A launchd *user* agent has no meaning here.
     Root,
+    /// The running binary is still where cargo wrote it — not installed by any
+    /// mechanism this tree has, whatever `$PATH` says (SH-630).
+    InBuildDirectory {
+        running: PathBuf,
+        build_dir: PathBuf,
+    },
     /// The running binary is not the `story` `$PATH` runs.
     Disagrees {
         running: PathBuf,
@@ -130,6 +159,24 @@ impl std::fmt::Display for Refusal {
                  against root's home rather than yours.\n\n\
                  Nothing was written; no agent was loaded or replaced.\n\n\
                  Run it again without `sudo`, as the user whose login it should start at."
+            ),
+            Self::InBuildDirectory { running, build_dir } => write!(
+                f,
+                "refusing to register `{running}` as your login agent: it is still where cargo \
+                 built it (`{build_dir}`) — it has not been installed, whatever $PATH says.\n\n\
+                 launchd runs the path in this plist verbatim, at every login, until this \
+                 command is run again. A build directory is rewritten by the next `cargo build` \
+                 and deleted by the next `cargo clean` or worktree teardown, and the process \
+                 launchd starts from it has no $PATH of its own to check against, which makes \
+                 it the one process the migration guard structurally cannot see.\n\n\
+                 Nothing was written; no agent was loaded or replaced.\n\n\
+                 Install this build first (`make install`, or however this tree normally \
+                 installs) — a copy outside its build directory is what installing means here \
+                 — then run `story daemon install` from the installed `story`. `--this-binary` \
+                 does not apply: it is for a binary this check cannot confirm, not one it can \
+                 confirm is uninstalled.",
+                running = running.display(),
+                build_dir = build_dir.display(),
             ),
             Self::Disagrees { running, installed } => write!(
                 f,
@@ -188,6 +235,17 @@ pub fn decide(inputs: &Inputs) -> Result<Verdict, Refusal> {
     if inputs.uid == 0 {
         return Err(Refusal::Root);
     }
+    // Ahead of the flag and of `$PATH` (SH-630): the flag answers *which
+    // binary*, and this binary is one the gate can name as uninstalled without
+    // asking anybody. See the module doc.
+    if let Some(build_dir) = &inputs.build_dir
+        && crate::path_identity::is_inside_build_dir(&inputs.running.canonical, build_dir)
+    {
+        return Err(Refusal::InBuildDirectory {
+            running: inputs.running.spelling.clone(),
+            build_dir: build_dir.clone(),
+        });
+    }
     // The operator naming this exact binary is the whole request, so the plist
     // records the spelling they invoked rather than one resolved for them.
     if inputs.this_binary {
@@ -225,6 +283,7 @@ pub fn gather(uid: u32, this_binary: bool, running: InstalledStory) -> Inputs {
     Inputs {
         uid,
         running,
+        build_dir: crate::path_identity::build_dir(),
         installed_story: crate::path_identity::installed_story(),
         this_binary,
     }
@@ -248,12 +307,83 @@ mod tests {
                 "/home/dev/repo/target/debug/story",
                 "/home/dev/repo/target/debug/story",
             ),
+            build_dir: None,
             installed_story: Some(story(
                 "/home/dev/.local/bin/story",
                 "/home/dev/.local/bin/story",
             )),
             this_binary: false,
         }
+    }
+
+    /// SH-630's shape: the same worktree binary, `$PATH` *agreeing* with it
+    /// because the caller put `target/debug` first, and the stamp saying it
+    /// never left its build directory.
+    fn stamped_inputs() -> Inputs {
+        let mut inputs = base_inputs();
+        inputs.build_dir = Some(PathBuf::from("/home/dev/repo/target/debug"));
+        inputs.installed_story = Some(story(
+            "/home/dev/repo/target/debug/story",
+            "/home/dev/repo/target/debug/story",
+        ));
+        inputs
+    }
+
+    /// The SH-630 shape on this gate: agreement is no longer enough.
+    #[test]
+    fn refuses_a_binary_still_in_its_build_directory_even_when_path_agrees() {
+        let refusal = decide(&stamped_inputs()).expect_err("must refuse");
+        assert_eq!(
+            refusal,
+            Refusal::InBuildDirectory {
+                running: PathBuf::from("/home/dev/repo/target/debug/story"),
+                build_dir: PathBuf::from("/home/dev/repo/target/debug"),
+            }
+        );
+        let said = refusal.to_string();
+        assert!(said.contains("/home/dev/repo/target/debug/story"), "{said}");
+        assert!(said.contains("/home/dev/repo/target/debug"), "{said}");
+        assert!(said.contains("make install"), "{said}");
+        assert!(
+            said.contains("Nothing was written"),
+            "a refusal must say the machine was left alone: {said}"
+        );
+        assert!(
+            !said.contains("story update"),
+            "must not repeat SH-405's dead end: {said}"
+        );
+    }
+
+    /// Not overridable: the flag is for a binary the gate cannot confirm, and
+    /// this one it can confirm is uninstalled. Asserted explicitly so a later
+    /// "harmonizing" edit cannot quietly let the flag through here.
+    #[test]
+    fn the_flag_does_not_override_the_build_directory_refusal() {
+        let mut inputs = stamped_inputs();
+        inputs.this_binary = true;
+        assert!(matches!(
+            decide(&inputs),
+            Err(Refusal::InBuildDirectory { .. })
+        ));
+    }
+
+    /// Installing is copying out: the same build, outside the stamped
+    /// directory, agreed with by `$PATH` — permitted, enthroning the `$PATH`
+    /// spelling as before.
+    #[test]
+    fn a_copy_outside_the_build_directory_is_judged_by_path_as_before() {
+        let mut inputs = stamped_inputs();
+        inputs.running = story("/home/dev/.local/bin/story", "/home/dev/.local/bin/story");
+        inputs.installed_story = Some(story(
+            "/home/dev/.local/bin/story",
+            "/home/dev/.local/bin/story",
+        ));
+        assert_eq!(
+            decide(&inputs),
+            Ok(Verdict {
+                enthrone: PathBuf::from("/home/dev/.local/bin/story")
+            })
+        );
     }
 
     /// SH-411's own shape: a worktree's debug binary asking for a permanent
@@ -328,8 +458,13 @@ mod tests {
         unconfirmable.installed_story = None;
         let a = decide(&base_inputs()).expect_err("disagrees");
         let b = decide(&unconfirmable).expect_err("unconfirmable");
+        let c = decide(&stamped_inputs()).expect_err("in build directory");
         assert_ne!(a, b);
         assert_ne!(a.to_string(), b.to_string());
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        assert_ne!(a.to_string(), c.to_string());
+        assert_ne!(b.to_string(), c.to_string());
     }
 
     #[test]
@@ -367,6 +502,7 @@ mod tests {
                 "/home/dev/.local/share/storyhook/versions/2.1.1/story",
                 "/home/dev/.local/share/storyhook/versions/2.1.1/story",
             ),
+            build_dir: None,
             installed_story: Some(story(
                 "/home/dev/.local/bin/story",
                 "/home/dev/.local/share/storyhook/versions/2.1.1/story",
@@ -400,5 +536,11 @@ mod tests {
         let said = Refusal::Root.to_string();
         assert!(said.contains("sudo"), "{said}");
         assert!(said.contains("Nothing was written"), "{said}");
+
+        // And ahead of the build-directory refusal too: root under `sudo` is
+        // the wrong user before it is the wrong binary.
+        let mut stamped = stamped_inputs();
+        stamped.uid = 0;
+        assert_eq!(decide(&stamped), Err(Refusal::Root));
     }
 }

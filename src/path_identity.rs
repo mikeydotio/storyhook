@@ -1,5 +1,7 @@
 //! The one question two guards ask about this machine: *which `story` does
-//! `$PATH` run, and is it the one running now?*
+//! `$PATH` run, and is it the one running now?* — and the second fact a third
+//! guard asks alone: *has this binary left the directory cargo wrote it into?*
+//! ([`crate::daemon::seat_guard`], SH-634, which needs no `$PATH` at all).
 //!
 //! Extracted from [`crate::migration_guard`] (SH-404) when SH-411 gave it a
 //! second caller. The two guards ask the same question and reach opposite
@@ -29,6 +31,22 @@
 //! through a symlink reports the symlink. So the common case already records a
 //! stable spelling, and only an operator invoking a version-pinned real path
 //! directly needs [`InstalledStory::spelling`] to correct it.
+//!
+//! # `$PATH` is the caller's claim, not the machine's (SH-630)
+//!
+//! Both guards used to ask *only* the question above, and on 2026-09-09 a
+//! `PATH="$PWD/target/debug:$PATH" story …` from the main checkout answered
+//! it for a worktree's debug binary: `$PATH` resolved `story` to the very
+//! binary asking, the comparison agreed with itself, and the production store
+//! was migrated past what the installed release understood. `$PATH` is a
+//! per-process variable the caller sets, and prefixing a build directory onto
+//! it is the most natural way anyone tries a build — so a refusal that
+//! protects durable state may never have [`installed_story`] as its only
+//! clause. [`build_dir`] is the second fact, and it is one the caller cannot
+//! rewrite: `build.rs` stamps the directory cargo wrote the binary into, and
+//! a binary that has not left it has not been installed by any mechanism this
+//! tree knows (`make install`, `story update` and `cargo install` all copy
+//! out). The judgement each guard draws from it stays its own, as above.
 //!
 //! # A known limit, inherited rather than created
 //!
@@ -80,6 +98,33 @@ pub fn running_exe() -> Option<InstalledStory> {
         canonical: canonicalize_or(spelling.clone(), spelling.clone()),
         spelling,
     })
+}
+
+/// The directory cargo wrote this binary into, as `build.rs` stamped it —
+/// `None` for a build that carried no `OUT_DIR` (see `build.rs`'s "Where the
+/// artifact was written").
+pub const BUILD_DIR: Option<&str> = option_env!("STORYHOOK_BUILD_DIR");
+
+/// [`BUILD_DIR`], canonicalized against the filesystem this process has.
+///
+/// A stamped directory that no longer exists (the checkout was moved, or
+/// `cargo clean` ran under a copied binary) falls back to its literal
+/// spelling, which then matches nothing a canonicalized executable path
+/// reports — so the binary reads as *outside* it. That is the honest answer:
+/// a binary whose build directory is gone is not sitting in it.
+#[must_use]
+pub fn build_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(BUILD_DIR?);
+    Some(canonicalize_or(dir.clone(), dir))
+}
+
+/// Whether `exe` sits inside `build_dir` — the fact both guards refuse on.
+///
+/// Both paths are expected canonical; [`Path::starts_with`] compares whole
+/// components, so `…/target/debug-old/story` is not inside `…/target/debug`.
+#[must_use]
+pub fn is_inside_build_dir(exe: &Path, build_dir: &Path) -> bool {
+    exe.starts_with(build_dir)
 }
 
 /// Resolves `name` against `path` the way a shell would — the first entry
@@ -233,6 +278,52 @@ mod tests {
     #[test]
     fn no_path_at_all_resolves_nothing() {
         assert_eq!(resolve_on_path(None, "story"), None);
+    }
+
+    /// Whole components, never a string prefix: a sibling directory that
+    /// happens to share a prefix is not inside the build directory.
+    #[test]
+    fn inside_is_decided_on_whole_path_components() {
+        let build = Path::new("/repo/target/debug");
+        assert!(is_inside_build_dir(
+            Path::new("/repo/target/debug/story"),
+            build
+        ));
+        assert!(is_inside_build_dir(
+            Path::new("/repo/target/debug/deps/story-abc"),
+            build
+        ));
+        assert!(is_inside_build_dir(
+            Path::new("/repo/target/debug/.storyhook-test-binaries/1/story"),
+            build
+        ));
+        assert!(!is_inside_build_dir(
+            Path::new("/repo/target/debug-old/story"),
+            build
+        ));
+        assert!(!is_inside_build_dir(
+            Path::new("/repo/target/release/story"),
+            build
+        ));
+        assert!(!is_inside_build_dir(
+            Path::new("/home/dev/.local/bin/story"),
+            build
+        ));
+    }
+
+    /// This very test binary was written by cargo, so the stamp reaches it and
+    /// names a directory it sits inside — the positive control for every
+    /// guard that reads [`build_dir`].
+    #[test]
+    fn this_test_binary_sits_inside_its_stamped_build_directory() {
+        let dir = build_dir().expect("a cargo-built test binary carries STORYHOOK_BUILD_DIR");
+        let running = running_exe().expect("current_exe").canonical;
+        assert!(
+            is_inside_build_dir(&running, &dir),
+            "{} must be inside {}",
+            running.display(),
+            dir.display()
+        );
     }
 
     /// The spelling is the `$PATH` entry's own `dir.join(name)`, never its

@@ -133,7 +133,7 @@ if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
     # one.
     unset STORYHOOK_GATE_LOCK_TAKEN STORYHOOK_GATE_LOCK_DEPTH
 elif [ "${STORYHOOK_GATE_LOCK:-1}" = "0" ]; then
-    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT the machine-wide 'gate' lock; a concurrent suite will contend with this one" >&2
+    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT this repository's 'gate' lock; a concurrent suite will contend with this one" >&2
 else
     # THE DEPTH GUARD, AND WHY IT IS NOT THE SAME CHECK TWICE.  Arriving here
     # a second time means the handshake above did not land -- and the failure
@@ -196,13 +196,11 @@ storyhook_isolate "$data_root"
 
 export INSTA_UPDATE=no
 
-# Every leg's combined output is teed here (terminal AND this file), so
-# `scripts/test-delta.sh` can record the per-test red/green ledger at the end
-# regardless of which mode ran or how many separate `cargo test` invocations
-# it took. `PIPESTATUS[0]` rather than `pipefail`'s own "rightmost nonzero" —
-# explicit about which command's status is being kept, since `tee` itself
-# essentially never fails and conflating the two would be the wrong command
-# to have decided the run's outcome.
+# Every leg's combined output is relayed to the terminal and copied here by
+# `activity-run.py`, so `scripts/test-delta.sh` can record the per-test
+# red/green ledger at the end regardless of which mode ran or how many Cargo
+# invocations it took. The child writes to a regular file, never a pipe a
+# detached descendant can keep open after Cargo exits (SH-605).
 log="$data_root/test-output.log"
 : >"$log"
 
@@ -211,30 +209,17 @@ log="$data_root/test-output.log"
 # this invocation's cases nest under -- set by run-rust-battery.sh per mode,
 # defaulting to the rust-suite leg's own path for run-changed.sh's selective
 # call, which is always that leg under `make test-changed`. This script emits
-# one "item" line carrying the exact pre-run total, then only "case" lines.
-# leg.sh still owns the item's running/passed/failed lifecycle because it wraps
-# this script's whole invocation; the fold preserves a total omitted by its
-# later terminal line.
+# one "item" line carrying the exact pre-run total. The file-backed observer
+# emits only recognized Cargo/libtest stage and completed-case records; random
+# output cannot renew the holder watchdog. `leg.sh` still owns the item's
+# running/passed/failed lifecycle because it wraps this whole invocation.
 run_leg() {
+    observer=(python3 "$script_dir/activity-run.py" --capture "$log")
     if [ -n "$(gate_progress_journal)" ]; then
-        # `env -u` strips the journal (and its path hint) from cargo and every
-        # test binary it spawns -- the same containment idiom
-        # scripts/merge-watch.sh already uses for STORYHOOK_STORE_PATH. A
-        # nested test that shells out to leg.sh/gate-receipt.sh against a
-        # disposable fixture repo (tests/gate_leg_reuse.rs and siblings) must
-        # not see this run's own journal path, or its fixture-scoped emissions
-        # would interleave into THIS run's real journal.
-        env -u STORYHOOK_GATE_PROGRESS -u STORYHOOK_GATE_PROGRESS_PATH "$@" 2>&1 \
-            | tee -a "$log" \
-            | awk -f "$script_dir/test-progress.awk" \
-            | while IFS=$'\t' read -r _bin _name outcome; do
-                gate_progress_emit_case "$gate_progress_case_path" \
-                    "$([ "$outcome" = PASS ] && echo pass || echo fail)"
-            done
-        return "${PIPESTATUS[0]}"
+        observer+=(--test-progress "$gate_progress_case_path")
     fi
-    "$@" 2>&1 | tee -a "$log"
-    return "${PIPESTATUS[0]}"
+    observer+=(run-tests.sh/cargo -- "$@")
+    "${observer[@]}"
 }
 
 # Resolves a lib target's own name (e.g. storyhook_test_support) to the
@@ -313,8 +298,12 @@ listed_test_count() {
     fi
 
     output="$(mktemp "$data_root/test-list.XXXXXX")"
-    if ! env -u STORYHOOK_GATE_PROGRESS -u STORYHOOK_GATE_PROGRESS_PATH \
-        "${command[@]}" >"$output" 2>&1; then
+    observer=(python3 "$script_dir/activity-run.py" --capture "$output")
+    if [ -n "$(gate_progress_journal)" ]; then
+        observer+=(--test-progress "$gate_progress_case_path")
+    fi
+    observer+=(run-tests.sh/discovery -- "${command[@]}")
+    if ! "${observer[@]}" >/dev/null; then
         cat "$output" >&2
         echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
         return 1

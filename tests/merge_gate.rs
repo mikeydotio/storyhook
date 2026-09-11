@@ -59,6 +59,16 @@
 //! environment, poller restoration, and signal cleanup are all real local Git
 //! behaviour. Those are provoked below without a GitHub imitation, following
 //! the same private-core pattern as `land-pr.sh --certified-run`.
+//!
+//! # The landing-convergence boundary
+//!
+//! SH-604 keeps GitHub outside the deterministic seam for the same reason.
+//! Tests supply the wire-shaped result of the authoritative refresh, then let
+//! `verify-pr.sh` fetch from a real local remote, recompute through the
+//! production preflight, and read receipts written by the production writer.
+//! This proves that an already-merged PR still needs actual-tree certification,
+//! while a changed base can request a bounded retry without granting its new
+//! tree the old tree's receipt.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -150,6 +160,18 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
         payload["detail"]
             .as_str()
             .unwrap()
+            .contains("Verification infrastructure failure")
+    );
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Candidate test status: unknown")
+    );
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
             .contains(payload["log"].as_str().unwrap())
     );
     assert!(
@@ -177,6 +199,141 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
     }
 }
 
+/// The SH-607 production incident had one decisive failure followed by 611
+/// unknown outcomes. A tail cannot recover the failure from that ordering.
+#[test]
+fn verifier_names_a_failure_before_hundreds_of_not_rerun_entries() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf 'test-delta: newly RED (1):\n'
+printf '  orphan_check::postlude_fails_when_a_survivor_outlives_sigkill\n'
+printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (611):\n'
+i=1
+while [ "$i" -le 611 ]; do
+    printf '  web_test::not_rerun_%03d (was PASS)\n' "$i"
+    i=$((i + 1))
+done
+exit 101
+"#;
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+
+    assert_ok(&outcome, "summarizing the reproduced verification failure");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("Failed tests (1)")
+            && detail.contains("orphan_check::postlude_fails_when_a_survivor_outlives_sigkill"),
+        "the decisive failure must survive independently of the tail: {detail}"
+    );
+    assert!(
+        detail.contains("Not re-run (611): status unknown; not counted as pass or failure"),
+        "unknown prior outcomes need their own classification: {detail}"
+    );
+    assert!(
+        detail.contains("Ancillary context — last 40 of 615 log lines (575 earlier lines omitted)"),
+        "the tail's bounded and ancillary nature must be explicit: {detail}"
+    );
+    assert_eq!(
+        payload["log"].as_str().map(Path::new).map(Path::exists),
+        Some(true),
+        "the full log must remain referenced"
+    );
+}
+
+#[test]
+fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
+printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
+printf '     Running tests/diagnostics.rs (target/debug/deps/diagnostics-fixture)\n'
+i=1
+while [ "$i" -le 25 ]; do
+    printf 'test failure_%02d ... FAILED\n' "$i"
+    i=$((i + 1))
+done
+i=1
+while [ "$i" -le 12 ]; do
+    printf 'error[E%04d]: compiler diagnostic %02d\n' "$i" "$i"
+    i=$((i + 1))
+done
+printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (300):\n'
+exit 101
+"#;
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+
+    assert_ok(&outcome, "summarizing bounded verification diagnostics");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    let detail = payload["detail"].as_str().unwrap();
+    let summary = detail
+        .split("\nAncillary context")
+        .next()
+        .expect("every failure detail starts with its summary");
+    assert!(
+        summary.contains("Failed tests (25; showing first 20)"),
+        "{detail}"
+    );
+    assert!(summary.contains("diagnostics::failure_20"), "{detail}");
+    assert!(!summary.contains("diagnostics::failure_21"), "{detail}");
+    assert!(
+        summary.contains("5 additional failed tests omitted"),
+        "{detail}"
+    );
+    assert!(
+        summary.contains("Compiler/build diagnostics (12; showing first 10)"),
+        "{detail}"
+    );
+    assert!(summary.contains("compiler diagnostic 10"), "{detail}");
+    assert!(!summary.contains("compiler diagnostic 11"), "{detail}");
+    assert!(
+        summary.contains("2 additional compiler/build diagnostics omitted"),
+        "{detail}"
+    );
+    assert!(detail.contains("Reused/cached legs (2)"), "{detail}");
+    assert!(
+        detail.contains("Not re-run (300): status unknown; not counted as pass or failure"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn verifier_reports_a_failed_gate_without_inventing_a_diagnosis() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", "exit 9"]);
+
+    assert_ok(&outcome, "summarizing a gate with no diagnostic output");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("The completed gate failed with exit status 9"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("No failed test or compiler/build diagnostic was recognized"),
+        "{detail}"
+    );
+}
+
 /// The verifier takes one machine-wide gate around the complete speculative
 /// command, so its timeout contains at most one lock wait plus one gate run.
 #[test]
@@ -196,7 +353,15 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         &[
             "bash",
             "-c",
-            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+            // `--held` asked from INSIDE the speculative checkout: the poller
+            // worktree's swapped gitlink resolves the repository's own common
+            // dir, so the key the inner `run-tests.sh` take derives is the one
+            // the outer `verify-pr.sh` hold recorded (SH-648) — the fact the
+            // reentrancy invariant now rests on.
+            &format!(
+                "bash '{}' --held gate || exit 99; [ -z \"${{STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+                checkout().join("scripts/machine-lock.sh").display()
+            ),
         ],
     );
 
@@ -233,6 +398,37 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         ),
         "the activity must terminate after acquisition: {progress}"
     );
+}
+
+#[test]
+fn same_tree_verification_attempts_keep_distinct_logs() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    for marker in ["first-attempt", "second-attempt"] {
+        let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["printf", marker]);
+        assert_ok(&outcome, "running a same-tree verification attempt");
+    }
+
+    let logs = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        logs.len(),
+        2,
+        "each attempt needs its own evidence: {logs:?}"
+    );
+    let contents = logs
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect::<Vec<_>>();
+    assert!(contents.iter().any(|text| text.contains("first-attempt")));
+    assert!(contents.iter().any(|text| text.contains("second-attempt")));
 }
 
 /// Neither pre-existing nor gate-created tracked edits may be discarded or
@@ -640,6 +836,220 @@ impl MergeRepo {
         }
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run(self.path(), "bash", &arg_refs)
+    }
+
+    /// Publishes the current local branches through a real local Git remote,
+    /// including the pull-request ref shape GitHub exposes to `git fetch`.
+    fn publish_origin(&self, pr: u64, head: &str) {
+        assert_ok(
+            &self.git(&["update-ref", &format!("refs/pull/{pr}/head"), head]),
+            "publishing the pull-request ref",
+        );
+        assert_ok(
+            &self.git(&[
+                "remote",
+                "add",
+                "origin",
+                &self.path().display().to_string(),
+            ]),
+            "adding the local origin",
+        );
+    }
+
+    /// Installs a fake `gh` at `<repo>/bin/gh` for the public path (SH-637).
+    ///
+    /// It answers `pr view <pr> --json <fields>` from `$FAKE_GH_STATE/pr.json`,
+    /// selecting exactly the fields the script asked for — a field the file
+    /// lacks is an error, as the real `gh` errors on an unknown field — and it
+    /// counts calls in `$FAKE_GH_STATE/calls`, running
+    /// `$FAKE_GH_STATE/before-call-<N>.sh` first when one exists. That hook is
+    /// the "head moves between fetch and verdict" instrument: with
+    /// `refresh_submission_refs` passing the entry read through, call 1 is the
+    /// entry read and call 2 is the verdict recheck. This is not a GitHub
+    /// model: it returns the same wire shape the private seams take as an
+    /// argument, one door over, because the defect under test lives in the
+    /// public path above every seam and its WIRING is the property.
+    fn fake_gh(&self) -> PathBuf {
+        let bin = self.path().join("bin");
+        fs::create_dir_all(&bin).expect("fixture: bin directory");
+        let state = self.path().join("fake-gh-state");
+        fs::create_dir_all(&state).expect("fixture: fake gh state");
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            r##"#!/usr/bin/env bash
+set -uo pipefail
+state="${FAKE_GH_STATE:?fake gh: FAKE_GH_STATE names the state directory}"
+calls=$(( $(cat "$state/calls" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$calls" > "$state/calls"
+printf '%s\n' "$*" >> "$state/argv"
+if [ -x "$state/before-call-$calls.sh" ]; then
+    "$state/before-call-$calls.sh" || { echo "fake gh: before-call-$calls hook failed" >&2; exit 70; }
+fi
+if [ "${1:-}" != pr ] || [ "${2:-}" != view ] || [ "${4:-}" != --json ] || [ -z "${5:-}" ]; then
+    echo "fake gh: unsupported invocation: $*" >&2
+    exit 64
+fi
+jq -e --arg fields "$5" '
+  . as $pr
+  | ($fields | split(",")) as $names
+  | ($names | map(select(. as $n | ($pr | has($n)) | not))) as $missing
+  | if ($missing | length) > 0
+    then error("fake gh: pr.json lacks " + ($missing | join(",")))
+    else reduce $names[] as $n ({}; . + {($n): $pr[$n]})
+    end
+' "$state/pr.json"
+"##,
+        )
+        .expect("fixture: writing the fake gh");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake gh executable");
+        state
+    }
+
+    /// Writes what the fake `gh` answers for the PR from now on.
+    fn fake_gh_answers(&self, metadata: &str) {
+        fs::write(self.path().join("fake-gh-state/pr.json"), metadata)
+            .expect("fixture: fake gh answer");
+    }
+
+    /// Runs `body` (bash) before the fake `gh`'s Nth call answers.
+    fn fake_gh_before_call(&self, call: u32, body: &str) {
+        let hook = self
+            .path()
+            .join(format!("fake-gh-state/before-call-{call}.sh"));
+        fs::write(
+            &hook,
+            format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+        )
+        .expect("fixture: fake gh hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake gh hook executable");
+    }
+
+    /// How many times the public path asked the fake `gh` about the PR.
+    fn fake_gh_calls(&self) -> u32 {
+        fs::read_to_string(self.path().join("fake-gh-state/calls"))
+            .map(|calls| calls.trim().parse().expect("a call count"))
+            .unwrap_or(0)
+    }
+
+    /// Installs a fake `make` at `<repo>/bin/make` — the gate `verify_public`
+    /// hands the public path is `make test`, and it resolves through `PATH`
+    /// inside the poller worktree (`merge-watch.sh --speculative-run`). The
+    /// body must not touch tracked files there, or the poller restore turns
+    /// the run into an infrastructure failure rather than a red.
+    fn fake_make(&self, body: &str) {
+        self.fake_gate("make", body);
+    }
+
+    /// Installs a fake gate executable at `<repo>/bin/<name>` (SH-649): the
+    /// public path runs whatever argv it is handed, resolved through `PATH`
+    /// inside the poller worktree, so a configured gate is any name here.
+    fn fake_gate(&self, name: &str, body: &str) {
+        let bin = self.path().join("bin");
+        fs::create_dir_all(&bin).expect("fixture: bin directory");
+        let script = bin.join(name);
+        fs::write(
+            &script,
+            format!("#!/usr/bin/env bash\nset -uo pipefail\n{body}\n"),
+        )
+        .expect("fixture: writing the fake gate");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+            .expect("fixture: fake gate executable");
+    }
+
+    /// Runs the PUBLIC path with the default gate — `verify-pr.sh <pr-url> --
+    /// make test`, the argv the daemon hands it for a project whose pointer
+    /// names no `[verify] gate`.
+    fn verify_public(&self) -> Output {
+        self.verify_public_with_gate(&["make", "test"])
+    }
+
+    /// Runs the PUBLIC path — `verify-pr.sh <pr-url> -- <gate...>` — against
+    /// this fixture's local origin, with the fake `gh` and any fake gate first
+    /// on `PATH` and the same containment `verification_gate` applies. An
+    /// empty `gate` omits the `--` entirely, which is the usage-refusal case.
+    fn verify_public_with_gate(&self, gate: &[&str]) -> Output {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut path = std::ffi::OsString::from(self.path().join("bin"));
+        path.push(":");
+        path.push(inherited);
+        let mut command = Command::new("bash");
+        command
+            .arg(checkout().join("scripts/verify-pr.sh"))
+            .arg("https://github.com/acme/widgets/pull/42");
+        if !gate.is_empty() {
+            command.arg("--").args(gate);
+        }
+        command
+            .current_dir(self.path())
+            .env("PATH", path)
+            .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
+            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .env(
+                "STORYHOOK_GATE_PROGRESS",
+                self.path().join("gate-progress.ndjson"),
+            )
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .expect("running the public verification path")
+    }
+
+    /// Runs the head-convergence seam (SH-636) with GitHub's wire shape for
+    /// the submitted PR; the fetch, the branch-tip read and the comparison are
+    /// all real Git against the local origin.
+    fn refresh_submission(&self, metadata: &str) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/verify-pr.sh")
+                    .display()
+                    .to_string(),
+                "--refresh-submission",
+                metadata,
+            ],
+        )
+    }
+
+    /// Runs the post-landing-refusal seam with authoritative metadata and real
+    /// refs. GitHub itself stays outside this deterministic boundary.
+    fn reconcile_landing_refusal(
+        &self,
+        refresh_status: i32,
+        metadata: &str,
+        expected_pr: u64,
+        expected_base: &str,
+        expected_head: &str,
+        verified_tree: &str,
+    ) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/verify-pr.sh")
+                    .display()
+                    .to_string(),
+                "--reconcile-land-refusal",
+                &refresh_status.to_string(),
+                metadata,
+                &expected_pr.to_string(),
+                expected_base,
+                expected_head,
+                verified_tree,
+                "land-pr refused after verification",
+            ],
+        )
     }
 }
 
@@ -1595,6 +2005,32 @@ fn a_textual_conflict_is_reported_distinctly_and_prints_no_tree() {
          conflict's virtual tree with markers baked in"
     );
     assert!(stderr(&out).contains("CONFLICT"), "got: {}", stderr(&out));
+
+    // SH-636: called with ref NAMES, the report still names the oids each
+    // resolved to — a stale reading has to be visible in the report itself,
+    // not inferred from the conflict's blob ids. Both, and on the same line.
+    let by_name = repo.preflight("branch-a", "branch-b");
+    assert_eq!(by_name.status.code(), Some(2));
+    let conflict_line = stderr(&by_name)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        conflict_line.contains(&format!("branch-b ({b})"))
+            && conflict_line.contains(&format!("branch-a ({a})")),
+        "got: {conflict_line}"
+    );
+    // An oid argument is not decorated with itself.
+    let by_oid_line = stderr(&out)
+        .lines()
+        .find(|line| line.contains("CONFLICT —"))
+        .map(str::to_string)
+        .unwrap_or_default();
+    assert!(
+        !by_oid_line.contains(&format!("{b} ({b})")),
+        "got: {by_oid_line}"
+    );
 }
 
 /// The receipt certifies content, not a branch name — the same doctrine
@@ -1728,7 +2164,7 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
     let repo = MergeRepo::new();
     let script = checkout().join("scripts/verify-pr.sh");
     let script = script.to_string_lossy().to_string();
-    let ready = r#"{"number":42,"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","headRefOid":"deadbeef","mergeCommit":null}"#;
+    let ready = r#"{"number":42,"state":"OPEN","isDraft":false,"isCrossRepository":false,"baseRefName":"main","headRefName":"feature","headRefOid":"deadbeef","mergeCommit":null}"#;
     let validate = |metadata: &str| {
         let out = run(
             repo.path(),
@@ -1779,6 +2215,191 @@ fn verifier_metadata_accepts_false_booleans_without_confusing_them_for_absence()
             .unwrap()
             .contains("no draft status")
     );
+
+    // SH-636: the head branch is what the pull ref mirrors, so a wire shape
+    // without it cannot be checked for convergence and is refused by name.
+    let branchless = validate(&ready.replace("\"headRefName\":\"feature\",", ""));
+    assert_eq!(branchless["result"], "infrastructure-failure");
+    assert_eq!(branchless["disposition"], "permanent");
+    assert!(
+        branchless["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no head branch")
+    );
+}
+
+/// GitHub's wire shape for an open same-repository PR whose head branch is
+/// `feature`, as `verify-pr.sh`'s `--refresh-submission` seam consumes it.
+fn open_pr_metadata(pr: u64, reported_head: &str) -> String {
+    serde_json::json!({
+        "number": pr,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": reported_head,
+        "mergeCommit": null,
+    })
+    .to_string()
+}
+
+/// The SH-630 shape: `feature` at OLD conflicts with `main`; a reconcile
+/// merge NEW resolves it. Returns `(old, new)` with `feature` left at NEW and
+/// `main` checked out, before any origin is published.
+fn reconciled_feature(repo: &MergeRepo) -> (String, String) {
+    let old = repo.branch("feature", "main", "f", "feature changes the base file\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.write("f", "main changes the base file\n");
+    repo.git(&["add", "f"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main moves"]),
+        "advancing main",
+    );
+    assert_ok(&repo.git(&["checkout", "-q", "feature"]), "onto feature");
+    repo.write("f", "reconciled\n");
+    repo.git(&["add", "f"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "feature takes main's change"]),
+        "preparing the reconcile content",
+    );
+    // A real merge commit, the shape a reconcile pushes: parents OLD and main.
+    let out = repo.git(&["merge", "-q", "-s", "ours", "--no-edit", "main"]);
+    assert_ok(&out, "recording the reconcile merge");
+    let new = repo.rev_parse("HEAD");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    assert_ne!(old, new);
+    (old, new)
+}
+
+/// SH-636's own incident, reconstructed: the branch was pushed (`refs/heads/
+/// feature` = NEW) but GitHub's two projections of it — `refs/pull/N/head`
+/// and the API's `headRefOid` — still both say OLD. Comparing the projections
+/// against each other passes; comparing them against the branch does not, and
+/// the verdict is RETRYABLE with all three oids named, never the stale head's
+/// conflict.
+#[test]
+fn a_pull_ref_lagging_its_branch_is_retried_not_reported_as_a_conflict() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a submission whose pull ref lags");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_eq!(payload["disposition"], "retryable");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&old),
+        "the stale projection is named: {detail}"
+    );
+    assert!(detail.contains(&new), "the branch tip is named: {detail}");
+    assert!(
+        detail.contains("refs/heads/feature"),
+        "the branch the pull ref mirrors is named: {detail}"
+    );
+    assert!(
+        !detail.contains("CONFLICT") && !stderr(&out).contains("CONFLICT"),
+        "no preflight may run against a head GitHub has not converged on"
+    );
+    // The retry comment has to be distinguishable from a head that moved
+    // AFTER verification (SH-604's "changed head" refusal).
+    assert!(detail.contains("not converged"), "{detail}");
+}
+
+/// The other half of the same lag: the API has caught up but the pull ref
+/// has not (or vice versa). This used to be a PERMANENT "moved while its refs
+/// were being refreshed" failure; it is the same asynchronous pipeline and
+/// gets the same bounded retry.
+#[test]
+fn a_pull_ref_disagreeing_with_the_api_is_retryable_not_permanent() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &new));
+    assert_ok(
+        &out,
+        "refreshing a submission whose API and pull ref disagree",
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_eq!(payload["disposition"], "retryable");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains(&old) && detail.contains(&new), "{detail}");
+}
+
+/// Three-way agreement is the precondition, not "no conflict": a head that
+/// GitHub HAS converged on proceeds to preflight even when it genuinely
+/// conflicts, so the convergence check cannot mask a real conflict — that
+/// is the first SH-630 return, which was correct.
+#[test]
+fn an_agreed_head_proceeds_whether_or_not_it_conflicts() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+
+    // Converged on the reconciled head.
+    repo.publish_origin(42, &new);
+    let out = repo.refresh_submission(&open_pr_metadata(42, &new));
+    assert_ok(&out, "refreshing a converged submission");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "refs-current", "{payload}");
+    assert_eq!(payload["head"], new);
+    assert_eq!(repo.rev_parse("refs/remotes/origin/pr/42"), new);
+    assert!(
+        !repo
+            .git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature"
+            ])
+            .status
+            .success(),
+        "reading the branch tip must not write a remote-tracking ref for it"
+    );
+
+    // Converged on a head that really conflicts: still current, and the
+    // production preflight then reports the conflict exactly as before.
+    assert_ok(
+        &repo.git(&["branch", "-f", "feature", &old]),
+        "rewinding the branch to the conflicting head",
+    );
+    assert_ok(
+        &repo.git(&["update-ref", "refs/pull/42/head", &old]),
+        "GitHub converging on the rewound head",
+    );
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a converged, conflicting submission");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "refs-current", "{payload}");
+    assert_eq!(payload["head"], old);
+    let conflict = repo.preflight("refs/remotes/origin/main", "refs/remotes/origin/pr/42");
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(stderr(&conflict).contains("CONFLICT"));
+}
+
+/// A PR whose head branch no longer exists on origin has nothing to converge
+/// on: that is a submission problem for the agent, not infrastructure.
+#[test]
+fn a_head_branch_absent_from_origin_is_an_invalid_submission() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    assert_ok(
+        &repo.git(&["branch", "-D", "feature"]),
+        "deleting the branch on origin",
+    );
+
+    let out = repo.refresh_submission(&open_pr_metadata(42, &old));
+    assert_ok(&out, "refreshing a submission whose branch is gone");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("refs/heads/feature"), "{detail}");
+    assert!(detail.contains("push it"), "{detail}");
 }
 
 #[test]
@@ -1870,7 +2491,240 @@ fn verifier_restart_recovers_only_a_certified_merge_on_the_current_base() {
 }
 
 #[test]
-fn verifier_preserves_the_landing_scripts_conflict_classification() {
+fn landing_refusal_recovers_only_the_certified_actual_merged_tree() {
+    for tier in ["gate", "changed"] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let base_tree = repo.tree_of("main");
+        let head = repo.branch("feature", "main", "g", "new\n");
+        assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+        repo.enroll_and_certify();
+        assert_ok(
+            &repo.git(&["checkout", "-q", "-b", "merged", &base]),
+            "branching for the landed merge",
+        );
+        assert_ok(
+            &repo.git(&["merge", "-q", "--no-edit", &head]),
+            "creating the landed merge",
+        );
+        let merge_oid = repo.rev_parse("HEAD");
+        let merge_tree = repo.tree_of("HEAD");
+        assert_ok(&repo.gate("preflight"), "enrolling the landed tree");
+        assert_ok(
+            &repo.gate_postlude(tier, (tier == "changed").then_some(base_tree.as_str())),
+            "writing the landed-tree receipt",
+        );
+        assert_ok(
+            &repo.git(&["branch", "-f", "main", &merge_oid]),
+            "advancing the authoritative base",
+        );
+        repo.publish_origin(42, &head);
+        let metadata = serde_json::json!({
+            "number": 42,
+            "state": "MERGED",
+            "isDraft": false,
+            "isCrossRepository": false,
+            "baseRefName": "main",
+            "headRefName": "feature",
+            "headRefOid": head,
+            "mergeCommit": {"oid": merge_oid},
+        })
+        .to_string();
+
+        let out = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &merge_tree);
+        assert_ok(&out, "classifying the refreshed merged PR");
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if tier == "gate" {
+            assert_eq!(payload["result"], "merged", "{payload}");
+            assert_eq!(payload["tree"], merge_tree);
+            assert!(
+                payload["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("landing refusal")
+            );
+        } else {
+            assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+            assert_eq!(payload["disposition"], "permanent");
+            assert!(
+                payload["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("insufficient 'changed' receipt")
+            );
+        }
+    }
+}
+
+#[test]
+fn landing_refusal_retries_only_a_new_tree_for_the_same_submission() {
+    let repo = MergeRepo::new();
+    let original_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+    let verified_tree = stdout(&repo.preflight(&original_base, &head));
+    assert_ok(
+        &repo.git(&["checkout", "-q", "-b", "certified", &original_base]),
+        "branching for the certified merge",
+    );
+    assert_ok(
+        &repo.git(&["merge", "-q", "--no-edit", &head]),
+        "creating the certified merge",
+    );
+    repo.enroll_and_certify();
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.publish_origin(42, &head);
+    let metadata = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let unchanged = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &verified_tree);
+    let unchanged: serde_json::Value = serde_json::from_slice(&unchanged.stdout).unwrap();
+    assert_eq!(unchanged["result"], "infrastructure-failure", "{unchanged}");
+    assert_eq!(unchanged["disposition"], "retryable", "{unchanged}");
+    assert!(
+        unchanged["detail"]
+            .as_str()
+            .unwrap()
+            .contains("remains current and certified"),
+        "{unchanged}"
+    );
+
+    repo.write("h", "base advanced\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging the base advancement");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "base advances after verification"]),
+        "advancing the authoritative base",
+    );
+    let current_base = repo.rev_parse("main");
+    let refreshed_tree = stdout(&repo.preflight(&current_base, &head));
+    assert_ne!(refreshed_tree, verified_tree);
+
+    let out = repo.reconcile_landing_refusal(0, &metadata, 42, "main", &head, &verified_tree);
+    assert_ok(&out, "classifying the advanced base");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains(&verified_tree), "{detail}");
+    assert!(detail.contains(&refreshed_tree), "{detail}");
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/gate-receipts")
+            .join(refreshed_tree)
+            .exists(),
+        "reconciliation must not certify the changed tree"
+    );
+}
+
+#[test]
+fn landing_refusal_keeps_missing_proof_and_changed_identity_distinct() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.publish_origin(42, &head);
+    let open = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let missing = repo.reconcile_landing_refusal(0, &open, 42, "main", &head, &tree);
+    let missing: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing["result"], "infrastructure-failure", "{missing}");
+    assert_eq!(missing["disposition"], "permanent");
+
+    for changed in [
+        open.replace("\"number\":42", "\"number\":43"),
+        open.replace("\"state\":\"OPEN\"", "\"state\":\"CLOSED\""),
+        open.replace("\"baseRefName\":\"main\"", "\"baseRefName\":\"other\""),
+        open.replace(
+            &format!("\"headRefOid\":\"{head}\""),
+            "\"headRefOid\":\"deadbeef\"",
+        ),
+    ] {
+        let out = repo.reconcile_landing_refusal(0, &changed, 42, "main", &head, &tree);
+        let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    }
+
+    let unavailable = repo.reconcile_landing_refusal(1, "", 42, "main", &head, &tree);
+    let unavailable: serde_json::Value = serde_json::from_slice(&unavailable.stdout).unwrap();
+    assert_eq!(
+        unavailable["result"], "infrastructure-failure",
+        "{unavailable}"
+    );
+    assert_eq!(unavailable["disposition"], "retryable");
+
+    assert_ok(
+        &repo.git(&["remote", "set-url", "origin", "/no/such/storyhook-origin"]),
+        "breaking the local origin",
+    );
+    let fetch_failure = repo.reconcile_landing_refusal(0, &open, 42, "main", &head, &tree);
+    let fetch_failure: serde_json::Value = serde_json::from_slice(&fetch_failure.stdout).unwrap();
+    assert_eq!(
+        fetch_failure["result"], "infrastructure-failure",
+        "{fetch_failure}"
+    );
+    assert_eq!(fetch_failure["disposition"], "retryable");
+}
+
+#[test]
+fn landing_refusal_reports_a_conflict_in_the_refreshed_tree() {
+    let repo = MergeRepo::new();
+    let head = repo.branch("feature", "main", "f", "feature changes the file\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("f", "base changes the file\n");
+    assert_ok(&repo.git(&["add", "f"]), "staging the base conflict");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "base conflicts after verification"]),
+        "advancing the conflicting base",
+    );
+    repo.publish_origin(42, &head);
+    let metadata = serde_json::json!({
+        "number": 42,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "baseRefName": "main",
+        "headRefName": "feature",
+        "headRefOid": head,
+        "mergeCommit": null,
+    })
+    .to_string();
+
+    let out = repo.reconcile_landing_refusal(
+        0,
+        &metadata,
+        42,
+        "main",
+        &head,
+        "previously-certified-tree",
+    );
+    assert_ok(&out, "classifying the refreshed conflict");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["result"], "conflict", "{payload}");
+    assert!(payload["detail"].as_str().unwrap().contains("CONFLICT"));
+}
+
+#[test]
+fn verifier_preserves_the_landing_scripts_terminal_classifications() {
     let repo = MergeRepo::new();
     let script = checkout().join("scripts/verify-pr.sh");
     let script = script.to_string_lossy().to_string();
@@ -1897,21 +2751,22 @@ fn verifier_preserves_the_landing_scripts_conflict_classification() {
             .contains("textual conflict")
     );
 
-    let infrastructure = run(
+    let merged = run(
         repo.path(),
         "bash",
         &[
             &script,
             "--classify-land",
-            "1",
-            "GitHub unavailable",
+            "0",
+            "merge landed and was certified",
             "42",
             "deadbeef",
         ],
     );
-    assert_ok(&infrastructure, "classifying a landing refusal");
-    let payload: serde_json::Value = serde_json::from_slice(&infrastructure.stdout).unwrap();
-    assert_eq!(payload["result"], "infrastructure-failure");
+    assert_ok(&merged, "classifying a successful landing");
+    let payload: serde_json::Value = serde_json::from_slice(&merged.stdout).unwrap();
+    assert_eq!(payload["result"], "merged");
+    assert_eq!(payload["tree"], "deadbeef");
 }
 
 /// Missing arguments are refused with a message naming correct usage, in
@@ -1931,4 +2786,452 @@ fn missing_arguments_are_refused_with_a_usage_message() {
 
     assert!(!out.status.success());
     assert!(stderr(&out).contains("usage"), "got: {}", stderr(&out));
+}
+
+/// A head that `refresh_submission_refs` converged on (SH-636), left on
+/// `feature`, `refs/pull/42/head` and the fake `gh` alike, so the public path
+/// reaches preflight. Returns the metadata the fake answers with.
+fn converge_public_head(repo: &MergeRepo, head: &str) {
+    assert_ok(
+        &repo.git(&["update-ref", "refs/heads/feature", head]),
+        "the branch on origin",
+    );
+    assert_ok(
+        &repo.git(&["update-ref", "refs/pull/42/head", head]),
+        "GitHub's pull ref converged",
+    );
+    repo.fake_gh_answers(&open_pr_metadata(42, head));
+}
+
+/// Bash that moves the branch, the pull ref and the fake `gh`'s answer to
+/// `head` — a push GitHub has fully propagated — from wherever the hook runs
+/// (the fake `make` runs inside the private-gitdir poller worktree, so `-C`
+/// names the fixture explicitly).
+fn move_public_head(repo: &MergeRepo, head: &str) -> String {
+    let fixture = repo.path().display();
+    let state = repo.path().join("fake-gh-state");
+    let state = state.display();
+    let metadata = open_pr_metadata(42, head);
+    format!(
+        "git -C '{fixture}' update-ref refs/heads/feature {head}\n\
+         git -C '{fixture}' update-ref refs/pull/42/head {head}\n\
+         printf '%s' '{metadata}' > '{state}/pr.json'\n"
+    )
+}
+
+fn public_payload(out: &Output) -> serde_json::Value {
+    assert_ok(out, "the public verification path emits classified JSON");
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("public path JSON: {e}: {}", stdout(out)))
+}
+
+/// SH-637's own shape, reconstructed: the head was current when the attempt
+/// began and GitHub had converged on it, so preflight ran and found the real
+/// conflict at OLD — then the reconcile push landed before the verdict was
+/// posted. The verdict is about a head nobody can act on any more, so it is
+/// discarded as RETRYABLE, naming both heads; it is never posted as the
+/// conflict it would have been two seconds earlier.
+#[test]
+fn a_conflict_verdict_is_discarded_when_the_head_moves_before_it_is_posted() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    // Call 1 is the entry read; call 2 is the recheck the verdict waits for.
+    repo.fake_gh_before_call(2, &move_public_head(&repo, &new));
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("head moved"), "{detail}");
+    assert!(
+        detail.contains(&old) && detail.contains(&new),
+        "both the judged and the current head are named: {detail}"
+    );
+    assert!(detail.contains("conflict verdict"), "{detail}");
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// The recheck reads the branch, not only GitHub's projections: a push that
+/// has reached `refs/heads/feature` but neither projection yet is still a
+/// head in flux, and SH-636's convergence rule answers for it — retryable,
+/// never the stale head's conflict.
+#[test]
+fn a_conflict_verdict_is_discarded_when_only_the_branch_has_moved() {
+    let repo = MergeRepo::new();
+    let (old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    repo.fake_gh_before_call(
+        2,
+        &format!(
+            "git -C '{}' update-ref refs/heads/feature {new}\n",
+            repo.path().display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("not converged"), "{detail}");
+    assert!(detail.contains(&new), "the branch tip is named: {detail}");
+}
+
+/// The positive control: a head that is still the head when the verdict is
+/// ready gets its conflict, exactly as before, and the recheck is what asked
+/// — two reads of GitHub, not one.
+#[test]
+fn a_conflict_on_a_head_that_stayed_put_is_still_reported_as_a_conflict() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "conflict", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+    assert!(
+        detail.contains(&old),
+        "SH-636's oid line names the head: {detail}"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        2,
+        "the verdict was confirmed against a fresh read, not the entry read"
+    );
+}
+
+/// The same rule at the other verdict site, with the window that actually
+/// matters: the release gate runs for minutes, and a push during it is the
+/// case a verdict-time check exists for. The gate goes red on NEW, the push
+/// moves the PR to NEWER before the verdict is posted, and the red for NEW is
+/// discarded as retryable — carrying the log so the evidence is not lost —
+/// never posted as `tests-failed`.
+#[test]
+fn a_red_verdict_is_discarded_when_the_head_moves_during_the_gate() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    assert_ok(&repo.git(&["checkout", "-q", "feature"]), "onto feature");
+    repo.write("g", "a later push\n");
+    repo.git(&["add", "g"]);
+    assert_ok(
+        &repo.git(&["commit", "-qm", "later push"]),
+        "the push during the gate",
+    );
+    let newer = repo.rev_parse("HEAD");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    // The gate itself is where the push lands: the fake `make` moves the
+    // head, then fails, the way a real suite would fail on the old head.
+    repo.fake_make(&format!("{}exit 1\n", move_public_head(&repo, &newer)));
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("head moved"), "{detail}");
+    assert!(detail.contains(&new) && detail.contains(&newer), "{detail}");
+    assert!(detail.contains("red verdict"), "{detail}");
+    assert!(
+        detail.contains("Gate log of the superseded attempt"),
+        "the red evidence is kept in the retry detail: {detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// The red positive control, through the public path: a completed red on a
+/// head that stayed put is `tests-failed` with the tree and the log, which is
+/// also what proves `run_verification_gate`'s status split preserved the
+/// verdict's shape where it is actually posted.
+#[test]
+fn a_red_on_a_head_that_stayed_put_is_still_reported_as_tests_failed() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    repo.fake_make("exit 3\n");
+
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let expected_tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    assert_eq!(payload["tree"], expected_tree, "{payload}");
+    let log = payload["log"].as_str().unwrap();
+    assert!(Path::new(log).is_file(), "the attempt log exists: {log}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("failed with exit status 3"),
+        "the gate's own status is reported: {detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 2, "entry read, then the recheck");
+}
+
+/// What the recheck refuses to reason past: a re-read that names a different
+/// PR or base is an identity change (invalid, as `reconcile_land_refusal`
+/// rules), and a PR no longer OPEN belongs to the next attempt's entry path
+/// (retryable). Neither posts the conflict that was computed.
+#[test]
+fn a_recheck_that_finds_a_different_pr_or_a_closed_one_posts_no_verdict() {
+    let repo = MergeRepo::new();
+    let (old, _new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &old);
+    repo.fake_gh();
+    converge_public_head(&repo, &old);
+    let state = repo.path().join("fake-gh-state").display().to_string();
+
+    let other_pr = open_pr_metadata(43, &old);
+    repo.fake_gh_before_call(
+        2,
+        &format!("printf '%s' '{other_pr}' > '{state}/pr.json'\n"),
+    );
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    assert!(
+        payload["detail"].as_str().unwrap().contains("PR #43"),
+        "{payload}"
+    );
+
+    // A second attempt on the same fixture: the entry read sees PR #42 again,
+    // and this time the recheck finds it CLOSED.
+    fs::remove_file(repo.path().join("fake-gh-state/calls")).unwrap();
+    repo.fake_gh_answers(&open_pr_metadata(42, &old));
+    let closed = open_pr_metadata(42, &old).replace("\"OPEN\"", "\"CLOSED\"");
+    repo.fake_gh_before_call(2, &format!("printf '%s' '{closed}' > '{state}/pr.json'\n"));
+    let payload = public_payload(&repo.verify_public());
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    assert!(
+        payload["detail"].as_str().unwrap().contains("CLOSED"),
+        "{payload}"
+    );
+}
+
+/// The gate is the daemon's to name, never this script's to assume (SH-649):
+/// `verify-pr.sh <pr-url>` with no `-- <gate...>` is refused by name before
+/// GitHub is so much as asked, because a script that quietly ran `make test`
+/// would be a second place the default lived — and the wrong one, since the
+/// project's pointer may say otherwise.
+#[test]
+fn the_public_path_refuses_to_run_without_a_named_gate() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    repo.fake_make("exit 0\n");
+
+    let payload = public_payload(&repo.verify_public_with_gate(&[]));
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("usage: verify-pr.sh <pr-url> -- <gate-command...>"),
+        "{detail}"
+    );
+    assert_eq!(repo.fake_gh_calls(), 0, "refused before GitHub is asked");
+}
+
+/// The configured argv reaches the gate word for word, resolved through
+/// `PATH` inside the poller worktree exactly as `make test` is. The red form
+/// is used so the run stops at the gate and the recorded argv is the whole
+/// evidence.
+#[test]
+fn a_configured_gate_runs_with_the_argv_it_was_named_with() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let record = repo.path().join("gate-argv");
+    repo.fake_gate(
+        "gate-bin",
+        &format!("printf '%s\\n' \"$@\" > '{}'\nexit 3\n", record.display()),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci", "unit"]));
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    assert_eq!(
+        fs::read_to_string(&record).expect("the gate ran and recorded its argv"),
+        "--ci\nunit\n"
+    );
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("failed with exit status 3"),
+        "the gate's own status is reported: {detail}"
+    );
+}
+
+/// A gate that exits 0 but mints no `gate`/`full` receipt has certified
+/// nothing, and landing would refuse it downstream with a diagnosis about the
+/// wrong layer ("no longer has a qualifying release-gate receipt", from
+/// `reconcile_land_refusal`, after `gh` had been asked again). The public
+/// path re-asks `merge-preflight.sh` — the reader `land-pr.sh` consults —
+/// immediately after the gate and refuses by name, before any landing read.
+/// The configured argv is recorded on the way, which is also the proof that
+/// the gate this refusal names is the one that ran.
+#[test]
+fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_landing() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let record = repo.path().join("gate-argv");
+    repo.fake_gate(
+        "gate-bin",
+        &format!("printf '%s\\n' \"$@\" > '{}'\nexit 0\n", record.display()),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci"]));
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("certified nothing"), "{detail}");
+    assert!(
+        detail.contains("`gate-bin --ci`"),
+        "names the gate: {detail}"
+    );
+    assert!(
+        detail.contains("gate-receipt.sh postlude"),
+        "names the remedy: {detail}"
+    );
+    let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    assert!(detail.contains(&tree), "names the tree: {detail}");
+    assert_eq!(fs::read_to_string(&record).expect("the gate ran"), "--ci\n");
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/gate-receipts")
+            .join(&tree)
+            .exists(),
+        "nothing certified the tree"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        1,
+        "refused after the entry read and before any landing read"
+    );
+}
+
+/// SH-666's second incident, reconstructed: the gate ran green on the tree
+/// preflight computed and certified it through the production writer — and
+/// while it ran, a fetch in the shared repository (a `/story do` creating a
+/// worktree, a poller, anything) moved `refs/remotes/origin/main` to a tip
+/// that conflicts with the PR. The post-gate certification check then
+/// re-resolved that REF instead of the commit the gate ran on, computed a
+/// different merge, met the conflict, and reported "certified nothing" as a
+/// PERMANENT halt of the whole queue. A base that moved is the story's own
+/// business: landing refreshes it under the merge lock and answers CONFLICT,
+/// which the daemon holds the queue on while the implementer reconciles — so
+/// the check must ask exactly "did the gate certify the tree it ran on",
+/// against the pinned commits, and let landing find the moved base.
+#[test]
+fn a_base_that_moves_during_the_gate_is_a_conflict_for_the_story_never_a_halt() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    // Main will move here during the gate: `f` diverges from NEW's reconcile.
+    let later = repo.branch("later", "main", "f", "main moves again during the gate\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let hooks = checkout().join(".githooks");
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    let fixture = repo.path().display().to_string();
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{writer}' preflight && bash '{writer}' postlude || exit $?\n\
+             git -C '{fixture}' update-ref refs/heads/main {later}\n\
+             git -C '{fixture}' update-ref refs/remotes/origin/main {later}\n",
+            hooks.display(),
+            writer = writer.display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
+    // The gate certified the tree it ran on: preflight of the pinned parents.
+    let gate_tree = {
+        let base_before = repo.rev_parse("later~1");
+        stdout(&repo.preflight(&base_before, &new))
+    };
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(gate_tree.trim());
+    assert!(
+        fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("the gate certified the tree it ran on: {e}"))
+            .contains("tier gate"),
+        "the production writer minted a gate-tier receipt for the gate's own tree"
+    );
+    assert_eq!(
+        payload["result"], "conflict",
+        "a base that moved into conflict is the story's to reconcile: {payload}"
+    );
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+    assert!(
+        !detail.contains("certified nothing"),
+        "a certified tree is never reported as uncertified because the base moved: {detail}"
+    );
+    assert!(
+        repo.fake_gh_calls() >= 2,
+        "the conflict was found by landing's own refresh, after the gate: {payload}"
+    );
+}
+
+/// The positive control, without which a check that always refused would
+/// pass the test above: a gate that certifies through the production writer
+/// (`gate-receipt.sh preflight` then `postlude`, inside the speculative
+/// checkout) gets past the check and on to landing — where this fixture's
+/// fake `gh` is asked again, which is what proves the refusal did not fire.
+#[test]
+fn a_configured_gate_that_certifies_through_the_production_writer_proceeds_to_landing() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let hooks = checkout().join(".githooks");
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    // The hooks link is untracked, so the poller restore tolerates it; the
+    // production writer needs an executable pre-push beside it to enrol.
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{writer}' preflight && bash '{writer}' postlude\n",
+            hooks.display(),
+            writer = writer.display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
+    let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    assert!(
+        fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("the gate certified the tree: {e}"))
+            .contains("tier gate"),
+        "the production writer minted a gate-tier receipt"
+    );
+    let detail = payload["detail"].as_str().unwrap_or("");
+    assert!(
+        !detail.contains("certified nothing"),
+        "a certified tree is not refused: {payload}"
+    );
+    assert!(
+        repo.fake_gh_calls() >= 2,
+        "landing was attempted after the gate: {payload}"
+    );
 }

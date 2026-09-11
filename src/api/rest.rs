@@ -43,8 +43,10 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
 use crate::output::{ReportData, Response, render_response};
-use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
-use crate::store::{ProjectId, ReadOps, Store, WriteOps};
+use crate::service::{
+    AttachmentService, CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService,
+};
+use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
@@ -58,7 +60,13 @@ pub struct RouteRequest<'a> {
     method: &'a Method,
     path: &'a str,
     headers: &'a [Header],
-    body: &'a str,
+    body: RouteBody<'a>,
+}
+
+/// Borrowed body semantics survive routing without a lossy text conversion.
+enum RouteBody<'a> {
+    Text(&'a str),
+    Binary(&'a [u8]),
 }
 
 impl<'a> RouteRequest<'a> {
@@ -69,8 +77,37 @@ impl<'a> RouteRequest<'a> {
             method,
             path,
             headers,
-            body,
+            body: RouteBody::Text(body),
         }
+    }
+
+    /// Creates a binary request for the attachment-upload route. Other routes
+    /// refuse this representation, even when the bytes happen to be UTF-8.
+    pub fn binary(
+        method: &'a Method,
+        path: &'a str,
+        headers: &'a [Header],
+        body: &'a [u8],
+    ) -> Self {
+        Self {
+            method,
+            path,
+            headers,
+            body: RouteBody::Binary(body),
+        }
+    }
+}
+
+/// Keeps catalog mutations on the ordinary text guard.
+fn guarded_text(
+    headers: &[Header],
+    trusted: &TrustedHosts,
+    body: RouteBody<'_>,
+    handler: impl FnOnce(&str) -> Reply,
+) -> Reply {
+    match body {
+        RouteBody::Text(text) => guarded(headers, trusted, text, handler),
+        RouteBody::Binary(_) => text_reply(400, "binary body requires the attachment-upload route"),
     }
 }
 
@@ -191,8 +228,10 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::VerificationAck => "verification-ack",
         ProjectRoute::StoryCreate => "new",
         ProjectRoute::StoryShow { .. } => "show",
+        ProjectRoute::StoryAttachment { .. } => "attachment-get",
         ProjectRoute::StoryPatch { .. } => "set-fields",
         ProjectRoute::StoryDelete { .. } => "delete",
+        ProjectRoute::StoryAttachmentUpload { .. } => "attachment",
         ProjectRoute::StoryAction { action, .. } => match action {
             StoryAction::Move => "move",
             StoryAction::Comment => "comment",
@@ -278,7 +317,22 @@ pub fn route_with_activity<S: Store>(
         headers,
         body,
     } = request;
-    match classify(&path_segments(path), method) {
+    let route = classify(&path_segments(path), method);
+    if matches!(body, RouteBody::Binary(_))
+        && !matches!(
+            route,
+            Route::Project {
+                route: ProjectRoute::StoryAttachmentUpload { .. },
+                ..
+            }
+        )
+    {
+        return Routed::quiet(text_reply(
+            400,
+            "binary body requires the attachment-upload route",
+        ));
+    }
+    match route {
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => Routed::quiet(match repos_json(store, env) {
             Ok(json) => json_reply(200, json).no_cache(),
@@ -286,14 +340,14 @@ pub fn route_with_activity<S: Store>(
         }),
         Route::ReposCreate => Routed::changing(
             method,
-            guarded(headers, trusted_hosts, body, |b| {
+            guarded_text(headers, trusted_hosts, body, |b| {
                 route_init_repo(store, env, b)
             }),
             Changed::Catalog,
         ),
         Route::RepoDelete { id } => Routed::changing(
             method,
-            guarded(headers, trusted_hosts, body, |b| {
+            guarded_text(headers, trusted_hosts, body, |b| {
                 route_delete_repo(store, env, id, b)
             }),
             Changed::Catalog,
@@ -341,6 +395,25 @@ pub fn route_with_activity<S: Store>(
     }
 }
 
+/// Serves one attachment through its owning project's service context.
+fn attachment_reply<S: Store>(ctx: &Ctx<'_, S>, id: &str, raw_id: &str) -> Result<Reply, AppError> {
+    let attachment_id = raw_id
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id > 0 && raw_id.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| {
+            AppError::Usage(format!(
+                "story `{id}` attachment id `{raw_id}` must be a positive decimal u32"
+            ))
+        })?;
+    let (attachment, bytes) = AttachmentService::new(ctx).get(id, attachment_id)?;
+    Ok(
+        Reply::from_bytes(200, attachment.media_type.as_str(), bytes)
+            .no_store()
+            .same_origin_resource(),
+    )
+}
+
 /// The per-project API surface — everything under `/api/repos/<id>/...` once
 /// `<id>` has resolved to a project.
 ///
@@ -354,10 +427,28 @@ fn route_project<S: Store>(
     verification_activity: &VerificationActivity,
     route: ProjectRoute<'_>,
     headers: &[Header],
-    body: &str,
+    body: RouteBody<'_>,
     trusted_hosts: &TrustedHosts,
 ) -> Reply {
+    let body = match body {
+        RouteBody::Text(text) => text,
+        RouteBody::Binary(bytes) => {
+            return match route {
+                ProjectRoute::StoryAttachmentUpload { id } => {
+                    guarded_no_body(headers, trusted_hosts, || {
+                        crate::api::upload::reply(ctx, id, headers, bytes)
+                    })
+                }
+                _ => text_reply(400, "binary body requires the attachment-upload route"),
+            };
+        }
+    };
     match route {
+        ProjectRoute::StoryAttachmentUpload { id } => {
+            guarded_no_body(headers, trusted_hosts, || {
+                crate::api::upload::reply(ctx, id, headers, body.as_bytes())
+            })
+        }
         ProjectRoute::Data => match project_data_json(ctx, verification_activity) {
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
@@ -376,6 +467,12 @@ fn route_project<S: Store>(
         }
         ProjectRoute::StoryShow { id } => {
             reply_with(ctx, 200, Invocation::Show { id: id.to_string() })
+        }
+        ProjectRoute::StoryAttachment { id, attachment_id } => {
+            match attachment_reply(ctx, id, attachment_id) {
+                Ok(reply) => reply,
+                Err(error) => error_reply(&error).no_store(),
+            }
         }
         ProjectRoute::StoryPatch { id } => guarded(headers, trusted_hosts, body, |b| {
             route_patch_story(ctx, id, b)
@@ -783,10 +880,10 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let active = verification_activity.active();
-            let incident = tx.verification_incident()?;
+            let active = verification_activity.active_for(project);
+            let incident = tx.verification_incident(project)?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates(tx)?,
+                &crate::service::verification::ordered_candidates_for(tx, project)?,
                 active.as_ref(),
                 incident.as_ref(),
                 ctx.env(),
@@ -881,30 +978,10 @@ fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let expected = require_str(&obj, "incident_id")?;
-        let current = ctx.store().read(|tx| tx.verification_incident())?;
-        let Some(current) = current else {
-            return Err(AppError::Validation(
-                "no verification incident is active".into(),
-            ));
-        };
-        if !current.halted {
-            return Err(AppError::Validation(
-                "the verification incident is still retrying".into(),
-            ));
-        }
-        if current.incident_id != expected {
-            return Err(AppError::Validation(format!(
-                "verification incident `{expected}` is stale; current incident is `{}`",
-                current.incident_id
-            )));
-        }
-        ctx.store().write(|tx| {
-            tx.clear_verification_incident(expected)?;
-            Ok(())
-        })?;
+        let acknowledged = crate::service::acknowledge_verification_incident(ctx, expected)?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": expected}).to_string(),
+            serde_json::json!({"acknowledged": acknowledged.incident_id}).to_string(),
         ))
     })()
     .unwrap_or_else(|error| error_reply(&error))
@@ -1036,12 +1113,9 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
 /// which is what this route used to do, and what cost it two acquisitions of a
 /// lock that no longer exists.
 ///
-/// Being the one route that skips [`dispatch`] makes it the one route that
-/// would also skip the story-id canonicalization every other door gets there
-/// (SH-118), so it asks for the same expansion explicitly. That call is the
-/// price of the shortcut above, and it is written here rather than hidden
-/// inside `set_fields` because the rule belongs to the *door*, not to the
-/// service.
+/// Like attachment upload, this service-backed route explicitly applies the
+/// story-id canonicalization otherwise provided by [`dispatch`] (SH-118).
+/// The rule belongs to the door, not to `set_fields`.
 fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let id = &crate::invoke::story_ids::canonicalize_one(ctx, id)?;

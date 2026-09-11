@@ -402,73 +402,109 @@ pub(super) fn live_engine_runs(conn: &Connection) -> Result<Vec<EngineRunRecord>
     )
 }
 
+type RawIncident = (
+    String,
+    i64,
+    i64,
+    i64,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+);
+
+const INCIDENT_COLUMNS: &str = "incident_id, project_id, story_no, generation, disposition, state, \
+                                attempts, detail, first_failed_at, last_failed_at";
+
+fn raw_incident(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawIncident> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, i64>(1)?,
+        row.get::<_, i64>(2)?,
+        row.get::<_, i64>(3)?,
+        row.get::<_, String>(4)?,
+        row.get::<_, String>(5)?,
+        row.get::<_, i64>(6)?,
+        row.get::<_, String>(7)?,
+        row.get::<_, String>(8)?,
+        row.get::<_, String>(9)?,
+    ))
+}
+
+fn incident_from_raw(raw: RawIncident) -> Result<VerificationIncident, StoreError> {
+    let (
+        incident_id,
+        project,
+        story,
+        generation,
+        disposition,
+        state,
+        attempts,
+        detail,
+        first_failed_at,
+        last_failed_at,
+    ) = raw;
+    let disposition = VerificationFailureDisposition::parse(&disposition).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "verification_incident.disposition holds unknown value `{disposition}`"
+        ))
+    })?;
+    let halted = match state.as_str() {
+        "retrying" => false,
+        "halted" => true,
+        _ => {
+            return Err(StoreError::Corrupt(format!(
+                "verification_incident.state holds unknown value `{state}`"
+            )));
+        }
+    };
+    Ok(VerificationIncident {
+        incident_id,
+        project: ProjectId::new(project),
+        story: StoryNo::new(story),
+        generation: GlobalSeq::new(generation),
+        disposition,
+        halted,
+        attempts: stored_u32(attempts, "verification_incident.attempts")?,
+        detail,
+        first_failed_at,
+        last_failed_at,
+    })
+}
+
 pub(super) fn verification_incident(
     conn: &Connection,
+    project: ProjectId,
 ) -> Result<Option<VerificationIncident>, StoreError> {
     let raw = one(
         conn,
-        "SELECT incident_id, project_id, story_no, generation, disposition, state, attempts, \
-                detail, first_failed_at, last_failed_at FROM verification_incident WHERE singleton = 1",
-        &[],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-            ))
-        },
+        &format!("SELECT {INCIDENT_COLUMNS} FROM verification_incident WHERE project_id = ?1"),
+        params![project.get()],
+        raw_incident,
         "reading the verification incident",
     )?;
-    raw.map(
-        |(
-            incident_id,
-            project,
-            story,
-            generation,
-            disposition,
-            state,
-            attempts,
-            detail,
-            first_failed_at,
-            last_failed_at,
-        )| {
-            let disposition =
-                VerificationFailureDisposition::parse(&disposition).ok_or_else(|| {
-                    StoreError::Corrupt(format!(
-                        "verification_incident.disposition holds unknown value `{disposition}`"
-                    ))
-                })?;
-            let halted = match state.as_str() {
-                "retrying" => false,
-                "halted" => true,
-                _ => {
-                    return Err(StoreError::Corrupt(format!(
-                        "verification_incident.state holds unknown value `{state}`"
-                    )));
-                }
-            };
-            Ok(VerificationIncident {
-                incident_id,
-                project: ProjectId::new(project),
-                story: StoryNo::new(story),
-                generation: GlobalSeq::new(generation),
-                disposition,
-                halted,
-                attempts: stored_u32(attempts, "verification_incident.attempts")?,
-                detail,
-                first_failed_at,
-                last_failed_at,
-            })
-        },
-    )
-    .transpose()
+    raw.map(incident_from_raw).transpose()
+}
+
+pub(super) fn verification_incidents(
+    conn: &Connection,
+) -> Result<Vec<VerificationIncident>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached(&format!(
+            "SELECT {INCIDENT_COLUMNS} FROM verification_incident ORDER BY project_id"
+        )),
+        "preparing the verification incidents",
+    )?;
+    let rows = sql(
+        stmt.query_map([], raw_incident),
+        "reading the verification incidents",
+    )?;
+    collect(rows, "reading the verification incidents")?
+        .into_iter()
+        .map(incident_from_raw)
+        .collect()
 }
 
 pub(super) fn engine_lanes(
@@ -484,7 +520,8 @@ pub(super) fn engine_lanes(
             // names every field correctly and fills every one wrong).
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
                     dispatched_at, last_observed_at, outcome, outcome_detail, \
-                    last_progress_seq, last_progress_at, pane_id, cleanup_lease_json \
+                    last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
+                    probe_detail \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -506,6 +543,7 @@ pub(super) fn engine_lanes(
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
             ))
         }),
         "reading engine lanes",
@@ -528,6 +566,7 @@ pub(super) fn engine_lanes(
                 last_progress_at,
                 pane_id,
                 cleanup_lease_json,
+                probe_detail,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -556,6 +595,7 @@ pub(super) fn engine_lanes(
                     last_progress_at,
                     outcome,
                     outcome_detail,
+                    probe_detail,
                 })
             },
         )
@@ -686,25 +726,31 @@ pub(super) fn settings(
 ) -> Result<ProjectSettings, StoreError> {
     let row = one(
         conn,
-        "SELECT sync_auto_transition, doctor_stale_threshold \
+        "SELECT sync_auto_transition, doctor_stale_threshold, cleanup_auto, \
+                cleanup_interval \
          FROM project_settings WHERE project_id = ?1",
         params![project.get()],
         |row| {
             Ok((
                 row.get::<_, Option<bool>>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<bool>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         },
         "reading settings",
     )?;
     // A project with no settings row has no settings — not an error. What a
     // default means belongs to the caller, which is the layer that has one.
-    let Some((sync_auto_transition, doctor_stale_threshold)) = row else {
+    let Some((sync_auto_transition, doctor_stale_threshold, cleanup_auto, cleanup_interval)) = row
+    else {
         return Ok(ProjectSettings::default());
     };
     Ok(ProjectSettings {
         sync_auto_transition,
         doctor_stale_threshold,
+        cleanup_auto,
+        cleanup_interval,
     })
 }
 

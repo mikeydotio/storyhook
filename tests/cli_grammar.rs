@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use storyhook::cli::{EngineAction, Invocation, parse_invocation};
+use storyhook::cli::{EngineAction, Invocation, VerifierAction, parse_invocation};
 use storyhook::store::{EngineAgent, EngineSpeed};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
@@ -146,6 +146,65 @@ fn unblock_clears_awaiting() {
         .assert()
         .success()
         .stdout(predicate::str::contains("awaiting:").not());
+}
+
+/// SH-658: production CLI -> daemon -> service -> ready queue, with an
+/// unrelated story reference in the explanation to catch spurious nudges.
+#[test]
+fn block_on_explanation_releases_the_ready_queue_when_the_blocker_finishes() {
+    let project = TestEnv::shared()
+        .project()
+        .seed_story("worker")
+        .seed_story("blocker")
+        .seed_story("context")
+        .build();
+    project
+        .run(&[
+            "block",
+            "SH-1",
+            "--on",
+            "SH-2",
+            "needs API; background in SH-3",
+        ])
+        .success()
+        .stdout(predicate::str::contains("reason names SH-3").not());
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1").not());
+    project.run(&["move", "SH-2", "done"]).success();
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1"));
+    project
+        .run(&["show", "SH-1"])
+        .success()
+        .stdout(predicate::str::contains(
+            "Blocked on SH-2: needs API; background in SH-3",
+        ));
+    project
+        .run(&["block", "SH-1", "external approval"])
+        .success();
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1").not());
+}
+
+#[test]
+fn block_on_warning_reads_the_preserved_prose_hold() {
+    let project = TestEnv::shared()
+        .project()
+        .seed_story("worker")
+        .seed_story("blocker")
+        .seed_story("unlinked blocker")
+        .build();
+    project.run(&["block", "SH-1", "waiting on SH-3"]).success();
+    project
+        .run(&["block", "SH-1", "--on", "SH-2", "dependency explanation"])
+        .success()
+        .stdout(predicate::str::contains("reason names SH-3"));
 }
 
 #[test]
@@ -870,6 +929,71 @@ fn engine_parser_refuses_bad_values_scoped_flags_and_trailing_words() {
 
     assert!(invocation(&["engine"]).is_err());
     assert!(invocation(&["engine", "launch"]).is_err());
+}
+
+/// `story verifier ack <incident-id>` (SH-666): the id is positional and
+/// required, so an acknowledgement can never clear "whichever incident is
+/// current" — the same exact-id contract the REST door keeps.
+#[test]
+fn verifier_parser_takes_exactly_one_incident_id() {
+    assert_eq!(
+        invocation(&["verifier", "ack", "2:28821"]).unwrap(),
+        Invocation::Verifier {
+            action: VerifierAction::Ack {
+                incident_id: "2:28821".to_string(),
+            },
+        }
+    );
+
+    let missing = invocation(&["verifier", "ack"]).unwrap_err();
+    assert!(
+        missing.to_string().contains("needs the incident id"),
+        "{missing}"
+    );
+    assert!(
+        missing
+            .to_string()
+            .contains("usage: story verifier ack <incident-id>")
+    );
+
+    // A flag where the id belongs is refused by the SH-52 guard ahead of the
+    // parser, naming the flag; the parser's own refusal is the fallback.
+    let flag_shaped = invocation(&["verifier", "ack", "--force"]).unwrap_err();
+    assert!(
+        flag_shaped.to_string().contains("unknown flag `--force`"),
+        "{flag_shaped}"
+    );
+
+    let trailing = invocation(&["verifier", "ack", "2:28821", "extra"]).unwrap_err();
+    assert!(
+        trailing.to_string().contains("unexpected argument `extra`"),
+        "{trailing}"
+    );
+    assert!(
+        trailing
+            .to_string()
+            .contains("usage: story verifier ack <incident-id>")
+    );
+
+    assert!(invocation(&["verifier"]).is_err());
+    assert!(invocation(&["verifier", "retry"]).is_err());
+}
+
+/// The verb is wired end to end: against a project with no incident the real
+/// binary answers with the service's own refusal, at the validation exit code,
+/// rather than an unknown-command usage error.
+#[test]
+fn verifier_ack_reaches_the_service_through_the_real_binary() {
+    let dir = scratch_dir();
+    init_and_create(dir.path());
+    story(dir.path())
+        .args(["verifier", "ack", "2:1"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "no verification incident is active",
+        ));
 }
 
 #[test]

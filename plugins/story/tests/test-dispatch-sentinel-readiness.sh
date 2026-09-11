@@ -66,7 +66,9 @@ dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SUPPRESS_SENTINEL=1 \
 assert_eq "$(jqf "$out" .ok)" "false" "pid-exited: a process that dies mid-poll is refused"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "pid-exited" \
   "pid-exited: named as the process having died, not a timeout"
-assert_eq "$(state_of)" "todo" "pid-exited: the claim is rolled back"
+assert_eq "$(state_of)" "in-progress" "pid-exited: uncertain descendant ownership preserves the claim"
+assert_contains "$(jqf "$out" .display)" "surviving descendants cannot be identified safely" \
+  "pid-exited: explains why resources remain"
 
 # ---- the happy path this whole mechanism exists to confirm, isolated from
 #      Families A-E's regression framing: a real sentinel, a real live pid,

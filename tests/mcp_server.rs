@@ -115,6 +115,46 @@ fn text_of(result: &Value) -> &str {
 }
 
 #[test]
+fn comment_lint_failures_reach_mcp_with_repair_guidance() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env
+        .project()
+        .prefix("SH")
+        .seed_story("Test text checks")
+        .build();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let failed = mcp.call(
+        "story_comment",
+        json!({
+            "project": project.slug(), "id": "SH-1", "text": "Don't utilize it."
+        }),
+    );
+    assert_eq!(failed["isError"], true);
+    let error: Value = serde_json::from_str(text_of(&failed)).unwrap();
+    assert_eq!(error["kind"], "text_lint");
+    assert_eq!(error["findings"][0]["field"], "comment");
+    assert!(
+        error["findings"][0]["help"]
+            .as_str()
+            .unwrap()
+            .contains("full")
+    );
+    assert!(comments_of(&mut mcp, &project.slug(), "SH-1").is_empty());
+    let repaired = mcp.call(
+        "story_comment",
+        json!({
+            "project": project.slug(), "id": "SH-1", "text": "Do not use it."
+        }),
+    );
+    assert_eq!(repaired["isError"], false);
+    assert_eq!(
+        comments_of(&mut mcp, &project.slug(), "SH-1"),
+        vec!["Do not use it."]
+    );
+}
+
+#[test]
 fn a_full_story_lifecycle_through_the_curated_tools() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
