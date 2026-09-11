@@ -400,7 +400,7 @@ pub fn dispatch<S: Store>(
                 view.warnings.extend(crate::block_notice::warnings(
                     ctx,
                     &id,
-                    awaiting.as_deref(),
+                    view.story.awaiting.as_deref(),
                     &view.story.relationships,
                 ));
             }

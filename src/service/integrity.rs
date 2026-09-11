@@ -130,6 +130,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             notices.extend(active_state_notice(&states));
             notices.extend(blocked_without_reason_notices(tx, project)?);
             notices.extend(unlinked_blocker_notices(tx, project)?);
+            notices.extend(stale_awaiting_notices(tx, project, &prefix)?);
             Ok(Examination { findings, notices })
         })?)
     }
@@ -1444,6 +1445,58 @@ fn unlinked_blocker_notices(
             crate::block_notice::warning(&view.story.id, &mentioned)
         })
         .collect())
+}
+
+/// SH-658: old `block --on` calls also wrote an independent prose hold.
+/// A closed mention is evidence to review, not proof that the whole reason
+/// is obsolete, so this stays advisory even under `doctor --fix`.
+fn stale_awaiting_notices(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+) -> Result<Vec<String>, AppError> {
+    use crate::domain::{SuperState, ids_in_line};
+
+    // Include closed and hidden targets: the live edge is normally already
+    // retracted, and a ready-only index would conceal the evidence again.
+    let stories = story_map(tx, project)?;
+    let mut notices = Vec::new();
+    for story in stories.values() {
+        let Some(awaiting) = story.awaiting.as_deref() else {
+            continue;
+        };
+        if story.superstate != SuperState::Open
+            || story.relationships.iter().any(|relation| {
+                relation.relation == "blocked-by"
+                    && stories
+                        .get(&relation.other_id)
+                        .is_some_and(|target| target.superstate == SuperState::Open)
+            })
+        {
+            continue;
+        }
+        let closed: BTreeSet<_> = ids_in_line(prefix, awaiting)
+            .into_iter()
+            .map(|(start, end)| &awaiting[start..end])
+            .filter(|id| *id != story.id)
+            .filter(|id| {
+                stories
+                    .get(*id)
+                    .is_some_and(|target| target.superstate == SuperState::Closed)
+            })
+            .collect();
+        if !closed.is_empty() {
+            let names = closed.into_iter().collect::<Vec<_>>().join(", ");
+            notices.push(format!(
+                "{}: possibly stale awaiting — reason names closed stories {names} and no open \
+                 blocked-by edge remains. The prose still blocks readiness: {awaiting:?}. \
+                 Review `story show {}`; if the entire hold is resolved, run `story unblock {}`. \
+                 Doctor will not clear it automatically.",
+                story.id, story.id, story.id
+            ));
+        }
+    }
+    Ok(notices)
 }
 
 /// What `--fix` identified and did not do, because the only story it could
