@@ -15,6 +15,7 @@ build_slots	scripts/rustc-slot.py
 checkout_path_readers	:(glob)**/*
 checkout_path_readers	:(glob)src/**/*.rs
 commit_identity	:(glob)**/*
+completion_state_search	:(glob)src/**/*.rs
 council_citations	:(glob)**/*
 coupled_snapshot	:(glob)**/*
 coupled_snapshot	:(glob)src/**/*.rs
