@@ -2469,6 +2469,14 @@ cmd_dispatch() {
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
   local DISPATCH_ROLLBACK_CLAIMED="$reused_claim" DISPATCH_ROLLBACK_NOTE=""
+  local launch_process launch_start
+  if ! launch_process=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → could not capture its launch process: $(printf '%s' "$launch_process" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+  launch_start=$(printf '%s' "$launch_process" | jq -r '.identity.start')
 
   # Publish the durable-cleanup handoff before any gate that can leave this
   # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
@@ -2516,6 +2524,18 @@ cmd_dispatch() {
   fi
   local readiness_confirmed=true
 
+  # The ready launch owns this exact pane/PID. Registration is required before
+  # the story charter, so a failed metadata write cannot strand remediation.
+  local identity_result dispatch_identity
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" register \
+      "$PROJECT_SLUG" "$id" "$wname" "$worktree_path" "$pane" "$pane_pid" "$AGENT" "$launch_start"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → could not register its agent identity: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+  dispatch_identity=$(printf '%s' "$identity_result" | jq -c '.identity')
+
   # Claude selected plan mode in its launch argv. Current Codex exposes a real
   # Plan mode through Shift+Tab, and the footer is the confirmation boundary.
   # Refuse before delivering the charter if that handoff cannot be established.
@@ -2549,6 +2569,13 @@ cmd_dispatch() {
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$dispatch_identity"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → its registered identity changed before handoff: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
@@ -3385,35 +3412,46 @@ cmd_notify() {
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  local wname pane buffer provider server
+  local wname pane buffer provider server identity_result identity detail
   wname=$(resolve_wname "$id")
-  server="${TMUX:-}"
-  server="${server%%,*}"
-  server="${server:-default (TMUX_TMPDIR=${TMUX_TMPDIR:-/tmp})}"
-  if ! pane=$(pane_for_window "$wname" 2>&1); then
-    refuse "pane-query-failed" "could not query tmux window \`$wname\` on server \`$server\`: $pane; verification diagnostics remain on $id."
+  if [ -z "$PROJECT_SLUG" ]; then
+    resolve_project || refuse "pane-query-failed" "$CHECKOUT_ERROR"
   fi
-  [ -n "$pane" ] \
-    || refuse "pane-unavailable" "no live tmux window named \`$wname\` on queried server \`$server\`; verification diagnostics remain on $id."
-  provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null || printf '')
-  case "$provider" in
-  claude | codex) configure_agent "$provider" ;;
-  *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
-  esac
-  # A pane whose process has exited under remain-on-exit still answers the
-  # provider option and a FROZEN #{pane_current_command} (pane_is_dead's doc),
-  # so it passes both gates above and pane_runs below. Ask tmux the one
-  # question that distinguishes it, first: the verifier re-dispatches on this
-  # refusal (SH-650), and must never read a corpse as `delivery-failed`, the
-  # refusal that means the agent IS live and a respawn would kill it.
-  ! pane_is_dead "$pane" \
-    || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
-  pane_runs "$pane" \
-    || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
+  if ! git rev-parse --git-common-dir >/dev/null 2>&1; then
+    resolve_checkout || refuse "pane-query-failed" "$CHECKOUT_ERROR"
+    cd "$CHECKOUT_PATH" || refuse "pane-query-failed" "cannot enter $CHECKOUT_PATH"
+  fi
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" resolve "$PROJECT_SLUG" "$id" "$wname"); then
+    detail=$(printf '%s' "$identity_result" | jq -r '.display')
+    # Keep the complete refusal vocabulary here for the daemon contract test.
+    case "$(printf '%s' "$identity_result" | jq -r '.reason')" in
+      pane-unavailable) refuse "pane-unavailable" "$detail" ;;
+      pane-dead) refuse "pane-dead" "$detail" ;;
+      pane-changed) refuse "pane-changed" "$detail" ;;
+      pane-provider-unknown) refuse "pane-provider-unknown" "$detail" ;;
+      *) refuse "pane-query-failed" "$detail" ;;
+    esac
+  fi
+  identity=$(printf '%s' "$identity_result" | jq -c '.identity')
+  pane=$(printf '%s' "$identity" | jq -r '.pane')
+  provider=$(printf '%s' "$identity" | jq -r '.provider')
+  server=$(printf '%s' "$identity" | jq -r '.socket')
+  configure_agent "$provider"
+  # Delivery uses the same captured server as the identity check, including
+  # a leased non-default socket. This local value cannot leak to the caller.
+  local TMUX="$server,0,0"
+  export TMUX
+
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+    refuse "pane-changed" "agent identity changed before delivery: $(printf '%s' "$identity_result" | jq -r '.display')"
+  fi
 
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+    refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
+  fi
   tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null \
     || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
   jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
