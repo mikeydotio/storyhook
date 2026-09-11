@@ -1423,6 +1423,89 @@ fn claude_command_sequence_and_success_guidance_use_the_canonical_target() {
     assert!(!message.contains("deprecated"), "{message}");
 }
 
+/// The receipt `story doctor install` reads when a provider has swept every
+/// other trace of an install (SH-671): written only once the provider's own
+/// registration succeeded, and removed by `story plugin uninstall`.
+fn install_receipt(harness: &Harness, target: &str) -> PathBuf {
+    harness
+        .home
+        .join("data/storyhook/provider-installs")
+        .join(target)
+}
+
+#[test]
+fn a_successful_install_writes_a_receipt_and_uninstall_removes_it() {
+    for provider in ["claude", "codex"] {
+        let harness = Harness::new(false);
+        match provider {
+            "claude" => {
+                harness.install_fake("claude", FAKE_CLAUDE);
+                fs::create_dir_all(harness.home.join(".claude")).unwrap();
+            }
+            _ => harness.install_fake("codex", FAKE_CODEX),
+        }
+        let receipt = install_receipt(&harness, provider);
+        assert!(
+            !receipt.exists(),
+            "{provider}: no receipt before any install"
+        );
+
+        let output = harness.run(&["plugin", "install", provider]);
+        assert!(output.status.success(), "{}", combined(&output));
+        let body = fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("{provider}: receipt at {}: {e}", receipt.display()));
+        assert!(
+            body.contains(&format!("version {}", env!("CARGO_PKG_VERSION"))),
+            "{provider}: the receipt names the installing release:\n{body}"
+        );
+        assert!(body.contains("installed_at "), "{body}");
+
+        let output = harness.run(&["plugin", "uninstall", provider]);
+        assert!(output.status.success(), "{}", combined(&output));
+        assert!(
+            !receipt.exists(),
+            "{provider}: a deliberate uninstall leaves nothing for the doctor to read as a loss"
+        );
+        assert!(
+            combined(&output).contains("receipt"),
+            "{provider}: the uninstall names what it removed:\n{}",
+            combined(&output)
+        );
+    }
+}
+
+#[test]
+fn a_failed_install_writes_no_receipt_and_keeps_an_earlier_one() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    fs::create_dir_all(harness.home.join(".claude")).unwrap();
+    let receipt = install_receipt(&harness, "claude");
+
+    harness.set_claude_mode("plugin-install-fail");
+    let output = harness.run(&["plugin", "install", "claude"]);
+    assert!(!output.status.success(), "{}", combined(&output));
+    assert!(
+        !receipt.exists(),
+        "a provider registration that never landed must not be receipted"
+    );
+
+    // Installed once for real, then a later reinstall fails after the
+    // removes (SH-641 puts the previous registration back): the machine
+    // WAS installed here, and the receipt must keep saying so.
+    harness.set_claude_mode("");
+    let output = harness.run(&["plugin", "install", "claude"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let first = fs::read_to_string(&receipt).unwrap();
+    harness.set_claude_mode("plugin-install-fail");
+    let output = harness.run(&["plugin", "install", "claude"]);
+    assert!(!output.status.success(), "{}", combined(&output));
+    assert_eq!(
+        fs::read_to_string(&receipt).unwrap(),
+        first,
+        "a failed reinstall neither removes nor rewrites the receipt"
+    );
+}
+
 #[test]
 fn claude_install_recovers_when_the_plugin_is_absent() {
     let harness = Harness::new(false);
