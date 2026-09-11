@@ -491,6 +491,37 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
+    let stored = tx.events_for(project, story)?;
+    let (known, _) = partition_known(story, &stored);
+    let index = query::story_map(tx, project)?;
+    crate::domain::transition::validate_append(
+        &story.to_id(prefix),
+        &known,
+        events,
+        &tx.states(project)?,
+        &index,
+    )?;
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Folds deterministic maintenance without applying new workflow policy to history.
+///
+/// Only catalog migration and integrity repair may call this directly; the
+/// architectural admission regression enforces that boundary. Label validation
+/// and transactional storage still apply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_and_fold_maintenance(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
     // Every producer of a `StoryLabelsSet` is expected to normalize through
     // `domain::normalize_labels` before it gets here; this is the backstop
     // for the one that forgets, so a comma-bearing or blank label (SH-164)

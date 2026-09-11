@@ -62,7 +62,7 @@ use crate::store::{
 
 use super::state_set::write_states_repairing;
 use super::{
-    Ctx, append_and_fold, project_prefix,
+    Ctx, append_and_fold_maintenance, project_prefix,
     query::{story_map, story_views},
 };
 
@@ -283,7 +283,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     ///
     /// * the **verdict** — repairs ran, findings remain — minted below;
     /// * a story whose events will not fold, raised by
-    ///   [`crate::domain::fold_story`] from *inside* [`append_and_fold`] while
+    ///   [`crate::domain::fold_story`] from *inside* [`append_and_fold_maintenance`] while
     ///   a repair is being written, which rolls that write back; and
     /// * whatever the store layer raises beneath either.
     ///
@@ -373,7 +373,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             for (destination, events) in pending {
                 let story_no = StoryNo::parse_id(&prefix, &destination)
                     .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
-                append_and_fold(
+                append_and_fold_maintenance(
                     tx,
                     project,
                     story_no,
