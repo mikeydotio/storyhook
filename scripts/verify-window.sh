@@ -50,10 +50,10 @@
 # own verification serial, so true concurrent writers are the rare case of
 # two DIFFERENT stores verifying at the same instant.
 #
-# CONTRACT: sourced by scripts/verify-pr.sh, in the same source-if-present
-# shape scripts/gate-progress.sh already uses -- a caller that cannot find
-# this file (a disposable test fixture repo with no scripts/ tree of its
-# own copied into it) gets no-op stub functions rather than a failure.
+# CONTRACT: sourced by verify-pr.sh from its own directory -- the bundle the
+# daemon projects out of its binary (SH-654) -- so it is always present beside
+# its caller; a missing copy is a packaging defect verify-pr.sh refuses by
+# name, never a reason to degrade to no-op stubs.
 #
 # The kill switch: STORYHOOK_VERIFIER_MIRROR=0 prohibits every tmux call.
 # Banners still enter the activity journal. The switch ships
