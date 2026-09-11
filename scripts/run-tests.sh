@@ -218,7 +218,7 @@ run_leg() {
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/cargo -- "$@")
+    observer+=(run-tests.sh/cargo -- python3 "$script_dir/cargo_diagnostics.py" -- "$@")
     "${observer[@]}"
 }
 
@@ -302,7 +302,7 @@ listed_test_count() {
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/discovery -- "${command[@]}")
+    observer+=(run-tests.sh/discovery -- python3 "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
     if ! "${observer[@]}" >/dev/null; then
         cat "$output" >&2
         echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
