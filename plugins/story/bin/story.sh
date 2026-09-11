@@ -1166,7 +1166,7 @@ cleanup_dispatch_git() {
 rollback_dispatch_attempt() {
   local stopped stop_error
   DISPATCH_ROLLBACK_CLAIMED="$reused_claim"
-  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" 2>&1) || true
+  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" "${launch_start:-}" 2>&1) || true
   if [ "$(printf '%s' "$stopped" | jq -r '.ok // false' 2>/dev/null || printf false)" != true ]; then
     stop_error=$(printf '%s' "$stopped" | jq -r '.error // "no termination result"' 2>/dev/null) || stop_error="${stopped:-no termination result}"
     DISPATCH_CLEANUP_NOTE="WARNING: startup cleanup could not be confirmed: $stop_error; claim and Git resources were preserved"
