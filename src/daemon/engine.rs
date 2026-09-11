@@ -169,18 +169,16 @@ fn census_journal_edge(
             Some((
                 "ERROR",
                 format!(
-                    "window census unanswered; lanes are filled against the store's own count alone until tmux answers: {detail}"
+                    "window census unanswered; live session count is unknown (run capacity is unchanged): {detail}"
                 ),
             ))
         }
-        crate::lane_budget::WindowCensus::Counted { .. } => {
-            previous.take().map(|_| {
-                (
-                    "INFO",
-                    "window census answers again; the machine lane budget counts live sessions once more".to_string(),
-                )
-            })
-        }
+        crate::lane_budget::WindowCensus::Counted { .. } => previous.take().map(|_| {
+            (
+                "INFO",
+                "window census answers again; live session counts are available".to_string(),
+            )
+        }),
     }
 }
 

@@ -9,6 +9,10 @@ fresh_tmux_state() {
   FAKE_TMUX_STATE="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
   export FAKE_TMUX_STATE
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
+  # SH-672: every recovery shape runs on a busy server.
+  for i in 1 2 3 4 5 6; do
+    printf 'manual:SH-%s\tclaude\t0\n' "$i" >>"$FAKE_TMUX_STATE/agent_windows"
+  done
 }
 
 dispatch_real() {
