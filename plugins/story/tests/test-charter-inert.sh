@@ -75,6 +75,21 @@ check_inert "the Codex attended prompt" "$codex_attended"
 check_inert "the Codex autonomous (council) charter" "$codex_auto"
 check_inert "the Codex autonomous (solo) charter" "$codex_solo"
 
+# SH-676: inertness must preserve automatic plan approval in every variant.
+# The original approval wording introduced a semicolon in the shared head.
+# Removing that instruction to pass the character guard would restore the stall.
+for variant in "auto:$auto" "solo:$solo" \
+               "Codex auto:$codex_auto" "Codex solo:$codex_solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  for needle in "StoryHook approves it automatically" \
+                "Do not request a human approval reply"; do
+    case "$text" in
+      *"$needle"*) ;;
+      *) fail_test "charter-inert: the $label charter lost '$needle' -- preserve automatic plan approval" ;;
+    esac
+  done
+done
+
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
 for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
