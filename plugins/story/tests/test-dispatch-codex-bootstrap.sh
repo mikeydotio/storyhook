@@ -14,7 +14,7 @@ out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
   TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
-  FAKE_TMUX_CODEX_SENTINEL_AFTER_SUBMIT=1 FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
+  FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
 assert_eq "$(jqf "$out" .ok)" true "first-turn hook initializes and dispatch succeeds"
@@ -23,6 +23,14 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$id" "last submission is 
 
 # Machine completion must belong to the intercepted turn and exact hook package.
 source "$PLUGIN_ROOT/lib/codex-bootstrap.sh"
+# The required Python runtime supplies the nonce on platforms without uuidgen.
+uuidgen() { return 127; }
+if codex_bootstrap_prepare "$repo"; then
+  [[ "$CODEX_BOOTSTRAP_TOKEN" =~ ^[0-9a-f]{32}$ ]] || fail_test "nonce must be 128 random bits in hex"
+else
+  fail_test "initialization requires an undeclared uuidgen dependency"
+fi
+unset -f uuidgen
 receipt="$FAKE_TMUX_STATE/receipt.json"
 transcript="$FAKE_TMUX_STATE/receipt-transcript.jsonl"
 jq -n --arg path "$transcript" --arg root "$PLUGIN_ROOT" \
@@ -58,4 +66,23 @@ printf '%s\n' "$valid_transcript" | sed 's/"plan"/"default"/' > "$transcript"
 if codex_bootstrap_completed "$receipt" "$PLUGIN_ROOT" expected; then
   fail_test "default-mode bootstrap cannot prove Plan-first initialization"
 fi
+# Stop cannot create an ordinary session handoff while bootstrap is active.
+printf '{}' > "$receipt"
+hook_out=$(STORYHOOK_CODEX_BOOTSTRAP="$receipt" bash "$PLUGIN_ROOT/hooks/stop-handoff.sh")
+assert_eq "$hook_out" '{}' "initialization Stop suppresses ordinary handoff context"
+
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-incomplete.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+id=$(new_story "$repo" "Incomplete initialization")
+out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
+  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+  FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_BOOTSTRAP_INCOMPLETE=1 \
+  FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  bash "$SCRIPT" dispatch "$id" --auto)
+assert_eq "$(jqf "$out" .ok)" false "a hook receipt alone cannot deliver the charter"
+assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-incomplete "missing completion is diagnosed"
+assert_eq "$(jqf "$out" .bootstrap_phase)" submitted "refusal identifies the submitted initialization phase"
+assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 1 "incomplete initialization is never resubmitted"
 finish
