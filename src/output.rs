@@ -2536,7 +2536,6 @@ mod cleanup_render_tests {
                 branch: "worktree-SH-7".into(),
                 removed_worktree: true,
                 removed_local_branch: true,
-                removed_remote_branch: true,
                 reclaimed_bytes: 4096,
             }],
             skipped: vec![CleanupSkip {

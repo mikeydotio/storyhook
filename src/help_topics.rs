@@ -335,28 +335,37 @@ Related:
             "cleanup",
             r#"story cleanup [--dry-run]
 
-Safely remove inactive StoryHook-owned story workspaces. A candidate is
-eligible only when its versioned cleanup lease matches the current project,
-its exact tmux window is absent, the worktree is clean and unlocked, and
-every worktree/local/origin branch tip is contained by a freshly fetched
-origin default branch.
+Retry the centralized verifier's reap of a finished story's workspace. The
+verifier reaps a story's tmux window, worktree and local branch itself once
+its PR lands; cleanup is that reap's retry path and never an independent
+reaper. A candidate is eligible only when its versioned cleanup lease
+matches the current project, its story is CLOSED and carries the verifier's
+CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
+latest verification, its exact tmux window is absent, the worktree is clean
+and unlocked, and every worktree and local-branch tip is contained by a
+freshly fetched origin default branch.
 
 Cleanup removes the exact leased worktree, its contained build artifacts,
-and the exact local and origin branches. It never removes the main checkout
-or shared build artifacts outside an eligible worktree. Missing or malformed
-leases, unverifiable tmux/Git state, dirty work, and unmerged commits are
-reported and preserved.
+and the exact local branch. It never removes the main checkout, shared build
+artifacts outside an eligible worktree, or a remote branch: the verifier's
+merge step deletes the remote branch, and cleanup neither reads nor writes
+it, so nothing on the remote can be lost by this command. Open stories,
+stories the verifier has not marked, missing or malformed leases,
+unverifiable tmux/Git state, dirty work, and unmerged commits are reported
+and preserved.
 
 --dry-run applies every read-only preflight and reports reclaimed bytes, but
-does not remove resources. JSON output includes removed and skipped arrays
-with stable reason strings.
+does not remove resources, and lists every candidate it declined with the
+reason (story-open, not-verifier-released, unknown-story, dirty-worktree,
+unmerged-work, ...). JSON output includes removed and skipped arrays with
+the same stable reason strings.
 
 The daemon runs the same service daily by default. Configure it per project:
 
   story project settings set cleanup.auto false
   story project settings set cleanup.interval 12h
 
-Remote fetch and deletion use Git's configured origin credentials. An
+The default-branch fetch uses Git's configured origin credentials. An
 authentication or network failure fails closed: the report names the failed
 step and a later explicit or scheduled pass can retry idempotently.
 "#,

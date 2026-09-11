@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, StoryEvent};
+use crate::domain::{CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, SuperState};
 use crate::error::AppError;
 use crate::process::{Captured, run_captured};
 use crate::store::{ReadOps, Store, StoryQuery};
 
 use super::Ctx;
+use super::verification::{ReapMarker, VerificationGeneration, latest_generation};
 
 /// One successfully cleaned story workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,9 +28,10 @@ pub struct CleanupRemoval {
     /// Whether the worktree existed before this pass.
     pub removed_worktree: bool,
     /// Whether the local branch existed before this pass.
+    ///
+    /// There is no remote counterpart: the verifier's merge step deletes the
+    /// remote branch and cleanup never reads or writes it (SH-653).
     pub removed_local_branch: bool,
-    /// Whether the remote branch existed before this pass.
-    pub removed_remote_branch: bool,
     /// Bytes measured beneath the worktree before removal.
     pub reclaimed_bytes: u64,
 }
@@ -108,37 +110,42 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
         let mut leases: BTreeMap<String, StoryCleanupLease> = BTreeMap::new();
         let mut conflicts = BTreeSet::new();
         let mut skipped = Vec::new();
+        let mut stories: BTreeMap<String, StoryFacts> = BTreeMap::new();
         for row in rows {
             let events = self
                 .ctx
                 .store()
                 .read(|tx| tx.events_for(project.id, row.story_no))?;
-            if let Some(lease) = events.iter().rev().find_map(|event| match event.known() {
-                Some(StoryEvent::StoryCleanupLeaseRecorded { lease, .. }) => {
-                    Some(lease.as_ref().clone())
-                }
-                _ => None,
-            }) {
-                let expected = row.story_no.to_id(&project.prefix);
+            let generation = latest_generation(&events);
+            let expected = row.story_no.to_id(&project.prefix);
+            if let Some(lease) = generation.as_ref().and_then(|found| found.lease.clone()) {
                 if lease.story_id != expected {
                     skipped.push(CleanupSkip {
-                        story_id: expected,
+                        story_id: expected.clone(),
                         reason: "invalid-lease".into(),
                         detail: format!(
                             "story history carries a cleanup lease for `{}`",
                             lease.story_id
                         ),
                     });
-                    continue;
+                } else {
+                    insert_lease(
+                        &project.slug,
+                        lease,
+                        &mut leases,
+                        &mut conflicts,
+                        &mut skipped,
+                    );
                 }
-                insert_lease(
-                    &project.slug,
-                    lease,
-                    &mut leases,
-                    &mut conflicts,
-                    &mut skipped,
-                );
             }
+            stories.insert(
+                expected,
+                StoryFacts {
+                    state: row.state,
+                    superstate: row.superstate,
+                    generation,
+                },
+            );
         }
         discover_worktree_markers(
             &repository,
@@ -152,6 +159,33 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
         let mut removed = Vec::new();
         let mut failed = Vec::new();
         for lease in leases.into_values() {
+            // The verifier's release is read from the store before any git
+            // or network work on the candidate: a refused story costs no
+            // fetch, and a story the verifier has not finished with is never
+            // inspected on disk at all.
+            let marker = match verifier_release(&lease.story_id, stories.get(&lease.story_id)) {
+                Ok(marker) => marker,
+                Err(skip) => {
+                    skipped.push(skip);
+                    continue;
+                }
+            };
+            // A lease whose resources are already gone is not a removal —
+            // decided from local facts alone, before the fetch. After a
+            // COMPLETE it is what the verifier already verified and is not
+            // worth a line on every pass; after a REQUIRED it is a retry
+            // with nothing left to retry, which is worth saying.
+            if nothing_left(&repository, &lease) {
+                if marker == ReapMarker::Required {
+                    skipped.push(CleanupSkip {
+                        story_id: lease.story_id.clone(),
+                        reason: "already-clean".into(),
+                        detail: "exact worktree and local branch are absent; nothing to retry"
+                            .into(),
+                    });
+                }
+                continue;
+            }
             match clean_candidate(&repository, &lease, dry_run) {
                 Ok(removal) => removed.push(removal),
                 Err(issue) if is_operational_failure(&issue.reason) => {
@@ -177,15 +211,77 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
     }
 }
 
+/// What the store says about the story a lease names, read once per pass.
+struct StoryFacts {
+    state: String,
+    superstate: SuperState,
+    generation: Option<VerificationGeneration>,
+}
+
+/// The verifier's release of a leased workspace to cleanup (SH-653, D-H).
+///
+/// Cleanup is the reap's retry path, never an independent reaper: a workspace
+/// is touchable only when its story is CLOSED and the verifier wrote a
+/// CLEANUP COMPLETE or CLEANUP REQUIRED marker for the story's **latest**
+/// verification generation. Anything else is refused with a reason a person
+/// can read back from `--dry-run`. The marker is read through the same
+/// [`latest_generation`] the verifier's own retry uses, so the two cannot
+/// disagree about which workspace the verifier owns.
+fn verifier_release(story_id: &str, facts: Option<&StoryFacts>) -> Result<ReapMarker, CleanupSkip> {
+    let refuse = |reason: &str, detail: String| CleanupSkip {
+        story_id: story_id.to_string(),
+        reason: reason.into(),
+        detail,
+    };
+    let Some(facts) = facts else {
+        return Err(refuse(
+            "unknown-story",
+            format!("no story `{story_id}` in this project; a lease is not a story"),
+        ));
+    };
+    if facts.superstate != SuperState::Closed {
+        return Err(refuse(
+            "story-open",
+            format!(
+                "`{story_id}` is `{}`; cleanup touches only a CLOSED story's workspace",
+                facts.state
+            ),
+        ));
+    }
+    match facts
+        .generation
+        .as_ref()
+        .and_then(|generation| generation.reap_marker)
+    {
+        Some(marker) => Ok(marker),
+        None => Err(refuse(
+            "not-verifier-released",
+            "no CENTRAL VERIFICATION CLEANUP COMPLETE/REQUIRED comment on its latest \
+             verification; the verifier owns the first reap"
+                .into(),
+        )),
+    }
+}
+
+/// Whether every resource cleanup would remove is already absent: the
+/// worktree path, its registration, and the local branch. Local facts only,
+/// so a pass over an already-reaped backlog costs no network.
+fn nothing_left(repository: &Path, lease: &StoryCleanupLease) -> bool {
+    if lease.worktree_path.exists()
+        || ref_exists(repository, &format!("refs/heads/{}", lease.branch))
+    {
+        return false;
+    }
+    git_text(repository, &["worktree", "list", "--porcelain"])
+        .is_ok_and(|listing| worktree_record(&listing, &lease.worktree_path).is_none())
+}
+
 fn is_operational_failure(reason: &str) -> bool {
     matches!(
         reason,
         "fetch-failed"
-            | "remote-unverifiable"
             | "remove-worktree-failed"
             | "delete-local-branch-failed"
-            | "delete-remote-branch-failed"
-            | "postcondition-unverifiable"
             | "postcondition-failed"
     )
 }
@@ -395,26 +491,12 @@ fn clean_candidate(
         return Err(refuse("fetch-failed", stderr(&fetch)));
     }
 
+    // Only what cleanup itself would delete has to be reachable: the worktree
+    // and the local branch. The remote branch is neither read nor written —
+    // `land-pr.sh` deletes it at merge time, and nothing on the remote can be
+    // lost by a tool that never touches it.
     let local_ref = format!("refs/heads/{}", lease.branch);
-    let remote_ref = format!("refs/remotes/origin/{}", lease.branch);
     let base_ref = format!("refs/remotes/origin/{default_branch}");
-    let remote_output = git(
-        repository,
-        &["ls-remote", "--heads", "origin", &lease.branch],
-    )
-    .map_err(|error| refuse("remote-unverifiable", error))?;
-    if !remote_output.status.success() {
-        return Err(refuse("remote-unverifiable", stderr(&remote_output)));
-    }
-    let remote_exists = !remote_output.stdout.is_empty();
-    if remote_exists {
-        let branch_spec = format!("+refs/heads/{}:{remote_ref}", lease.branch);
-        let branch_fetch = git(repository, &["fetch", "--quiet", "origin", &branch_spec])
-            .map_err(|error| refuse("fetch-failed", error))?;
-        if !branch_fetch.status.success() {
-            return Err(refuse("fetch-failed", stderr(&branch_fetch)));
-        }
-    }
     let mut tips = BTreeSet::new();
     if worktree_exists {
         tips.insert(
@@ -422,13 +504,11 @@ fn clean_candidate(
                 .map_err(|detail| refuse("worktree-unverifiable", detail))?,
         );
     }
-    for reference in [&local_ref, &remote_ref] {
-        if ref_exists(repository, reference) {
-            tips.insert(
-                git_text(repository, &["rev-parse", reference])
-                    .map_err(|detail| refuse("branch-unverifiable", detail))?,
-            );
-        }
+    if ref_exists(repository, &local_ref) {
+        tips.insert(
+            git_text(repository, &["rev-parse", &local_ref])
+                .map_err(|detail| refuse("branch-unverifiable", detail))?,
+        );
     }
     for tip in tips {
         let answer = git(
@@ -446,7 +526,6 @@ fn clean_candidate(
 
     let removed_worktree = worktree_exists;
     let removed_local_branch = ref_exists(repository, &local_ref);
-    let removed_remote_branch = remote_exists;
     let reclaimed_bytes = if worktree_exists {
         directory_size(&lease.worktree_path)
     } else {
@@ -459,7 +538,6 @@ fn clean_candidate(
             branch: lease.branch.clone(),
             removed_worktree,
             removed_local_branch,
-            removed_remote_branch,
             reclaimed_bytes,
         });
     }
@@ -479,28 +557,10 @@ fn clean_candidate(
         run_git(repository, &["branch", "-D", &lease.branch])
             .map_err(|detail| refuse("delete-local-branch-failed", detail))?;
     }
-    if removed_remote_branch {
-        run_git(
-            repository,
-            &["push", "--quiet", "origin", "--delete", &lease.branch],
-        )
-        .map_err(|detail| refuse("delete-remote-branch-failed", detail))?;
-    }
-    let remote_after = git(
-        repository,
-        &["ls-remote", "--heads", "origin", &lease.branch],
-    )
-    .map_err(|error| refuse("postcondition-unverifiable", error))?;
-    if !remote_after.status.success() {
-        return Err(refuse("postcondition-unverifiable", stderr(&remote_after)));
-    }
-    if lease.worktree_path.exists()
-        || ref_exists(repository, &local_ref)
-        || !remote_after.stdout.is_empty()
-    {
+    if lease.worktree_path.exists() || ref_exists(repository, &local_ref) {
         return Err(refuse(
             "postcondition-failed",
-            "worktree path, local branch, or remote branch remains".into(),
+            "worktree path or local branch remains".into(),
         ));
     }
     Ok(CleanupRemoval {
@@ -509,7 +569,6 @@ fn clean_candidate(
         branch: lease.branch.clone(),
         removed_worktree,
         removed_local_branch,
-        removed_remote_branch,
         reclaimed_bytes,
     })
 }
@@ -628,7 +687,7 @@ mod tests {
     use crate::domain::TmuxCleanupTarget;
 
     struct Repo {
-        _root: tempfile::TempDir,
+        workspace: storyhook_test_support::StoryWorkspace,
         checkout: PathBuf,
         worktree: PathBuf,
         lease: StoryCleanupLease,
@@ -636,104 +695,111 @@ mod tests {
 
     impl Repo {
         fn new(merged: bool) -> Self {
-            let root = tempfile::Builder::new()
-                .prefix("storyhook-cleanup-")
-                .tempdir_in("/private/tmp")
-                .unwrap();
-            let origin = root.path().join("origin.git");
-            let checkout = root.path().join("repo");
-            let worktree = root.path().join("SH-7");
-            run_git(
-                root.path(),
-                &["init", "--bare", origin.to_string_lossy().as_ref()],
-            )
-            .unwrap();
-            run_git(
-                root.path(),
-                &[
-                    "clone",
-                    origin.to_string_lossy().as_ref(),
-                    checkout.to_string_lossy().as_ref(),
-                ],
-            )
-            .unwrap();
-            run_git(&checkout, &["config", "user.name", "Cleanup Test"]).unwrap();
-            run_git(&checkout, &["config", "user.email", "cleanup@example.test"]).unwrap();
-            fs::write(checkout.join("README"), "base").unwrap();
-            fs::write(checkout.join(".gitignore"), "target/\n").unwrap();
-            run_git(&checkout, &["add", "README", ".gitignore"]).unwrap();
-            run_git(&checkout, &["commit", "-m", "base"]).unwrap();
-            run_git(&checkout, &["branch", "-M", "dev"]).unwrap();
-            run_git(&checkout, &["push", "-u", "origin", "dev"]).unwrap();
-            run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/dev"]).unwrap();
-            run_git(&checkout, &["remote", "set-head", "origin", "dev"]).unwrap();
-            run_git(
-                &checkout,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    "worktree-SH-7",
-                    worktree.to_string_lossy().as_ref(),
-                    "dev",
-                ],
-            )
-            .unwrap();
-            fs::write(worktree.join("work"), "merged work").unwrap();
-            fs::create_dir(worktree.join("target")).unwrap();
-            fs::write(worktree.join("target/artifact"), vec![0_u8; 4096]).unwrap();
-            run_git(&worktree, &["add", "work"]).unwrap();
-            run_git(&worktree, &["commit", "-m", "story work"]).unwrap();
-            run_git(&worktree, &["push", "-u", "origin", "worktree-SH-7"]).unwrap();
-            if merged {
-                run_git(
-                    &checkout,
-                    &["merge", "--no-ff", "-m", "merge story", "worktree-SH-7"],
-                )
-                .unwrap();
-                run_git(&checkout, &["push", "origin", "dev"]).unwrap();
-            }
+            let workspace = storyhook_test_support::StoryWorkspace::new("SH-7", merged);
             let lease = StoryCleanupLease {
                 version: CLEANUP_LEASE_VERSION,
                 project_slug: "fixture".into(),
-                story_id: "SH-7".into(),
-                repository_path: checkout.canonicalize().unwrap(),
-                worktree_path: worktree.canonicalize().unwrap(),
-                branch: "worktree-SH-7".into(),
+                story_id: workspace.story_id.clone(),
+                repository_path: workspace.checkout.clone(),
+                worktree_path: workspace.worktree.clone(),
+                branch: workspace.branch.clone(),
                 tmux: TmuxCleanupTarget {
-                    socket_path: root.path().join("no-tmux.sock"),
+                    socket_path: workspace.root.path().join("no-tmux.sock"),
                 },
             };
             Self {
-                _root: root,
-                checkout,
-                worktree,
+                checkout: workspace.checkout.clone(),
+                worktree: workspace.worktree.clone(),
                 lease,
+                workspace,
             }
+        }
+
+        fn root(&self) -> &Path {
+            self.workspace.root.path()
+        }
+    }
+
+    fn facts(superstate: SuperState, marker: Option<ReapMarker>) -> StoryFacts {
+        StoryFacts {
+            state: if superstate == SuperState::Closed {
+                "done".into()
+            } else {
+                "in-progress".into()
+            },
+            superstate,
+            generation: Some(VerificationGeneration {
+                lease: None,
+                landed: true,
+                reap_marker: marker,
+            }),
         }
     }
 
     #[test]
-    fn merged_inactive_story_removes_worktree_artifacts_and_both_branches() {
+    fn only_a_closed_story_with_a_verifier_marker_on_its_latest_generation_is_released() {
+        assert_eq!(
+            verifier_release("SH-7", None).unwrap_err().reason,
+            "unknown-story"
+        );
+        let open = verifier_release(
+            "SH-7",
+            Some(&facts(SuperState::Open, Some(ReapMarker::Required))),
+        )
+        .unwrap_err();
+        assert_eq!(open.reason, "story-open");
+        assert!(open.detail.contains("in-progress"), "{}", open.detail);
+        assert_eq!(
+            verifier_release("SH-7", Some(&facts(SuperState::Closed, None)))
+                .unwrap_err()
+                .reason,
+            "not-verifier-released"
+        );
+        let never_verified = StoryFacts {
+            state: "done".into(),
+            superstate: SuperState::Closed,
+            generation: None,
+        };
+        assert_eq!(
+            verifier_release("SH-7", Some(&never_verified))
+                .unwrap_err()
+                .reason,
+            "not-verifier-released"
+        );
+        assert_eq!(
+            verifier_release(
+                "SH-7",
+                Some(&facts(SuperState::Closed, Some(ReapMarker::Complete)))
+            ),
+            Ok(ReapMarker::Complete)
+        );
+        assert_eq!(
+            verifier_release(
+                "SH-7",
+                Some(&facts(SuperState::Closed, Some(ReapMarker::Required)))
+            ),
+            Ok(ReapMarker::Required)
+        );
+    }
+
+    #[test]
+    fn merged_inactive_story_removes_the_worktree_and_local_branch_and_never_the_remote() {
         let repo = Repo::new(true);
+        assert!(repo.workspace.origin_has_branch(), "fixture control");
         let removal = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
         assert!(removal.removed_worktree);
         assert!(removal.removed_local_branch);
-        assert!(removal.removed_remote_branch);
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(!repo.worktree.exists());
-        assert!(!ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
-        let remote = git_text(
-            &repo.checkout,
-            &["ls-remote", "--heads", "origin", "worktree-SH-7"],
-        )
-        .unwrap();
-        assert!(remote.is_empty());
+        assert!(!repo.workspace.local_branch_exists());
+        assert!(
+            repo.workspace.origin_has_branch(),
+            "the remote branch is the verifier's merge step's to delete, never cleanup's"
+        );
 
         let retry = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
         assert!(!retry.removed_worktree);
         assert!(!retry.removed_local_branch);
-        assert!(!retry.removed_remote_branch);
     }
 
     #[test]
@@ -756,11 +822,11 @@ mod tests {
         let removal = clean_candidate(&repo.checkout, &repo.lease, true).unwrap();
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(repo.worktree.exists());
-        assert!(ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
+        assert!(repo.workspace.local_branch_exists());
     }
 
     #[test]
-    fn locked_worktree_and_divergent_remote_are_preserved() {
+    fn a_locked_worktree_is_preserved_and_a_divergent_remote_is_left_alone() {
         let locked = Repo::new(true);
         run_git(
             &locked.checkout,
@@ -776,9 +842,9 @@ mod tests {
 
         let divergent = Repo::new(true);
         let remote = git_text(&divergent.checkout, &["remote", "get-url", "origin"]).unwrap();
-        let clone = divergent._root.path().join("remote-writer");
+        let clone = divergent.root().join("remote-writer");
         run_git(
-            divergent._root.path(),
+            divergent.root(),
             &["clone", remote.as_str(), clone.to_string_lossy().as_ref()],
         )
         .unwrap();
@@ -790,39 +856,13 @@ mod tests {
         run_git(&clone, &["commit", "-m", "remote divergence"]).unwrap();
         run_git(&clone, &["push", "origin", "worktree-SH-7"]).unwrap();
 
-        let refusal = clean_candidate(&divergent.checkout, &divergent.lease, false).unwrap_err();
-        assert_eq!(refusal.reason, "unmerged-work");
-        assert!(divergent.worktree.exists());
-    }
-
-    #[test]
-    fn remote_deletion_failure_never_claims_complete_cleanup() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let repo = Repo::new(true);
-        let remote =
-            PathBuf::from(git_text(&repo.checkout, &["remote", "get-url", "origin"]).unwrap());
-        let hook = remote.join("hooks/pre-receive");
-        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-        let mut permissions = fs::metadata(&hook).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&hook, permissions).unwrap();
-
-        let refusal = clean_candidate(&repo.checkout, &repo.lease, false).unwrap_err();
-
-        assert_eq!(refusal.reason, "delete-remote-branch-failed");
-        assert!(!repo.worktree.exists(), "earlier worktree leg did complete");
-        assert!(!ref_exists(&repo.checkout, "refs/heads/worktree-SH-7"));
-        assert!(
-            !git_text(
-                &repo.checkout,
-                &["ls-remote", "--heads", "origin", "worktree-SH-7"]
-            )
-            .unwrap()
-            .is_empty(),
-            "the report must remain a failure while the remote ref survives"
-        );
-        assert!(is_operational_failure(&refusal.reason));
+        // Nothing on the remote can be lost by a tool that never writes it:
+        // the local worktree and branch are reachable from the default branch
+        // and go; the remote-only commit stays exactly where it was pushed.
+        let removal = clean_candidate(&divergent.checkout, &divergent.lease, false).unwrap();
+        assert!(removal.removed_worktree);
+        assert!(!divergent.worktree.exists());
+        assert!(divergent.workspace.origin_has_branch());
     }
 
     #[test]
@@ -862,7 +902,7 @@ mod tests {
         assert_eq!(refusal.reason, "worktree-mismatch");
 
         let mut protected = repo.lease.clone();
-        protected.worktree_path = repo._root.path().join("already-absent");
+        protected.worktree_path = repo.root().join("already-absent");
         protected.branch = "dev".into();
         let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
@@ -871,10 +911,9 @@ mod tests {
     #[test]
     fn malformed_or_misdirected_private_markers_never_authorize_cleanup() {
         let repo = Repo::new(true);
-        let git_dir = git_text(&repo.worktree, &["rev-parse", "--absolute-git-dir"]).unwrap();
-        let marker = Path::new(&git_dir).join(CLEANUP_LEASE_MARKER);
+        let marker = repo.workspace.worktree_git_dir().join(CLEANUP_LEASE_MARKER);
         let mut misdirected = repo.lease.clone();
-        misdirected.worktree_path = repo._root.path().join("different-worktree");
+        misdirected.worktree_path = repo.root().join("different-worktree");
         fs::write(&marker, serde_json::to_vec(&misdirected).unwrap()).unwrap();
 
         let mut leases = BTreeMap::new();
@@ -906,7 +945,7 @@ mod tests {
     #[test]
     fn tmux_gate_matches_the_exact_story_window_and_fails_closed() {
         let repo = Repo::new(true);
-        let socket = repo._root.path().join("tmux.sock");
+        let socket = repo.root().join("tmux.sock");
         let socket_text = socket.to_string_lossy();
         let started = Command::new("tmux")
             .args([

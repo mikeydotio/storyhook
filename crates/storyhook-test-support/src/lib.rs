@@ -55,6 +55,7 @@ mod service;
 mod source_scan;
 mod store;
 mod tailnet;
+mod workspace;
 
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use engine::{DispatcherCall, DispatcherStep, FakeDispatcher};
@@ -81,3 +82,4 @@ pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
 pub use source_scan::without_rust_comments;
 pub use store::project_id_at;
 pub use tailnet::path_without_tailscale;
+pub use workspace::StoryWorkspace;

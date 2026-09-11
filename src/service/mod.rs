@@ -101,8 +101,9 @@ pub use story::{FieldEdits, NewStoryInput, StoryService, default_unclaim_comment
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 pub use verification::{
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFYING_STATE,
-    VerificationCandidate, VerificationProblem, VerificationQueue,
+    ReapMarker, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
+    VERIFICATION_GREEN_PREFIX, VERIFYING_STATE, VerificationCandidate, VerificationGeneration,
+    VerificationProblem, VerificationQueue, latest_generation,
 };
 
 /// Where a service reads "now" from.

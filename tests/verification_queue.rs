@@ -10,11 +10,9 @@ use storyhook::daemon::verification::{
     tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
-use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
     CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -26,8 +24,8 @@ use storyhook::service::{
     VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
-    VerificationFailureDisposition, VerificationIncident, WriteOps, partition_known,
+    GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoryNo, VerificationFailureDisposition,
+    VerificationIncident, WriteOps,
 };
 use storyhook_test_support::ServiceFixture;
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
@@ -1735,30 +1733,6 @@ fn cleanup_candidate(
     }
 }
 
-fn append_cleanup_lease(fixture: &ServiceFixture, story_id: &str, lease: StoryCleanupLease) {
-    let story = StoryNo::parse_id("SH", story_id).unwrap();
-    fixture
-        .store()
-        .write(|tx| {
-            let head = tx.append_events(
-                fixture.project(),
-                story,
-                ExpectedSeq::Any,
-                &[StoryEvent::StoryCleanupLeaseRecorded {
-                    at: FIXTURE_NOW.into(),
-                    lease: Box::new(lease),
-                }],
-                &Provenance::unrecorded(),
-            )?;
-            let stored = tx.events_for(fixture.project(), story)?;
-            let (known, _) = partition_known(story, &stored);
-            let states = tx.state_map(fixture.project())?;
-            let snapshot = fold_story(story_id, &known, &states).map_err(StoreError::from)?;
-            tx.put_story(fixture.project(), &snapshot, head)
-        })
-        .unwrap();
-}
-
 #[test]
 fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_change() {
     let fixture = ServiceFixture::new();
@@ -1768,7 +1742,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     let first = cleanup_candidate(&fixture, first_root.path())
         .cleanup_lease
         .unwrap();
-    append_cleanup_lease(&fixture, &id, first.clone());
+    fixture.append_cleanup_lease(&id, first.clone());
     assert_eq!(
         VerificationQueue::new(fixture.store())
             .next()
@@ -1798,7 +1772,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
     let second = cleanup_candidate(&fixture, second_root.path())
         .cleanup_lease
         .unwrap();
-    append_cleanup_lease(&fixture, &id, second.clone());
+    fixture.append_cleanup_lease(&id, second.clone());
     let replacement = scratch_dir();
     fixture
         .store()
@@ -1830,6 +1804,53 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
         .unwrap();
     assert_eq!(recovered.checkout, replacement.path());
     assert_eq!(recovered.cleanup_lease, Some(second));
+}
+
+#[test]
+fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_reap() {
+    // Generation one: landed, reaped, marked COMPLETE.
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "reopened after reap", Priority::High, PR_ONE);
+    let ctx = fixture.ctx();
+    let green = format!(
+        "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+    );
+    StoryService::new(&ctx).comment(&id, &green).unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_ONE)
+        .unwrap();
+    StoryService::new(&ctx)
+        .comment(
+            &id,
+            &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+        )
+        .unwrap();
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next_cleanup()
+            .unwrap()
+            .is_none(),
+        "generation one was reaped"
+    );
+
+    // Generation two: reopened, re-verified, landed again — and its reap has
+    // not happened. The COMPLETE above belongs to generation one.
+    StoryService::new(&ctx).reopen(&id).unwrap();
+    PrLinkService::new(&ctx).link(&id, PR_TWO, true).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    StoryService::new(&ctx).comment(&id, &green).unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_TWO)
+        .unwrap();
+
+    let owed = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .expect("the second generation's reap is still owed");
+    assert_eq!(owed.story_id, id);
 }
 
 fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
