@@ -124,6 +124,9 @@ pub enum AppError {
     Usage(String),
     #[error("{0}")]
     Validation(String),
+    /// New story text failed the published authoring checks.
+    #[error("{0}")]
+    TextLint(crate::text_lint::TextLintReport),
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
@@ -166,7 +169,7 @@ impl AppError {
     /// meaning silently wrong instead of simply unreachable.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Usage(_) | Self::Validation(_) => 2,
+            Self::Usage(_) | Self::Validation(_) | Self::TextLint(_) => 2,
             Self::NotFound(_) => 3,
             Self::LockTimeout(_) => 4,
             Self::Integrity(_) | Self::Storage(_) => 5,
@@ -207,6 +210,13 @@ impl AppError {
         match self {
             Self::Usage(detail) => Self::Usage(joined(detail)),
             Self::Validation(detail) => Self::Validation(joined(detail)),
+            Self::TextLint(mut detail) => {
+                detail.context = Some(match detail.context {
+                    Some(inner) => format!("{context}\n\n{inner}"),
+                    None => context.to_string(),
+                });
+                Self::TextLint(detail)
+            }
             Self::NotFound(detail) => Self::NotFound(joined(detail)),
             Self::LockTimeout(detail) => Self::LockTimeout(joined(detail)),
             Self::DeadlineExceeded(detail) => Self::DeadlineExceeded(joined(detail)),
@@ -268,6 +278,11 @@ pub enum WireError {
     Validation {
         detail: String,
     },
+    /// Structured authoring findings survive the daemon hop.
+    TextLint {
+        /// The rejected story and its field diagnostics.
+        detail: crate::text_lint::TextLintReport,
+    },
     NotFound {
         detail: String,
     },
@@ -318,6 +333,9 @@ impl From<&AppError> for WireError {
             AppError::Validation(detail) => Self::Validation {
                 detail: detail.clone(),
             },
+            AppError::TextLint(detail) => Self::TextLint {
+                detail: detail.clone(),
+            },
             AppError::NotFound(detail) => Self::NotFound {
                 detail: detail.clone(),
             },
@@ -363,6 +381,7 @@ impl From<WireError> for AppError {
         match wire {
             WireError::Usage { detail } => Self::Usage(detail),
             WireError::Validation { detail } => Self::Validation(detail),
+            WireError::TextLint { detail } => Self::TextLint(detail),
             WireError::NotFound { detail } => Self::NotFound(detail),
             WireError::LockTimeout { detail } => Self::LockTimeout(detail),
             WireError::DeadlineExceeded { detail } => Self::DeadlineExceeded(detail),

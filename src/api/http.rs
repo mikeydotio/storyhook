@@ -253,7 +253,7 @@ pub fn path_segments(path: &str) -> Vec<&str> {
 pub fn status_for(error: &AppError) -> u16 {
     match error {
         AppError::Usage(_) => 400,
-        AppError::Validation(_) => 422,
+        AppError::Validation(_) | AppError::TextLint(_) => 422,
         AppError::NotFound(_) => 404,
         AppError::LockTimeout(_) => 409,
         // Client-originated: the daemon never constructs this. If it crosses

@@ -415,12 +415,13 @@ fn publish_project(
         } = &status
         {
             format!(
-                "{GATE_PROGRESS_PREFIX} last evidence {last_failed_at}\n\nVerification — {} after {attempts} attempt(s)\nFirst infrastructure failure: {first_failed_at}.\nReason: {detail}\n",
+                "{GATE_PROGRESS_PREFIX} last evidence {last_failed_at}\n\nVerification — {} after {attempts} attempt(s).\nFirst infrastructure failure: {first_failed_at}.\n\nReason:\n\n{}\n",
                 if *halted {
                     "HALTED"
                 } else {
                     "RETRYING INFRASTRUCTURE"
-                }
+                },
+                crate::text_lint::quote_evidence(detail)
             )
         } else if matches!(&status, VerificationStatus::Running { .. }) {
             let journal = journal_path(env, candidate);
@@ -516,11 +517,13 @@ fn render_blocker(blocker: &VerificationBlocker) -> String {
     } = blocker;
     if *halted {
         format!(
-            "\nVerifier HALTED since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\nThe queue resumes once the cause is fixed and the incident is acknowledged: story verifier ack {incident_id}\n"
+            "\nVerifier HALTED since {first_failed_at} on an infrastructure failure of the verifier itself.\nThe failure was first hit while verifying {story_id} ({story_id} is not at fault).\nFix the cause. Release the queue with `story verifier ack {incident_id}`.\n\n{}\n",
+            crate::text_lint::quote_evidence(detail)
         )
     } else {
         format!(
-            "\nVerifier RETRYING since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\n"
+            "\nVerifier RETRYING since {first_failed_at} on an infrastructure failure of the verifier itself.\nThe failure was first hit while verifying {story_id} ({story_id} is not at fault).\n\n{}\n",
+            crate::text_lint::quote_evidence(detail)
         )
     }
 }

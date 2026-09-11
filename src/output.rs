@@ -1039,6 +1039,15 @@ pub fn render_error(error: &AppError, json: bool) -> String {
         // joined — so a caller reading it is unaffected, and a caller wanting
         // `field`/`persisted`/`rebuilt` reads them instead of regexing a
         // 1.68MB string for them.
+        if let AppError::TextLint(detail) = error {
+            return format!(
+                "{}\n",
+                serde_json::json!({
+                    "result": "error", "error": error.to_string(), "exit_code": error.exit_code(),
+                    "kind": "text_lint", "story_id": detail.story, "findings": detail.findings,
+                })
+            );
+        }
         if let AppError::Integrity(detail) = error {
             return format!(
                 "{}\n",

@@ -155,6 +155,17 @@ fn undo_is_new_input_and_cannot_restore_blocked_progress() {
     let fixture = ServiceFixture::new();
     let story = create(&fixture, "verifying");
     let no = StoryNo::parse_id("SH", &story).unwrap();
+    let historical_text = "Don't utilize this historic API.";
+    storyhook::store::test_support::inject_events(
+        fixture.store(),
+        fixture.project(),
+        no,
+        &[StoryEvent::StoryCommentAdded {
+            at: storyhook_test_support::FIXTURE_NOW.into(),
+            text: historical_text.into(),
+        }],
+    )
+    .unwrap();
     let history: Vec<StoryEvent> = fixture
         .store()
         .read(|tx| {
@@ -172,7 +183,44 @@ fn undo_is_new_input_and_cannot_restore_blocked_progress() {
     RelationService::new(&fixture.ctx())
         .relate(&story, "blocked-by", &blocker, false)
         .unwrap();
-    assert!(storyhook::service::history::restore(&fixture.ctx(), &story, &history).is_err());
+    storyhook::store::test_support::inject_events(
+        fixture.store(),
+        fixture.project(),
+        no,
+        &[StoryEvent::StoryCommentRetracted {
+            at: storyhook_test_support::FIXTURE_NOW.into(),
+            comment_at: storyhook_test_support::FIXTURE_NOW.into(),
+            text: historical_text.into(),
+        }],
+    )
+    .unwrap();
+    let before = fixture
+        .store()
+        .read(|tx| tx.events_for(fixture.project(), no))
+        .unwrap();
+    let error = storyhook::service::history::restore(&fixture.ctx(), &story, &history)
+        .expect_err("historical text exemption must not bypass blocked transitions")
+        .to_string();
+    assert!(error.contains(&blocker), "{error}");
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.events_for(fixture.project(), no))
+            .unwrap(),
+        before,
+        "a refused undo must not restore even part of the old text"
+    );
+    StoryService::new(&fixture.ctx())
+        .set_state(&blocker, "done", None, None, None)
+        .unwrap();
+    storyhook::service::history::restore(&fixture.ctx(), &story, &history).unwrap();
+    let restored = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.snapshot.state, "verifying");
+    assert_eq!(restored.snapshot.comments[0].text, historical_text);
 }
 
 #[test]

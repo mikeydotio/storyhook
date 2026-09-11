@@ -93,7 +93,8 @@ if [ ! -s "$owned_dir/child" ]; then
   finish
 fi
 child=$(cat "$owned_dir/child")
-stop_result=$(python3 "$PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pid")
+launch_start=$(python3 "$PLUGIN_ROOT/lib/agent_identity.py" capture "$pid" | jq -r .identity.start)
+stop_result=$(python3 "$PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pid" "$launch_start")
 assert_eq "$(jqf "$stop_result" .ok)" true "real startup tree terminated"
 if kill -0 "$pid" 2>/dev/null || kill -0 "$child" 2>/dev/null; then
   fail_test "real owned parent or descendant remains alive"
