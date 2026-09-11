@@ -532,11 +532,14 @@ impl VerificationActuator for ActivityObservingActuator {
         panic!("a delivered notification never re-dispatches")
     }
 
-    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         assert_eq!(
-            self.activity.active_all(),
-            Vec::new(),
-            "process-local ownership must end before post-merge cleanup"
+            self.activity
+                .active_for(candidate.project)
+                .unwrap()
+                .story_id,
+            candidate.story_id,
+            "manual cancellation must retain ownership through post-merge cleanup"
         );
         assert!(
             lifecycle::read_inflight(&self.env).is_empty(),

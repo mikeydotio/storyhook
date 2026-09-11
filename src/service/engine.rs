@@ -2541,6 +2541,24 @@ pub(crate) fn run_shell_dispatch(
     options: &DispatchOptions,
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
+    run_shell_dispatch_cancellable(
+        script, project, story, agent, auto, full_auto, options, env, None,
+    )
+}
+
+/// Dispatch with verifier-owned cancellation; ordinary dispatch uses an unset token.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_shell_dispatch_cancellable(
+    script: &Path,
+    project: &str,
+    story: &str,
+    agent: Option<EngineAgent>,
+    auto: bool,
+    full_auto: bool,
+    options: &DispatchOptions,
+    env: &Environment,
+    cancellation: Option<&crate::process::Cancellation>,
+) -> Result<DispatchOutcome, AppError> {
     let [
         story_prompt,
         story_auto_prompt,
@@ -2627,7 +2645,22 @@ pub(crate) fn run_shell_dispatch(
         );
     }
 
-    let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+    let captured = match cancellation {
+        Some(cancellation) => crate::process::run_captured_cancellable(
+            command,
+            DISPATCH_TIMEOUT,
+            crate::process::TerminationPolicy::TerminateThenKill {
+                grace: Duration::from_secs(30),
+            },
+            cancellation,
+            |_| Ok(()),
+        ),
+        None => run_captured(command, DISPATCH_TIMEOUT),
+    }
+    .map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage dispatch output: {detail}"))
         }
@@ -2679,6 +2712,9 @@ fn run_shell_unclaim(
         .env("GIT_TERMINAL_PROMPT", "0");
 
     let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage unclaim output: {detail}"))
         }
@@ -2776,6 +2812,9 @@ pub(crate) fn run_shell_capabilities(
         .env("GIT_TERMINAL_PROMPT", "0");
 
     let captured = run_captured(command, CAPABILITIES_TIMEOUT).map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage capabilities output: {detail}"))
         }

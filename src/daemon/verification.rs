@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+mod control;
+use crate::process::Cancellation;
+pub use control::VerificationControlState;
+
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
@@ -24,11 +28,11 @@ use crate::env::spawn_env::{
 };
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, Captured, TerminationPolicy, TimeoutTermination,
-    run_captured_with_progress_and_registration, run_captured_with_registration,
+    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured_cancellable,
+    run_captured_with_progress_and_registration,
 };
 use crate::service::engine::{
-    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch,
+    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
 };
 use crate::service::verification::GenerationWrite;
 use crate::service::{
@@ -73,7 +77,12 @@ pub struct ActiveVerification {
 /// progress publisher and the HTTP dispatcher.
 #[derive(Clone, Default)]
 pub struct VerificationActivity {
-    active: Arc<Mutex<BTreeMap<ProjectId, ActiveVerification>>>,
+    active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
+}
+
+struct VerificationSlot {
+    active: ActiveVerification,
+    cancellation: Cancellation,
 }
 
 impl VerificationActivity {
@@ -91,7 +100,7 @@ impl VerificationActivity {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&project)
-            .cloned()
+            .map(|slot| slot.active.clone())
     }
 
     /// Every project's owned generation, ordered by project.
@@ -101,7 +110,7 @@ impl VerificationActivity {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .values()
-            .cloned()
+            .map(|slot| slot.active.clone())
             .collect()
     }
 
@@ -117,22 +126,38 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> VerificationGuard {
+        let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        self.acquire_locked(&mut slots, candidate, started_at)
+    }
+
+    fn acquire_locked(
+        &self,
+        slots: &mut BTreeMap<ProjectId, VerificationSlot>,
+        candidate: &VerificationCandidate,
+        started_at: String,
+    ) -> VerificationGuard {
+        assert!(
+            !slots.contains_key(&candidate.project),
+            "the serialized verifier acquired twice"
+        );
         let active = ActiveVerification {
             project: candidate.project,
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
             started_at,
         };
-        let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(
-            !slots.contains_key(&candidate.project),
-            "the serialized verifier for project {} acquired twice",
-            candidate.project_slug
+        let cancellation = Cancellation::default();
+        slots.insert(
+            candidate.project,
+            VerificationSlot {
+                active: active.clone(),
+                cancellation: cancellation.clone(),
+            },
         );
-        slots.insert(candidate.project, active.clone());
         VerificationGuard {
             registry: self.clone(),
             active,
+            cancellation,
         }
     }
 }
@@ -143,6 +168,7 @@ impl VerificationActivity {
 pub struct VerificationGuard {
     registry: VerificationActivity,
     active: ActiveVerification,
+    cancellation: Cancellation,
 }
 
 impl Drop for VerificationGuard {
@@ -152,13 +178,19 @@ impl Drop for VerificationGuard {
             .active
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if slots.get(&self.active.project) == Some(&self.active) {
+        if slots.get(&self.active.project).map(|slot| &slot.active) == Some(&self.active) {
             slots.remove(&self.active.project);
         }
     }
 }
 
 impl VerificationGuard {
+    /// Whether an operator has irreversibly cancelled this owned attempt.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
     /// Transfers this worker's existing reservation to a newer verification
     /// generation of the same story.
     ///
@@ -180,8 +212,11 @@ impl VerificationGuard {
             .active
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(slots.get(&self.active.project), Some(&self.active));
-        slots.insert(self.active.project, replacement.clone());
+        let slot = slots
+            .get_mut(&self.active.project)
+            .expect("owned verification slot");
+        assert_eq!(slot.active, self.active);
+        slot.active = replacement.clone();
         self.active = replacement;
     }
 }
@@ -209,6 +244,8 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// The operator cancelled the owned attempt; queued work remains recoverable.
+    Cancelled,
     /// The exact merge tree passed and the guarded merge landed.
     Merged {
         tree: String,
@@ -399,6 +436,7 @@ enum HelperAnswer {
 
 /// Production actuator backed by repository and plugin scripts.
 pub struct ShellVerificationActuator {
+    activity: VerificationActivity,
     env: Environment,
     owned_processes: super::lifecycle::OwnedProcesses,
     helper_path: Option<PathBuf>,
@@ -414,6 +452,7 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn new(env: Environment) -> Self {
         Self {
+            activity: VerificationActivity::new(),
             owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: None,
@@ -433,6 +472,7 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn with_paths(env: Environment, helper_path: PathBuf, story_binary: PathBuf) -> Self {
         Self {
+            activity: VerificationActivity::new(),
             owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: Some(helper_path),
@@ -459,6 +499,7 @@ impl ShellVerificationActuator {
         termination_grace: Duration,
     ) -> Self {
         Self {
+            activity: VerificationActivity::new(),
             owned_processes: super::lifecycle::OwnedProcesses::new(env.clone()),
             env,
             helper_path: Some(helper_path),
@@ -479,6 +520,13 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn with_verifier_script(mut self, script: PathBuf) -> Self {
         self.verifier_script = Some(script);
+        self
+    }
+
+    /// Binds this actuator to the same attempt registry used by its worker.
+    #[must_use]
+    pub fn with_activity(mut self, activity: VerificationActivity) -> Self {
+        self.activity = activity;
         self
     }
 
@@ -514,12 +562,16 @@ impl ShellVerificationActuator {
         command: Command,
         role: &str,
         request_id: &str,
+        project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
-        run_captured_with_registration(
+        run_captured_cancellable(
             command,
             self.control_timeout,
-            TerminationPolicy::Kill,
+            TerminationPolicy::TerminateThenKill {
+                grace: self.termination_grace,
+            },
+            &self.activity.cancellation_for(project),
             |pid| {
                 self.owned_processes
                     .register(role, pid, Some(request_id))
@@ -569,6 +621,7 @@ impl ShellVerificationActuator {
             command,
             &format!("verifier-{verb}"),
             &verification_request_id(candidate),
+            candidate.project,
             &format!("story helper `{verb}`"),
         )?;
         let payload: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
@@ -635,6 +688,7 @@ impl ShellVerificationActuator {
             command,
             "verifier-reap",
             &verification_request_id(candidate),
+            candidate.project,
             "leased story helper `reap`",
         )?;
 
@@ -737,6 +791,7 @@ impl ShellVerificationActuator {
                 command,
                 "verifier-submit",
                 &verification_request_id(candidate),
+                candidate.project,
                 "leased story helper `submit`",
             )
             .map_err(|error| infrastructure(error.to_string()))?;
@@ -903,6 +958,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 grace: self.termination_grace,
             },
             &journal,
+            &self.activity.cancellation_for(candidate.project),
             |pid| {
                 self.owned_processes
                     .register("verifier", pid, Some(&request_id))
@@ -910,6 +966,7 @@ impl VerificationActuator for ShellVerificationActuator {
             },
         ) {
             Ok(captured) => captured,
+            Err(CaptureError::Cancelled) => return VerificationOutcome::Cancelled,
             Err(CaptureError::Stage(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not stage verify-pr.sh output: {error}"),
@@ -1003,7 +1060,7 @@ impl VerificationActuator for ShellVerificationActuator {
         // so a resume typed by the verifier is byte-for-byte the resume a
         // person would have typed — including the target session, without
         // which the helper refuses "story requires tmux" from a daemon.
-        let outcome = run_shell_dispatch(
+        let outcome = run_shell_dispatch_cancellable(
             &script,
             &candidate.project_slug,
             &candidate.story_id,
@@ -1012,6 +1069,7 @@ impl VerificationActuator for ShellVerificationActuator {
             plan.full_auto,
             &options,
             &self.env,
+            Some(&self.activity.cancellation_for(candidate.project)),
         )?;
         match outcome.state {
             DispatchOutcomeState::Ok => Ok(()),
@@ -1167,6 +1225,8 @@ pub enum TickResult {
     RetryLater,
     /// Durable infrastructure evidence has stopped the queue pending acknowledgement.
     Halted,
+    /// Manual permission or cancellation stopped this attempt.
+    Stopped,
 }
 
 /// Runs one verification attempt for `project`. Public for store-backed
@@ -1266,6 +1326,9 @@ where
             env.clone(),
         )
         .no_hooks(true);
+        let Some(_active) = activity.try_acquire(store, &candidate, env.now())? else {
+            return Ok(TickResult::Stopped);
+        };
         return match actuator.reap(&candidate) {
             Ok(()) => {
                 record_cleanup_complete(&ctx, &candidate)?;
@@ -1280,12 +1343,17 @@ where
     let started_at = env.now();
     let lifecycle_entry = inflight.enter();
     name_verification(&lifecycle_entry, &candidate, &started_at);
-    let mut active = activity.acquire(&candidate, started_at);
+    let Some(mut active) = activity.try_acquire(store, &candidate, started_at)? else {
+        return Ok(TickResult::Stopped);
+    };
     // The generation this tick has already submitted, so the `continue` after
     // recording a submission re-derives the candidate without pushing twice.
     let mut submitted: Option<Option<GlobalSeq>> = None;
 
     loop {
+        if active.is_cancelled() {
+            return Ok(TickResult::Stopped);
+        }
         match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
             AuthorityRefresh::Current => {}
             AuthorityRefresh::Replaced => continue,
@@ -1300,7 +1368,7 @@ where
         .no_hooks(true);
         if submission_due(&candidate, submitted) {
             submitted = Some(candidate.verifying_generation);
-            match submit_candidate(&queue, &ctx, actuator, &candidate)? {
+            match submit_candidate(&queue, &ctx, actuator, &candidate, &active.cancellation)? {
                 GenerationWrite::Applied(Some(result)) => return Ok(result),
                 // Recorded: the link is a store fact now. Re-derive rather than
                 // trust a PrLink built here, so whatever `ordered_candidates`
@@ -1311,7 +1379,14 @@ where
         let pull_request = match &candidate.pull_request {
             Ok(pull_request) => pull_request.clone(),
             Err(VerificationProblem::MissingPullRequest) if candidate.cleanup_lease.is_none() => {
-                match return_for_repair(&queue, &ctx, actuator, &candidate, UNLEASED_SUBMISSION)? {
+                match return_for_repair(
+                    &queue,
+                    &ctx,
+                    actuator,
+                    &candidate,
+                    UNLEASED_SUBMISSION,
+                    &active.cancellation,
+                )? {
                     GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                     GenerationWrite::Superseded => match refresh_authority(
                         &queue,
@@ -1326,7 +1401,14 @@ where
                 }
             }
             Err(problem) => {
-                match return_for_repair(&queue, &ctx, actuator, &candidate, &problem.message())? {
+                match return_for_repair(
+                    &queue,
+                    &ctx,
+                    actuator,
+                    &candidate,
+                    &problem.message(),
+                    &active.cancellation,
+                )? {
                     GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                     GenerationWrite::Superseded => match refresh_authority(
                         &queue,
@@ -1349,7 +1431,13 @@ where
             &activity_context,
             "verification started",
         );
+        if active.is_cancelled() {
+            return Ok(TickResult::Stopped);
+        }
         let outcome = actuator.verify(&candidate, &pull_request);
+        if active.is_cancelled() && !matches!(outcome, VerificationOutcome::Merged { .. }) {
+            return Ok(TickResult::Stopped);
+        }
         super::activity::emit(
             if matches!(outcome, VerificationOutcome::Merged { .. }) {
                 "INFO"
@@ -1369,6 +1457,7 @@ where
         }
 
         match outcome {
+            VerificationOutcome::Cancelled => return Ok(TickResult::Stopped),
             VerificationOutcome::Merged { tree, detail, gate } => {
                 let green_comment = format!(
                     "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
@@ -1397,7 +1486,6 @@ where
                 // Reaping is cleanup for work whose durable outcome is already
                 // recorded; it must not keep graceful shutdown waiting on the
                 // completed verification transaction.
-                drop(active);
                 drop(lifecycle_entry);
                 match actuator.reap(&candidate) {
                     Ok(()) => record_cleanup_complete(&ctx, &candidate)?,
@@ -1415,6 +1503,7 @@ where
                         "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
+                    &active.cancellation,
                 )?;
                 let remediation_started = match remediation_started {
                     GenerationWrite::Applied(started) => started,
@@ -1459,6 +1548,7 @@ where
                         "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; the verifier pushes and links the pull request.",
                         candidate.story_id
                     ),
+                    &active.cancellation,
                 )?;
                 if matches!(result, GenerationWrite::Applied(_)) {
                     return Ok(TickResult::Returned);
@@ -1479,6 +1569,7 @@ where
                         "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
                         candidate.story_id
                     ),
+                    &active.cancellation,
                 )?;
                 if matches!(result, GenerationWrite::Applied(_)) {
                     return Ok(TickResult::Returned);
@@ -1539,9 +1630,16 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
     ctx: &Ctx<'_, S>,
     actuator: &A,
     candidate: &VerificationCandidate,
+    cancellation: &Cancellation,
 ) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
+    if cancellation.is_cancelled() {
+        return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
+    }
     let submitted = actuator.submit(candidate);
+    if cancellation.is_cancelled() && submitted.is_err() {
+        return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
+    }
     super::activity::emit(
         if submitted.is_ok() { "INFO" } else { "ERROR" },
         "verifier",
@@ -1561,10 +1659,15 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                          run `story move {} verifying` again",
                         pull_request.url, linked.url, candidate.story_id
                     );
-                    return Ok(
-                        return_for_repair(queue, ctx, actuator, candidate, &diagnosis)?
-                            .map(|_| Some(TickResult::Returned)),
-                    );
+                    return Ok(return_for_repair(
+                        queue,
+                        ctx,
+                        actuator,
+                        candidate,
+                        &diagnosis,
+                        cancellation,
+                    )?
+                    .map(|_| Some(TickResult::Returned)));
                 }
             }
             match queue.record_generation_submitted(ctx, candidate, &pull_request) {
@@ -1584,10 +1687,12 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                 Err(error) => Err(error),
             }
         }
-        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
-            queue, ctx, actuator, candidate, &display,
-        )?
-        .map(|_| Some(TickResult::Returned))),
+        Err(SubmissionFailure::Refused { display, .. }) => {
+            Ok(
+                return_for_repair(queue, ctx, actuator, candidate, &display, cancellation)?
+                    .map(|_| Some(TickResult::Returned)),
+            )
+        }
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
             queue,
             ctx,
@@ -1790,7 +1895,11 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
     actuator: &A,
     candidate: &VerificationCandidate,
     diagnosis: &str,
+    cancellation: &Cancellation,
 ) -> Result<GenerationWrite<bool>, AppError> {
+    if cancellation.is_cancelled() {
+        return Ok(GenerationWrite::Applied(false));
+    }
     if matches!(
         queue.record_generation_returned(ctx, candidate, diagnosis)?,
         GenerationWrite::Superseded
@@ -1798,7 +1907,11 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
         return Ok(GenerationWrite::Superseded);
     }
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
-    let absent = match actuator.notify(candidate, diagnosis) {
+    let delivered = actuator.notify(candidate, diagnosis);
+    if cancellation.is_cancelled() {
+        return Ok(GenerationWrite::Applied(false));
+    }
+    let absent = match delivered {
         Ok(NotifyDelivery::Delivered) => return Ok(GenerationWrite::Applied(true)),
         Ok(NotifyDelivery::AgentAbsent { reason, detail }) => format!("{detail} ({reason})"),
         Err(error) => {
@@ -1825,7 +1938,11 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
         &activity_context,
         &format!("agent absent ({absent}); re-dispatching with {plan:?}"),
     );
-    if let Err(error) = actuator.redispatch(candidate, &plan) {
+    let redispatched = actuator.redispatch(candidate, &plan);
+    if cancellation.is_cancelled() {
+        return Ok(GenerationWrite::Applied(false));
+    }
+    if let Err(error) = redispatched {
         super::activity::emit(
             "ERROR",
             "verifier",
@@ -1842,7 +1959,11 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
     // story's comments — where the diagnosis already is. A paste that fails
     // here is recorded, never a hard stop (D-E: `awaiting` only when the
     // re-dispatch itself is refused).
-    match actuator.notify(candidate, diagnosis) {
+    let delivered = actuator.notify(candidate, diagnosis);
+    if cancellation.is_cancelled() {
+        return Ok(GenerationWrite::Applied(false));
+    }
+    match delivered {
         Ok(NotifyDelivery::Delivered) => {}
         Ok(NotifyDelivery::AgentAbsent { reason, detail }) => comment_once(
             ctx,
@@ -1953,8 +2074,24 @@ pub fn wait_for_reconciled_candidate(
     stop: &AtomicBool,
     reserved: &VerificationCandidate,
 ) -> Result<Option<VerificationCandidate>, AppError> {
+    wait_for_reconciled_candidate_cancellable(
+        store,
+        subscription,
+        stop,
+        reserved,
+        &Cancellation::default(),
+    )
+}
+
+fn wait_for_reconciled_candidate_cancellable(
+    store: &impl Store,
+    subscription: &crate::daemon::bus::Subscription,
+    stop: &AtomicBool,
+    reserved: &VerificationCandidate,
+    cancellation: &Cancellation,
+) -> Result<Option<VerificationCandidate>, AppError> {
     loop {
-        if stop.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || cancellation.is_cancelled() {
             return Ok(None);
         }
         if let Some(candidate) = VerificationQueue::new(store)
@@ -1968,7 +2105,7 @@ pub fn wait_for_reconciled_candidate(
         {
             return Ok(Some(candidate));
         }
-        let _ = subscription.recv(RECOVERY_WAKE);
+        let _ = subscription.recv(Duration::from_millis(100));
     }
 }
 
@@ -1983,7 +2120,7 @@ pub(crate) fn poll_verification(
     inflight: &InFlight,
 ) {
     poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
-        ShellVerificationActuator::new(env.clone())
+        ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
     });
 }
 
@@ -2091,7 +2228,15 @@ fn poll_project_verification(
             activity,
             inflight,
             project,
-            |reserved| wait_for_reconciled_candidate(store, &subscription, stop, reserved),
+            |reserved| {
+                wait_for_reconciled_candidate_cancellable(
+                    store,
+                    &subscription,
+                    stop,
+                    reserved,
+                    &activity.cancellation_for(project),
+                )
+            },
         ) {
             Ok(TickResult::Completed | TickResult::Returned) => continue,
             Ok(TickResult::RetryLater) => {
@@ -2104,7 +2249,7 @@ fn poll_project_verification(
                     let _ = subscription.recv(remaining);
                 }
             }
-            Ok(TickResult::Halted) => {
+            Ok(TickResult::Halted | TickResult::Stopped) => {
                 while matches!(subscription.recv(RECOVERY_WAKE), Some(Change::Ping))
                     && !stop.load(Ordering::Relaxed)
                 {}

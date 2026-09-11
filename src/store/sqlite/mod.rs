@@ -846,6 +846,10 @@ macro_rules! impl_read_ops {
                 read::verification_incident(&self.conn, project)
             }
 
+            fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
+                read::verification_enabled(&self.conn, project)
+            }
+
             fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
                 read::verification_incidents(&self.conn)
             }
@@ -1043,6 +1047,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         incident: &VerificationIncident,
     ) -> Result<(), StoreError> {
         write::put_verification_incident(&self.conn, incident)
+    }
+
+    fn put_verification_enabled(
+        &mut self,
+        project: ProjectId,
+        enabled: bool,
+    ) -> Result<(), StoreError> {
+        write::put_verification_enabled(&self.conn, project, enabled)
     }
 
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError> {

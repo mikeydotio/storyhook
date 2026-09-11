@@ -60,6 +60,7 @@ pub mod system;
 pub mod templates;
 pub mod transfer;
 pub mod verification;
+pub mod verification_control;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

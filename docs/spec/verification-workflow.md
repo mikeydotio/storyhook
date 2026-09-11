@@ -787,3 +787,37 @@ the proof that the inner `run-tests.sh` take is reentrant with the outer
 as owned; a halt in one leaves the other draining and is acknowledged only
 through its own route; a conflict hold in one does not hold the other; queue
 position counts one project; the supervisor follows the catalog).
+
+## Manual verifier controls — SH-668
+
+Each project stores admission permission separately from failure incidents.
+The default is running; an operator stop survives daemon restart. Stopping
+does not change queued stories, agent lanes, or another project's verifier.
+
+| Action | Contract |
+|---|---|
+| Let inflight verifications finish | Disable new admissions; finish the owned attempt, including its reconciliation hold. |
+| Stop inflight verifications | Disable admissions and latch cancellation on the owned attempt. The worker terminates and reaps its subprocess group, and releases reconciliation waits. |
+| Start verifier | Enable admission after stopped work has exited. Never acknowledge a failure implicitly. |
+| Leave verifier stopped | Validate and acknowledge the exact halted incident and disable admission in one transaction. |
+| Acknowledge and retry | Validate and acknowledge the exact halted incident, then permit another attempt. |
+
+The header displays stop while running or draining, allowing drain to escalate
+to cancellation. While cancelling it displays stopping; play becomes available
+once the worker has released ownership. A halted incident remains visible until
+explicit acknowledgement. Legacy CLI acknowledgement preserves manual permission.
+
+The council chose worker-owned cancellation over API-side signalling (decision
+and complete reasoning recorded on SH-668). The shared activity registry serializes
+admission and control mutations, always locking before store access. Only permission
+is durable; draining/stopping derive from live ownership and an attempt-scoped,
+monotonic token that survives reconciliation-generation replacement. No registry
+lock is held during subprocess work or waits. Cancellation is distinct from
+infrastructure failure; uncertain external merges are recovered on restart through
+the existing authoritative PR checks, never presumed absent because a child exited.
+
+REST: `POST /api/repos/{project}/verification/control` accepts `action` of
+`start`, `drain`, or `stop`. `/data` includes `verification_control` with its
+derived `state`. `/verification/ack` accepts optional `action`: `retry` or
+`leave-stopped`; omission retains the legacy acknowledgement contract. Mutations
+return confirmed state; the UI refreshes after failures or ambiguous transport.

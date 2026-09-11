@@ -3934,3 +3934,51 @@ fn default_states() -> Vec<storyhook::domain::StateDef> {
         })
         .collect()
 }
+
+#[test]
+fn migration_37_preserves_existing_projects_and_constrains_manual_permission() {
+    use storyhook::store::{NewProject, WriteOps};
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..36]).unwrap();
+    let project = store
+        .write(|tx| {
+            tx.create_project(&NewProject {
+                uuid: "manual-verifier-migration".into(),
+                slug: "migration".into(),
+                name: "Existing project".into(),
+                prefix: "MV".into(),
+                created_at: "2026-09-11T00:00:00Z".into(),
+            })
+        })
+        .unwrap();
+    store.migrate().unwrap();
+    assert!(store.read(|tx| tx.verification_enabled(project)).unwrap());
+    store
+        .write(|tx| tx.put_verification_enabled(project, false))
+        .unwrap();
+    let reopened = SqliteStore::open(store.path()).unwrap();
+    assert!(
+        !reopened
+            .read(|tx| tx.verification_enabled(project))
+            .unwrap()
+    );
+    assert_eq!(
+        reopened
+            .read(|tx| tx.project(project))
+            .unwrap()
+            .unwrap()
+            .name,
+        "Existing project"
+    );
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+    assert!(
+        conn.execute("UPDATE verification_control SET enabled = 2", [])
+            .is_err()
+    );
+    assert!(
+        conn.execute("INSERT INTO verification_control VALUES (999999, 0)", [])
+            .is_err()
+    );
+}

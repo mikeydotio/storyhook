@@ -6,7 +6,8 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("a durable verifier halt remains visible until exact acknowledgement", async ({
+for (const action of ["retry", "leave-stopped"] as const) {
+test(`a durable verifier halt remains visible until exact acknowledgement: ${action}`, async ({
   page,
   request,
 }) => {
@@ -38,6 +39,7 @@ test("a durable verifier halt remains visible until exact acknowledgement", asyn
         halted: true,
       };
       data.stories.push(stalled);
+      data.verification_control = { state: active || action === "retry" ? "running" : "stopped" };
       data.verification_incident = active
         ? {
             incident_id: incidentId,
@@ -58,9 +60,9 @@ test("a durable verifier halt remains visible until exact acknowledgement", asyn
   await page.route(
     (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/verification/ack`,
     async (route) => {
-      expect(route.request().postDataJSON()).toEqual({ incident_id: incidentId });
+      expect(route.request().postDataJSON()).toEqual({ incident_id: incidentId, action });
       active = false;
-      await route.fulfill({ status: 200, json: { acknowledged: incidentId } });
+      await route.fulfill({ status: 200, json: { acknowledged: incidentId, state: action === "retry" ? "running" : "stopped" } });
     },
   );
 
@@ -77,6 +79,16 @@ test("a durable verifier halt remains visible until exact acknowledgement", asyn
   await expect(card.locator(".verification-chip-stalled")).toContainText(
     "Verification halted · attempt 3",
   );
-  await banner.getByRole("button", { name: "Acknowledge and retry" }).click();
+  const start = page.locator('.column[data-state="verifying"]').getByRole("button", { name: "Start verifier", exact: true });
+  await expect(start).toBeDisabled();
+  await banner.getByRole("button", { name: action === "retry" ? "Acknowledge and retry" : "Leave verifier stopped" }).click();
   await expect(banner).toHaveCount(0);
+  if (action === "leave-stopped") {
+    await expect(start).toBeEnabled();
+    await page.reload();
+    await expect(start).toBeEnabled();
+    await expect(banner).toHaveCount(0);
+  }
 });
+
+}
