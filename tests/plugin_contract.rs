@@ -176,3 +176,64 @@ fn codex_manifest_is_skills_only() {
         );
     }
 }
+
+/// The helper's `COMPLETION_STATE="…"` declaration, read the way
+/// `declared_dispatch_protocol` reads `DISPATCH_PROTOCOL=`: the first
+/// assignment at the start of a line, unquoted.
+fn declared_completion_state(script: &Path) -> Option<String> {
+    std::fs::read_to_string(script)
+        .ok()?
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("COMPLETION_STATE="))
+        .map(|value| value.trim().trim_matches('"').to_string())
+}
+
+/// `story.sh` hard-codes the completion state exactly as it hard-codes
+/// `verifying` — a protocol constant, not a preference — and the two halves
+/// of the protocol must spell it identically, or the verifier lands green work
+/// in a state its own reap refuses (SH-652). Pinned here rather than restated
+/// in either file's comments (SH-136): the daemon's constant is the source and
+/// the helper's is checked against it.
+#[test]
+fn story_sh_names_the_completion_state_the_verifier_writes() {
+    let script = repo_root().join(PLUGIN_ROOT).join("bin/story.sh");
+    let declared = declared_completion_state(&script).unwrap_or_else(|| {
+        panic!(
+            "{} declares no COMPLETION_STATE= line; story.sh reap must name the state the \
+             verifier writes",
+            script.display()
+        )
+    });
+    assert_eq!(
+        declared,
+        storyhook::domain::COMPLETION_STATE_SLUG,
+        "plugins/story/bin/story.sh declares COMPLETION_STATE={declared}, but \
+         domain::COMPLETION_STATE_SLUG is {} -- the verifier's write and the helper's reap \
+         must agree by construction",
+        storyhook::domain::COMPLETION_STATE_SLUG
+    );
+}
+
+/// The retired override is not merely undocumented: nothing in the helper
+/// reads it any more except the refusal that names it (SH-357 — a knob that
+/// lands nowhere is refused, never dropped).
+#[test]
+fn story_sh_reads_story_done_state_only_to_refuse_it() {
+    let script = repo_root().join(PLUGIN_ROOT).join("bin/story.sh");
+    let contents = std::fs::read_to_string(&script).unwrap();
+    let reads: Vec<&str> = contents
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.contains("STORY_DONE_STATE"))
+        .collect();
+    assert!(
+        reads.iter().all(|line| line.contains("+set}")
+            || line.contains("refuse")
+            || line.contains("${STORY_DONE_STATE}")),
+        "story.sh consults STORY_DONE_STATE outside its refusal: {reads:#?}"
+    );
+    assert!(
+        reads.iter().any(|line| line.contains("+set}")),
+        "story.sh no longer refuses STORY_DONE_STATE by name; a set knob would be silently ignored"
+    );
+}

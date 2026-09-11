@@ -595,6 +595,12 @@ impl Dispatcher for NoopDispatcher {
         }
     }
 
+    fn census(&self) -> crate::lane_budget::WindowCensus {
+        crate::lane_budget::WindowCensus::Unanswered {
+            detail: "engine HTTP reached a window census without a shell dispatcher".to_string(),
+        }
+    }
+
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
         Err(AppError::Storage(
             "engine HTTP reached kill-window without a shell dispatcher".to_string(),

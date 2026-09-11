@@ -24,7 +24,7 @@ use storyhook::cli::{
     DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
     HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
     PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, WebAction,
+    UnclaimComment, VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
@@ -563,6 +563,26 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
         ),
         (
+            "lane_budget_counted",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Counted {
+                        windows: vec!["storyhook:SH-655".to_string()],
+                    },
+                ),
+            )),
+        ),
+        (
+            "lane_budget_unanswered",
+            Response::LaneBudget(Box::new(
+                storyhook::lane_budget::LaneBudgetView::from_census(
+                    storyhook::lane_budget::WindowCensus::Unanswered {
+                        detail: "no server running — ünïcödé".to_string(),
+                    },
+                ),
+            )),
+        ),
+        (
             "project_snapshot_empty",
             Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
                 slug: "storyhook".to_string(),
@@ -858,6 +878,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::ProjectSettings(_) => "project_settings",
             Response::RawJson(_) => "raw_json",
             Response::ProjectSnapshot(_) => "project_snapshot",
+            Response::LaneBudget(_) => "lane_budget",
             Response::StoryHistory(_) => "story_history",
             Response::StoryLog { .. } => "story_log",
             Response::ConfirmationRequired(_) => "confirmation_required",
@@ -865,7 +886,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 19] = [
+    const EVERY_VARIANT: [&str; 20] = [
         "message",
         "message_with_warnings",
         "story",
@@ -881,6 +902,7 @@ fn the_response_corpus_covers_every_variant() {
         "project_settings",
         "raw_json",
         "project_snapshot",
+        "lane_budget",
         "story_history",
         "story_log",
         "confirmation_required",
@@ -1625,6 +1647,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Version,
         Invocation::ProjectSnapshot,
+        Invocation::LaneBudget,
         Invocation::History {
             action: HistoryAction::Read {
                 id: "SH-7".to_string(),
@@ -1795,6 +1818,11 @@ fn invocation_corpus() -> Vec<Invocation> {
                 run: Some("run-1".to_string()),
             },
         },
+        Invocation::Verifier {
+            action: VerifierAction::Ack {
+                incident_id: "2:28821".to_string(),
+            },
+        },
         Invocation::Cleanup { dry_run: true },
         Invocation::Attachment {
             action: AttachmentAction::List {
@@ -1833,6 +1861,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Engine { .. } => "Engine",
+        Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
@@ -1886,6 +1915,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
         Invocation::ProjectSnapshot => "ProjectSnapshot",
+        Invocation::LaneBudget => "LaneBudget",
         Invocation::History { .. } => "History",
         Invocation::Migrate { .. } => "Migrate",
         Invocation::Attachment { .. } => "Attachment",
@@ -1902,7 +1932,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        68,
+        70,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

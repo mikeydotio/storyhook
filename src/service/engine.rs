@@ -22,6 +22,7 @@ use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
+use crate::lane_budget::WindowCensus;
 #[cfg(test)]
 use crate::process::read_capture;
 use crate::process::{CaptureError, Captured, run_captured};
@@ -38,7 +39,12 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// This is the dashboard dispatch bound moved to the shared seam: the script's
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
-pub(crate) const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+///
+/// Public because it is the deadline the reconciler's deferral of a dead
+/// window on a returned story disproves (SH-650): `tests/engine_reconcile.rs`
+/// pins it inside [`STALL_CEILING_SECS`], so a resume re-dispatch has either
+/// shown a live pane or parked the story before the stall clock can fire.
+pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// How often stop-now re-reads a lane whose dispatch helper still owns the
 /// exact cleanup lease it is about to publish.
@@ -70,8 +76,9 @@ pub const HARD_STOP_BREAKER: u32 = 3;
 /// subprocess, and this machine already bounds those:
 /// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
 /// literal would be a second opinion about one machine, which this project has
-/// paid for repeatedly (SH-136). `engine_lane_budget_matches_dispatch_capacity`
-/// fails if the two ever drift.
+/// paid for repeatedly (SH-136).
+/// `the_lane_budget_is_spelled_as_the_dispatch_capacity_not_a_copy_of_its_digits`
+/// (`tests/engine_reconcile.rs`) fails if the two ever drift.
 pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
 
 /// How long a live agent may legitimately show **no output on its pty and no
@@ -311,6 +318,12 @@ pub struct LaneObservation {
     /// relay verbatim if this lane is quarantined, rather than overwriting it
     /// with a message composed here (SH-120).
     pub awaiting_reason: Option<String>,
+    /// Whether the story's state history ends with the verifier's return
+    /// (`verifying` → `in-progress`, nothing since): the verifier is, or is
+    /// about to be, re-dispatching into this lane's window (SH-650). Read only
+    /// when the probe says the window is gone, which is the one case it
+    /// changes.
+    pub returned_for_repair: bool,
 }
 
 /// What one reconcile pass did, as data rather than rendered text.
@@ -324,6 +337,11 @@ pub struct ReconcileReport {
     /// Lanes whose liveness probe could not be answered this pass, with the
     /// probe's own reason (SH-626). Not a hard stop — see [`WindowProbe`].
     pub unanswered: Vec<(u32, String)>,
+    /// Lanes whose window is gone but whose story the verifier has just
+    /// returned for repair (SH-650), with the probe's own reason. Not a hard
+    /// stop this pass: the verifier's resume re-dispatch is what fills that
+    /// window, and the stall clock bounds the wait.
+    pub deferred: Vec<(u32, String)>,
     /// Lane indices freed because their story completed.
     pub completed: Vec<u32>,
     /// Lane indices held this pass because their story reached `verifying`.
@@ -332,6 +350,11 @@ pub struct ReconcileReport {
     pub quarantined: Vec<(u32, HardStopKind)>,
     /// Lane indices filled this pass, with the story each claimed.
     pub filled: Vec<(u32, String)>,
+    /// The machine-wide census the fill measured its budget against
+    /// (SH-655): every live agent window on the dispatcher's tmux server,
+    /// manual sessions included. `None` when the pass never reached a fill
+    /// (the run was not running, or reconciliation stopped earlier).
+    pub census: Option<WindowCensus>,
     /// The run's state after the pass.
     pub run_state: EngineRunState,
     /// The run's stop reason after the pass, when it has one.
@@ -351,9 +374,9 @@ pub struct ReconcileReport {
 ///
 /// `AgentBlocked` is tested next, ahead of `Verifying`: a story can sit in
 /// `verifying` with `awaiting` also set (centralized verification's own
-/// `return_for_repair` falls back to `set_awaiting` when it cannot reach the
-/// dispatched pane, SH-521), and that diagnosis must surface rather than be
-/// masked by the handoff.
+/// `return_for_repair` parks a story with `awaiting` when its resume
+/// re-dispatch is refused, SH-521/SH-650), and that diagnosis must surface
+/// rather than be masked by the handoff.
 ///
 /// `Verifying` is tested ahead of `WindowGone` and `Stalled`. The agent's
 /// last action for a successful story is `story move <n> verifying`, and the
@@ -396,6 +419,18 @@ pub fn classify(
         // the window, so the lane is judged by the store fact D3 already makes
         // primary — the stall clock below, which a dead agent cannot advance.
         WindowProbe::Alive { .. } | WindowProbe::Unanswered { .. } => {}
+        // A window gone on a story the verifier has just returned is the
+        // verifier's own re-dispatch in flight (SH-650): the pane is normally
+        // already dead at the handoff, and `dispatch --resume` respawns it
+        // in place after a readiness wait this pass would otherwise read as
+        // a hard stop. No evidence, same as an unanswered probe — the stall
+        // clock below still bounds it, and `DISPATCH_TIMEOUT` is inside that
+        // ceiling, so a re-dispatch either shows a live pane or has parked
+        // the story with `awaiting` (classified above) before the clock can
+        // fire. Only on a steady pass: a daemon that died mid-re-dispatch
+        // has nobody left to finish it, so a restart still reports it.
+        WindowProbe::Gone { .. }
+            if observation.returned_for_repair && pass == ReconcilePass::Steady => {}
         WindowProbe::Gone { .. } => {
             return LaneClassification::HardStop(match pass {
                 ReconcilePass::Steady => HardStopKind::WindowGone,
@@ -531,6 +566,11 @@ pub trait Dispatcher: Send + Sync {
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
+    /// The live agent windows on the tmux server this dispatcher fills
+    /// lanes on — every dispatched session, engine-filled or manual, counted
+    /// against the one machine budget (SH-655). Taken once per fill pass;
+    /// an unanswered census is no evidence (SH-626), never zero.
+    fn census(&self) -> WindowCensus;
 }
 
 /// Refusing dispatcher for lifecycle operations that are store-only.
@@ -558,6 +598,12 @@ impl Dispatcher for StoreOnlyDispatcher {
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
         Err(store_only_dispatcher_error())
+    }
+
+    fn census(&self) -> WindowCensus {
+        WindowCensus::Unanswered {
+            detail: store_only_dispatcher_error().to_string(),
+        }
     }
 }
 
@@ -594,6 +640,13 @@ impl ShellDispatcher {
     }
 }
 
+impl ShellDispatcher {
+    /// The window census on the server this dispatcher's lanes live on.
+    fn shell_census(&self) -> WindowCensus {
+        crate::lane_budget::census_through(self.tmux())
+    }
+}
+
 impl Dispatcher for ShellDispatcher {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
         let options = DispatchOptions {
@@ -606,7 +659,7 @@ impl Dispatcher for ShellDispatcher {
             &self.story_sh_path,
             &request.project,
             &request.story,
-            request.agent,
+            Some(request.agent),
             true,
             true,
             &options,
@@ -751,6 +804,10 @@ impl Dispatcher for ShellDispatcher {
                 error.detail()
             ))),
         }
+    }
+
+    fn census(&self) -> WindowCensus {
+        self.shell_census()
     }
 }
 
@@ -1082,6 +1139,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
             unanswered: Vec::new(),
+            deferred: Vec::new(),
+            census: None,
             completed: Vec::new(),
             verifying: Vec::new(),
             quarantined: Vec::new(),
@@ -1105,6 +1164,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         for (lane, classification, observation) in observed {
             if let WindowProbe::Unanswered { detail } = &observation.window {
                 report.unanswered.push((lane.lane_index, detail.clone()));
+            }
+            if let (WindowProbe::Gone { detail }, LaneClassification::Progressing) =
+                (&observation.window, classification)
+            {
+                report.deferred.push((lane.lane_index, detail.clone()));
             }
             match classification {
                 LaneClassification::Progressing => {
@@ -1266,6 +1330,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     |target| self.dispatcher.probe_window(&target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
+            // Read only when it can change the verdict: a Gone window on an
+            // open, non-verifying, non-awaiting story (SH-650). Every other
+            // combination is decided without it, and a live run reconciles
+            // about once a second.
+            let returned_for_repair = match (&window, row.as_ref()) {
+                (WindowProbe::Gone { .. }, Some(row))
+                    if row.superstate != SuperState::Closed
+                        && row.state != VERIFYING_STATE_SLUG
+                        && row.awaiting.is_none() =>
+                {
+                    self.ctx.store().read(|tx| {
+                        super::verification::returned_for_repair(tx, project, row.story_no)
+                    })?
+                }
+                _ => false,
+            };
             let seconds_since_output = match &window {
                 WindowProbe::Alive {
                     last_output_at: Some(at),
@@ -1291,6 +1371,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .and_then(|at| elapsed_secs(at, &now)),
                 seconds_since_output,
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
+                returned_for_repair,
             };
             let classification = if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)
@@ -1404,7 +1485,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// at observation time — for [`HardStopKind::AgentBlocked`], the agent's
     /// own diagnosis (its charter tells it to `story block <n> the-reason`
     /// before stopping), or centralized verification's own message when
-    /// `return_for_repair` could not reach a dead pane (SH-521). SH-120's
+    /// `return_for_repair` could not re-dispatch into a dead pane (SH-521,
+    /// SH-650). SH-120's
     /// relay rule applies here exactly as it does to a dispatch refusal: the
     /// existing text is appended to, never replaced by, a message composed
     /// here. Every other kind observes `existing_reason` as `None` by
@@ -1658,6 +1740,26 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cloned()
             .collect();
 
+        // THE MACHINE CENSUS (SH-655). `occupied_lane_count` sees the store's
+        // own lanes; a session `/story do` opened by hand is the same window,
+        // worktree and cold build and is in no table. So the budget is also
+        // measured against the live agent windows on this dispatcher's tmux
+        // server — taken ONCE per pass, outside the claim transaction (a
+        // subprocess inside a write transaction would hold the store for as
+        // long as tmux takes to answer), and advanced by hand for every
+        // window this pass has opened since, which the census cannot yet see.
+        // An unanswered census is no evidence (SH-626): the store's count
+        // still bounds the engine's own lanes, and the daemon journals the
+        // outage on its edge rather than once per pass.
+        let census = if idle.is_empty() {
+            None
+        } else {
+            Some(self.dispatcher.census())
+        };
+        let census_live = census.as_ref().and_then(WindowCensus::live);
+        report.census = census;
+        let mut dispatched_this_pass = 0usize;
+
         for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
@@ -1677,6 +1779,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         let eligible = current.state == EngineRunState::Running
                             && scope_is_available(tx, self.ctx.project(), &current.scope)?
                             && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
+                            && census_live.is_none_or(|live| {
+                                live + dispatched_this_pass < ENGINE_LANE_BUDGET
+                            })
                             && occupied_run_lane_count(&lanes) < current.lanes as usize
                             && lanes.iter().any(|candidate| candidate == &lane);
                         if eligible {
@@ -1741,6 +1846,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     live.outcome = None;
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
+                    dispatched_this_pass += 1;
                     report.filled.push((lane.lane_index, story));
                 }
                 DispatchOutcomeState::Refused => {
@@ -2463,15 +2569,19 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
-/// engine lane so that only the engine receives that identity and isolation
-/// boundary. Full Auto lanes copy their run's immutable provider options into
-/// `options`; attended dispatch supplies its request-scoped selections.
+/// engine lane so that only the engine — and, since SH-650, the verifier
+/// re-dispatching a story that engine lane holds — receives that identity and
+/// isolation boundary. Full Auto lanes copy their run's immutable provider
+/// options into `options`; attended dispatch supplies its request-scoped
+/// selections; `agent: None` names no provider and leaves the helper to read
+/// the one the dispatch being resumed recorded (`surviving_dispatch_provider`
+/// in `story.sh`), which only a resume has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
     story: &str,
-    agent: EngineAgent,
+    agent: Option<EngineAgent>,
     auto: bool,
     full_auto: bool,
     options: &DispatchOptions,
@@ -2511,8 +2621,10 @@ pub(crate) fn run_shell_dispatch(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story)
-        .arg(format!("--agent={}", agent.as_str()));
+        .arg(story);
+    if let Some(agent) = agent {
+        command.arg(format!("--agent={}", agent.as_str()));
+    }
     if options.resume {
         command.arg("--resume");
     }
@@ -2521,13 +2633,16 @@ pub(crate) fn run_shell_dispatch(
     }
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
-        debug_assert!(
-            !options.resume,
-            "Full Auto reuses its fresh engine-owned claim and never resumes artifacts"
-        );
-        // Full Auto dispatch follows the engine's atomic claim immediately. `--force`
-        // reuses that sole claim while the helper still rejects worktree, branch, or pane artifacts.
-        command.arg("--full-auto").arg("--force");
+        command.arg("--full-auto");
+        // The engine's own Full Auto dispatch follows its atomic claim
+        // immediately: `--force` reuses that sole claim while the helper still
+        // rejects worktree, branch, or pane artifacts. A RESUME of a lane's
+        // story (the verifier's re-dispatch, SH-650) reconstructs exactly those
+        // artifacts instead, and the helper refuses `--resume --force` as a
+        // contradiction, so the two flags never travel together.
+        if !options.resume {
+            command.arg("--force");
+        }
     }
     if let Some(model) = &options.model {
         command.arg(format!("--model={model}"));
@@ -2827,6 +2942,17 @@ fn probe_journal_edge(
                 "window liveness unanswered; the lane is judged by its stall clock until tmux answers: {detail}"
             ),
         )),
+        // A Gone probe reaches `record_progress` only when it was deferred
+        // (SH-650: the story was just returned for repair); a Gone that is a
+        // hard stop is written on the story and the quarantine record and
+        // never comes here. So this IS the deferral's own edge, and a
+        // deferral nobody can see is the SH-306 shape.
+        WindowProbe::Gone { detail } if previous != Some(detail.as_str()) => Some((
+            "INFO",
+            format!(
+                "window gone on a story the verifier just returned; awaiting its resume re-dispatch, judged by the stall clock meanwhile: {detail}"
+            ),
+        )),
         WindowProbe::Alive { .. } if previous.is_some() => {
             Some(("INFO", "window liveness probe answers again".to_string()))
         }
@@ -3090,15 +3216,28 @@ mod tests {
             ),
             None
         );
+        // A Gone probe reaches the journal only when the reconciler deferred
+        // it (SH-650): a dead window that is a hard stop is written on the
+        // story instead and never comes here. The deferral is an INFO on its
+        // edge, and silent on repetition.
+        let gone = WindowProbe::Gone {
+            detail: "pane_dead=1".to_string(),
+        };
+        let entry = probe_journal_edge(None, &gone).expect("a deferral is an edge");
+        assert_eq!(entry.0, "INFO");
+        assert!(entry.1.contains("verifier just returned"), "{}", entry.1);
+        assert!(entry.1.contains("pane_dead=1"), "{}", entry.1);
+        assert_eq!(probe_journal_edge(Some("pane_dead=1"), &gone), None);
         assert_eq!(
             probe_journal_edge(
-                None,
-                &WindowProbe::Gone {
-                    detail: "pane_dead=1".to_string()
+                Some("pane_dead=1"),
+                &WindowProbe::Alive {
+                    last_output_at: None
                 }
-            ),
-            None,
-            "a dead window is a hard stop, written on the story rather than journaled here"
+            )
+            .map(|line| line.0),
+            Some("INFO"),
+            "the respawned pane answering again is the deferral's closing edge"
         );
     }
 
@@ -3235,6 +3374,40 @@ mod tests {
     /// shape the browser harness's broken double produced -- a nonzero exit
     /// with an unrelated message, an empty answer, a non-numeric pid, a
     /// spawn failure -- is `Unanswered` and names its own cause.
+    /// SH-655: the dispatcher's census asks its OWN tmux program, on the
+    /// server its lanes live on, for every window carrying
+    /// `@storyhook-agent` with a live pane -- and a tmux it cannot ask is
+    /// unanswered, never an empty machine.
+    #[test]
+    fn shell_census_counts_live_agent_windows_on_its_own_server() {
+        let root = storyhook_test_support::scratch_dir();
+        let answering = root.path().join("tmux-answering");
+        executable(
+            &answering,
+            "case \" $* \" in (*' list-windows -a -F '*) \
+             printf 'storyhook:SH-1\\tclaude\\t0\\nstoryhook:SH-2\\tclaude\\t1\\nstoryhook:zsh\\t\\t0\\n'; exit 0;; \
+             esac; exit 1",
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &answering).census(),
+            WindowCensus::Counted {
+                windows: vec!["storyhook:SH-1".to_string()]
+            }
+        );
+
+        let broken = root.path().join("tmux-broken");
+        executable(
+            &broken,
+            "printf 'no server running on /tmp/tmux-501/default\n' >&2; exit 1",
+        );
+        let WindowCensus::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &broken).census()
+        else {
+            panic!("a tmux that could not be asked is not an empty server");
+        };
+        assert!(detail.contains("no server running"), "{detail}");
+    }
+
     #[test]
     fn shell_window_probe_reports_a_tmux_it_could_not_ask_as_unanswered() {
         let root = storyhook_test_support::scratch_dir();

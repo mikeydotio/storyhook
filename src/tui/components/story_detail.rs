@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::domain::{CommitReference, Priority, StorySnapshot, SuperState};
+use crate::domain::{CommitReference, Priority, StorySnapshot, SuperState, completion_state};
 use crate::output::ReferencedBy;
 use crate::tui::action::Action;
 use crate::tui::components::modal::render_modal;
@@ -127,13 +127,9 @@ impl StoryDetail {
         if current_idx + 1 < open_states.len() {
             Some(open_states[current_idx + 1].to_string())
         } else {
-            // At last OPEN state; move to first CLOSED state
-            state
-                .data
-                .states
-                .iter()
-                .find(|s| s.super_state == SuperState::Closed)
-                .map(|s| s.slug.clone())
+            // Past the last OPEN state the story is complete: the required
+            // `done`, never whichever CLOSED state is listed first (SH-652).
+            completion_state(&state.data.states).map(|s| s.slug)
         }
     }
 
@@ -835,8 +831,8 @@ fn render_editing_field<'a>(
 mod tests {
     use super::*;
     use crate::domain::{
-        CommentMention, CommitReference, Member, Priority, StateDef, StoryComment, StorySnapshot,
-        SuperState,
+        COMPLETION_STATE_SLUG, CommentMention, CommitReference, Member, Priority, StateDef,
+        StoryComment, StorySnapshot, SuperState,
     };
     use crate::store::PrLink;
     use crate::tui::action::View;
@@ -1373,6 +1369,48 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(
             matches!(&actions[0], Action::MoveStory { target_state, .. } if target_state == "done")
+        );
+    }
+
+    /// Advancing past the last OPEN state completes the story: `done`, never
+    /// the CLOSED state the catalog lists first (SH-652).
+    #[test]
+    fn move_forward_from_last_open_completes_not_abandons() {
+        let mut snap = test_snapshot();
+        snap.state = "in-progress".to_string();
+        let mut states = test_states();
+        states.insert(
+            2,
+            StateDef {
+                slug: "abandoned".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        );
+        let data = DataStore::from_test_data(states, vec![snap], "SH".to_string(), vec![]);
+        let state = AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters: Vec::new(),
+            filter_bar_focused: false,
+            running: true,
+            notification: None,
+            terminal_size: (120, 40),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+        let mut detail = StoryDetail::new("SH-1".to_string());
+
+        let actions = detail.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::MoveStory { target_state, .. } if target_state == COMPLETION_STATE_SLUG),
+            "{actions:?}"
         );
     }
 

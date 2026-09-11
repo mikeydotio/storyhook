@@ -49,8 +49,14 @@ enum Decision {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// The latest release replaced the running executable, including a forced
-    /// reinstall or downgrade.
-    Replaced(String),
+    /// reinstall or downgrade — and the registered provider plugins were
+    /// reinstalled from it (SH-667). `warnings` are the reinstall's findings
+    /// it did not act on: copies left behind without a registration, a
+    /// provider configuration it could not read.
+    Replaced {
+        message: String,
+        warnings: Vec<String>,
+    },
     /// The command only reported status; no executable was replaced.
     Unchanged(String),
 }
@@ -95,7 +101,7 @@ pub fn run(check: bool, force: bool) -> Result<Outcome, AppError> {
         )));
     }
 
-    install_release(&agent, &tag, &latest, current).map(Outcome::Replaced)
+    install_release(&agent, &tag, &latest, current)
 }
 
 /// Build an HTTP agent for update downloads.
@@ -150,13 +156,14 @@ fn fetch_latest_tag(agent: &Agent) -> Result<String, AppError> {
     Ok(tag)
 }
 
-/// Download and swap in the release identified by `tag`.
+/// Download and swap in the release identified by `tag`, then reinstall the
+/// registered provider plugins from what was swapped in.
 fn install_release(
     agent: &Agent,
     tag: &str,
     latest: &str,
     current: &str,
-) -> Result<String, AppError> {
+) -> Result<Outcome, AppError> {
     let target = target_for(std::env::consts::ARCH, std::env::consts::OS).ok_or_else(|| {
         AppError::Storage(format!(
             "unsupported platform {}-{}: no prebuilt story release. \
@@ -191,7 +198,68 @@ fn install_release(
 
     replace_exe(&staged, &exe)?;
 
-    Ok(format!("story updated to v{latest} (was v{current})"))
+    let swapped = format!("story updated to v{latest} (was v{current})");
+    // The plan is read HERE, by the binary that is going away: provider
+    // configurations are the providers' formats, not this release's. The
+    // installing is delegated to `exe` — see `reinstall_plugins_via`.
+    let plan = crate::plugin::reinstall::plan();
+    match reinstall_plugins_via(&exe, &plan) {
+        Ok(report) => Ok(Outcome::Replaced {
+            message: format!("{swapped}\n\n{}", report.message),
+            warnings: report.warnings,
+        }),
+        // The swap is not undone: it succeeded, and it is what the retry
+        // needs. The error says both things.
+        Err(error) => Err(AppError::Storage(format!(
+            "{swapped}, but its provider plugins were not all reinstalled:\n\n{error}"
+        ))),
+    }
+}
+
+/// Reinstalls every provider in `plan` by running `<exe> plugin install
+/// <provider>` — `exe` being the executable just swapped in (SH-667).
+///
+/// Delegated, never in-process: this process is the OLD binary, and the
+/// payload it embeds is the one just replaced. Per provider through `plugin
+/// install <t>` rather than through the new `plugin reinstall` verb, because
+/// `plugin install <t>` exists in every 2.x release — a `--force` downgrade
+/// to a release older than SH-667 would otherwise exit 2 after a successful
+/// swap. Output is captured and folded into the result so it never
+/// interleaves with the final message; stdin is closed so a provider that
+/// prompts fails fast instead of hanging an unattended update.
+fn reinstall_plugins_via(
+    exe: &Path,
+    plan: &crate::plugin::reinstall::Plan,
+) -> Result<crate::plugin::reinstall::Report, AppError> {
+    crate::plugin::reinstall::execute(plan, |target| {
+        let token = target.install_token();
+        let out = Command::new(exe)
+            .args(["plugin", "install", token])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| {
+                AppError::Storage(format!(
+                    "failed to run `{} plugin install {token}`: {e}",
+                    exe.display()
+                ))
+            })?;
+        let mut text = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !stderr.trim().is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(stderr.trim_end());
+        }
+        if out.status.success() {
+            Ok(text)
+        } else {
+            Err(AppError::Storage(format!(
+                "`story plugin install {token}` exited {}:\n{text}",
+                out.status
+            )))
+        }
+    })
 }
 
 /// Map `(arch, os)` — as produced by `std::env::consts` — to a release target
@@ -431,11 +499,126 @@ mod tests {
 
     #[test]
     fn outcome_distinguishes_a_replaced_binary_from_an_unchanged_one() {
-        let replaced = Outcome::Replaced("updated".to_string());
+        let replaced = Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: Vec::new(),
+        };
         let unchanged = Outcome::Unchanged("already current".to_string());
 
-        assert!(matches!(replaced, Outcome::Replaced(_)));
+        assert!(matches!(replaced, Outcome::Replaced { .. }));
         assert!(matches!(unchanged, Outcome::Unchanged(_)));
+    }
+
+    /// A stand-in for the executable just swapped in: records every argv it
+    /// is run with, and fails on demand for one provider.
+    fn fake_exe(dir: &Path, failing_token: Option<&str>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = dir.join("story");
+        let log = dir.join("calls");
+        let failing = failing_token.unwrap_or("");
+        fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\n\
+                 if [ \"${{3:-}}\" = \"{failing}\" ]; then echo 'provider exploded' >&2; exit 3; fi\n\
+                 echo \"registered $3\"\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    fn calls(dir: &Path) -> String {
+        fs::read_to_string(dir.join("calls")).unwrap_or_default()
+    }
+
+    fn plan(targets: &[crate::plugin::PluginTarget]) -> crate::plugin::reinstall::Plan {
+        crate::plugin::reinstall::Plan {
+            targets: targets.to_vec(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// The exact argv every 2.x release understands, once per registered
+    /// provider, against the executable it was handed — not `story` on PATH.
+    #[test]
+    fn the_new_executable_is_run_once_per_registered_provider_as_plugin_install() {
+        use crate::plugin::PluginTarget;
+        let dir = storyhook_test_support::scratch_dir();
+        let exe = fake_exe(dir.path(), None);
+
+        let report = reinstall_plugins_via(
+            &exe,
+            &plan(&[PluginTarget::ClaudeCode, PluginTarget::Codex]),
+        )
+        .expect("both providers reinstalled");
+
+        assert_eq!(
+            calls(dir.path()),
+            "plugin install claude\nplugin install codex\n"
+        );
+        assert!(
+            report
+                .message
+                .contains("reinstalled the Claude Code plugin:\nregistered claude"),
+            "{}",
+            report.message
+        );
+        assert!(
+            report
+                .message
+                .contains("reinstalled the Codex plugin:\nregistered codex"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[test]
+    fn nothing_registered_spawns_nothing() {
+        let dir = storyhook_test_support::scratch_dir();
+        let exe = fake_exe(dir.path(), None);
+
+        let report = reinstall_plugins_via(&exe, &plan(&[])).expect("nothing to do succeeds");
+
+        assert_eq!(calls(dir.path()), "", "no provider registered, no spawn");
+        assert!(
+            report.message.contains("nothing to reinstall"),
+            "{}",
+            report.message
+        );
+    }
+
+    /// A failing child names its exit, carries its output, does not stop the
+    /// sibling, and ends with the retry.
+    #[test]
+    fn a_failing_child_is_reported_with_its_output_and_the_retry() {
+        use crate::plugin::PluginTarget;
+        let dir = storyhook_test_support::scratch_dir();
+        let exe = fake_exe(dir.path(), Some("claude"));
+
+        let error = reinstall_plugins_via(
+            &exe,
+            &plan(&[PluginTarget::ClaudeCode, PluginTarget::Codex]),
+        )
+        .expect_err("one failed provider fails the reinstall");
+
+        assert_eq!(
+            calls(dir.path()),
+            "plugin install claude\nplugin install codex\n",
+            "the sibling still runs"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("failed to reinstall the Claude Code plugin: `story plugin install claude` exited exit status: 3:\nprovider exploded"),
+            "{text}"
+        );
+        assert!(text.contains("reinstalled the Codex plugin"), "{text}");
+        assert!(
+            text.ends_with("run `story plugin reinstall` to retry"),
+            "{text}"
+        );
     }
 
     #[test]

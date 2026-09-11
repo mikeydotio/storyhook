@@ -371,6 +371,20 @@ remove` mirrors the real one. `story plugin uninstall` for either provider
 now sweeps the residue *directories* the doctor reads; the Codex launcher and
 rule keep their own marker-checked removal that preserves a user's file.
 
+**The evidence must be storyhook's own (SH-671).** Residue is the provider's
+leftovers, and a provider can take those too: on 2026-09-10 Claude Code 2.1.268
+rewrote its registry without storyhook *and* swept `~/.claude/plugins/cache/
+storyhook`, so `install_residue` found nothing, the row read the quiet `not
+registered`, and the report closed `every component agrees` over a machine
+whose dashboard dispatch was broken. `story plugin install <target>` now
+leaves a receipt at `<data dir>/provider-installs/<target>` — written only
+after the provider's own registration succeeded, never on a failed reinstall
+(an earlier install keeps being one), removed by `story plugin uninstall
+<target>` — and `unregistered` flags on residue *or* receipt. The receipt is
+per target, which the managed-path manifest is not, and lives in storyhook's
+own directory, which no provider rewrites. A machine that never installed the
+provider has neither and stays quiet.
+
 **What caused the loss is recorded as evidence, not settled.** The candidate
 the story named — `install_claude`'s remove-then-add with no rollback — did
 not run: `~/.claude/plugins/marketplaces/` and its `claude-plugins-official`
@@ -381,3 +395,91 @@ pointed at never went away; and the plugin helper makes no marketplace call.
 That is a Claude Code marketplace refresh pruning the entry — a fact about the
 host, which makes the detector the whole of the fix. The no-rollback shape
 remains a real gap and is filed separately.
+
+## As built: the verifier scripts travel inside the binary (SH-654)
+
+The table above listed five components with their own paths to a machine.
+There was a sixth nobody had listed: the verifier script family
+(`scripts/verify-pr.sh` and the nine scripts it reaches through its own
+directory), which the daemon ran **from the registered project's checkout**
+— so it tracked whatever tree that checkout had, and existed at all only when
+the project was storyhook. SH-654 gives it the same arrival as the plugin:
+`build.rs` embeds it (`EMBEDDED_VERIFIER`, beside `EMBEDDED_MARKETPLACE`),
+and `src/daemon/verifier_bundle.rs` projects it through the same
+materializer — now `src/embedded.rs`, extracted so both payloads share one
+comparison, one staged write and one rename-with-rollback — under the
+daemon's own state directory, in a leaf named by the payload's digest.
+Lockstep with the daemon is therefore by construction: the bytes a
+verification runs are the bytes of the binary running it, and a different
+build writes a different leaf rather than rewriting one in use. The rule
+this adds to the list: **a script a shipped process invokes is part of the
+release, not of whichever checkout the process happens to be pointed at.**
+Design of record for the verifier side: `docs/spec/verification-workflow.md`'s
+SH-654 entry.
+
+## As built: the incident that found the sixth component (SH-666)
+
+The section above records the mechanism; this one records the measurement that
+made it urgent (`docs/rca/verifier-halt-read-as-a-story-block.md`). On
+2026-09-10 the installed daemon was `build 89f604316fa5`, the tree of the
+SH-646 merge; SH-649 merged five hours later and made `verify-pr.sh` require
+`<pr-url> -- <gate…>`; the main checkout was pulled past it that afternoon;
+the next verification was refused by name and the queue halted for the night,
+reporting itself on every waiting story as "blocked by" the story it was first
+hit on. The refusal was the correct detection of a skew that should never have
+been representable — exactly the plugin's original failure mode, one component
+over, and the reason the table at the top of this document now has six rows in
+spirit. SH-654 closed the origin; SH-666 owns the report, in
+`docs/spec/verification-workflow.md`'s SH-666 entry.
+
+## As built: replacing the binary reinstalls the registered plugins (SH-667)
+
+The plugin is part of the binary release (above), so a new binary carries a
+new plugin — and until SH-667 nothing but `scripts/release.sh` acted on that.
+`make install` and `story update` replaced the binary and left every provider
+registered at the previous release's projection: the `STALE RELEASE` row of
+`story doctor install`, and the state SH-584's RCA found on the filing machine
+(2.4.0 plugins under a 2.4.2 CLI). The lockstep this document is named for was
+being broken by the two most ordinary commands in the tool.
+
+**`story plugin reinstall`** is the one answer. It reinstalls the plugin for
+every provider whose own configuration registers the storyhook marketplace,
+from the binary running it. *Registered* is the whole test: the registration is
+the provider's statement of intent, read through the parser `story doctor
+install` already uses. Installed copies with no registration — SH-640's
+DEREGISTERED — are not intent and are not reinstalled; they are a warning naming
+`story plugin install <provider>`, the doctor's own remedy, because absence is
+never promoted to intent (SH-372). A configuration the parser cannot read is a
+warning that never blocks the other provider (the SH-404/SH-405 trap). Nothing
+registered is a success that says so. Every registered provider is attempted;
+one failure never costs the sibling its refresh, and the error names every
+outcome and the retry.
+
+Every binary-replacement path runs it:
+
+- **`make install`** runs `"$(INSTALL_DIR)/story" plugin reinstall` — the binary
+  just installed, never `story` on PATH — with `|| echo` on purpose. The target
+  is the `SchemaTooNew` recovery and stays ungated (rule above), and
+  `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+  start`; a refresh that failed the install would leave the machine with no
+  daemon. The failure is named with its retry.
+- **`story update`** runs `<new exe> plugin install <provider>` per registered
+  provider after the swap. The running process is the old binary and its
+  embedded payload is the one just replaced, so it may read the plan (provider
+  configurations are the providers' formats) but must not install. Per provider
+  through `plugin install <t>`, which every 2.x release understands, rather than
+  through the new verb, so a `--force` downgrade past SH-667 still works. A
+  failure is an error that states the binary *was* updated and names the retry;
+  the swap is not undone.
+- **`install.sh`** runs `plugin reinstall` after `install(1)`, warning on
+  failure, since a pinned `STORYHOOK_VERSION` older than SH-667 exits 2 there.
+
+`scripts/release.sh` keeps installing *both* providers unconditionally: that is
+the dogfooding choice this document opens with, and it is idempotent over the
+reinstall `make install` now performs first.
+
+One consequence is stated rather than hidden: the verb is daemon-routed, and
+`lifecycle::usable` requires the daemon to be this exact build (version, path,
+and mtime), so the new client never talks to the old daemon and `make install`
+and `story update` now reseat the daemon on the new binary — what
+`release.sh` did by hand.

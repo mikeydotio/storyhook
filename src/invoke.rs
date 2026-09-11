@@ -30,7 +30,7 @@ use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
+    StoreAction, TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -571,13 +571,19 @@ pub fn dispatch<S: Store>(
         Invocation::Plugin { action } => {
             let service = SystemService::new(ctx);
             match action {
-                PluginAction::Install { target } => service.install_plugin(&target),
-                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Install { target } => {
+                    service.install_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Uninstall { target } => {
+                    service.uninstall_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Reinstall => {
+                    service.reinstall_plugins().map(plugin_reinstall_response)
+                }
                 PluginAction::Run { .. } => Err(AppError::Storage(
                     "internal: `story plugin run` reached the daemon".to_string(),
                 )),
             }
-            .map(Response::Message)
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
@@ -671,6 +677,7 @@ pub fn dispatch<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
+        Invocation::Verifier { action } => dispatch_verifier(ctx, action),
         Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
             .run(dry_run)
             .map(|report| Response::Cleanup(Box::new(report))),
@@ -920,6 +927,7 @@ pub fn dispatch<S: Store>(
         | Invocation::Daemon { .. }
         | Invocation::Token { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Store { .. }
@@ -940,6 +948,27 @@ pub fn dispatch<S: Store>(
             invocation,
             ctx.stdin(),
         ),
+    }
+}
+
+/// `story verifier ack <incident-id>`: the CLI door onto the same
+/// acknowledgement `POST .../verification/ack` performs (SH-666).
+fn dispatch_verifier<S: Store>(
+    ctx: &Ctx<'_, S>,
+    action: VerifierAction,
+) -> Result<Response, AppError> {
+    match action {
+        VerifierAction::Ack { incident_id } => {
+            let incident = crate::service::acknowledge_verification_incident(ctx, &incident_id)?;
+            let prefix = ctx
+                .store()
+                .read(|tx| crate::service::project_prefix(tx, ctx.project()))?;
+            Ok(Response::Message(format!(
+                "acknowledged verification incident {} (first hit while verifying {}); the verifier retries on its next tick",
+                incident.incident_id,
+                incident.story.to_id(&prefix)
+            )))
+        }
     }
 }
 
@@ -1842,6 +1871,18 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
     body
 }
 
+/// A reinstall's findings ride the warnings channel: what was *not* done —
+/// copies left behind without a registration, a config that could not be read
+/// — must reach the person, never be folded into the success text where a
+/// `--json` reader would have to grep for it.
+fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Response {
+    if report.warnings.is_empty() {
+        Response::Message(report.message)
+    } else {
+        Response::MessageWithWarnings(report.message, report.warnings)
+    }
+}
+
 /// `story update` — self-update, which touches no project data at all.
 ///
 /// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
@@ -1853,7 +1894,7 @@ fn update(check: bool, force: bool) -> Result<Response, AppError> {
 
     let outcome = crate::update::run(check, force)?;
     let is_terminal = std::io::stderr().is_terminal();
-    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced(_)) {
+    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced { .. }) {
         // `main` has already published a global `--store-path` into the
         // process environment, so resolving here inspects that store's own
         // agent without opening the store. This diagnostic is best-effort: an
@@ -1875,15 +1916,19 @@ fn update_response(
 ) -> Response {
     match outcome {
         crate::update::Outcome::Unchanged(message) => Response::Message(message),
-        crate::update::Outcome::Replaced(message) => {
-            let warning = if is_terminal {
-                health.and_then(crate::daemon::agent::warning)
+        crate::update::Outcome::Replaced {
+            message,
+            mut warnings,
+        } => {
+            // The plugin reinstall's own findings first (they are about what
+            // this update did), the agent's last (it is about the next login).
+            if is_terminal && let Some(warning) = health.and_then(crate::daemon::agent::warning) {
+                warnings.push(warning);
+            }
+            if warnings.is_empty() {
+                Response::Message(message)
             } else {
-                None
-            };
-            match warning {
-                Some(warning) => Response::MessageWithWarnings(message, vec![warning]),
-                None => Response::Message(message),
+                Response::MessageWithWarnings(message, warnings)
             }
         }
     }
@@ -1901,6 +1946,13 @@ mod update_response_tests {
         }
     }
 
+    fn replaced(message: &str) -> crate::update::Outcome {
+        crate::update::Outcome::Replaced {
+            message: message.to_string(),
+            warnings: Vec::new(),
+        }
+    }
+
     fn assert_message_only(response: Response) {
         assert!(
             matches!(response, Response::Message(_)),
@@ -1910,11 +1962,7 @@ mod update_response_tests {
 
     #[test]
     fn a_successful_replacement_at_a_terminal_reports_a_stale_agent() {
-        let response = update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            true,
-            Some(&stale()),
-        );
+        let response = update_response(replaced("updated"), true, Some(&stale()));
 
         let Response::MessageWithWarnings(message, warnings) = response else {
             panic!("a stale agent must travel as a structured warning")
@@ -1922,6 +1970,36 @@ mod update_response_tests {
         assert_eq!(message, "updated");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("/old/story"));
+    }
+
+    /// The reinstall's findings reach the person whether or not the agent
+    /// has anything to say, in every mode — they are about what this update
+    /// just did, not about a terminal.
+    #[test]
+    fn plugin_reinstall_warnings_travel_and_precede_the_agents() {
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(message, warnings) =
+            update_response(outcome, true, Some(&stale()))
+        else {
+            panic!("reinstall findings must travel as structured warnings")
+        };
+        assert_eq!(message, "updated");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], "Codex: copies remain");
+        assert!(warnings[1].contains("/old/story"), "{warnings:?}");
+
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(_, warnings) = update_response(outcome, false, None)
+        else {
+            panic!("reinstall findings must travel even away from a terminal")
+        };
+        assert_eq!(warnings, vec!["Codex: copies remain".to_string()]);
     }
 
     #[test]
@@ -1935,11 +2013,7 @@ mod update_response_tests {
 
     #[test]
     fn a_non_terminal_update_never_reports_the_agent() {
-        assert_message_only(update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            false,
-            Some(&stale()),
-        ));
+        assert_message_only(update_response(replaced("updated"), false, Some(&stale())));
     }
 
     #[test]
@@ -1954,11 +2028,7 @@ mod update_response_tests {
                 exe: PathBuf::from("/installed/story"),
             },
         ] {
-            assert_message_only(update_response(
-                crate::update::Outcome::Replaced("updated".to_string()),
-                true,
-                Some(&health),
-            ));
+            assert_message_only(update_response(replaced("updated"), true, Some(&health)));
         }
     }
 }
@@ -2287,6 +2357,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorInstall
+            | Invocation::LaneBudget
             | Invocation::DoctorAbandoned { .. }
             | Invocation::DoctorCrashes { .. }
             | Invocation::Store {
@@ -2355,6 +2426,16 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // it. Store-free, because "the store will not open" is the single most
         // important thing it can report.
         Invocation::DoctorInstall => Ok(Response::Message(crate::install_status::report()?)),
+        // SH-655: the machine lane budget against the caller's own tmux
+        // server. Answered here, client-side, because the census must come
+        // from the server the caller's `$TMUX` names — a daemon may sit on
+        // another socket — and must never start a daemon to ask. The RPC
+        // route can still reach this arm, like `DoctorInstall`; a daemon
+        // answering it reports its own socket's census, which is the engine's
+        // view rather than the operator's.
+        Invocation::LaneBudget => Ok(Response::LaneBudget(Box::new(
+            crate::lane_budget::LaneBudgetView::measure(),
+        ))),
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // The same shape as `DoctorAbandoned` immediately above, and for the
         // same reason (SH-287).
@@ -2459,13 +2540,19 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             })),
         },
         Invocation::Plugin { action } => match action {
-            PluginAction::Install { target } => system::install_plugin(&target, root),
-            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Install { target } => {
+                system::install_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Uninstall { target } => {
+                system::uninstall_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Reinstall => {
+                system::reinstall_plugins(root).map(plugin_reinstall_response)
+            }
             PluginAction::Run { .. } => Err(AppError::Storage(
                 "internal: `story plugin run` reached the daemon".to_string(),
             )),
-        }
-        .map(Response::Message),
+        },
         // Reached only when no project could be resolved. `claude-md` and
         // `cursor-rules` take nothing from a project at all; `agents-md` falls
         // back to the default prefix and `done`, which is exactly what the
@@ -2696,11 +2783,13 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
@@ -2903,6 +2992,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Engine { .. } => "engine",
+        Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
@@ -2949,6 +3039,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Daemon { .. } => "daemon",
         Invocation::Token { .. } => "token",
         Invocation::DoctorInstall => "doctor-install",
+        Invocation::LaneBudget => "lane-budget",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::DoctorCrashes { .. } => "doctor-crashes",
         Invocation::Store { .. } => "store",
@@ -4027,11 +4118,13 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
