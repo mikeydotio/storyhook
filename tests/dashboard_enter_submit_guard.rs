@@ -417,6 +417,11 @@ const DIRECT_KEYDOWN_RECEIVERS: &[Receiver] = &[
         reason: "the column sort menu — the same shape again",
     },
     Receiver {
+        name: "verificationMenuNode",
+        reason: "the verifier stop menu: command items with no editable descendants, \
+                 checked by verification-control.spec.ts",
+    },
+    Receiver {
         name: "container",
         reason: "the board column's roving-focus card container: the focused \
                  element is a card, which hosts no composition",
