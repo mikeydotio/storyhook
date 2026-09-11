@@ -10,10 +10,13 @@ on SH-662. This extends SH-545 and preserves SH-590's continuous journal.
 - Project identity is the canonical Git common directory, hashed in full with
   `git hash-object --stdin`, like the gate lock. All linked worktrees share
   the window. Equal directory basenames in different repositories do not.
-- Verification window names contain a sanitized directory label and the full
-  identity digest. A project window follows its current attempt log or shows
-  a phase banner. Daemon and standalone invocations use the same identity.
-- Activity windows use canonical store identity. They continuously follow
+- Verification windows are named `verification-<directory-label>-<digest>`.
+  The label is sanitized and the digest is complete. A window follows its
+  current attempt log or shows a phase banner. Daemon and standalone
+  invocations use the same identity.
+- Activity windows are named `activity-<store-directory-label>-<sha256>`.
+  Python 3 resolves file symlinks and hashes canonical path bytes in full,
+  independently of Git or the daemon's starting directory. These windows run
   `story daemon logs --follow`; project phases cannot replace those readers.
   Banners also continue to enter the activity journal through stderr.
 - Session creation tolerates a concurrent creator. Window creation/reuse is
@@ -31,7 +34,8 @@ The default server stays independent of story dispatch cleanup.
 `STORYHOOK_VERIFIER_MIRROR=0` prohibits every tmux call. Journal banners still
 emit when enabled by the activity environment. Missing Git identity or tmux
 causes a helper failure that verification ignores; identity never falls back
-to a shared project window.
+to a shared project window. The activity mirror also needs Python 3.10 or
+later; its absence leaves the journal and verifier working without that view.
 
 ## Verification
 

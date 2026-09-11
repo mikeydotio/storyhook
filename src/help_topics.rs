@@ -45,9 +45,10 @@ per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store.
 
-The daemon opens storyhook-verifier:verification on the default tmux server
-as a continuous log view. STORYHOOK_VERIFIER_MIRROR=0 disables that view,
-without disabling the journal. A missing tmux is non-fatal.
+The daemon opens a store-specific activity window in storyhook-verifier on
+the default tmux server. Each project's verification uses a separate window.
+STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
+A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
 They are private, append across restarts, and are not automatically deleted.

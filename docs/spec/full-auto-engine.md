@@ -1737,6 +1737,13 @@ acceptance example required it.
 
 ### SH-545 — verifier observability (a tmux mirror, not a second execution path)
 
+**Current window ownership (SH-662):** the fixed session now contains one
+verification window per canonical Git common directory and one continuous
+activity window per store. Project phases do not replace journal readers.
+See [Concurrent verifier views](verifier-windows.md) for names, concurrency,
+and migration behavior. The original SH-545 decision below records the serial
+verifier design that SH-590, SH-648, SH-654, and SH-662 subsequently extended.
+
 SH-524's checklist answers "how far along is this candidate," but not "what
 is `make test` printing right now" — the one artifact that already grows
 incrementally (`verify-pr.sh`'s own `>"$log" 2>&1` redirect around the gate
