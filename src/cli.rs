@@ -598,10 +598,9 @@ pub enum Invocation {
     /// is that the store will not open, or opens read-only, so a verb that
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
-    /// `story lane-budget` — the machine lane budget and the live agent
-    /// windows counted against it (SH-655). Store-free and daemon-free on
-    /// purpose: `cmd_dispatch` asks it before any claim exists, from inside
-    /// the operator's own tmux, whose server the daemon may not share.
+    /// `story lane-budget` — an informational census of live agent
+    /// windows (SH-672). Store-free and daemon-free so the operator reads
+    /// their own tmux server, which the daemon may not share.
     LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
