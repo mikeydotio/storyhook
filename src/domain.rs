@@ -1406,6 +1406,22 @@ pub const CLOSED_STATE_SLUG: &str = "closed";
 /// The reserved OPEN handoff state owned by centralized verification.
 pub const VERIFYING_STATE_SLUG: &str = "verifying";
 
+/// The slug of the state verified work comes to rest in (SH-652): what the
+/// verifier writes after a green merge, what `story pr-check` closes a merged
+/// story into, what the scaffolded `AGENTS.md` names, and the one CLOSED state
+/// `story.sh reap` accepts as completion.
+///
+/// Named rather than searched for, for the same reason as
+/// [`CLOSED_STATE_SLUG`]: a catalog is user-ordered and user-extended, so "the
+/// first CLOSED state" answers `abandoned` the moment somebody puts one ahead
+/// of `done`, and "the first CLOSED state in a `BTreeMap`" answered `closed`
+/// for every default catalog (`service::pr_check`, before SH-652) while three
+/// comments claimed catalog order protected it. Catalog order is layout — the
+/// board's columns and where new stories land — never a business outcome.
+/// [`completion_state`] is the one resolver; `tests/completion_state_search.rs`
+/// fences every other CLOSED-state search in `src/`.
+pub const COMPLETION_STATE_SLUG: &str = "done";
+
 pub static REQUIRED_STATES: [RequiredState; 6] = [
     RequiredState {
         slug: "todo",
@@ -1424,16 +1440,17 @@ pub static REQUIRED_STATES: [RequiredState; 6] = [
         super_state: SuperState::Open,
     },
     RequiredState {
-        slug: "done",
+        slug: COMPLETION_STATE_SLUG,
         super_state: SuperState::Closed,
     },
-    // After `done`, deliberately. Three functions answer "the CLOSED state"
-    // with a bare `.find()` — `service::project::closed_state`, which names the
-    // state in every generated AGENTS.md, and `service::pr_check`, where a
-    // merged PR closes its story and abandonment would be a lie — and ordering
-    // is what keeps both answering `done`. The third,
-    // `resting_state_for_closure`, is the one that should answer `closed`, and
-    // it names the slug instead of relying on this position.
+    // After `done`, deliberately: `default_states` mirrors this order into
+    // every new catalog, and a board whose first CLOSED column is the
+    // abandonment state would read as though finishing work were the
+    // exception. Nothing *resolves* by this position any more — both
+    // completion and abandonment are named (`completion_state`,
+    // `resting_state_for_closure`), which is what SH-652 fixed after
+    // `service::pr_check` proved that a positional search reads a `BTreeMap`
+    // as readily as a `Vec` and answers `closed` when it does.
     RequiredState {
         slug: CLOSED_STATE_SLUG,
         super_state: SuperState::Closed,
@@ -1477,7 +1494,7 @@ fn resting_state_for_closure(states: &BTreeMap<String, StateDef>) -> Option<&Sta
     };
 
     closed(CLOSED_STATE_SLUG)
-        .or_else(|| closed("done"))
+        .or_else(|| closed(COMPLETION_STATE_SLUG))
         .or_else(|| {
             states
                 .values()
@@ -2460,6 +2477,29 @@ pub fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
         .cloned()
 }
 
+/// The state verified work comes to rest in: the catalog's
+/// [`COMPLETION_STATE_SLUG`], and only while it is CLOSED.
+///
+/// `None` for a catalog below the SH-125 floor — one read through a legacy
+/// path, or a `done` a user edit has reclassified OPEN, which
+/// `with_required_states` refuses but the fold still has to read. A caller
+/// that would *write* a story into the answer refuses on `None` and names
+/// `story doctor --fix`; a caller that merely *documents* the answer (the
+/// scaffolded `AGENTS.md`) renders the constant, because documentation that
+/// fails to render is worse than documentation naming a state the reader can
+/// add.
+///
+/// Deliberately not "the first CLOSED state", positional or alphabetical —
+/// see [`COMPLETION_STATE_SLUG`] for the two ways that answer has been wrong.
+pub fn completion_state(states: &[StateDef]) -> Option<StateDef> {
+    states
+        .iter()
+        .find(|state| {
+            state.slug == COMPLETION_STATE_SLUG && state.super_state == SuperState::Closed
+        })
+        .cloned()
+}
+
 /// The project's first configured type — what a new story should be typed as
 /// when nothing more specific is asked for. `None` for an empty catalog,
 /// which `story type` no longer produces (`ConfigService::remove_type`
@@ -2564,10 +2604,10 @@ fn computed_epic_state(
             .all(|(_, _, superstate)| *superstate == SuperState::Closed)
     {
         let first = &children[0].1;
-        if first != "done" && children.iter().all(|(_, state, _)| state == first) {
+        if first != COMPLETION_STATE_SLUG && children.iter().all(|(_, state, _)| state == first) {
             first.clone()
         } else {
-            "done".to_string()
+            COMPLETION_STATE_SLUG.to_string()
         }
     } else {
         let incomplete: Vec<&(StorySnapshot, String, SuperState)> = children
@@ -2603,7 +2643,7 @@ fn computed_epic_state(
         .find(|definition| definition.slug == state)
         .map(|definition| definition.super_state.clone())
         .unwrap_or_else(|| {
-            if state == "done" {
+            if state == COMPLETION_STATE_SLUG {
                 SuperState::Closed
             } else {
                 SuperState::Open
@@ -4146,14 +4186,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        CLOSED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges,
-        StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
-        VERIFYING_STATE_SLUG, active_state, compute_display_state, compute_progress, default_type,
-        derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
-        last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
-        validate_event_for_append, validate_required_states, validate_state_defs,
-        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
-        with_required_states, would_create_parent_cycle,
+        CLOSED_STATE_SLUG, COMPLETION_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES,
+        STATE_ROLE_ACTIVE, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
+        StorySnapshot, SuperState, TypeDef, VERIFYING_STATE_SLUG, active_state, completion_state,
+        compute_display_state, compute_progress, default_type, derive_family_relationships,
+        fold_story, has_children, is_claimable, is_ready, last_activity_type, needs_intervention,
+        normalize_labels, ready_order, story_number, validate_event_for_append,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -6853,6 +6893,66 @@ mod tests {
     #[test]
     fn default_type_is_none_for_a_project_with_no_types_configured() {
         assert_eq!(default_type(&[]), None);
+    }
+
+    // --- completion_state (SH-652) -----------------------------------------
+
+    /// The straddle: a catalog where the positionally first CLOSED state
+    /// (`shipped`) and the alphabetically first CLOSED state (`abandoned`)
+    /// both differ from `done`. Either wrong search answers wrong here.
+    fn straddle_catalog() -> Vec<StateDef> {
+        vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
+            state(VERIFYING_STATE_SLUG, SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+            state("abandoned", SuperState::Closed, None),
+            state(COMPLETION_STATE_SLUG, SuperState::Closed, None),
+            state(CLOSED_STATE_SLUG, SuperState::Closed, None),
+        ]
+    }
+
+    #[test]
+    fn completion_state_is_the_required_done_not_the_first_closed_state() {
+        let answer = completion_state(&straddle_catalog()).expect("the floor is present");
+        assert_eq!(answer.slug, COMPLETION_STATE_SLUG);
+        assert_eq!(answer.super_state, SuperState::Closed);
+    }
+
+    #[test]
+    fn completion_state_is_the_same_answer_for_the_default_catalog() {
+        let states: Vec<StateDef> = REQUIRED_STATES
+            .iter()
+            .map(|required| state(required.slug, required.super_state.clone(), None))
+            .collect();
+        assert_eq!(
+            completion_state(&states).map(|s| s.slug),
+            Some(COMPLETION_STATE_SLUG.to_string())
+        );
+    }
+
+    /// A `done` a user edit reclassified OPEN is not what anything downstream
+    /// means by "done" — the SH-130 shape — so it is not an answer.
+    #[test]
+    fn completion_state_refuses_a_done_that_is_open() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state(COMPLETION_STATE_SLUG, SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        assert_eq!(completion_state(&states), None);
+    }
+
+    /// A catalog below the floor has no completion state at all; it does not
+    /// borrow the nearest CLOSED one.
+    #[test]
+    fn completion_state_is_none_below_the_floor() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        assert_eq!(completion_state(&states), None);
     }
 
     // --- compute_display_state (SH-165) -------------------------------
