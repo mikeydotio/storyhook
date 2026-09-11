@@ -18,7 +18,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::bus::{Change, ChangeBus};
+use super::bus::{Change, ChangeBus, Subscription};
 use crate::api::dispatch::resolve_engine_dispatch_script;
 use crate::env::Environment;
 use crate::error::AppError;
@@ -231,21 +231,36 @@ pub(crate) fn poll_engine<S: Store>(
     while !stop.load(Ordering::Relaxed) && !draining.load(Ordering::Relaxed) {
         reconcile_tick(store, env);
         let deadline = Instant::now() + reconcile_tick_interval();
-        loop {
-            if stop.load(Ordering::Relaxed) || draining.load(Ordering::Relaxed) {
-                return;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match subscription.recv(remaining) {
-                Some(Change::Ping) | None => continue,
-                Some(_) => break,
-            }
+        if !wait_for_reconcile(&subscription, deadline, stop, draining) {
+            return;
         }
     }
 }
+
+/// True when another pass is due; false when shutdown forbids another pass.
+fn wait_for_reconcile(
+    subscription: &Subscription,
+    deadline: Instant,
+    stop: &AtomicBool,
+    draining: &AtomicBool,
+) -> bool {
+    loop {
+        if stop.load(Ordering::Relaxed) || draining.load(Ordering::Relaxed) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        match subscription.recv(remaining) {
+            Some(Change::Ping) | None => continue,
+            Some(_) => return true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod wait_tests;
 
 #[cfg(test)]
 mod census_edge_tests {
