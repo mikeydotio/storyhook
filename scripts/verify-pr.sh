@@ -51,55 +51,35 @@ command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
 verifier_wt="$common_dir/storyhook/verification-worktree"
-verifier_format="$common_dir/storyhook/verification-worktree.format"
-readonly VERIFIER_FORMAT_VERSION="private-gitdir-v1"
+# Every mutating entry takes gate ownership before the lifecycle supervisor.
+# Metadata-only seams remain read-only. The supervisor validates reentrancy
+# against its exact recorded session, rather than trusting an environment flag.
+owner_wt="$verifier_wt"
+case "${1:-}" in
+--run-gate) owner_wt="${6:-$verifier_wt}" ;;
+--validate-metadata | --refresh-submission | --reconcile-land-refusal) owner_wt="" ;;
+esac
+if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$owner_wt"; then
+    owner_output="$(STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
+        bash "$script_dir/machine-lock.sh" gate -- \
+        python3 "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
+        bash "$script_dir/verify-pr.sh" "$@")"
+    owner_status=$?
+    [ "$owner_status" -eq 0 ] \
+        || die_json "verifier lifecycle ownership or supervision failed for $owner_wt (status $owner_status); inspect the lifecycle owner record under $common_dir/storyhook/verifier-lifecycle and the preceding diagnostics"
+    printf '%s\n' "$owner_output"
+    exit 0
+fi
 
 ensure_verifier_worktree() {
     fallback="$1"
     git cat-file -e "$fallback^{commit}" 2>/dev/null \
         || die_json "cannot repair the verifier worktree from unavailable commit $fallback"
-    mkdir -p "$(dirname "$verifier_wt")" \
-        || die_json "could not create private verifier state"
-
-    rebuild=0
-    if [ -e "$verifier_wt/.git" ]; then
-        [ -f "$verifier_wt/.git" ] && [ ! -L "$verifier_wt/.git" ] \
-            || die_json "the verifier worktree has an invalid .git entry at $verifier_wt/.git"
-        installed_format="$(cat "$verifier_format" 2>/dev/null || true)"
-        if [ "$installed_format" != "$VERIFIER_FORMAT_VERSION" ]; then
-            rebuild=1
-        elif ! git -C "$verifier_wt" cat-file -e 'HEAD^{commit}' 2>/dev/null \
-            || ! git -C "$verifier_wt" reflog show --format='%H' HEAD >/dev/null 2>&1; then
-            rebuild=1
-        fi
-    elif [ -e "$verifier_wt" ]; then
-        die_json "the verifier path $verifier_wt exists without a registered worktree; refusing to overwrite unclassified evidence"
-    fi
-
-    if [ "$rebuild" -eq 1 ]; then
-        remove_output="$(git worktree remove --force "$verifier_wt" 2>&1)"
-        remove_status=$?
-        registration_survives=0
-        git worktree list --porcelain 2>/dev/null \
-            | awk -v target="$verifier_wt" \
-                '$1 == "worktree" && substr($0, 10) == target { found = 1 } END { exit !found }' \
-            && registration_survives=1
-        if [ -e "$verifier_wt" ] || [ "$registration_survives" -eq 1 ]; then
-            remove_detail="${remove_output:-git worktree remove exited $remove_status without a diagnostic}"
-            die_json "could not remove invalid verifier worktree metadata at $verifier_wt: $remove_detail"
-        fi
-    fi
-    if [ ! -e "$verifier_wt/.git" ]; then
-        git worktree add -q --detach "$verifier_wt" "$fallback" \
-            || die_json "could not create the persistent verifier worktree at $fallback"
-    fi
-
-    marker_tmp="$(mktemp "$verifier_format.XXXXXX")" \
-        || die_json "could not stage the verifier worktree format marker"
-    if ! printf '%s\n' "$VERIFIER_FORMAT_VERSION" > "$marker_tmp" \
-        || ! mv -f "$marker_tmp" "$verifier_format"; then
-        rm -f "$marker_tmp"
-        die_json "could not record the verifier worktree format"
+    lifecycle_detail="$(python3 "$script_dir/verifier-worktree.py" ensure \
+        "$common_dir" "$verifier_wt" "$fallback" 2>&1)" \
+        || die_json "$lifecycle_detail"
+    if [ -n "$lifecycle_detail" ]; then
+        printf '%s\n' "$lifecycle_detail" >&2
     fi
 }
 
@@ -254,10 +234,8 @@ run_verification_gate() {
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
     verifier_window_tail "$log"
-    STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
-        STORYHOOK_GATE_RESULT_FILE="$gate_result" \
-        activity_run "machine-lock.sh/merge-watch.sh" bash "$script_dir/machine-lock.sh" gate -- \
-        bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
+    STORYHOOK_GATE_RESULT_FILE="$gate_result" \
+        activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
     completed_status="$(cat "$gate_result")" || completed_status=""
