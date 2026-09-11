@@ -90,6 +90,17 @@ for variant in "auto:$auto" "solo:$solo" \
   done
 done
 
+# SH-660: the complete record must survive rendering for both providers.
+# The same strings also pass the shell-character guard above.
+for variant in "auto:$auto" "solo:$solo" \
+               "Codex auto:$codex_auto" "Codex solo:$codex_solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  for needle in "every decision comment" "Context:" "Question:" "Decision:" \
+                "Rationale:" "without this session or local files"; do
+    assert_contains "$text" "$needle" "$label: decision record retains '$needle'"
+  done
+done
+
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
 for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
