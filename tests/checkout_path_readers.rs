@@ -67,6 +67,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "adopt_checkout fills a gap, forget_checkout is doctor --fix's half, delete_plan lists it",
     ),
     (
+        "src/service/pr_link.rs",
+        "GitHub API override lookup chooses the already-selected project's registered checkout \
+         only to locate that project's configuration",
+    ),
+    (
         "src/service/git_links.rs",
         "link and unlink read the previous value to report the path they displaced; link also \
          reads it to decide the pointer-file plan, but resolves nothing by it (SH-167)",
@@ -82,6 +87,14 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/daemon/engine.rs",
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
+    ),
+    (
+        "src/service/cleanup.rs",
+        "manual cleanup chooses a working directory only after resolving the selected project",
+    ),
+    (
+        "src/daemon/cleanup.rs",
+        "scheduled cleanup chooses a working directory only after enumerating the store project by id",
     ),
 ];
 

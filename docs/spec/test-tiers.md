@@ -164,7 +164,7 @@ Measured over the 30 merges preceding the fix: **14 produced a tree matching
 neither parent** — content no receipt could possibly have covered.
 
 **The fix asks the same question a push does, computed instead of pushed.**
-`git merge-tree --write-tree origin/main <pr-head>` computes the tree a merge
+`git merge-tree --write-tree <base-ref> <pr-head>` computes the tree a merge
 would produce without touching the working directory or creating a commit,
 and is byte-identical to what a real `git merge` of the same two parents
 produces — pinned by `tests/merge_gate.rs::
@@ -179,9 +179,14 @@ one store serves both rather than teaching every reader about a second one.
 **Reached through the store-backed `verifying` queue, not a broad PR poll
 (SH-521).** Agents run targeted tests, link exactly one close-on-merge PR,
 move their story to required OPEN state `verifying`, and stop. The daemon
-selects one candidate globally by priority then age, refreshes its current
-base and head, and runs the exact merge tree in one persistent verifier
-worktree. A green run writes the same `gate-receipt.sh` receipt, lands through
+selects one candidate globally — one worker, one queue over every project —
+by priority, then story `created_at` (not time in the queue: `verifying_since`
+is carried and not sorted on), refreshes its current base and head, and runs
+the exact merge tree in one persistent verifier worktree. SH-648 makes the
+worker and the queue per project and SH-651 makes the tiebreak the time the
+story entered `verifying`; `docs/spec/verification-workflow.md` is the design
+of record for the whole lifecycle from submission to reap, this section for
+the gate it runs. A green run writes the same `gate-receipt.sh` receipt, lands through
 `land-pr.sh`, records `done`, and reaps. Conflict or red returns the story to
 its provider-tagged pane; infrastructure leaves it `verifying` for bounded
 retry. The public every-open-PR mode of `merge-watch.sh` is retired; only its
@@ -193,7 +198,7 @@ administration remains detached at the ordinary base commit. For the gate only,
 `merge-watch.sh` atomically points the verifier's `.git` file at lease-local
 per-worktree administration whose `commondir` still reaches shared receipts;
 its synthetic `HEAD`, index, and objects therefore remain private together.
-The verifier supplies a fetched ref such as `refs/remotes/origin/main`, but a
+The verifier supplies the submitted PR's fetched base ref, but a
 private detached `HEAD` records the exact commit resolved from that ref, never
 the unprefixed ref text (SH-556). This keeps the temporary administration a
 valid Git repository while the later preflight still detects ref drift.
@@ -226,7 +231,7 @@ matrix above. `tests/verification_queue.rs` drives durable selection and
 outcome handling. Live GitHub orchestration is not replaced by a behavioral
 fake.
 
-## The push gate narrowed to `main`/`master`, so work ships before it is tested (SH-429)
+## The push gate narrowed to long-lived branches (SH-429, SH-595)
 
 Once the SH-396 section above was true — `merge-preflight.sh` and its verifier
 are what actually decide whether content reaches `main`, unconditionally,
@@ -239,17 +244,20 @@ story, three-to-four concurrent worktree suites), so every session paid that
 cost **before its work ever left the machine**, on every branch, whether or
 not that branch was ever going near `main` directly.
 
-**The decision:** `.githooks/pre-push` now refuses only a direct push to
-`main` or `master` with no receipt — defence in depth behind the org's
-`protect-main` ruleset, which already blocks direct pushes there by policy.
-Every other ref is *reported*, never refused: which tier's receipt the tree
+**The decision:** `.githooks/pre-push` refuses a direct push to `dev`, `main`,
+or legacy `master` with no receipt — defence in depth behind the GitHub
+rulesets that already block direct pushes there by policy. Every feature ref
+is *reported*, never refused: which tier's receipt the tree
 carries, or that it carries none, and that `scripts/merge-preflight.sh` is
-what actually decides whether this content may land. The autonomous dispatch
-charter (`plugins/story/bin/story.sh`'s `PROMPT_TPL`/`AUTO_PROMPT_TAIL`)
-changed to match: commit, push, and open the PR *before* running the test
-suite, so work is preserved on the remote even if testing turns something up
-— then run `make test` and merge only once it passes, since the merge gate
-still requires it.
+what actually decides whether this content may land. Since SH-647 the
+autonomous dispatch charter (`plugins/story/bin/story.sh`'s
+`PROMPT_TPL`/`AUTO_PROMPT_TAIL`) no longer pushes at all: the agent commits and
+moves the story to `verifying` from inside its worktree, and the verifier
+pushes the leased branch and opens the PR as its first step, then runs the gate
+on the speculative merge tree and merges only once it passes. The push gate's
+narrowing still governs any branch a human pushes by hand; a dispatched agent
+no longer pushes, so it no longer meets the gate at all. Design of record for
+the dispatched path: `docs/spec/verification-workflow.md`.
 
 **Why this is sound and not merely convenient.** Nothing about `main`'s actual
 protection moved: `merge-preflight.sh` still refuses a merge tree with no
@@ -264,9 +272,9 @@ exactly as untested as it was; only the party who finds out, and when, has
 changed.
 
 **What stays a hard refusal, and why the line is drawn there.** A direct push
-to `main`/`master` is categorically different: unlike a feature branch, its
-content does not pass through `merge-preflight.sh` on the way in (there is no
-merge — it *is* `main` already). The org ruleset already blocks this by
+to `dev`/`main`/`master` is categorically different: unlike a feature branch,
+its content does not pass through `merge-preflight.sh` on the way in (there is
+no PR merge). GitHub rulesets already block this by
 policy, so in the ordinary case this refusal never fires; it exists for the
 case where policy is misconfigured, bypassed, or the ruleset is not the layer
 actually enforcing it (e.g. a fork, a mirror, or a future repo that adopts
@@ -279,8 +287,9 @@ it: `push_branch` provokes the new non-`main` report-not-refuse path (a
 fresh, receipt-less branch push must still succeed and must still move the
 remote ref — SH-306's own doctrine that the remote ref, not the exit code, is
 the load-bearing assertion), while the renamed
-`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move`
-keeps pinning the surviving refusal. Mutation-checked in both directions:
+`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move` and
+the corresponding `dev` test pin the surviving refusals. Mutation-checked in
+both directions:
 forcing every ref to be treated as protected turns exactly the one new
 report-path test red; making the `main`/`master` case arm unreachable (so
 nothing is ever refused) turns every test whose assertion depends on that
@@ -330,7 +339,7 @@ resolves on no fresh clone). Two reasons, and both are general:
 - **It is a hand-kept list.** SH-136, SH-198, SH-258, SH-260/276 and SH-360 are
   five recorded cases of exactly that shape drifting.
 
-The trigger is instead: **does `origin/main`'s tip tree already carry a `tier
+The trigger is instead: **does `origin/dev`'s tip tree already carry a `tier
 full` receipt?** Derived from content, so it re-arms on every merge whatever
 that merge touched; free to evaluate (a file stat); and self-coalescing — a
 burst of merges collapses into one run against the newest tip rather than one
@@ -365,8 +374,8 @@ No second notion of "certified" was introduced. A green pass writes an ordinary
 with **no change to how they read it**. What is new is a reader that
 discriminates.
 
-`scripts/browser-status.sh` walks `main` back — `--first-parent`, because a
-commit a merge brought in was never `main`'s own content — to the nearest tree
+`scripts/browser-status.sh` walks `dev` back — `--first-parent`, because a
+commit a merge brought in was never `dev`'s own content — to the nearest tree
 carrying a `full` receipt, and reports **commits-behind and age, or `never`**.
 
 **Distance, computed per read, and deliberately not a cached marker.** A
@@ -402,7 +411,7 @@ nothing about whether any run ever hadn't. `make test` now follows it with
 
 ```
 leg e2e: SKIPPED — not part of this tier. Run `make test-full` to include it.
-browser-status: never — no tree in origin/main's 642-commit first-parent
+browser-status: never — no tree in origin/dev's 642-commit first-parent
   history has ever passed the browser suite. Run 'make browser-watch'.
 ```
 
@@ -541,6 +550,144 @@ pass. Load grace is working as designed and cannot reach this; the stories the
 first reading pointed at name individual sightings, where SH-501 names the class.
 The distance `browser-status.sh` reports will keep growing until SH-501 lands,
 and that reading is still correct.
+
+### As built, third reading: the flake population was the machine (SH-627)
+
+The v2.5.0 release, 2026-09-09, ran the tier five times on one tree and read three
+single, non-repeating failures in three specs across two engines — a *population*,
+which the priority rubric prices as its own defect because a backlog of known
+flakes is how a genuine red gets waved off as the usual one. With `retries: 0`,
+`workers: 1` and no escape from `make test-full` on `scripts/release.sh`'s public
+path, one flake anywhere across five projects failed the tier and cost a ~38-minute
+re-run, and "run it again" was not a bounded strategy.
+
+**The verdict** (a three-seat council on the story; `story show SH-627` carries it
+inline, per SH-363): **no laundering.** `retries: 0` stays, no blind re-run, no
+numeric retry cap (a bare literal, SH-394), no receipt over a known-unfixed defect.
+The release path *is* the acceptance procedure — one `make test-full` on the frozen
+tree, on a quiesced machine, accepted only if every failure it shows is a named
+quarantine carrying a story (`every_webkit_quarantine_names_a_story`). Every
+mechanism finding was demoted from root cause to filed hypothesis carrying a
+pre-registered discriminating observation, because each had been derived by
+reading code rather than reproduced by toggle. The skeptic seat voted against its
+own proposal on that ground, and reading further into its own claim found its
+proposed fix aimed at the wrong function — it would have shipped, been reviewed as
+complete, and covered nothing.
+
+**What measurement then found**, in the order it arrived:
+
+| run | condition | webkit | mobile-webkit | what it was |
+|---|---|---|---|---|
+| gate 2 | quiesced, before 01:31 | clean | clean | the tree |
+| gate 3 | **concurrent with the council** (9 subagents); e2e leg 6538 s vs gate 2's 1864 s, 111 load-grace resets vs 47 | 1 fail | 27 fail | contention, then the crash |
+| gate 4 | quiesced, after 01:31 | 0 pass / 45 fail | — | `webkit.launch()` hung, every test |
+| gate 5 | quiesced, WebKit restored | clean | clean | **first `tier full` receipt in this repo** |
+
+`/Library/Logs/DiagnosticReports/WindowServer-2026-09-09-013128.ips`: WindowServer
+crashed at 01:31:28. Headless WebKit depends on the WindowServer/GPU XPC service
+graph, and from that moment until a re-login every `webkit.launch()` hung. Gate 3's
+mobile-webkit project started at ~01:30 — straight into the restart — and its
+four-in-one-file tap-target cluster was read as an SH-620 regression before the
+crash log was found. Gate 5 refuted that, and refuted H1 (a swallowed click on the
+settings screen, `window.__storyhookPressGate.swallows` empty on the healthy run).
+Of the three filed members, SH-624 closed on its own criterion (it named the next
+green full run as the experiment), the webkit `status-destination-prompt` failure
+was gate 3's contamination, and SH-626 is the population: one occurrence in the
+chromium project across gate 2, 3, 4, 5 and an isolated re-run. `story list --label
+flake` enumerates it; a ledger script was declined as machinery for one data point.
+
+**The detection gap, and what closes it.** Playwright's `browser` fixture is
+worker-scoped with `timeout: 0`, so a launch is bounded only by
+`DEFAULT_PLAYWRIGHT_LAUNCH_TIMEOUT` — `3 * 60 * 1000` in playwright-core 1.63,
+read from `coreBundle.js` rather than assumed. Under `workers: 1` a worker that
+cannot launch fails its test at that bound and Playwright starts a fresh worker for
+the next, which pays it again: 45 desktop-webkit tests × 180 s is gate 4's two and a
+quarter hours, and the tier's verdict on a dead browser is *45 tree failures*. That
+is SH-306's shape — a gate whose verdict depends on state it never checked — and
+it is why this was misread twice. `e2e/launch-probe.ts`, the config's
+`globalSetup`, launches the selected project's own engine once before any worker
+starts and closes it: one line naming what launched, or a refusal that says NO TEST
+RAN, names the machine rather than the tree, and points at the remedy. The engine
+is resolved as Playwright's own `browserName` fixture resolves it
+(`use.browserName ?? use.defaultBrowserType`), never from a project map (SH-136);
+the launch options mirror the fixture's; no `timeout:` is passed, so the ceiling
+derives from Playwright's own default (SH-394). `scripts/run-e2e.sh` exports
+`E2E_PROJECT` after its `--list` probe — listing runs no global setup — and before
+the real run. Measured by toggle in the worktree that shipped it, never mocked
+(SH-263, SH-345): `PLAYWRIGHT_BROWSERS_PATH=/nonexistent --project=webkit` refused
+in 11 ms with zero tests attempted; healthy webkit, chromium, mobile-webkit and
+untrusted-origin-chromium launched in 409/226/179/107 ms and ran.
+
+Two alternatives were declined on the loop's own shape rather than on taste. A
+Playwright setup project with `dependencies` would appear in `run-e2e.sh`'s derived
+project loop as a standalone project with its own daemon and seed, and need
+exclusions there and in `tests/e2e_browser_coverage.rs`'s project-block parsers.
+`maxFailures` would end a run with real failures early, destroying exactly the
+enumeration the council said had never been done. And probing every engine the
+config names, rather than the selected project's, would have refused Chromium's
+463/463 runs on the crash night — real evidence about the tree — along with WebKit's.
+
+`tests/e2e_launch_probe.rs` pins the council's two settings and the probe's wiring,
+in SH-360's sense: a call site exists, never that it reaches the right pixel.
+
+### As built, fourth reading: an empty selection is an answer, a failed listing is not (SH-625)
+
+Found while verifying SH-622/SH-623 on the release branch: `scripts/run-e2e.sh`
+printed "selects no tests under this filter — skipping" for a four-spec triage
+run, executed nothing, and exited 0. The wrapper asked Playwright `--list` whether
+the project selected anything, then discarded stderr and the exit status and read
+the answer as text — and Playwright's text is the same for an empty selection and
+for a listing that never happened. Measured on the pinned 1.63.0, this repository's
+config, no browser, no daemon:
+
+| `--list --reporter=list` | stdout | exit | stderr |
+|---|---|---|---|
+| filter matches nothing | `Total: 0 tests in 0 files` | 1 | `Error: No tests found.` |
+| one selected spec fails to load | `Total: 0 tests in 0 files` | 1 | the load error |
+| unknown flag / unknown project | nothing | 1 | Playwright's own message |
+
+A load failure in **any** selected file zeroes the whole listing. The story's
+suspicion — that four positional filters select nothing where one selects — was
+refuted before anything was changed: Playwright ORs plain regexes
+(`createFiltersFromArguments`), and the story's exact command lists 34 tests in 4
+files on this tree and on both commits of the branch it was found on. The only
+mechanism producing that output is a selected spec that would not load, which is
+consistent with an uncommitted mid-repair edit at the moment of the sighting.
+
+**The discriminator is structural.** Under `--pass-with-no-tests` Playwright's own
+exit status tells the two apart — no error-message text is matched:
+
+| `… --pass-with-no-tests` | stdout | exit |
+|---|---|---|
+| no match / nonexistent file / `-g` matching nothing | `Total: 0 tests in 0 files` | **0** |
+| a selected spec fails to load | `Total: 0 tests in 0 files` | 1, error on stderr |
+| unknown flag / unknown project | no `Total:` line | 1 |
+
+`scripts/e2e-selection.sh` is the decision, sourced by the runner: a nonzero
+listing is **refused** with Playwright's stderr replayed verbatim, so the spec that
+would not load is named; a successful listing with no readable `Total:` line is
+refused rather than read as zero; only a listing that happened and selected nothing
+skips. The library exists because `run-e2e.sh` cannot be sourced by a test (a
+`cargo build`, seeding, a daemon at top level), and `tests/e2e_selection.rs` drives
+the tracked file through a symlink with a fake `playwright` whose stdout, stderr and
+exit are chosen per case — the flag that makes the exit status mean what the
+library says it means is asserted in the fake's recorded argv, because deleting it
+is the one-token edit that reopens the defect. The measured Playwright version is
+recorded in the library and compared to `e2e/package.json`'s pin, since the drift
+the harness cannot see at run time is a future Playwright exiting 0 on a load error.
+
+**The rule that outlives the fix:** a run in which no project selected a test exits
+1, whatever each project's own verdict was. Each project records its `Total:` count
+under `e2e/test-results/current/selected/` before its real run and the runner sums
+them after the loop. The per-project skip stays — the SH-335 loop legitimately gives
+`chromium`/`webkit` nothing under a `.mobile.spec.ts` filter while the mobile pair
+runs — and only the sum can tell that from a filter typo, or from an explicit
+`--project=` given a filter it cannot match. Every gate-tier caller passes no
+filter, so this fires only on interactive and triage runs: precisely the moment
+someone is deciding whether a fix works. Weighed and rejected: `--reporter=json`,
+whose `errors[]` is structured but still identifies "No tests found" by message
+text, and whose suite tree would have replaced the list-reporter line shape that
+`known_total`, `real_dispatch_selected` and `tests/e2e_browser_coverage.rs` parse.
 
 ## The timing-ceiling rule
 
@@ -783,7 +930,7 @@ over a mechanism that is not actually reliable.
 
 ## One suite at a time on this machine (SH-457)
 
-`scripts/run-tests.sh` runs under the machine-wide `gate` lock
+`scripts/run-tests.sh` runs under the repository's `gate` lock
 (`scripts/machine-lock.sh`, SH-456). Every caller therefore queues: both Rust
 batteries, `scripts/run-changed.sh`, and a bare `bash scripts/run-tests.sh`
 typed by hand.
@@ -811,18 +958,21 @@ rather than asking anyone to remember a step.
 
 Liveness is sufficient for a waiter and insufficient for a holder: an
 infinite loop, deadlocked mutex or wedged syscall leaves the process alive
-while it holds every later verification off the machine-wide gate. The lock
+while it holds every later verification off the repository's gate. The lock
 therefore watches the SH-524 append-only journal while `gate` is held. Each
 growth event resets the full inactivity budget; total runtime has no ceiling.
 
-The default is **288 silent seconds**, expressed in `machine-lock.sh` as the
-product of three named inputs rather than as that literal: the measured
-36-second warm gate median, `api::dispatch::MAX_RUNNING`'s four concurrent
-Full Auto runs, and a twofold margin for fmt, clippy and build work that other
-worktrees can still perform outside this lock. `tests/machine_lock.rs` binds
-the measurement, concurrency value and source-level formula. `--max-idle`
-accepts a positive caller-derived override; non-`gate` locks remain unbounded
-unless a caller supplies one.
+The default is **1,746 silent seconds**, expressed in `machine-lock.sh` as the
+measured 873-second contended gate maximum times a named twofold margin. The
+contended observation includes cold and load-sensitive work that the old
+36-second warm-suite proxy did not. `tests/machine_lock.rs` binds the measured
+fact to the verifier's independent copy and binds the source-level formula.
+`--max-idle` accepts a positive caller-derived override; non-`gate` locks
+remain unbounded unless a caller supplies one.
+
+The outer verifier's silence ceiling is one existing 30-second recovery window
+longer. That derived ordering lets the gate watchdog publish its last evidence
+and complete bounded process-group cleanup before its supervisor can intervene.
 
 Central verification provides the durable journal. An interactive gate has no
 publisher, so the lock creates a private journal inside its owned directory
@@ -840,14 +990,76 @@ If discovery fails, the battery refuses to start: displaying completed cases
 over a moving seen-so-far estimate made an incomplete gate look 100% complete
 and therefore could not distinguish progress from a wedge.
 
+Discovery and execution write combined Cargo output to regular files through
+`activity-run.py`; no descendant receives an output pipe whose inherited file
+descriptor can delay observer completion. One shared parser recognizes only
+Cargo build/running milestones and completed libtest cases for both live
+progress and the final test ledger. Arbitrary chatter remains visible in the
+raw log but cannot renew the watchdog. Each verification attempt also owns a
+distinct raw log, so a retry cannot overwrite the evidence from the attempt it
+is diagnosing.
+
 The wrapped command is a process-group leader. On expiry, the lock prints the
-last journal record and the group's live commands, appends a failed gate item,
+last journal record and the complete live descendant tree, appends a failed gate item,
 sends `SIGTERM`, waits two lock-poll observations, escalates survivors to
 `SIGKILL`, reaps, and only then releases the lock. Exit 124 distinguishes that
 outcome from both the command's own failure and a waiter's exit 75. External
 `INT`, `TERM` and `HUP` use the same group cleanup before re-raising the signal.
 This ordering prevents the next verifier from entering while descendants of
 the failed holder are still active.
+
+### As built: a holder's startup is not under the silence clock (SH-643)
+
+Recorded because the first load-sensitive failure the Rust side of this
+watchdog ever produced was in its own test file, and the obvious repair was
+the wrong one. `tests/machine_lock.rs` drove the script with a bare
+`--max-idle 2` at eight sites, each with a holder whose first statement wrote
+the journal. On 2026-09-10, under load 25–64 on 10 cores (a concurrent full
+suite plus a rustc build), four cases failed together: the holder existed for
+the whole ceiling and was never scheduled once — `ps` reported ELAPSED 00:02,
+TIME 0:00.00, and the diagnosis read `<journal is empty>`. The silence clock
+starts at fork, so the fixture's own spawn latency, not the mechanism, had
+decided the verdict.
+
+**Measured before anything was changed**, because the story offered a load
+multiplier in the browser suite's shape (above) as one candidate:
+spawn-to-first-line of the exact holder shape is 8 ms on this machine at a
+load ratio of 0.92, and exceeded 2000 ms at 2.5–6.4 in the incident — 250x the
+latency for 5x the contention. Spawn starvation is not proportional to
+`loadavg / cores`; a multiplier would have granted 5–13 s against an unbounded
+quantity, and a spawn probe taken moments earlier samples a bursty quantity
+once. Both estimate the starvation. Neither removes the dependence on it.
+
+**What ships removes it.** `ProgressFeeder`, in the fixture and never in the
+script: the test process appends a legal `item` line under its own path every
+half poll until a per-case sentinel says the holder has finished its setup —
+its own journal line, a pid file it wrote, the first line of the raw capture —
+then stops. The clock therefore only ever measures a *running* holder, which
+is what every case there was always about, and the production journal has
+many writers already, so the shape is honest (SH-364). The feeder is
+self-bounding (`poll_ceiling`, so a sentinel that never comes is a named
+failure and never a hang — SH-528), creates the journal exactly once and never
+recreates one the holder removed, and reports why it stopped; every case
+asserts the reason it expects, which is what turned one case from vacuous into
+load-bearing (`arbitrary_output_does_not_renew_the_idle_ceiling` also passed
+when the chatterer never ran). Every `--max-idle` is derived from the script's
+own `LOCK_POLL_SECS`: `idle_ceiling` where the watchdog is the subject, two
+observations plus one stated poll of slack for a running holder, and
+`patience_ceiling` where it is only a failsafe. The regression test constructs
+the straddle (SH-420): a holder whose first statement sleeps past the ceiling,
+red without the feeder on any machine, green with it.
+
+**The class is fenced** in `tests/timing_assertions.rs`, the same doctrine one
+process boundary over: every flag `scripts/machine-lock.sh`'s own usage line
+declares with `<seconds>` may never be followed, in a tracked test file, by a
+string literal of bare digits. The vocabulary is derived from the artifact, so
+a flag the script gains is fenced without an edit to the test.
+
+**Named rather than glossed:** a *running* holder starved for a whole poll
+between its own progress writes is outside the feeder and inside the one poll
+of slack; the incident's running holders held under the same load. If one ever
+does not, the repair is a spawn-free holder (`time.sleep` in-process), never a
+wider slack.
 
 ### The escape hatch is reported, always
 
@@ -906,7 +1118,7 @@ all.
 wedged a `bash scripts/run-rust-battery.sh core` run for **ten hours and
 twenty-one minutes** (2026-08-31 22:35 → 2026-09-01 08:56): the test binary at
 0% CPU with its own `story daemon --serve --port 0` child alive and never
-reaped. It held the machine-wide `gate` lock the whole time, and every
+reaped. It held the repository's `gate` lock the whole time, and every
 subsequent verification on the machine queued behind it.
 
 Nothing above the test could have ended it. `run-tests.sh`,
@@ -1114,11 +1326,136 @@ binary's blocks, so an unsupported hard link fails loudly with both paths.
 
 This closes every producer door without naming one: Makefile builds, E2E,
 baseline capture and a hand-run `cargo build` can all replace the shared path,
-and no already-running consumer follows it. Widening the machine-wide `gate`
+and no already-running consumer follows it. Widening the repository's `gate`
 lock remains rejected because it enlarges the critical section and still
 cannot cover a hand-run producer. A per-leg `CARGO_TARGET_DIR` remains rejected
 because it covers only listed legs while paying the graph's disk and cold-build
 cost in each worktree.
+
+### The browser runner gets the same lease (SH-635)
+
+SH-532 closed the producer conflict "at the consumer" and named E2E among the
+producers it protected against — but `scripts/run-e2e.sh` was itself a
+*consumer* of the bare artifact, and it never got the lease. It built and then
+ran `$repo_root/target/debug/story` directly: for the daemon it starts, for
+every seeding and cleanup call, and, through five specs that
+`resolve("../target/debug/story")` on their own, for every CLI call the suite
+makes mid-run. Measured 2026-09-09, verifying SH-622 in a worktree: a full
+chromium run stood at 162 of 469 (161 green) when a `cargo test --test
+council_citations` in the same worktree rewrote the artifact. The daemon's
+portfile identity is `(version, exe, exe_mtime)` (`DaemonInfo::is_this_binary`),
+so the next CLI call read the running daemon as somebody else's, stood it down
+and re-spawned it on `--port 0` — a fresh port — and every remaining test failed
+in ~150 ms with `ECONNREFUSED` against the old one: **167 failures over 25
+minutes for one rebuild**, the SH-627 shape, with nothing in the output naming
+the cause. Reproduced before it was fixed, and again after: with the lease in
+place the same `touch src/main.rs && cargo build` fired after the first green
+test changed the artifact's inode (`73243842` → `73247095`) under a live
+chromium filter and all 47 tests stayed green.
+
+**What ships.** `scripts/binary-lease.sh` is the shell rendering of
+`story_binary()`: `storyhook_lease_binary <artifact> [owner pid]` hard-links the
+artifact into `<artifact dir>/.storyhook-test-binaries/<pid>-<nonce>/story` and
+prints that path; `storyhook_sweep_binary_leases` reclaims only a lease whose
+owner `kill -0` reports as `ESRCH` — EPERM, a malformed name and pid 0 are
+retained, the Rust rule verbatim. The runner takes the lease immediately after
+`cargo build`, uses it for everything it runs, releases it on exit, and exports
+it as `DASHBOARD_STORY_BIN`; `e2e/specs/support.ts`'s `storyBinary()` is the
+specs' one door to it, and `tests/e2e_browser_coverage.rs` fails the build on
+any tracked file under `e2e/` that names `target/debug` outside a comment or
+any `execFileSync` whose first argument is not that door. A spec on the bare
+artifact would otherwise be the client that replaces the leased daemon —
+`untrusted-origin-cookie.spec.ts` restarts it *on purpose*.
+
+**Why the lease lives beside the artifact, and shares the Rust root.** A hard
+link cannot cross filesystems, and on this machine the runner's `data_root`
+(`/private/tmp`) and the checkout are different volumes — SH-532 recorded the
+same constraint. Sharing `.storyhook-test-binaries/` and the `<pid>-<nonce>`
+shape with the Rust lease means either sweeper reclaims the other's dead
+leases under one policy; `tests/binary_lease.rs` pins the shell spelling equal
+to `storyhook_test_support::BINARY_SNAPSHOT_DIR` and drives the script for real
+(inode equality, survival of an atomic replacement, the sweep's retain cases).
+
+**Naming the shape when it still happens.** After every project's Playwright
+run — pass or fail — the runner prints a note when `[ lease -ef artifact ]`
+stops holding (informational: the lease is what made it harmless), and asks
+`scripts/e2e-daemon-check.sh`'s `storyhook_daemon_is_still_ours` whether the
+daemon it started is still the one answering: the portfile exists, its port is
+the one the run was pointed at, its `exe` is the lease's *inode* (`-ef`, never a
+string compare — macOS's `current_exe()` reports the invocation spelling), and
+its pid is alive. A failure is reported as **one** dead or replaced daemon, not
+as N tree failures, and fails the project even on a green verdict (SH-226,
+SH-306). **The pid recorded at start is deliberately not compared**:
+`untrusted-origin-cookie.spec.ts` restarts the daemon and keeps its port
+(SH-321), and a check that red-flagged it would be a fixture lying to a correct
+gate (SH-263). The incident's own signature is the port moving. Measured: a
+`kill -9` of the leased daemon mid-run yields Playwright's 19 red plus the
+diagnosis naming the dead pid and port, exit 1, no leaked lease.
+
+**Adopted on the way: the orphan checker could not see a leased daemon.**
+`scripts/check-no-orphan-servers.sh`'s own-tree pattern was anchored on the
+literal `target/debug/story `, so every Rust-suite daemon since SH-532 — and
+every browser-runner daemon from now on — was outside the preflight's refusal
+and the postlude's reaping, falling through to the abandoned class only once
+its fixture directory was gone. `make test-full` brackets the browser leg with
+that script, so moving the e2e daemons onto the lease would have moved them out
+of its sight. The pattern now admits an optional lease directory whose name is
+sourced from `binary-lease.sh` rather than spelled a second time;
+`tests/orphan_check.rs` spawns a shim from the lease path and proves refusal
+and reaping, red under the old pattern.
+
+**Limits, stated.** A lease protects against *replacement* of the artifact,
+never deletion of `target/` — a `cargo clean` under a live run is out of scope.
+The daemon check runs after Playwright, so it names the cause rather than
+preventing the cascade; prevention is the lease's job. The plugin shell leg
+shared the exposure with a smaller blast radius and was filed separately —
+SH-639, the next section.
+
+### The plugin leg gets the same lease (SH-639)
+
+`plugins/story/tests/lib.sh` put `target/debug` on `PATH`, and `Makefile`'s two
+plugin recipes prepended the same directory again; every plugin test then ran
+`story` by name off the bare artifact. Since SH-631 each test owns one
+short-lived daemon, so a `cargo build|test|check` landing mid-test did not
+cascade: it changed the identity of that one test's daemon, and the next
+`story` call stood it down and restarted it against the same store on a fresh
+port, silently. Measured with the fix in place and the owning branch mutated
+back to the bare prepend: `test-temp-cleanup.sh` stays green through exactly
+that restart, which is why nothing had ever reported it.
+
+**What ships.** The same `scripts/binary-lease.sh`, one owner down: the
+instance of `lib.sh` that mints the test home leases the artifact with `$$` —
+the test — as owner, the same pid its daemon is parented to, and prepends the
+lease directory rather than `target/debug`. The lease directory is registered
+with the rest of the test's temporaries, so `_cleanup` removes it **after**
+`story daemon stop --force`: the stop needs `story` on `PATH`, so the lease
+outlives the daemon, never the reverse. `Makefile`'s prepend is gone — `lib.sh`
+resolves the artifact from the checkout and never read `PATH` for it, so the
+prepend was only a second door to the bare artifact — and the gate's plugin leg
+and a hand-typed `bash test-foo.sh` are now one code path.
+
+**A nested instance reuses, never mints.** `DaemonInfo::is_this_binary`
+compares the executable's *path*, so a nested `bash -c 'source lib.sh'` that
+inherits its caller's home (`test-temp-cleanup.sh`) must resolve the caller's
+lease — it does, through the exported `PATH` — and must not take a second lease
+of the same inode at a second path: that instance's first `story` call would
+stand the shared daemon down, the very restart the lease removes. The nested
+branch therefore leases nothing and refuses by name unless `story` already
+resolves under the artifact's lease root. Mutation-checked: an unconditional
+lease fails `test-binary-lease.sh`'s nested-reuse assertion and leaves
+`test-temp-cleanup.sh` green.
+
+**The test.** `plugins/story/tests/test-binary-lease.sh` drives a child `lib.sh`
+instance against a private `CARGO_TARGET_DIR` holding a *copy* of the real
+artifact — never the real one, which three or four concurrent worktree suites
+share — starts its daemon, replaces the fixture artifact the way Cargo does (new
+inode, renamed over, provably different mtime), and proves `command -v story`
+still resolves the leased inode and the daemon keeps its pid. Its positive
+control then calls the replaced bare artifact directly and requires the pid to
+*change*, so the assertion is proven able to see the restart it forbids; the
+parent proves the lease and the home are gone after the child's teardown.
+`test-binary-under-test.sh`'s "this checkout's own build" is now an inode claim
+(`-ef`) plus a leased location, not a path string.
 
 ### Filed, not fixed
 
@@ -1337,6 +1674,13 @@ test that asks about bytes on disk stands the daemon down first), and
 `tests/corruption_recovery.rs` — the one place that removes a store file — runs
 `story daemon stop` before it does.
 
+**The filesystem twin of this process class is `story daemon gc`** (SH-638):
+the same "the store file is gone" predicate over the runtime *directories*
+under `daemons/`, the same derived age floor, and stricter — it also requires
+the store to have been under a temp root, proves the recorded path by hashing
+it back to the directory's name, and asks before it removes. Design of record:
+`docs/spec/store-isolation.md`, the SH-638 amendment.
+
 **A defect in the tests themselves, found by mutation rather than by review.**
 Every shim in `tests/orphan_check.rs` is a direct child of the test process, so
 a shim that is killed becomes a **zombie** until the test process waits on it —
@@ -1356,6 +1700,111 @@ first empty poll it sees, having proved nothing. A worker now lives one whole
 and the churn drops from twenty process spawns a second to five. The
 supervisor's own deadline is derived from the script's two constants rather
 than the literal `18` that did not notice when the worst case moved.
+
+## The compile bound (SH-655)
+
+The harness caps the two quantities it once measured and left uncapped the one
+that consumes the machine. `--test-threads=4` bounds daemons; `workers: 1`
+bounds browsers; **compilation had no bound at all** — no `.cargo/config.toml`,
+no `--jobs`, no `CARGO_BUILD_JOBS` anywhere in the tree — so cargo sized
+itself to `hw.ncpu` (10) on a machine with 8 performance cores, and every
+worktree owns its own `target/`, so N concurrent agent sessions are N
+independent cold workspace builds. Measured on 2026-09-10: seven `/story do`
+sessions, load 33; SH-643's four `tests/machine_lock.rs` failures under load
+25–64 with one project active, the holder never scheduled once inside its
+ceiling. The merge gate's verdict had become a function of load the harness
+itself created, reported as the tree's fault.
+
+**What ships is a `build.rustc-wrapper` in a tracked `.cargo/config.toml`**
+(`scripts/rustc-slot.py`), settled by a three-seat council, 3-0
+(`story show SH-655` — never the council's own directory, SH-363). A real
+compile — an invocation carrying `--crate-name` — takes one of K `flock`
+slots and then **execs rustc in place**, holding the lock on an inherited fd:
+the slot's lifetime is rustc's own, and the kernel releases it the instant
+rustc exits, crashes or is SIGKILLed, with no pid file, no reaper and no
+stale-reclaim path (the SH-528 rule at the primitive level — `machine-lock.sh`
+needs pid+lstart liveness because its holder is a shell; this holder is the
+compiler). A probe with no crate name passes straight through. The wrapper is
+the only door every cargo invocation walks through — `make test`, a bare
+`cargo test --test foo` in an agent pane, rust-analyzer, a release build, the
+Lima guest — which is why the two candidates it beat lost: a counting
+semaphore in `machine-lock.sh` around *harness* invocations structurally
+cannot see the bare invocation that saturated the machine, and a
+GNU-make-style jobserver FIFO via `MAKEFLAGS` bounds threads rather than
+processes but loses a crashed holder's tokens for ever and blocks every cargo
+silently when starved (SH-528 and SH-306 in one mechanism).
+
+**Derived, never picked.** K is `hw.perflevel0.logicalcpu` on Darwin — the
+performance-core count, 8 here against `hw.ncpu`'s 10, because the two
+efficiency cores are markedly slower for LLVM codegen and counting them
+oversubscribes the fast ones — with a loud fallback to `hw.ncpu`, and
+`sched_getaffinity` on Linux; `STORYHOOK_BUILD_SLOTS` overrides it for the
+tests that prove the bound with a small K. The slot root derives from `$HOME`
+exactly as `machine-lock.sh`'s lock root does and **never from
+`XDG_STATE_HOME`**, which `run-tests.sh` re-exports per run: a per-run root
+would give every concurrent build its own slots and bound nothing (the SH-364
+shape). `STORYHOOK_LOCK_DIR` overrides it, the seam `tests/machine_lock.rs`
+already uses; neither variable joins the test-environment table (SH-531). The
+re-scan cadence equals `machine-lock.sh`'s `LOCK_POLL_SECS` and the report
+cadence its `WAIT_REPORT_SECS`, pinned equal by `tests/build_slots.rs` rather
+than left to drift (SH-136).
+
+**A wait is never silent (SH-306), and never reaps the gate.** Cargo forwards
+a wrapper's non-JSON stderr verbatim — measured under `cargo build`,
+`--message-format=json` and `cargo clippy` before a line was written — so a
+wait is reported as it begins, every report cadence, and when it ends with its
+duration. Inside a gate-held `make test` the same cadence appends an activity
+line to the SH-524 progress journal, whose *growth* is what `machine-lock.sh
+--max-idle` watches: a compile queued behind other sessions' builds reads as
+progress, not as a wedged holder to reap (a bound that manufactured exit-124
+false reds would have been worse than the load it removed). Like every emitter
+of that journal, this is a no-op when `STORYHOOK_GATE_PROGRESS` is unset.
+
+**Fail open, loudly.** An unusable slot root, an unopenable slot file, a lock
+call that fails for any reason but contention: one stderr line naming the root
+and the cause, then rustc runs unbounded. A compiler that refuses to compile
+over a lock directory is the SH-404/405 dead end; one that throttled nothing
+and said nothing would be SH-306's. The one failure the wrapper cannot soften
+is a missing `python3`, which stops cargo before any of this runs — so both
+release preflights (`build-release-assets.sh`, `release-linux.sh`'s guest
+check) refuse by name rather than as cargo's "could not execute process" two
+steps later (SH-576).
+
+**Measured, not assumed (direction d of the story).** Cold
+`cargo build --workspace --tests` in scratch clones on this machine while six
+other agent sessions were live — a busy machine, stated rather than hidden;
+the attributable columns are this build's own CPU seconds and its own rustc
+descendants, the load column is the whole machine's:
+
+| run | wall | own CPU (user+sys) | own rustc peak | wrapper waits | wait mean / max | machine load peak |
+|---|---|---|---|---|---|---|
+| one build, unbounded | 117s | 624s + 101s | 10 | — | — | 73 |
+| one build, K=8 slots | 118s | 633s + 108s | 10 (incl. waiting wrappers) | 96 | 1.6s / 14s | 56 |
+| two concurrent, unbounded | 218s / 221s | ≈645s + 108s each | 10 each | — | — | **153** |
+| two concurrent, K=8 slots | 212s / 227s | ≈644s + 112s each | 10 each | 367 / 362 | 2.8s / 28s | **90** |
+
+Wall clock is unchanged in every pairing — the bound costs nothing a build
+would have finished sooner without — and the wrapper's own overhead (a python
+start per rustc) is the +9s of CPU on a 725s build, 1.3%. The bound bit: 96
+waits alone, 729 across two builds, none over half a minute. Two concurrent
+cold builds peaked the machine at 153 unbounded and 90 bounded. **What the
+bound does not do, stated as a limit:** it bounds rustc *processes*, not the
+codegen threads inside one (each cargo still hands its rustcs up to `-j`
+jobserver tokens) and not test execution; the residual load above K is those
+threads plus the other sessions. If a later measurement shows load staying
+materially above K with the wrapper in force, the council's own follow-up is a
+jobserver bridge, not a wider K. **And the feared cost did not exist:** landing
+the wrapper did *not* trigger a full rebuild in any target directory — cargo's
+artifact fingerprint does not include the wrapper, and the first
+`cargo test --no-run` after the config landed recompiled only the crate that
+had changed (11s).
+
+**Also measured:** `cargo build` runs the wrapper for its `rustc -vV` probe
+(pass-through), nests correctly under clippy's `RUSTC_WORKSPACE_WRAPPER`, and
+resolves a config-relative path from a subdirectory. `RUSTC_WRAPPER` in the
+environment overrides the config by cargo's own precedence, so
+`tests/build_slots.rs` refuses any tracked file that exports it — the only
+way the bound could be silently gone for whatever that file runs.
 
 ## Out of scope, named rather than silently dropped
 

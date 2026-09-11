@@ -46,24 +46,36 @@ if (loadGraceEnabled()) {
  * needs daemon and browser configuration that would invalidate every ordinary
  * project's fixture, so both desktop projects exclude it and one dedicated
  * Chromium project selects it.
- * Full Auto close-out and the open-PR chip intentionally span desktop and
- * phone layouts. The mobile pair adds those exact filenames to this same
- * base set instead of maintaining independent per-engine globs (SH-473/SH-586).
+ * Full Auto close-out, the open-PR chip, and verification text layout span
+ * desktop and phone layouts. The mobile pair adds those exact filenames to
+ * this same base set instead of maintaining independent per-engine globs.
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 const ENGINE_SPECS = /engine\.spec\.ts$/;
 const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
+const VERIFICATION_LAYOUT_SPECS = /verification-layout\.spec\.ts$/;
 const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
 const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];
 const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
-const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS];
+const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS, VERIFICATION_LAYOUT_SPECS];
 
 export default defineConfig({
   testDir: "./specs",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
+  // Both are a council's decision, not a default (SH-627, pinned by
+  // `tests/e2e_launch_probe.rs`): the release tier enumerates failures rather
+  // than surviving them, so a red is never re-run into a green, and one
+  // worker is what keeps "one project, one daemon, one seed" (SH-335) true.
   retries: 0,
   workers: 1,
+  // Launch the project's own engine once before any worker is started
+  // (./launch-probe.ts). The `browser` fixture is worker-scoped and bounded
+  // only by Playwright's 3-minute launch default, so under `workers: 1` a
+  // browser that cannot start costs that bound PER TEST and reads as that
+  // many tree failures -- 45 x 180 s after this machine's WindowServer crash
+  // (SH-627). The probe pays it once, and says what it found by name.
+  globalSetup: "./launch-probe.ts",
   // The second reporter is the SH-524 gate progress journal's Playwright
   // side (./gate-progress-reporter.ts) — inert by construction whenever
   // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.

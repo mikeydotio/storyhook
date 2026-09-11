@@ -87,8 +87,8 @@ pub enum PointerOutcome {
     /// checkout` leaves the working tree clean.
     AlreadyCorrect(PathBuf),
     /// A pointer file already named this project but with a stale `prefix`,
-    /// now repaired. Any `[plugin]`/`[hooks]` tables it carried came through
-    /// untouched.
+    /// now repaired. Any `[plugin]`/`[hooks]`/`[github]` tables it carried came
+    /// through untouched.
     PrefixRepaired {
         path: PathBuf,
         was: String,
@@ -345,11 +345,11 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     ///
     /// **Never deletes the pointer file (SH-167).** `.storyhook.toml` is
     /// committed to the repository and may carry user-authored `[plugin]`/
-    /// `[hooks]` tables; deleting it would propagate to every other clone on
-    /// their next pull and destroy configuration this service has promised
-    /// never to write, let alone remove. `story project delete` sets the same
-    /// precedent for the checkout itself: it "never touches the project's own
-    /// files on disk."
+    /// `[hooks]`/`[github]` tables; deleting it would propagate to every other
+    /// clone on their next pull and destroy configuration this service has
+    /// promised never to write, let alone remove. `story project delete` sets
+    /// the same precedent for the checkout itself: it "never touches the
+    /// project's own files on disk."
     pub fn unlink_checkout(&self) -> Result<CheckoutLink, AppError> {
         let project = self.ctx.project();
         let slug = self.slug()?;

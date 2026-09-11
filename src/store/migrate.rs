@@ -350,6 +350,40 @@ pub const MIGRATIONS: &[Migration] = &[
         // runs retain the honest fact that no explicit selection was stored.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 33,
+        name: "cleanup_settings",
+        sql: include_str!("schema/0033_cleanup_settings.sql"),
+        // Two nullable project-setting columns added in place. Existing
+        // projects inherit the code defaults without a stored rewrite.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 34,
+        name: "engine_lane_probe",
+        sql: include_str!("schema/0034_engine_lane_probe.sql"),
+        // One nullable diagnostic column added in place; NULL reads as "the
+        // probe last said alive, or has not run", which is what every
+        // existing lane is.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 35,
+        name: "verification_incident_per_project",
+        sql: include_str!("schema/0035_verification_incident_per_project.sql"),
+        // A table rebuild, but of a LEAF: nothing references
+        // `verification_incident`, so dropping it under live enforcement
+        // orphans no child row (the same reasoning as version 18). Its own
+        // references to `projects` and `stories` are re-checked on the
+        // INSERT … SELECT, which is what we want.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 36,
+        name: "dropped_state",
+        sql: include_str!("schema/0036_dropped_state.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
@@ -450,13 +484,32 @@ pub fn run(
     })
 }
 
-/// Registers the exact Rust label canonicalizer for data migrations.
+/// Registers domain canonicalizers shared by data migrations and live imports.
 ///
 /// SQLite's built-in `lower()` is ASCII-only. A migration using it would
 /// disagree with the Unicode-aware write path and leave existing labels such
 /// as `ÄPPLE` noncanonical. The function is scoped to migration connections;
 /// no stored schema object depends on it after the transaction commits.
 fn register_migration_functions(conn: &Connection) -> Result<(), StoreError> {
+    conn.create_scalar_function(
+        "storyhook_validate_dropped_catalog",
+        2,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            let project = ctx.get::<String>(0)?;
+            let raw = ctx.get::<String>(1)?;
+            let states: Vec<crate::domain::StateDef> = serde_json::from_str(&raw)
+                .map_err(|error| SqlError::UserFunctionError(Box::new(error)))?;
+            crate::domain::state_rename::normalize_catalog(&states).map_err(|error| {
+                SqlError::UserFunctionError(Box::new(std::io::Error::other(format!(
+                    "project `{project}`: {error}"
+                ))))
+            })?;
+            Ok(true)
+        },
+    )?;
     conn.create_scalar_function(
         "storyhook_normalize_labels_json",
         1,

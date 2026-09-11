@@ -115,7 +115,10 @@ test("a state filter absent from the next project is pruned, with a toast, not s
   ).toBeVisible();
   await expect(page.locator("#filter-count")).toHaveText("1 / 1");
   // The dropdown itself reflects the prune too: no lingering "(1)" badge.
-  await expect(page.locator("#fdd-states .fdd-btn")).toHaveText("State");
+  // Accessible name, not textContent: the aria-hidden emoji caret rides in this
+  // button's text since SH-620. See column-visibility.spec.ts for the rule
+  // (SH-622).
+  await expect(page.locator("#fdd-states .fdd-btn")).toHaveAccessibleName("State");
 });
 
 test("sort order carries over across a project switch", async ({ page }) => {
@@ -148,4 +151,25 @@ test("filters survive a page reload on the same project", async ({
   await expect(
     page.locator(".card-title", { hasText: "Fix the flaky upload test" }),
   ).not.toBeVisible();
+});
+
+test("mobile filter values survive reload but the sheet open state does not", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await openProject(page, "Alpha Project");
+  await page.locator("#search-input").fill("flow");
+  await openFilters(page);
+  await expect(page.locator("#filter-sheet")).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.locator("#search-input")).toHaveValue("flow");
+  await expect(page.locator("#filter-sheet")).toBeHidden();
+  await expect(page.locator("#filter-panel")).toBeHidden();
+  await expect(page.locator("#filter-toggle-btn")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(page.locator("#filter-active-indicator")).toBeVisible();
 });

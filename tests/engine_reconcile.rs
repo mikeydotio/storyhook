@@ -16,11 +16,12 @@
 mod store_support;
 
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
+use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
-    BREAKER_TRIPPED, COMPLETED, DispatchOutcome, ENGINE_LANE_BUDGET, EngineService,
-    GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, OPERATOR_STOPPED,
-    QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS, STALL_MARGIN,
-    StartRequest, classify,
+    BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, ENGINE_LANE_BUDGET,
+    EngineService, HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
+    OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS,
+    STALL_MARGIN, StartRequest, WindowProbe, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -56,11 +57,15 @@ fn progressing() -> LaneObservation {
         story_closed: false,
         story_verifying: false,
         agent_blocked: false,
-        window_alive: true,
+        window: WindowProbe::Alive {
+            last_output_at: None,
+        },
         head_global_seq: Some(200),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
+        seconds_since_output: None,
         awaiting_reason: None,
+        returned_for_repair: false,
     }
 }
 
@@ -94,12 +99,134 @@ fn an_agent_blocked_story_is_a_hard_stop() {
 #[test]
 fn a_missing_window_on_an_open_story_is_a_hard_stop() {
     let observation = LaneObservation {
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::WindowGone)
+    );
+}
+
+/// SH-650: a window gone on a story the verifier has just returned for
+/// repair is the verifier's own resume re-dispatch in flight, not a hard
+/// stop. It contributes no evidence on a steady pass, exactly as an
+/// unanswered probe does.
+#[test]
+fn a_missing_window_on_a_story_just_returned_for_repair_is_deferred() {
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing
+    );
+}
+
+/// SH-650: the deferral is bounded by the stall clock, which a re-dispatch
+/// that never comes cannot advance — `DISPATCH_TIMEOUT` sits inside the
+/// ceiling, so a re-dispatch has either shown a live pane or parked the story
+/// with `awaiting` before this fires.
+#[test]
+fn a_deferred_missing_window_still_lets_the_stall_ceiling_catch_a_dead_lane() {
+    assert!(
+        storyhook::service::engine::DISPATCH_TIMEOUT.as_secs() < STALL_CEILING_SECS,
+        "the resume re-dispatch must be able to finish inside the stall ceiling"
+    );
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled)
+    );
+}
+
+/// SH-650: a daemon that died mid-re-dispatch has nobody left to finish it,
+/// so a restart pass still reports the missing window as `Interrupted`.
+#[test]
+fn a_missing_window_on_a_returned_story_is_interrupted_across_a_restart() {
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Restart),
+        LaneClassification::HardStop(HardStopKind::Interrupted)
+    );
+}
+
+/// SH-650: the verifier's own refusal to re-dispatch sets `awaiting`, and
+/// that still outranks the deferral — a parked story is a hard stop.
+#[test]
+fn an_agent_block_wins_over_a_deferred_missing_window() {
+    let observation = LaneObservation {
+        agent_blocked: true,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::AgentBlocked)
+    );
+}
+
+/// SH-626 (council verdict on the story): a probe tmux could not answer is
+/// not a dead window. It contributes no evidence this pass, so a lane whose
+/// story is moving keeps progressing under both passes.
+#[test]
+fn an_unanswered_probe_on_a_moving_story_is_not_a_hard_stop() {
+    let observation = LaneObservation {
+        window: WindowProbe::Unanswered {
+            detail: "tmux exited 1: unbound variable".to_string(),
+        },
+        ..progressing()
+    };
+    for pass in [ReconcilePass::Steady, ReconcilePass::Restart] {
+        assert_eq!(
+            classify(&observation, STALL_CEILING_SECS, pass),
+            LaneClassification::Progressing,
+            "{pass:?}"
+        );
+    }
+}
+
+/// SH-626's backstop: with the probe unanswerable, the lane is judged by the
+/// stall clock alone, so an unmoved seq past the ceiling is still caught —
+/// later, and by the store fact a dead agent cannot forge.
+#[test]
+fn an_unanswered_probe_still_lets_the_stall_ceiling_catch_a_dead_lane() {
+    let observation = LaneObservation {
+        window: WindowProbe::Unanswered {
+            detail: "tmux did not answer within 3s".to_string(),
+        },
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled)
     );
 }
 
@@ -150,6 +277,120 @@ fn an_unmoved_seq_inside_the_ceiling_is_not_yet_a_stall() {
         classify(&at_ceiling, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing,
         "a lane exactly at the ceiling has not passed it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The second stall channel (SH-657)
+// ---------------------------------------------------------------------------
+
+/// The incident's own row: the store has not moved past the ceiling — an
+/// autonomous agent writes nothing to the store between its dispatch and its
+/// plan comment — but its pane wrote to the terminal inside the ceiling. That
+/// is a working agent, and 8 of the first 8 stall verdicts the engine ever
+/// wrote were this row misread as a stall.
+#[test]
+fn a_store_silent_lane_whose_pane_wrote_inside_the_ceiling_is_progressing() {
+    let observation = LaneObservation {
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS * 10),
+        window: WindowProbe::Alive {
+            last_output_at: Some(1_789_066_115),
+        },
+        seconds_since_output: Some(1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing,
+        "a pane that wrote within the ceiling holds a live agent whatever the store says"
+    );
+}
+
+/// The true stall, both channels: an agent that has neither written to the
+/// store nor to its terminal for longer than the ceiling — a Claude parked at
+/// an idle prompt, whose pane goes static for hours (measured for SH-657).
+#[test]
+fn a_lane_silent_on_both_channels_past_the_ceiling_is_a_stall() {
+    let observation = LaneObservation {
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        window: WindowProbe::Alive {
+            last_output_at: Some(1_789_066_115),
+        },
+        seconds_since_output: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled)
+    );
+}
+
+/// The pty channel has the same boundary as the store channel: exactly AT the
+/// ceiling is not past it, so output that old still rescues the lane.
+#[test]
+fn pane_output_exactly_at_the_ceiling_is_not_yet_silent() {
+    let observation = LaneObservation {
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS * 10),
+        window: WindowProbe::Alive {
+            last_output_at: Some(1_789_066_115),
+        },
+        seconds_since_output: Some(STALL_CEILING_SECS),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing
+    );
+}
+
+/// A pty channel that could not be read contributes no evidence (SH-372), so
+/// the store channel judges alone — which is the SH-626 backstop: a dead lane
+/// behind a tmux that cannot be asked is still caught by store silence.
+#[test]
+fn unknown_pane_output_leaves_the_store_channel_to_judge_alone() {
+    let store_silent = LaneObservation {
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        seconds_since_output: None,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&store_silent, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled),
+        "no pty evidence is not pty evidence of life"
+    );
+    let store_moving = LaneObservation {
+        seconds_since_output: None,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&store_moving, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing
+    );
+}
+
+/// The store channel still wins on its own: a story that moved is progress
+/// even when the pane has been static past the ceiling (a long foreground
+/// tool call that ended with a `story comment`, say).
+#[test]
+fn a_moved_seq_is_progress_even_when_the_pane_is_silent() {
+    let observation = LaneObservation {
+        head_global_seq: Some(200),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS * 10),
+        seconds_since_output: Some(STALL_CEILING_SECS * 10),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing
     );
 }
 
@@ -206,7 +447,9 @@ fn an_unresolvable_story_is_not_a_stall() {
 fn a_verifying_story_with_a_dead_window_is_held_not_window_gone() {
     let observation = LaneObservation {
         story_verifying: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -251,7 +494,9 @@ fn a_verifying_story_past_the_ceiling_is_held_not_stalled() {
 fn a_closed_story_wins_over_a_closed_window() {
     let observation = LaneObservation {
         story_closed: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -270,11 +515,15 @@ fn a_closed_story_wins_over_every_other_signal() {
         story_closed: true,
         story_verifying: true,
         agent_blocked: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         head_global_seq: Some(100),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(STALL_CEILING_SECS * 10),
+        seconds_since_output: Some(STALL_CEILING_SECS * 10),
         awaiting_reason: Some("the agent said why".to_string()),
+        returned_for_repair: true,
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
@@ -289,7 +538,9 @@ fn a_closed_story_wins_over_every_other_signal() {
 fn an_agent_block_wins_over_a_closed_window() {
     let observation = LaneObservation {
         agent_blocked: true,
-        window_alive: false,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
         ..progressing()
     };
     assert_eq!(
@@ -389,61 +640,50 @@ fn the_lane_budget_is_spelled_as_the_dispatch_capacity_not_a_copy_of_its_digits(
 }
 
 /// The ceiling's own spelling, for the same reason and by the same mechanism:
-/// the product must be written as its three named factors, so a reader can see
-/// which part is measurement and which is judgement.
+/// the product must be written as its two named factors, so a reader can see
+/// which part is the deadline being disproved and which is judgement.
+///
+/// SH-657 replaced the factors. The ceiling used to be spelled
+/// `ENGINE_LANE_BUDGET * GATE_MEDIAN_SECS * STALL_MARGIN` — a bound on a test
+/// leg, which the clock never measured; it measured time between story
+/// events, which has no legitimate bound at all. The deadline the ceiling
+/// disproves now is one foreground tool call, the longest an agent can be
+/// silent on BOTH channels the engine reads.
 #[test]
 fn the_stall_ceiling_is_spelled_as_its_derivation() {
     let declared = declared_const(
         &checkout_source("src/service/engine.rs"),
         "STALL_CEILING_SECS",
     );
-    for factor in ["ENGINE_LANE_BUDGET", "GATE_MEDIAN_SECS", "STALL_MARGIN"] {
+    for factor in ["HOST_TOOL_CALL_CEILING_SECS", "STALL_MARGIN"] {
         assert!(
             declared.contains(factor),
             "STALL_CEILING_SECS must name {factor} in its own derivation; found `{declared}`"
         );
     }
+    for retired in ["ENGINE_LANE_BUDGET", "GATE_MEDIAN_SECS"] {
+        assert!(
+            !declared.contains(retired),
+            "STALL_CEILING_SECS must not derive from {retired} again: a test leg's duration bounds nothing the stall clock measures (SH-657); found `{declared}`"
+        );
+    }
 }
 
-/// `make test`'s measured warm median, read back out of the document that
-/// measures it, exactly as `tests/machine_lock.rs` does for the same figure.
-fn measured_gate_median_secs() -> u64 {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/rearch/baseline/timings.md");
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    let after = src
-        .split("## The whole gate")
-        .nth(1)
-        .expect("docs/rearch/baseline/timings.md must have a `## The whole gate` section");
-    let bolded = after
-        .split("**")
-        .nth(1)
-        .expect("that section must carry a **bolded** median");
-    let seconds: String = bolded
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    seconds
-        .parse::<f64>()
-        .unwrap_or_else(|e| panic!("the median {seconds:?} must parse: {e}")) as u64
-}
-
-/// The ceiling is derived from the deadline it disproves, and stays derived.
-/// A lane's longest legitimate silence is queuing on the machine-wide `gate`
-/// lock while other lanes run the suite, so the inputs are the lane budget and
-/// the suite's own measured median.
+/// The ceiling is derived from the deadline it disproves, and stays derived:
+/// a live agent's longest silence on both channels is one foreground tool
+/// call, which the host bounds at [`HOST_TOOL_CALL_CEILING_SECS`].
 #[test]
-fn the_stall_ceiling_still_derives_from_the_measured_suite_median() {
-    let measured = measured_gate_median_secs();
-    assert_eq!(
-        GATE_MEDIAN_SECS, measured,
-        "service::engine declares GATE_MEDIAN_SECS={GATE_MEDIAN_SECS}, but docs/rearch/baseline/timings.md now measures `make test` at {measured}s. Re-derive the ceiling rather than leaving the engine asserting a median nobody measures any more."
-    );
+fn the_stall_ceiling_still_derives_from_the_host_tool_call_ceiling() {
     assert_eq!(
         STALL_CEILING_SECS,
-        ENGINE_LANE_BUDGET as u64 * measured * STALL_MARGIN,
-        "the ceiling must remain the product of the budget, the measured median and the named margin — not a literal that happens to equal it today"
+        HOST_TOOL_CALL_CEILING_SECS * STALL_MARGIN,
+        "the ceiling must remain the product of the host's tool-call ceiling and the named margin — not a literal that happens to equal it today"
+    );
+    // The host bound is Claude Code's own: `timeout … max 600000` ms on its
+    // Bash tool. Pinned so a change here is a decision, not drift.
+    assert_eq!(
+        HOST_TOOL_CALL_CEILING_SECS, 600,
+        "Claude Code bounds one foreground Bash call at 600 s; re-measure before moving this"
     );
 }
 
@@ -456,19 +696,6 @@ fn the_reconcile_tick_derives_from_the_stall_ceiling() {
     // That the tick is non-zero is asserted at COMPILE time beside the
     // constant itself (`const _: () = assert!(...)`), because a runtime
     // assertion over a `const` folds away and proves nothing.
-}
-
-/// The margin is judgement and the median is measurement; keeping them as
-/// separate named factors is what lets a reader tell which is which (SH-394).
-/// A margin below 1 would make the ceiling tighter than the worst legitimate
-/// case it is derived from, which would quarantine healthy lanes.
-#[test]
-fn the_stall_margin_never_tightens_the_ceiling_below_its_own_derivation() {
-    // The margin's own floor is a compile-time assertion beside the constant.
-    assert!(
-        STALL_CEILING_SECS >= ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS,
-        "every lane must be able to wait out a full round of serialized suites without being called stalled"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +713,7 @@ fn every_hard_stop_kind_has_a_distinct_stable_spelling() {
         HardStopKind::Stalled,
         HardStopKind::Interrupted,
         HardStopKind::DispatchRefused,
+        HardStopKind::StoryMissing,
     ];
     let spellings: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
     let mut unique = spellings.clone();
@@ -545,6 +773,28 @@ fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str) {
         .store()
         .write(|tx| tx.put_engine_lane(&lane))
         .unwrap();
+}
+
+fn awaiting_of(fixture: &ServiceFixture, number: i64) -> Option<String> {
+    fixture
+        .store()
+        .read(|tx| {
+            tx.story(
+                fixture.project(),
+                storyhook::store::ids::StoryNo::new(number),
+            )
+        })
+        .unwrap()
+        .unwrap()
+        .awaiting
+}
+
+fn run_of(fixture: &ServiceFixture, run_id: &str) -> storyhook::store::EngineRunRecord {
+    fixture
+        .store()
+        .read(|tx| tx.engine_run(run_id))
+        .unwrap()
+        .unwrap()
 }
 
 fn lane_at(fixture: &ServiceFixture, run_id: &str, index: u32) -> EngineLaneRecord {
@@ -830,6 +1080,106 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
         awaiting.contains("window-gone") && awaiting.contains(&run_id),
         "the reason names the kind and the run so a human can act on it: {awaiting}"
     );
+    // SH-626: the probe's own words travel with the verdict, so "window-gone"
+    // can never again stand in for "tmux could not be asked".
+    assert!(
+        awaiting.contains("scripted: tmux reports `=fixture:=story-SH-1` gone"),
+        "the reason carries what tmux actually said: {awaiting}"
+    );
+}
+
+/// SH-650, wired: the fact is read from the story's own state history. A
+/// lane whose story went `verifying` → `in-progress` (the verifier's return)
+/// keeps a dead window out of the verdict on a steady pass and reports the
+/// deferral; once the story changes state again the same dead window is a
+/// hard stop; and a restart pass never defers.
+#[test]
+fn a_dead_window_on_a_story_the_verifier_just_returned_is_deferred_not_quarantined() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "returned for repair", &[]);
+    let gone = || DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    };
+    let fake = FakeDispatcher::new([gone(), gone(), gone()]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(report.quarantined, [], "the return is not a hard stop");
+    assert_eq!(
+        report.deferred.len(),
+        1,
+        "the deferral is reported, never silent"
+    );
+    assert_eq!(report.deferred[0].0, 0);
+    assert!(
+        report.deferred[0].1.contains("gone"),
+        "{:?}",
+        report.deferred
+    );
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert!(
+        lane.probe_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("gone")),
+        "status surfaces what tmux said: {:?}",
+        lane.probe_detail
+    );
+    assert_eq!(awaiting_of(&fixture, 1), None);
+
+    // A restart pass never defers: nobody is left to finish the re-dispatch.
+    let restart_ctx = Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.cwd(),
+        fixture.env().clone(),
+    )
+    .clock(Clock::Fixed(FIXTURE_NOW.to_string()));
+    let report = EngineService::new(&restart_ctx, &fake)
+        .reconcile_after_restart(&run_id.to_string())
+        .unwrap();
+    assert_eq!(report.quarantined, [(0, HardStopKind::Interrupted)]);
+}
+
+/// SH-650, wired: the deferral ends with the story's next state change. A
+/// story a person moved out of `in-progress` after the return is judged by
+/// its window again.
+#[test]
+fn a_dead_window_is_a_hard_stop_again_once_the_returned_story_moves_on() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "moved on after the return", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+    service.set_state(&story, "todo", None, None, None).unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(report.quarantined, [(0, HardStopKind::WindowGone)]);
+    assert_eq!(report.deferred, []);
 }
 
 /// D10 is a continuation policy, not only a counter: below the breaker
@@ -1640,7 +1990,7 @@ fn an_idle_lane_claims_and_dispatches_a_ready_story() {
 }
 
 #[test]
-fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
+fn a_run_uses_the_latest_configuration_for_future_claims() {
     let fixture = ServiceFixture::new();
     let story = new_story(&fixture, "configured claim", &[]);
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
@@ -1651,7 +2001,8 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         }),
     ))]);
     let ctx = fixture.ctx();
-    let run_id = EngineService::new(&ctx, &fake)
+    let service = EngineService::new(&ctx, &fake);
+    let run_id = service
         .start(StartRequest {
             scope: EngineScope::Project,
             lanes: 1,
@@ -1662,6 +2013,18 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         })
         .unwrap()
         .id;
+    service
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 1,
+                agent: EngineAgent::Claude,
+                model: Some("claude-opus-4-6".into()),
+                effort: Some("max".into()),
+                speed: Some(EngineSpeed::Standard),
+            },
+        )
+        .unwrap();
 
     let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
 
@@ -1670,12 +2033,101 @@ fn a_run_reuses_its_immutable_dispatch_configuration_for_every_fill() {
         storyhook::service::engine::DispatchRequest {
             project: "fixture".into(),
             story,
-            agent: EngineAgent::Codex,
-            model: Some("gpt-5.3-codex".into()),
-            effort: Some("high".into()),
-            speed: Some(EngineSpeed::Fast),
+            agent: EngineAgent::Claude,
+            model: Some("claude-opus-4-6".into()),
+            effort: Some("max".into()),
+            speed: Some(EngineSpeed::Standard),
         }
     )));
+}
+
+#[test]
+fn a_reduced_lane_cap_blocks_refill_until_occupancy_falls_below_it() {
+    let fixture = ServiceFixture::new();
+    let occupied_a = new_story(&fixture, "occupied a", &[]);
+    let occupied_b = new_story(&fixture, "occupied b", &[]);
+    let waiting = new_story(&fixture, "waiting", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{occupied_a}"),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{occupied_b}"),
+            alive: true,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 3);
+    occupy(&fixture, &run_id, 0, &occupied_a);
+    occupy(&fixture, &run_id, 1, &occupied_b);
+    let ctx = fixture.ctx();
+    EngineService::new(&ctx, &fake)
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 2,
+                agent: EngineAgent::Codex,
+                model: None,
+                effort: None,
+                speed: None,
+            },
+        )
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(report.filled.is_empty());
+    assert_eq!(run_state(&fixture, &run_id), EngineRunState::Running);
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DispatcherCall::Dispatch(_))),
+        "{waiting} must remain ready while occupancy equals the reduced cap"
+    );
+}
+
+#[test]
+fn a_surplus_occupied_lane_retires_after_its_story_completes() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "surplus occupied lane", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: true,
+    }]);
+    let run_id = started_run(&fixture, &fake, 2);
+    occupy(&fixture, &run_id, 1, &story);
+    let ctx = fixture.ctx();
+    EngineService::new(&ctx, &fake)
+        .configure(
+            &run_id,
+            ConfigureRequest {
+                lanes: 1,
+                agent: EngineAgent::Codex,
+                model: None,
+                effort: None,
+                speed: None,
+            },
+        )
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&story, "done", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.completed, [1]);
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run_id))
+            .unwrap()
+            .into_iter()
+            .map(|lane| lane.lane_index)
+            .collect::<Vec<_>>(),
+        [0],
+        "a lane above the new cap remains occupied until completion, then disappears"
+    );
 }
 
 /// The helper returns the pane id that tmux guarantees is stable for the
@@ -1704,6 +2156,87 @@ fn a_dispatched_lane_is_observed_through_its_exact_pane_id() {
 
     assert!(report.quarantined.is_empty());
     assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(story));
+}
+
+/// SH-626, wired: a probe tmux could not answer leaves the lane working,
+/// blocks nothing, counts toward nothing, and is loud on the status surface
+/// — the probe's own words are on the lane and in the pass report — until
+/// tmux answers again, when the lane clears them.
+#[test]
+fn an_unanswered_probe_leaves_the_lane_working_and_names_itself_on_the_lane() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "lane behind a broken tmux", &[]);
+    let detail = "tmux exited exit status: 1 answering the liveness probe for `%1`: FAKE_TMUX_IMPLEMENTATION: unbound variable";
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowUnanswered {
+            window: format!("=fixture:=story-{story}"),
+            detail: detail.to_string(),
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{story}"),
+            alive: true,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(
+        report.quarantined.is_empty(),
+        "an unanswered probe is not a verdict"
+    );
+    assert_eq!(report.unanswered, [(0, detail.to_string())]);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(lane.probe_detail.as_deref(), Some(detail));
+    assert!(
+        lane.last_progress_seq.is_some(),
+        "the stall clock is seeded exactly as it would be for an answered probe"
+    );
+    assert_eq!(
+        awaiting_of(&fixture, 1),
+        None,
+        "nothing was written onto the story"
+    );
+    assert_eq!(run_of(&fixture, &run_id).consecutive_hard_stops, 0);
+
+    // tmux answers again: the lane clears what it said.
+    let recovered = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(recovered.unanswered.is_empty());
+    assert_eq!(lane_at(&fixture, &run_id, 0).probe_detail, None);
+}
+
+/// SH-626's backstop, wired: with the probe unanswerable for the whole life
+/// of a lane, a story that stops moving is still quarantined at the stall
+/// ceiling, and the block reason carries what tmux said so the reader knows
+/// the window's own state was never observed.
+#[test]
+fn a_dead_lane_behind_an_unanswerable_probe_is_caught_by_the_stall_ceiling() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "dead lane behind a broken tmux", &[]);
+    let detail = "tmux did not answer the liveness probe for `%1` within 3s";
+    let unanswered = || DispatcherStep::WindowUnanswered {
+        window: format!("=fixture:=story-{story}"),
+        detail: detail.to_string(),
+    };
+    let fake = FakeDispatcher::new([unanswered(), unanswered()]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let seeded = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(seeded.quarantined.is_empty());
+
+    let past = "2026-01-02T00:00:00Z";
+    let report = reconcile_at(&fixture, &fake, &run_id, past);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::Stalled)]);
+    let awaiting = awaiting_of(&fixture, 1).expect("a stalled story carries a reason");
+    assert!(
+        awaiting.contains("stalled") && awaiting.contains(detail),
+        "the stall reason names the probe that could not be asked: {awaiting}"
+    );
 }
 
 /// The stall row, wired: the seq has not moved and the ceiling has passed.
@@ -1796,6 +2329,159 @@ fn a_lane_whose_story_moved_is_not_stalled_however_long_the_clock_says() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The second stall channel, wired (SH-657)
+// ---------------------------------------------------------------------------
+
+/// The unix second of `FIXTURE_NOW`, for scripting a pty stamp against the
+/// fixture clock.
+fn fixture_now_unix() -> i64 {
+    chrono::DateTime::parse_from_rfc3339(FIXTURE_NOW)
+        .unwrap()
+        .timestamp()
+}
+
+/// The incident replayed (SH-657, run a64495a6): a lane is filled, the story
+/// gets its dispatch comment, and then the store hears nothing for longer than
+/// the ceiling while the agent reads code and plans — its pane writing to the
+/// terminal the whole time. Before this fix that was three quarantines, a
+/// tripped breaker and a halted run; it is a working lane.
+#[test]
+fn a_store_silent_lane_whose_pane_keeps_writing_is_not_stalled() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "planning in silence", &[]);
+    let window = format!("=fixture:=story-{story}");
+    // Past the ceiling on the store, but the pane wrote one second before
+    // the pass looked — the sub-second cadence measured on every working lane.
+    let past_secs = i64::try_from(STALL_CEILING_SECS * 2).unwrap();
+    let past = chrono::DateTime::from_timestamp(fixture_now_unix() + past_secs, 0)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let output_at = fixture_now_unix() + past_secs - 1;
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: window.clone(),
+            alive: true,
+        },
+        DispatcherStep::WindowActive {
+            window,
+            last_output_at: output_at,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let seeded = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(seeded.quarantined.is_empty());
+    let before = lane_at(&fixture, &run_id, 0);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, &past);
+
+    assert!(
+        report.quarantined.is_empty(),
+        "a pane that wrote inside the ceiling is a working lane, however silent the store: {report:?}"
+    );
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert_eq!(
+        lane.last_progress_seq, before.last_progress_seq,
+        "the seq did not move and the mark says so"
+    );
+    assert_eq!(
+        lane.last_progress_at.as_deref(),
+        Some(
+            chrono::DateTime::from_timestamp(output_at, 0)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .as_str()
+        ),
+        "the clock restarts from the pane's own output stamp, not from this observation"
+    );
+    assert_eq!(streak(&fixture, &run_id), 0, "no hard stop was counted");
+    assert!(
+        awaiting_of(&fixture, 1).is_none(),
+        "the story was not blocked"
+    );
+}
+
+/// The true stall, wired: the pane's stamp is as old as the store's silence.
+/// The reason names what each channel measured, so the verdict can be checked
+/// against the lane rather than taken on trust (SH-418).
+#[test]
+fn a_lane_silent_on_both_channels_is_quarantined_with_its_evidence() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "parked at a prompt", &[]);
+    let window = format!("=fixture:=story-{story}");
+    let past_secs = i64::try_from(STALL_CEILING_SECS * 2).unwrap();
+    let past = chrono::DateTime::from_timestamp(fixture_now_unix() + past_secs, 0)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowActive {
+            window: window.clone(),
+            last_output_at: fixture_now_unix(),
+        },
+        DispatcherStep::WindowActive {
+            window,
+            last_output_at: fixture_now_unix(),
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    let report = reconcile_at(&fixture, &fake, &run_id, &past);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::Stalled)]);
+    let awaiting = awaiting_of(&fixture, 1).expect("a stalled story carries a reason");
+    let store_silence = STALL_CEILING_SECS * 2;
+    assert!(
+        awaiting.contains(&format!("no story event for {store_silence}s"))
+            && awaiting.contains(&format!(
+                "{store_silence}s since the pane last wrote to its terminal"
+            ))
+            && awaiting.contains(&format!("the ceiling is {STALL_CEILING_SECS}s")),
+        "the stall reason names both channels' measurements and the ceiling: {awaiting}"
+    );
+}
+
+/// The store channel still restarts the clock on its own, and a pane stamp
+/// OLDER than the recorded mark never moves the mark backwards.
+#[test]
+fn a_stale_pane_stamp_never_rewinds_the_progress_mark() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "old stamp", &[]);
+    let window = format!("=fixture:=story-{story}");
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowActive {
+            window: window.clone(),
+            last_output_at: fixture_now_unix() - 3_600,
+        },
+        DispatcherStep::WindowActive {
+            window,
+            last_output_at: fixture_now_unix() - 3_600,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        lane_at(&fixture, &run_id, 0).last_progress_at.as_deref(),
+        Some(FIXTURE_NOW),
+        "the first pass seeds from the observation, not from an hour-old stamp"
+    );
+    // Inside the ceiling, nothing moved, stamp still an hour old: the mark
+    // holds at the seed rather than rewinding to the stamp.
+    let soon = "2026-01-01T00:01:00Z";
+    let report = reconcile_at(&fixture, &fake, &run_id, soon);
+    assert!(report.quarantined.is_empty());
+    assert_eq!(
+        lane_at(&fixture, &run_id, 0).last_progress_at.as_deref(),
+        Some(FIXTURE_NOW)
+    );
+}
+
 /// D14: total lanes filled across a pass are bounded by the machine budget,
 /// even when more lanes sit idle and more stories are claimable.
 #[test]
@@ -1829,5 +2515,107 @@ fn fill_stops_at_the_machine_lane_budget() {
             .count(),
         ENGINE_LANE_BUDGET,
         "and the engine asked the dispatcher exactly that many times"
+    );
+}
+
+/// SH-655: a session `/story do` opened by hand is in no table, so the fill
+/// also measures the budget against the live agent windows on the tmux
+/// server — and a window this pass opened, which the census taken at the
+/// start of the pass cannot yet see, counts too.
+#[test]
+fn fill_counts_manually_dispatched_windows_against_the_budget() {
+    let fixture = ServiceFixture::new();
+    let manual = 2;
+    let room = ENGINE_LANE_BUDGET - manual;
+    let over = ENGINE_LANE_BUDGET + 2;
+    for n in 0..over {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..room)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..manual).map(|n| format!("storyhook:SH-9{n}")).collect(),
+    });
+    let run_id = started_run(&fixture, &fake, u32::try_from(over).unwrap());
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(
+        report.filled.len(),
+        room,
+        "{manual} manual sessions leave room for {room} engine lanes under a budget of {ENGINE_LANE_BUDGET}"
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, DispatcherCall::Dispatch(_)))
+            .count(),
+        room,
+        "the pass stopped asking once the census plus its own dispatches reached the budget"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Counted { windows }) if windows.len() == manual),
+        "the pass reports the census it measured against: {:?}",
+        report.census
+    );
+}
+
+/// SH-655: a full machine of manual sessions leaves the engine nothing to
+/// fill, and an unanswered census is no evidence — the store's own count
+/// alone bounds the pass, so the fill is unchanged from before the census
+/// existed.
+#[test]
+fn a_full_machine_fills_nothing_and_an_unanswered_census_changes_nothing() {
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let fake = FakeDispatcher::new(Vec::new());
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..ENGINE_LANE_BUDGET)
+            .map(|n| format!("storyhook:SH-9{n}"))
+            .collect(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(
+        report.filled.is_empty(),
+        "a machine already at its budget of manual sessions fills nothing: {:?}",
+        report.filled
+    );
+    assert!(fake.calls().is_empty(), "and never asked the dispatcher");
+
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..2)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Unanswered {
+        detail: "no server running".to_string(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        report.filled.len(),
+        2,
+        "no evidence is not a full machine: both lanes fill on the store's count alone"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Unanswered { detail }) if detail == "no server running"),
+        "the unanswered census travels on the report for the daemon to journal: {:?}",
+        report.census
     );
 }

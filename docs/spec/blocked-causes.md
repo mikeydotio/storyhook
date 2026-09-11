@@ -40,14 +40,25 @@ list on SH-136, SH-198, SH-258).
 reason is required only when no `--on` was given — matching the pre-SH-398 contract
 for every caller that never learns the new flag (REST's `route_block_story`, the
 TUI's `Action::SetAwaiting`, and MCP's `story_block`, none of which changed). Both
-may be given together: the edges and the reason commit in **one transaction**
+may be given together: the edges and an explanatory comment commit in **one transaction**
 (`RelationService::block_on`, a generalisation of `RelationService::relate` from one
 target to N — each blocker takes one append for its own inverse edge, and the
 subject takes exactly one append carrying every new edge plus the optional
-`StoryAwaitingSet`). The alternative — a loop of `relate` calls followed by a
-separate `set_awaiting` — is the exact half-write hazard `relation.rs`'s own module
+`StoryCommentAdded`). The comment reads `Blocked on <blocker IDs>: <reason>`,
+with duplicate IDs collapsed and the reason trimmed. Repeated calls preserve
+each explanation in history without duplicating existing edges. The alternative
+— a loop of `relate` calls followed by a separate comment — is the half-write hazard `relation.rs`'s own module
 doc already names (SH-60): "blocked by A and B" landing with only A recorded, or
 edges landing without the reason that explained them.
+
+**SH-658 corrects the original write contract:** the `--on` form used to append
+`StoryAwaitingSet` as well as the edges. The prose then kept the story out of the
+ready queue after its blockers closed. The explanation is now a comment, which
+survives dependency closure without becoming a blocking signal. An independent
+`awaiting` hold already on the subject is neither overwritten nor cleared.
+Without `--on`, the reason still writes `StoryAwaitingSet` and needs an explicit
+`story unblock`. `is_ready` and the interpretation of historical events are
+unchanged: a true independent hold remains authoritative even alongside edges.
 
 `story unblock <id> [--on <blocker>]...` is the inverse. No `--on` clears the prose
 reason (unchanged) — and, new, warns if an open `blocked-by`/`obviated-by` edge is
@@ -66,6 +77,8 @@ set `awaiting` (`SetAwaiting`, `SetState` via `story move <id> blocked --reason`
 `SetFields` via `story set --blocked`/`--json`), fenced by
 `tests/block_notice_paths.rs` deriving that door list from an exhaustive match
 rather than a hand-kept one — the shape this project has been burned by before.
+For `block --on`, the warning reads the persisted `awaiting` hold, not the
+explanatory comment: background references in a comment are not blocking claims.
 
 ### The detection layer
 
@@ -73,6 +86,19 @@ The nudge only fires at authoring time. `story doctor` gained a sibling notice
 (`unlinked_blocker_notices`, beside the existing `blocked_without_reason_notices`)
 that sweeps the whole project for the same condition, so a reason typed before this
 story existed — or edited by hand — still surfaces.
+
+SH-658 adds `stale_awaiting_notices`: an open story with an `awaiting` reason
+mentioning closed stories and no remaining open `blocked-by` target receives a
+"possibly stale awaiting" notice. The scan includes hidden closed targets,
+deduplicates mentions, and ignores self, foreign-project, and missing IDs.
+It reads the complete project in the doctor's existing transaction and propagates
+store errors. Human and JSON output both name the hold and suggest reviewing
+`story show <id>` before clearing the entire hold with `story unblock <id>`.
+
+This is advice, not a repair: old events do not associate each prose clause with
+a particular edge. `doctor --fix` therefore preserves the hold and its history.
+Reasons with no resolvable closed-story ID cannot be detected by this heuristic;
+the write-path fix prevents new `--on` explanations from creating that state.
 
 ### The dashboard
 

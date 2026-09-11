@@ -91,7 +91,7 @@ async function holdStoryPatch(
 
 async function openListRow(page: Page, id: string) {
   await page.locator('#view-toggle button[data-view="list"]').click();
-  const row = page.locator(`#list-body tr[data-id="${id}"]`);
+  const row = page.locator(`#mobile-list-body li[data-id="${id}"]`);
   await expect(row).toBeVisible();
   const actions = row.locator(".row-actions-btn");
   await expect(actions).toBeVisible();
@@ -104,7 +104,9 @@ test("an unrelated data update preserves an unchanged row action button and its 
 }) => {
   const title = "SH-425 list-row identity across a no-op render";
   const id = await createStory(page, title);
-  const { actions } = await openListRow(page, id);
+  const { row, actions } = await openListRow(page, id);
+  await row.locator(".mobile-story-details-btn").click();
+  await expect(row.locator(".mobile-story-details")).toBeVisible();
 
   await actions.evaluate((node) => {
     (node as HTMLElement & { __sh425Original?: boolean }).__sh425Original = true;
@@ -126,6 +128,7 @@ test("an unrelated data update preserves an unchanged row action button and its 
     "the live actions button must be the same node, not an identical replacement",
   ).toBe(true);
   await expect(actions).toBeFocused();
+  await expect(row.locator(".mobile-story-details")).toBeVisible();
 
   await page.locator('#view-toggle button[data-view="board"]').click();
   await deleteStory(page, title);
@@ -152,7 +155,7 @@ test("a row action pressed across a data reply opens its menu from current state
   // SH-401 lands state.data now but defers populateListRow until the press can
   // no longer click. The old button therefore activates against newer state.
   await held.deliver();
-  await expect(row.locator("td").nth(4)).toContainText("medium");
+  await expect(row.locator(".mobile-story-priority")).toContainText("medium");
   await actions.evaluate((node) => (node as HTMLElement).click());
 
   const menu = page.locator('.ctxmenu[aria-label="Story actions"]');
@@ -180,7 +183,7 @@ test("a row action pressed across a data reply opens its menu from current state
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
-  await expect(row.locator("td").nth(4)).toContainText("high");
+  await expect(row.locator(".mobile-story-priority")).toContainText("high");
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");

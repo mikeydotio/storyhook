@@ -22,6 +22,7 @@ use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
+use crate::lane_budget::WindowCensus;
 #[cfg(test)]
 use crate::process::read_capture;
 use crate::process::{CaptureError, Captured, run_captured};
@@ -38,7 +39,12 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// This is the dashboard dispatch bound moved to the shared seam: the script's
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
-pub(crate) const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+///
+/// Public because it is the deadline the reconciler's deferral of a dead
+/// window on a returned story disproves (SH-650): `tests/engine_reconcile.rs`
+/// pins it inside [`STALL_CEILING_SECS`], so a resume re-dispatch has either
+/// shown a live pane or parked the story before the stall clock can fire.
+pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// How often stop-now re-reads a lane whose dispatch helper still owns the
 /// exact cleanup lease it is about to publish.
@@ -55,6 +61,8 @@ pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
 pub const BREAKER_TRIPPED: &str = "breaker-tripped";
 /// The run-level stop reason a drained queue writes.
 pub const QUEUE_DRAINED: &str = "queue-drained";
+/// The selected epic no longer exists or is no longer typed as an epic.
+pub const SCOPE_UNAVAILABLE: &str = "scope-unavailable";
 
 /// The lane-level outcome recorded when a story reached a CLOSED superstate.
 pub const COMPLETED: &str = "completed";
@@ -68,18 +76,33 @@ pub const HARD_STOP_BREAKER: u32 = 3;
 /// subprocess, and this machine already bounds those:
 /// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
 /// literal would be a second opinion about one machine, which this project has
-/// paid for repeatedly (SH-136). `engine_lane_budget_matches_dispatch_capacity`
-/// fails if the two ever drift.
+/// paid for repeatedly (SH-136).
+/// `the_lane_budget_is_spelled_as_the_dispatch_capacity_not_a_copy_of_its_digits`
+/// (`tests/engine_reconcile.rs`) fails if the two ever drift.
 pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
 
-/// `make test`'s measured warm median, in seconds, from
-/// `docs/rearch/baseline/timings.md`.
+/// How long a live agent may legitimately show **no output on its pty and no
+/// story event**, in seconds: one foreground tool call.
 ///
-/// Kept beside the ceiling it feeds so the derivation is legible at the point
-/// of use; `stall_ceiling_derives_from_the_measured_suite_median` reads the
-/// same figure back out of that document and fails if the measurement moves,
-/// in the shape `tests/machine_lock.rs` already uses for `GATE_MEDIAN_SECS`.
-pub const GATE_MEDIAN_SECS: u64 = 36;
+/// Claude Code bounds a foreground `Bash` call at 600 s — the tool's own
+/// schema says `timeout … max 600000` ms (`BASH_MAX_TIMEOUT_MS`). Measured on
+/// tmux 3.7c for SH-657: a working agent redraws its pane sub-second while
+/// the model streams or thinks, and the pane goes static only inside a tool
+/// call; an idle agent at a prompt stays static for hours. So the longest
+/// silence on *both* channels a live lane can show is one such call, and
+/// that is the deadline [`STALL_CEILING_SECS`] disproves (SH-394).
+///
+/// The engine makes this bound its own rather than a cited host default:
+/// [`crate::api::dispatch`]'s engine lanes export `BASH_MAX_TIMEOUT_MS`
+/// derived from this constant onto the lane's `tmux new-window -e` boundary,
+/// so the environment the agent runs under and the ceiling that judges it
+/// share one source (SH-657's council verdict, `story show SH-657`).
+pub const HOST_TOOL_CALL_CEILING_SECS: u64 = 600;
+
+/// The environment name through which an engine lane's dispatch is told
+/// [`HOST_TOOL_CALL_CEILING_SECS`], in milliseconds; `story.sh` forwards it
+/// onto the lane's `tmux new-window -e` boundary as `BASH_MAX_TIMEOUT_MS`.
+pub const LANE_TOOL_CEILING_ENV: &str = "STORY_LANE_TOOL_CEILING_MS";
 
 /// How much slack the ceiling carries over the derived worst case.
 ///
@@ -87,32 +110,36 @@ pub const GATE_MEDIAN_SECS: u64 = 36;
 /// reader can see what is measurement and what is judgement (SH-394).
 pub const STALL_MARGIN: u64 = 2;
 
-/// How long a lane may show no observable progress before it is a hard stop.
+/// How long a lane may show no observable progress — on **every** channel the
+/// engine reads — before it is a hard stop.
 ///
 /// **Derived from the deadline it disproves, never a bare literal** (SH-394).
-/// This ceiling was first derived when a lane's longest *legitimate* silence
-/// was its own full `make test` run, queuing on the machine-wide `gate` lock
-/// behind up to [`ENGINE_LANE_BUDGET`] other lanes doing the same (SH-457
-/// takes that lock inside `scripts/run-tests.sh`).
+/// Two channels feed the clock: the story's change-feed position
+/// (`stories.head_global_seq`) and the pane's last pty output
+/// (`#{window_activity}`, SH-657). A lane is stalled only when BOTH have been
+/// silent longer than this, so the deadline being disproved is the longest
+/// silence a live agent can show on both at once —
+/// [`HOST_TOOL_CALL_CEILING_SECS`], one foreground tool call.
 ///
-/// **SH-521 moved that run out of the lane.** A lane now runs only its own
-/// new and directly impacted tests (D4); the full suite runs once, on one
-/// serialized daemon verification worker, for a story that has already
-/// reached `verifying` — which [`LaneClassification::Verifying`] holds
-/// outside this ceiling entirely, precisely because that queue can
-/// legitimately outrun it. What remains behind this ceiling is a lane's own
-/// much smaller test leg, so [`GATE_MEDIAN_SECS`] — the full suite's measured
-/// warm median — stays a generous, conservative bound on it rather than a
-/// tight one: SH-394's rule is to widen a fixture's own cost over tightening
-/// an assertion that sits too close to flake, and re-deriving down to a
-/// narrower, less-measured figure would be exactly that.
+/// **History, kept because it is the case that made the rule.** This ceiling
+/// was first derived as `ENGINE_LANE_BUDGET × make-test median × margin`
+/// (288 s), on the reasoning that a lane's longest legitimate silence was its
+/// own `make test` run queuing behind other lanes. That bounded the wrong
+/// thing: the clock never measured test time, it measured time between story
+/// events, and an autonomous agent writes nothing to the store between its
+/// dispatch and its plan comment — 267–616 s on this tracker's own history,
+/// and far longer during implementation. Eight of the first eight stall
+/// verdicts the engine ever wrote were false, each on an agent that was
+/// working (SH-657, `docs/rca/full-auto-stalls-working-lanes.md`). A store
+/// silence has no bounded legitimate span, so no ceiling over the store
+/// alone can be derived; the pty channel is what makes a deadline exist.
 ///
-/// **If a lane's own test leg is ever folded back into a `make test` run
-/// serialized behind other lanes, this ceiling must be re-derived, not
-/// merely raised** — that was the original 873s-vs-median distinction this
-/// constant was built to make, and SH-521 changed which run is being bounded
-/// without changing that underlying rule.
-pub const STALL_CEILING_SECS: u64 = ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS * STALL_MARGIN;
+/// **Stated limit, not glossed:** an agent whose *turn ended* waiting on a
+/// background task is silent on both channels for the task's whole
+/// duration, which the host does not bound. A process-tree activity signal
+/// would cover it and is filed separately, gated on measuring that such
+/// waits actually exceed this ceiling in a lane.
+pub const STALL_CEILING_SECS: u64 = HOST_TOOL_CALL_CEILING_SECS * STALL_MARGIN;
 
 /// How often a live run should be reconciled in the absence of any other wake.
 ///
@@ -152,6 +179,8 @@ pub enum HardStopKind {
     /// `story next` refused the claim the fill phase attempted (SH-120: the
     /// refusal is relayed verbatim, never composed here).
     DispatchRefused,
+    /// The story was deleted while its lane still held the claim.
+    StoryMissing,
 }
 
 impl HardStopKind {
@@ -164,6 +193,7 @@ impl HardStopKind {
             Self::Stalled => "stalled",
             Self::Interrupted => "interrupted",
             Self::DispatchRefused => "dispatch-refused",
+            Self::StoryMissing => "story-missing",
         }
     }
 }
@@ -210,6 +240,51 @@ pub enum LaneClassification {
     HardStop(HardStopKind),
 }
 
+/// What the liveness probe learned about a lane's window (SH-626).
+///
+/// Three answers, not two, because "tmux says the pane is dead" and "tmux
+/// could not be asked" are different facts and used to collapse into one
+/// `false` named `window-gone`. That is how a harness defect — the daemon's
+/// `tmux` double dying on an unset variable, exit 1 — was reported for months
+/// as a lane whose window had closed (SH-312's shape: an ambiguous outcome
+/// reported as a definite one; SH-576's: a confident diagnosis produced
+/// downstream of an unchecked failure). Each non-alive answer carries the
+/// reason in the probe's own words so the block reason names the cause.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowProbe {
+    /// The window holds a live process that is the agent it was launched with.
+    ///
+    /// `last_output_at` is tmux's own `#{window_activity}`: the unix time the
+    /// pane last wrote to its pty (SH-657). It is a fact about bytes the
+    /// confirmed process emitted, not about what the screen shows — SH-226's
+    /// rule is that rendered output is never evidence a process is *running*,
+    /// and the process is confirmed separately, above. `None` when tmux
+    /// answered the field empty or unparseable: absence states nothing
+    /// (SH-372), and the lane is then judged by the store channel alone.
+    Alive { last_output_at: Option<i64> },
+    /// tmux answered, and the answer is that the window is gone or no longer
+    /// holds the agent: the target cannot be found, the pane is dead, its
+    /// pid is not running, or its foreground command is something else.
+    Gone { detail: String },
+    /// tmux could not be asked, or answered in a shape the probe does not
+    /// understand: it could not be spawned, did not answer within
+    /// [`TMUX_TIMEOUT`], exited nonzero for a reason that is not "no such
+    /// target", or printed something other than the three fields requested.
+    /// A fact about the machine, not about the window.
+    Unanswered { detail: String },
+}
+
+impl WindowProbe {
+    /// The probe's own reason when the window is not simply alive.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Alive { .. } => None,
+            Self::Gone { detail } | Self::Unanswered { detail } => Some(detail),
+        }
+    }
+}
+
 /// One lane's facts as of one pass, gathered before anything is decided.
 ///
 /// Separating observation from classification is what lets the taxonomy be
@@ -223,20 +298,32 @@ pub struct LaneObservation {
     pub story_verifying: bool,
     /// Whether the agent blocked the story or set `awaiting` on it.
     pub agent_blocked: bool,
-    /// Whether the lane's window still runs the agent it was launched with.
-    pub window_alive: bool,
+    /// What the liveness probe learned about the lane's window.
+    pub window: WindowProbe,
     /// The story's current change-feed position, or `None` if it could not be
     /// resolved (a deleted story, say).
     pub head_global_seq: Option<i64>,
     /// The seq recorded the last time this lane was seen to move.
     pub last_progress_seq: Option<i64>,
-    /// Seconds since [`Self::last_progress_seq`] last advanced, or `None` when
-    /// no progress has been observed yet.
+    /// Seconds since the lane last showed any observed activity — a moved
+    /// seq or pty output (SH-657) — or `None` when nothing has been observed
+    /// yet.
     pub seconds_since_progress: Option<u64>,
+    /// Seconds since the pane last wrote to its pty, from the probe's own
+    /// `#{window_activity}` (SH-657), or `None` when the probe did not answer
+    /// it: the window is gone, tmux could not be asked, or the field was
+    /// empty. `None` contributes no evidence either way.
+    pub seconds_since_output: Option<u64>,
     /// The story's own `awaiting` text, when it has one — the reason to
     /// relay verbatim if this lane is quarantined, rather than overwriting it
     /// with a message composed here (SH-120).
     pub awaiting_reason: Option<String>,
+    /// Whether the story's state history ends with the verifier's return
+    /// (`verifying` → `in-progress`, nothing since): the verifier is, or is
+    /// about to be, re-dispatching into this lane's window (SH-650). Read only
+    /// when the probe says the window is gone, which is the one case it
+    /// changes.
+    pub returned_for_repair: bool,
 }
 
 /// What one reconcile pass did, as data rather than rendered text.
@@ -247,6 +334,14 @@ pub struct LaneObservation {
 pub struct ReconcileReport {
     /// The run this pass reconciled.
     pub run_id: RunId,
+    /// Lanes whose liveness probe could not be answered this pass, with the
+    /// probe's own reason (SH-626). Not a hard stop — see [`WindowProbe`].
+    pub unanswered: Vec<(u32, String)>,
+    /// Lanes whose window is gone but whose story the verifier has just
+    /// returned for repair (SH-650), with the probe's own reason. Not a hard
+    /// stop this pass: the verifier's resume re-dispatch is what fills that
+    /// window, and the stall clock bounds the wait.
+    pub deferred: Vec<(u32, String)>,
     /// Lane indices freed because their story completed.
     pub completed: Vec<u32>,
     /// Lane indices held this pass because their story reached `verifying`.
@@ -255,6 +350,11 @@ pub struct ReconcileReport {
     pub quarantined: Vec<(u32, HardStopKind)>,
     /// Lane indices filled this pass, with the story each claimed.
     pub filled: Vec<(u32, String)>,
+    /// The machine-wide census the fill measured its budget against
+    /// (SH-655): every live agent window on the dispatcher's tmux server,
+    /// manual sessions included. `None` when the pass never reached a fill
+    /// (the run was not running, or reconciliation stopped earlier).
+    pub census: Option<WindowCensus>,
     /// The run's state after the pass.
     pub run_state: EngineRunState,
     /// The run's stop reason after the pass, when it has one.
@@ -274,9 +374,9 @@ pub struct ReconcileReport {
 ///
 /// `AgentBlocked` is tested next, ahead of `Verifying`: a story can sit in
 /// `verifying` with `awaiting` also set (centralized verification's own
-/// `return_for_repair` falls back to `set_awaiting` when it cannot reach the
-/// dispatched pane, SH-521), and that diagnosis must surface rather than be
-/// masked by the handoff.
+/// `return_for_repair` parks a story with `awaiting` when its resume
+/// re-dispatch is refused, SH-521/SH-650), and that diagnosis must surface
+/// rather than be masked by the handoff.
 ///
 /// `Verifying` is tested ahead of `WindowGone` and `Stalled`. The agent's
 /// last action for a successful story is `story move <n> verifying`, and the
@@ -284,8 +384,9 @@ pub struct ReconcileReport {
 /// persistent shell (`plugins/story/bin/story.sh`'s own `remain-on-exit`
 /// rationale) — so the pane is normally already dead the instant a story
 /// reaches this handoff, exactly like an ordinary completion. Reading the
-/// window next would report every successful lane as `WindowGone`, and D4's
-/// serial, machine-wide verification queue can legitimately outrun any one
+/// window next would report every successful lane as `WindowGone`, and the
+/// project's serial verification queue (D4 as narrowed by SH-648: one worker
+/// per project) can legitimately outrun any one
 /// lane's own [`STALL_CEILING_SECS`] besides, so reading the clock next would
 /// eventually report the same success as `Stalled` instead. Neither is a
 /// failure; the story is exactly where it is supposed to be.
@@ -313,11 +414,30 @@ pub fn classify(
     if observation.story_verifying {
         return LaneClassification::Verifying;
     }
-    if !observation.window_alive {
-        return LaneClassification::HardStop(match pass {
-            ReconcilePass::Steady => HardStopKind::WindowGone,
-            ReconcilePass::Restart => HardStopKind::Interrupted,
-        });
+    match observation.window {
+        // An unanswered probe contributes no evidence this pass (SH-626,
+        // council verdict on the story): it is a fact about the machine, not
+        // the window, so the lane is judged by the store fact D3 already makes
+        // primary — the stall clock below, which a dead agent cannot advance.
+        WindowProbe::Alive { .. } | WindowProbe::Unanswered { .. } => {}
+        // A window gone on a story the verifier has just returned is the
+        // verifier's own re-dispatch in flight (SH-650): the pane is normally
+        // already dead at the handoff, and `dispatch --resume` respawns it
+        // in place after a readiness wait this pass would otherwise read as
+        // a hard stop. No evidence, same as an unanswered probe — the stall
+        // clock below still bounds it, and `DISPATCH_TIMEOUT` is inside that
+        // ceiling, so a re-dispatch either shows a live pane or has parked
+        // the story with `awaiting` (classified above) before the clock can
+        // fire. Only on a steady pass: a daemon that died mid-re-dispatch
+        // has nobody left to finish it, so a restart still reports it.
+        WindowProbe::Gone { .. }
+            if observation.returned_for_repair && pass == ReconcilePass::Steady => {}
+        WindowProbe::Gone { .. } => {
+            return LaneClassification::HardStop(match pass {
+                ReconcilePass::Steady => HardStopKind::WindowGone,
+                ReconcilePass::Restart => HardStopKind::Interrupted,
+            });
+        }
     }
     if pass == ReconcilePass::Restart {
         return LaneClassification::Progressing;
@@ -329,11 +449,18 @@ pub fn classify(
         (Some(head), Some(recorded)) => head == recorded,
         _ => false,
     };
-    if unmoved
+    let store_silent = unmoved
         && observation
             .seconds_since_progress
-            .is_some_and(|elapsed| elapsed > stall_ceiling_secs)
-    {
+            .is_some_and(|elapsed| elapsed > stall_ceiling_secs);
+    // The pty is the second channel (SH-657): a pane that wrote within the
+    // ceiling holds a live agent whatever the store says. Its absence
+    // (`None`) is no evidence, so the store verdict stands alone then —
+    // which is the SH-626 backstop for a dead-but-unobservable lane.
+    let pty_silent = observation
+        .seconds_since_output
+        .is_none_or(|elapsed| elapsed > stall_ceiling_secs);
+    if store_silent && pty_silent {
         return LaneClassification::HardStop(HardStopKind::Stalled);
     }
     LaneClassification::Progressing
@@ -341,7 +468,18 @@ pub fn classify(
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
-const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+pub const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+
+/// The one `display-message` format the liveness probe asks a lane's pane
+/// for: its pid, its foreground command, whether tmux itself considers the
+/// pane dead, and when the window last wrote to its pty (`#{window_activity}`,
+/// unix seconds — the second stall channel, SH-657), tab-separated. Exported so the fixture that has to answer
+/// it (`plugins/story/tests/fakes/tmux`'s composite arm, SH-575) and the
+/// harness fence that proves the daemon's own environment can reach that
+/// fixture (`tests/e2e_provider_doubles.rs`, SH-626) ask with this exact
+/// spelling rather than a copy of it (SH-136).
+pub const WINDOW_PROBE_FORMAT: &str =
+    "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_activity}";
 
 const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
     "STORY_PROMPT",
@@ -427,8 +565,13 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
-    fn window_alive(&self, window: &str) -> bool;
+    fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
+    /// The live agent windows on the tmux server this dispatcher fills
+    /// lanes on — every dispatched session, engine-filled or manual, counted
+    /// against the one machine budget (SH-655). Taken once per fill pass;
+    /// an unanswered census is no evidence (SH-626), never zero.
+    fn census(&self) -> WindowCensus;
 }
 
 /// Refusing dispatcher for lifecycle operations that are store-only.
@@ -448,12 +591,20 @@ impl Dispatcher for StoreOnlyDispatcher {
         Err(store_only_dispatcher_error())
     }
 
-    fn window_alive(&self, _window: &str) -> bool {
-        false
+    fn probe_window(&self, _window: &str) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: store_only_dispatcher_error().to_string(),
+        }
     }
 
     fn kill_window(&self, _window: &str) -> Result<(), AppError> {
         Err(store_only_dispatcher_error())
+    }
+
+    fn census(&self) -> WindowCensus {
+        WindowCensus::Unanswered {
+            detail: store_only_dispatcher_error().to_string(),
+        }
     }
 }
 
@@ -490,6 +641,13 @@ impl ShellDispatcher {
     }
 }
 
+impl ShellDispatcher {
+    /// The window census on the server this dispatcher's lanes live on.
+    fn shell_census(&self) -> WindowCensus {
+        crate::lane_budget::census_through(self.tmux())
+    }
+}
+
 impl Dispatcher for ShellDispatcher {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
         let options = DispatchOptions {
@@ -502,7 +660,7 @@ impl Dispatcher for ShellDispatcher {
             &self.story_sh_path,
             &request.project,
             &request.story,
-            request.agent,
+            Some(request.agent),
             true,
             true,
             &options,
@@ -524,31 +682,102 @@ impl Dispatcher for ShellDispatcher {
         )
     }
 
-    fn window_alive(&self, window: &str) -> bool {
+    fn probe_window(&self, window: &str) -> WindowProbe {
         let mut command = self.tmux();
-        command.args([
-            "display-message",
-            "-p",
-            "-t",
-            window,
-            "#{pane_pid}\t#{pane_current_command}\t#{pane_dead}",
-        ]);
+        command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let captured = match run_captured(command, TMUX_TIMEOUT) {
-            Ok(captured) if captured.status.success() => captured,
-            _ => return false,
+            Ok(captured) => captured,
+            Err(CaptureError::Timeout(_)) => {
+                return WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux did not answer the liveness probe for `{window}` within {}s",
+                        TMUX_TIMEOUT.as_secs()
+                    ),
+                };
+            }
+            Err(error) => {
+                return WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux could not be run for the liveness probe of `{window}`: {}",
+                        error.detail()
+                    ),
+                };
+            }
         };
-        let answer = String::from_utf8_lossy(&captured.stdout);
-        let mut fields = answer.trim_end().splitn(3, '\t');
-        let Some(pid) = fields.next().and_then(|raw| raw.parse::<i32>().ok()) else {
-            return false;
-        };
-        let Some(command) = fields.next() else {
-            return false;
-        };
-        if fields.next() != Some("0") || !pid_is_live(pid) {
-            return false;
+        if !captured.status.success() {
+            let stderr = String::from_utf8_lossy(&captured.stderr).trim().to_string();
+            // tmux exits 1 both for "no such target" and for anything else
+            // that went wrong; only its own vocabulary separates the two.
+            return if tmux_reports_a_missing_target(&stderr) {
+                WindowProbe::Gone {
+                    detail: format!("tmux cannot find `{window}`: {stderr}"),
+                }
+            } else {
+                WindowProbe::Unanswered {
+                    detail: format!(
+                        "tmux exited {} answering the liveness probe for `{window}`: {}",
+                        captured.status,
+                        if stderr.is_empty() {
+                            "(no stderr)"
+                        } else {
+                            &stderr
+                        }
+                    ),
+                }
+            };
         }
-        ProcessIdentity::from_process().matches(command)
+        let answer = String::from_utf8_lossy(&captured.stdout);
+        let answer = answer.trim_end_matches(['\r', '\n']);
+        let mut fields = answer.splitn(4, '\t');
+        let (Some(pid), Some(command), Some(dead), Some(activity)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "tmux answered the liveness probe for `{window}` with {answer:?}, not the four fields asked for"
+                ),
+            };
+        };
+        // `display-message -t` is `CMD_FIND_CANFAIL` in tmux itself: a target
+        // it cannot find is not an error, the format simply expands with no
+        // pane behind it — every field empty, exit 0 (measured on tmux
+        // 3.7c). That IS tmux's answer that the pane is gone, in the only
+        // words it uses for it.
+        if pid.is_empty() && command.is_empty() && dead.is_empty() && activity.is_empty() {
+            return WindowProbe::Gone {
+                detail: format!("tmux finds no pane `{window}`"),
+            };
+        }
+        let Ok(pid) = pid.parse::<i32>() else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "tmux answered the liveness probe for `{window}` with pane pid {pid:?}, not a number"
+                ),
+            };
+        };
+        if dead != "0" {
+            return WindowProbe::Gone {
+                detail: format!("tmux reports pane `{window}` dead (pane_dead={dead})"),
+            };
+        }
+        if !pid_is_live(pid) {
+            return WindowProbe::Gone {
+                detail: format!("pane `{window}`'s process {pid} is not running"),
+            };
+        }
+        if !ProcessIdentity::from_process().matches(command) {
+            return WindowProbe::Gone {
+                detail: format!(
+                    "pane `{window}` runs `{command}` (pid {pid}), not the agent it was launched with"
+                ),
+            };
+        }
+        // An empty or non-numeric activity stamp is not a reason to doubt a
+        // pane whose pid and identity just checked out; it only means the
+        // pty channel has nothing to say this pass (SH-372).
+        WindowProbe::Alive {
+            last_output_at: activity.parse::<i64>().ok(),
+        }
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
@@ -577,6 +806,10 @@ impl Dispatcher for ShellDispatcher {
             ))),
         }
     }
+
+    fn census(&self) -> WindowCensus {
+        self.shell_census()
+    }
 }
 
 /// Stable identity for one engine run.
@@ -591,6 +824,21 @@ pub struct StartRequest {
     pub agent: EngineAgent,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub speed: Option<EngineSpeed>,
+}
+
+/// Replacement configuration for future claims in a live Full Auto run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigureRequest {
+    /// Desired maximum number of concurrently occupied lanes.
+    pub lanes: u32,
+    /// Agent host used by stories claimed after this update commits.
+    pub agent: EngineAgent,
+    /// Explicit provider model, or the provider default when absent.
+    pub model: Option<String>,
+    /// Explicit reasoning effort, or the provider default when absent.
+    pub effort: Option<String>,
+    /// Explicit speed selection, or the provider default when absent.
     pub speed: Option<EngineSpeed>,
 }
 
@@ -624,18 +872,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Starts one run and all of its idle lanes in a single transaction.
     pub fn start(&self, request: StartRequest) -> Result<EngineRunRecord, AppError> {
-        if !(1..=MAX_ENGINE_LANES).contains(&request.lanes) {
-            return Err(AppError::Validation(format!(
-                "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
-            )));
-        }
-        for (name, value) in [("model", &request.model), ("effort", &request.effort)] {
-            if let Some(value) = value {
-                validate_dispatch_option_token(value).map_err(|reason| {
-                    AppError::Validation(format!("invalid engine {name} `{value}`: {reason}"))
-                })?;
-            }
-        }
+        validate_configuration(request.lanes, &request.model, &request.effort)?;
 
         let project = self.ctx.project();
         let now = self.ctx.now();
@@ -715,6 +952,48 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         }
     }
 
+    /// Replaces the configuration used by future claims in a running or
+    /// paused run without touching work that is already occupied.
+    pub fn configure(
+        &self,
+        run_id: &RunId,
+        request: ConfigureRequest,
+    ) -> Result<RunView, AppError> {
+        validate_configuration(request.lanes, &request.model, &request.effort)?;
+        let project = self.ctx.project();
+        let updated_at = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            require_state(
+                &run,
+                "configure",
+                &[EngineRunState::Running, EngineRunState::Paused],
+            )?;
+
+            let lanes = tx.engine_lanes(run_id)?;
+            for lane in lanes.iter().filter(|lane| {
+                lane.lane_index >= request.lanes && lane.state == EngineLaneState::Idle
+            }) {
+                tx.delete_engine_lane(run_id, lane.lane_index)?;
+            }
+            for lane_index in 0..request.lanes {
+                if !lanes.iter().any(|lane| lane.lane_index == lane_index) {
+                    tx.put_engine_lane(&idle_lane(run_id, lane_index, &updated_at))?;
+                }
+            }
+
+            run.lanes = request.lanes;
+            run.agent = request.agent;
+            run.model = request.model;
+            run.effort = request.effort;
+            run.speed = request.speed;
+            run.updated_at = updated_at.clone();
+            tx.update_engine_run(&run)
+        })?;
+        self.one_view(run_id)
+    }
+
     /// Reads all project runs, or exactly one named run, with ordered lanes.
     pub fn status(&self, run_id: Option<&RunId>) -> Result<Vec<RunView>, AppError> {
         let project = self.ctx.project();
@@ -731,11 +1010,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             runs.into_iter()
                 .map(|run| {
                     let lanes = tx.engine_lanes(&run.id)?;
-                    let skipped_no_auto = if run.state.is_live() {
-                        needs_human_stories(tx, project, &now, &run.scope)?
-                    } else {
-                        Vec::new()
-                    };
+                    let skipped_no_auto =
+                        if run.state.is_live() && scope_is_available(tx, project, &run.scope)? {
+                            needs_human_stories(tx, project, &now, &run.scope)?
+                        } else {
+                            Vec::new()
+                        };
                     Ok(RunView {
                         run,
                         lanes,
@@ -859,6 +1139,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let slug = self.project_slug()?;
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
+            unanswered: Vec::new(),
+            deferred: Vec::new(),
+            census: None,
             completed: Vec::new(),
             verifying: Vec::new(),
             quarantined: Vec::new(),
@@ -867,15 +1150,35 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             stop_reason: None,
         };
 
+        if self.halt_if_scope_unavailable(run_id)? {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
+
         // ---- observe + classify -------------------------------------------
         let observed = self.observe_lanes(&slug, run_id, pass)?;
 
         // ---- apply: free completions, hold handoffs, quarantine hard stops
         let mut hard_stops = Vec::new();
         for (lane, classification, observation) in observed {
+            if let WindowProbe::Unanswered { detail } = &observation.window {
+                report.unanswered.push((lane.lane_index, detail.clone()));
+            }
+            if let (WindowProbe::Gone { detail }, LaneClassification::Progressing) =
+                (&observation.window, classification)
+            {
+                report.deferred.push((lane.lane_index, detail.clone()));
+            }
             match classification {
                 LaneClassification::Progressing => {
-                    self.record_progress(&lane, observation.head_global_seq, pass)?;
+                    self.record_progress(
+                        &lane,
+                        observation.head_global_seq,
+                        &observation.window,
+                        pass,
+                    )?;
                 }
                 LaneClassification::Verifying => {
                     // Held, not freed: the story still owns a live worktree
@@ -883,21 +1186,36 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     // (SH-521). The story DID move to reach this handoff, so
                     // the stall clock restarts the same way a Progressing
                     // lane's does.
-                    report.verifying.push(lane.lane_index);
-                    self.record_progress(&lane, observation.head_global_seq, pass)?;
+                    if self.record_progress(
+                        &lane,
+                        observation.head_global_seq,
+                        &observation.window,
+                        pass,
+                    )? {
+                        report.verifying.push(lane.lane_index);
+                    }
                 }
                 LaneClassification::Completed => {
-                    report.completed.push(lane.lane_index);
-                    self.free_completed_lane(&lane)?;
+                    if self.free_completed_lane(&lane, observation.head_global_seq)? {
+                        report.completed.push(lane.lane_index);
+                    }
                 }
                 LaneClassification::HardStop(kind) => {
-                    report.quarantined.push((lane.lane_index, kind));
-                    hard_stops.push(self.quarantine_lane(
+                    let stall = stall_evidence(&observation);
+                    if let Some(record) = self.quarantine_lane(
                         run_id,
                         &lane,
                         kind,
-                        observation.awaiting_reason.as_deref(),
-                    )?);
+                        QuarantineEvidence {
+                            existing_reason: observation.awaiting_reason.as_deref(),
+                            window_detail: observation.window.detail(),
+                            stall: stall.as_deref(),
+                        },
+                        observation.head_global_seq,
+                    )? {
+                        report.quarantined.push((lane.lane_index, kind));
+                        hard_stops.push(record);
+                    }
                 }
             }
         }
@@ -986,12 +1304,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .story_id
                     .clone()
                     .expect("a non-idle lane holds a story");
-                // A story that will not resolve states nothing about progress:
-                // `head_global_seq` stays `None` and `classify` declines to
-                // call that a stall (SH-372).
-                let row = resolve_story(tx, project, &prefix, &story)
-                    .ok()
-                    .map(|(_, row)| row);
+                let row = optional_lane_story(tx, project, &prefix, &story)?;
                 facts.push((lane, row));
             }
             Ok(facts)
@@ -1000,7 +1313,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut observed = Vec::with_capacity(facts.len());
         for (lane, row) in facts {
             // The window probe is a subprocess, so it runs outside the read.
-            let window_alive = lane
+            let window = lane
                 .pane_id
                 .as_deref()
                 .filter(|pane| valid_pane_id(pane))
@@ -1010,8 +1323,36 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         .as_deref()
                         .map(|window| exact_window_target(slug, window))
                 })
-                .is_some_and(|target| self.dispatcher.window_alive(&target));
+                .map_or_else(
+                    || WindowProbe::Gone {
+                        detail: "the lane records neither a pane id nor a window name to probe"
+                            .to_string(),
+                    },
+                    |target| self.dispatcher.probe_window(&target),
+                );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
+            // Read only when it can change the verdict: a Gone window on an
+            // open, non-verifying, non-awaiting story (SH-650). Every other
+            // combination is decided without it, and a live run reconciles
+            // about once a second.
+            let returned_for_repair = match (&window, row.as_ref()) {
+                (WindowProbe::Gone { .. }, Some(row))
+                    if row.superstate != SuperState::Closed
+                        && row.state != VERIFYING_STATE_SLUG
+                        && row.awaiting.is_none() =>
+                {
+                    self.ctx.store().read(|tx| {
+                        super::verification::returned_for_repair(tx, project, row.story_no)
+                    })?
+                }
+                _ => false,
+            };
+            let seconds_since_output = match &window {
+                WindowProbe::Alive {
+                    last_output_at: Some(at),
+                } => seconds_between_unix(*at, &now),
+                _ => None,
+            };
             let observation = LaneObservation {
                 story_closed: row
                     .as_ref()
@@ -1022,19 +1363,41 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 agent_blocked: row.as_ref().is_some_and(|row| {
                     row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
                 }),
-                window_alive,
+                window,
                 head_global_seq,
                 last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),
                 seconds_since_progress: lane
                     .last_progress_at
                     .as_deref()
                     .and_then(|at| elapsed_secs(at, &now)),
+                seconds_since_output,
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
+                returned_for_repair,
             };
-            let classification = classify(&observation, STALL_CEILING_SECS, pass);
+            let classification = if row.is_none() {
+                LaneClassification::HardStop(HardStopKind::StoryMissing)
+            } else {
+                classify(&observation, STALL_CEILING_SECS, pass)
+            };
             observed.push((lane, classification, observation));
         }
         Ok(observed)
+    }
+
+    /// One activity-journal line per CHANGE in what the probe says about a
+    /// lane, never per pass — [`probe_journal_edge`] decides, this only
+    /// writes.
+    fn journal_probe_edge(&self, lane: &EngineLaneRecord, probe: &WindowProbe) {
+        let Some((level, message)) = probe_journal_edge(lane.probe_detail.as_deref(), probe) else {
+            return;
+        };
+        let context = format!(
+            "run={} lane={} story={}",
+            lane.run_id,
+            lane.lane_index,
+            lane.story_id.as_deref().unwrap_or("-")
+        );
+        crate::daemon::activity::emit(level, "engine/probe", "event", &context, &message);
     }
 
     /// Records that a lane's story moved, so the stall clock restarts from the
@@ -1051,11 +1414,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         &self,
         lane: &EngineLaneRecord,
         head_global_seq: Option<i64>,
+        probe: &WindowProbe,
         pass: ReconcilePass,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut updated = lane.clone();
         updated.last_observed_at = observed_at.clone();
+        // What tmux last said, when it did not say "alive" (SH-626). Written
+        // every pass so status reads the current truth; JOURNALED only on
+        // the edge, because a live run is reconciled roughly once a second
+        // and a line per pass is the SH-263 self-noise shape.
+        updated.probe_detail = probe.detail().map(str::to_string);
+        if updated.probe_detail != lane.probe_detail {
+            self.journal_probe_edge(lane, probe);
+        }
         let moved = pass == ReconcilePass::Restart
             || match (head_global_seq, lane.last_progress_seq.map(GlobalSeq::get)) {
                 (Some(head), Some(recorded)) => head != recorded,
@@ -1065,21 +1437,41 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         if moved {
             updated.last_progress_seq = head_global_seq.map(GlobalSeq::new);
             updated.last_progress_at = Some(observed_at);
+        } else if let Some(output_at) = pty_output_after(probe, lane.last_progress_at.as_deref()) {
+            // The store did not move but the pane did (SH-657): the agent is
+            // working without writing to the store, which is most of what an
+            // agent does. The clock restarts from the OUTPUT, not from this
+            // observation — tmux's stamp is exact and the tick is coarse.
+            updated.last_progress_at = Some(output_at);
         }
-        if &updated != lane {
-            self.ctx.store().write(|tx| tx.put_engine_lane(&updated))?;
-        }
-        Ok(())
+        Ok(self.ctx.store().write(|tx| {
+            if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
+                return Ok(false);
+            }
+            if &updated != lane {
+                tx.put_engine_lane(&updated)?;
+            }
+            Ok(true)
+        })?)
     }
 
     /// Frees a lane whose story reached a CLOSED superstate.
-    fn free_completed_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
+    fn free_completed_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        head_global_seq: Option<i64>,
+    ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = Some(COMPLETED.to_string());
         idle.outcome_detail = lane.story_id.clone();
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
-        Ok(())
+        Ok(self.ctx.store().write(|tx| {
+            if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
+                return Ok(false);
+            }
+            put_or_retire_idle_lane(tx, &idle)?;
+            Ok(true)
+        })?)
     }
 
     /// Records a hard stop on the story and preserves the lane's evidence.
@@ -1094,7 +1486,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// at observation time — for [`HardStopKind::AgentBlocked`], the agent's
     /// own diagnosis (its charter tells it to `story block <n> the-reason`
     /// before stopping), or centralized verification's own message when
-    /// `return_for_repair` could not reach a dead pane (SH-521). SH-120's
+    /// `return_for_repair` could not re-dispatch into a dead pane (SH-521,
+    /// SH-650). SH-120's
     /// relay rule applies here exactly as it does to a dispatch refusal: the
     /// existing text is appended to, never replaced by, a message composed
     /// here. Every other kind observes `existing_reason` as `None` by
@@ -1106,13 +1499,43 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         run_id: &RunId,
         lane: &EngineLaneRecord,
         kind: HardStopKind,
-        existing_reason: Option<&str>,
-    ) -> Result<EngineQuarantineRecord, AppError> {
+        evidence: QuarantineEvidence<'_>,
+        head_global_seq: Option<i64>,
+    ) -> Result<Option<EngineQuarantineRecord>, AppError> {
+        let QuarantineEvidence {
+            existing_reason,
+            window_detail,
+            stall: stall_evidence,
+        } = evidence;
         let observed_at = self.ctx.now();
         let mut fired_reason = None;
-        if let Some(story) = lane.story_id.as_deref() {
+        if lane.story_id.is_some() {
+            // The probe's own words travel with a window verdict (SH-626):
+            // "window-gone" alone once hid a tmux that could not be run at
+            // all behind the same three words as a window that had closed.
+            let probe = match kind {
+                HardStopKind::WindowGone | HardStopKind::Interrupted => window_detail
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default(),
+                // A stall reached while the probe could not be asked is the
+                // council's backstop for a dead-but-unobservable lane, so the
+                // last probe failure travels with it.
+                // A stall names what was measured on each channel (SH-657):
+                // a verdict whose evidence nobody can see is the SH-418
+                // shape, and 8 of the first 8 were wrong.
+                HardStopKind::Stalled => format!(
+                    "{}{}",
+                    stall_evidence
+                        .map(|evidence| format!(" ({evidence})"))
+                        .unwrap_or_default(),
+                    window_detail
+                        .map(|detail| format!(" (window liveness unknown: {detail})"))
+                        .unwrap_or_default()
+                ),
+                _ => String::new(),
+            };
             let provenance = format!(
-                "Full Auto: {} on lane {} of run {run_id}{}{}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
+                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
                 kind.as_str(),
                 lane.lane_index,
                 lane.window_name
@@ -1128,7 +1551,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 Some(existing) if !existing.is_empty() => format!("{existing} ({provenance})"),
                 _ => provenance,
             };
-            super::StoryService::new(self.ctx).set_awaiting(story, &reason)?;
             fired_reason = Some(reason);
         }
         let mut quarantined = lane.clone();
@@ -1136,9 +1558,37 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         quarantined.last_observed_at = observed_at.clone();
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
-        self.ctx
-            .store()
-            .write(|tx| tx.put_engine_lane(&quarantined))?;
+        quarantined.probe_detail = window_detail.map(str::to_string);
+        let applied = self.ctx.store().write(|tx| {
+            let project = self.ctx.project();
+            if !observation_is_current(tx, project, lane, head_global_seq)? {
+                return Ok(false);
+            }
+            if kind != HardStopKind::StoryMissing {
+                let prefix = project_prefix(tx, project)?;
+                let story = lane.story_id.as_deref().expect("occupied lane has a story");
+                let (number, row) = resolve_story(tx, project, &prefix, story)?;
+                let states = tx.state_map(project)?;
+                super::append_and_fold(
+                    tx,
+                    project,
+                    number,
+                    &prefix,
+                    &states,
+                    crate::store::ExpectedSeq::Exact(row.head_seq),
+                    &[crate::domain::StoryEvent::StoryAwaitingSet {
+                        at: observed_at.clone(),
+                        awaiting: fired_reason.clone().expect("occupied lane has a reason"),
+                    }],
+                    self.ctx.provenance(),
+                )?;
+            }
+            tx.put_engine_lane(&quarantined)?;
+            Ok(true)
+        })?;
+        if !applied {
+            return Ok(None);
+        }
         self.fire_lane_quarantined_hook(
             run_id,
             lane.lane_index,
@@ -1148,7 +1598,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             lane.window_name.as_deref(),
             lane.worktree_path.as_deref(),
         );
-        Ok(EngineQuarantineRecord {
+        Ok(Some(EngineQuarantineRecord {
             lane_index: lane.lane_index,
             story_id: lane.story_id.clone(),
             kind: kind.as_str().to_string(),
@@ -1157,7 +1607,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             window_name: lane.window_name.clone(),
             worktree_path: lane.worktree_path.clone(),
             observed_at,
-        })
+        }))
     }
 
     /// Fires the `engine_lane_quarantined` hook for a lane just quarantined
@@ -1257,6 +1707,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             &serde_json::json!({
                 "event_type": "engine_run_halted",
                 "run_id": run_id,
+                "stop_reason": view.run.stop_reason,
+                "scope": view.run.scope.kind(),
+                "epic_id": view.run.scope.story_id(),
                 "consecutive_hard_stops": view.run.consecutive_hard_stops,
                 "last_quarantine_reasons": reasons,
                 "timestamp": self.ctx.now(),
@@ -1281,11 +1734,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             EngineScope::Epic(id) => Some(id.clone()),
             EngineScope::Project => None,
         };
-        let occupied = view
-            .lanes
-            .iter()
-            .filter(|lane| lane.state != EngineLaneState::Idle)
-            .count();
         let idle: Vec<EngineLaneRecord> = view
             .lanes
             .iter()
@@ -1293,12 +1741,30 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cloned()
             .collect();
 
-        for (n, lane) in idle.into_iter().enumerate() {
-            if occupied + n >= ENGINE_LANE_BUDGET {
-                break;
-            }
+        // THE MACHINE CENSUS (SH-655). `occupied_lane_count` sees the store's
+        // own lanes; a session `/story do` opened by hand is the same window,
+        // worktree and cold build and is in no table. So the budget is also
+        // measured against the live agent windows on this dispatcher's tmux
+        // server — taken ONCE per pass, outside the claim transaction (a
+        // subprocess inside a write transaction would hold the store for as
+        // long as tmux takes to answer), and advanced by hand for every
+        // window this pass has opened since, which the census cannot yet see.
+        // An unanswered census is no evidence (SH-626): the store's count
+        // still bounds the engine's own lanes, and the daemon journals the
+        // outage on its edge rather than once per pass.
+        let census = if idle.is_empty() {
+            None
+        } else {
+            Some(self.dispatcher.census())
+        };
+        let census_live = census.as_ref().and_then(WindowCensus::live);
+        report.census = census;
+        let mut dispatched_this_pass = 0usize;
+
+        for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
+            let dispatch_configuration = std::cell::RefCell::new(None);
             let filters = ReadyQueueFilters {
                 phase: None,
                 epic: scope_epic.as_deref(),
@@ -1308,7 +1774,27 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .claim_next_filtered_if(
                     filters,
                     None,
-                    |tx| Ok(run_for_project(tx, slug, run_id)?.state == EngineRunState::Running),
+                    |tx| {
+                        let current = run_for_project(tx, slug, run_id)?;
+                        let lanes = tx.engine_lanes(run_id)?;
+                        let eligible = current.state == EngineRunState::Running
+                            && scope_is_available(tx, self.ctx.project(), &current.scope)?
+                            && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
+                            && census_live.is_none_or(|live| {
+                                live + dispatched_this_pass < ENGINE_LANE_BUDGET
+                            })
+                            && occupied_run_lane_count(&lanes) < current.lanes as usize
+                            && lanes.iter().any(|candidate| candidate == &lane);
+                        if eligible {
+                            dispatch_configuration.replace(Some((
+                                current.agent,
+                                current.model,
+                                current.effort,
+                                current.speed,
+                            )));
+                        }
+                        Ok(eligible)
+                    },
                     |tx, before, claimed| {
                         working.state = EngineLaneState::Dispatching;
                         working.story_id = Some(claimed.id.clone());
@@ -1322,16 +1808,19 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 break;
             };
             let story = claimed.id.clone();
+            let (agent, model, effort, speed) = dispatch_configuration
+                .into_inner()
+                .expect("an engine claim captures configuration in its transaction");
             debug_assert_eq!(working.story_id.as_deref(), Some(story.as_str()));
             debug_assert_eq!(working.outcome.as_deref(), Some(before.state.as_str()));
 
             let outcome = self.dispatcher.dispatch(DispatchRequest {
                 project: slug.to_string(),
                 story: story.clone(),
-                agent: view.run.agent,
-                model: view.run.model.clone(),
-                effort: view.run.effort.clone(),
-                speed: view.run.speed,
+                agent,
+                model,
+                effort,
+                speed,
             })?;
             match outcome.state {
                 DispatchOutcomeState::Ok => {
@@ -1358,6 +1847,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     live.outcome = None;
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
+                    dispatched_this_pass += 1;
                     report.filled.push((lane.lane_index, story));
                 }
                 DispatchOutcomeState::Refused => {
@@ -1436,21 +1926,33 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     fn finish_if_drained(&self, run_id: &RunId, reason: &str) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        let needs_human = !self
-            .ctx
-            .store()
-            .read(|tx| {
-                let slug = project_slug(tx, project)?;
-                let run = run_for_project(tx, &slug, run_id)?;
-                needs_human_stories(tx, project, &now, &run.scope)
-            })?
-            .is_empty();
         let just_drained = std::cell::Cell::new(false);
-        let view = self.transition(run_id, |run, lanes| {
+        let just_halted = std::cell::Cell::new(false);
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            if halt_invalid_scope(tx, project, &mut run, &now)? {
+                just_halted.set(true);
+                return Ok(());
+            }
+            let lanes = tx.engine_lanes(run_id)?;
             let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
-            let waiting_on_a_human = run.state == EngineRunState::Running && needs_human;
+            // An empty fill may mean capacity contention, or the queue may
+            // have changed since filling. Only this transaction can certify drain.
+            let waiting_for_work = run.state == EngineRunState::Running
+                && (!needs_human_stories(tx, project, &now, &run.scope)?.is_empty()
+                    || !QueryService::new(tx, project, &now)
+                        .next_filtered(
+                            1,
+                            ReadyQueueFilters {
+                                phase: None,
+                                epic: run.scope.story_id(),
+                                exclude_label: Some(LABEL_NO_AUTO),
+                            },
+                        )?
+                        .is_empty());
             if all_idle
-                && !waiting_on_a_human
+                && !waiting_for_work
                 && matches!(
                     run.state,
                     EngineRunState::Running | EngineRunState::Draining
@@ -1462,6 +1964,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     run.acknowledged_at = None;
                     just_drained.set(reason == QUEUE_DRAINED);
                 }
+                run.updated_at = now.clone();
+                tx.update_engine_run(&run)?;
             }
             Ok(())
         })?;
@@ -1475,7 +1979,40 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }),
             );
         }
+        let view = self.one_view(run_id)?;
+        if just_halted.get() {
+            self.fire_run_halted_hook(run_id, &view);
+        }
         Ok(view)
+    }
+
+    /// Scope loss halts allocation without touching any occupied lane. An
+    /// explicit drain needs no scope and remains owned by its stop request.
+    fn halt_if_scope_unavailable(&self, run_id: &RunId) -> Result<bool, AppError> {
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        // Project runs have no story identity to lose. Do not acquire a
+        // writer merely to re-prove that invariant on every tick.
+        if self.ctx.store().read(|tx| {
+            let slug = project_slug(tx, project)?;
+            Ok(run_for_project(tx, &slug, run_id)?.scope == EngineScope::Project)
+        })? {
+            return Ok(false);
+        }
+        let (just_halted, unavailable_halt) = self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            let changed = halt_invalid_scope(tx, project, &mut run, &now)?;
+            Ok((
+                changed,
+                run.state == EngineRunState::Halted
+                    && run.stop_reason.as_deref() == Some(SCOPE_UNAVAILABLE),
+            ))
+        })?;
+        if just_halted {
+            self.fire_run_halted_hook(run_id, &self.one_view(run_id)?);
+        }
+        Ok(unavailable_halt)
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
@@ -1491,6 +2028,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     EngineRunState::Running,
                     EngineRunState::Paused,
                     EngineRunState::Draining,
+                    EngineRunState::Halted,
                 ],
             )?;
             run.state = EngineRunState::Draining;
@@ -1604,7 +2142,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = Some(OPERATOR_STOPPED_NOW.to_string());
         idle.outcome_detail = Some(payload.to_string());
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        self.ctx
+            .store()
+            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
         Ok(())
     }
 
@@ -1613,7 +2153,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = lane.outcome.clone();
         idle.outcome_detail = lane.outcome_detail.clone();
-        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        self.ctx
+            .store()
+            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
         Ok(())
     }
 
@@ -1699,6 +2241,60 @@ pub(crate) fn elapsed_secs(earlier: &str, later: &str) -> Option<u64> {
     u64::try_from((later - earlier).num_seconds()).ok()
 }
 
+/// Seconds from a unix timestamp to an RFC3339 instant, or `None` when the
+/// stamp is unrepresentable or lies in `later`'s future (a clock that has
+/// gone backwards states nothing about silence, SH-372).
+pub(crate) fn seconds_between_unix(earlier_unix: i64, later: &str) -> Option<u64> {
+    let earlier = chrono::DateTime::from_timestamp(earlier_unix, 0)?;
+    let later = chrono::DateTime::parse_from_rfc3339(later).ok()?;
+    u64::try_from((later.with_timezone(&chrono::Utc) - earlier).num_seconds()).ok()
+}
+
+/// What a hard stop's reason is composed from, as observed on the pass that
+/// quarantined the lane (SH-120: relayed, never replaced).
+#[derive(Clone, Copy, Debug, Default)]
+struct QuarantineEvidence<'a> {
+    /// The story's own `awaiting` text, when the agent set one.
+    existing_reason: Option<&'a str>,
+    /// The liveness probe's own words when it did not say "alive" (SH-626).
+    window_detail: Option<&'a str>,
+    /// Both stall channels' measurements, for a `Stalled` verdict (SH-657).
+    stall: Option<&'a str>,
+}
+
+/// What the two stall channels measured, in words an operator can check
+/// against the lane (SH-657); `None` for any non-stall observation.
+fn stall_evidence(observation: &LaneObservation) -> Option<String> {
+    let store = observation.seconds_since_progress?;
+    let pty = match observation.seconds_since_output {
+        Some(secs) => format!("{secs}s since the pane last wrote to its terminal"),
+        None => "the pane's terminal output could not be read".to_string(),
+    };
+    Some(format!(
+        "no story event for {store}s and {pty}; the ceiling is {STALL_CEILING_SECS}s"
+    ))
+}
+
+/// The probe's pty output stamp, rendered as the store's RFC3339 spelling,
+/// when it is later than the lane's recorded activity — `None` when the
+/// probe carries no stamp or the stamp is not newer (SH-657).
+fn pty_output_after(probe: &WindowProbe, recorded_at: Option<&str>) -> Option<String> {
+    let WindowProbe::Alive {
+        last_output_at: Some(output_at),
+    } = probe
+    else {
+        return None;
+    };
+    let output = chrono::DateTime::from_timestamp(*output_at, 0)?;
+    let newer = match recorded_at.and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok()) {
+        Some(recorded) => output > recorded.with_timezone(&chrono::Utc),
+        // Nothing recorded yet: the seq seeds on this same pass, so an
+        // absent mark defers to that rather than to the pty.
+        None => false,
+    };
+    newer.then(|| output.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 /// An empty lane at `lane_index`, ready to be filled.
 ///
 /// The progress pair is cleared along with the story: an idle lane holds no
@@ -1720,6 +2316,7 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         last_progress_at: None,
         outcome: None,
         outcome_detail: None,
+        probe_detail: None,
     }
 }
 
@@ -1783,6 +2380,143 @@ fn needs_human_stories(
         .collect())
 }
 
+/// A stored scope is never widened when its epic disappears or changes type.
+fn scope_is_available(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    scope: &EngineScope,
+) -> Result<bool, StoreError> {
+    let EngineScope::Epic(id) = scope else {
+        return Ok(true);
+    };
+    let prefix = project_prefix(tx, project)?;
+    Ok(optional_lane_story(tx, project, &prefix, id)?.is_some_and(|row| is_epic(&row.snapshot)))
+}
+
+/// Persist scope loss only once, in the transaction that decides whether the
+/// run can allocate or finish. Draining is an explicit operator decision.
+fn halt_invalid_scope(
+    tx: &mut impl WriteOps,
+    project: crate::store::ProjectId,
+    run: &mut EngineRunRecord,
+    now: &str,
+) -> Result<bool, StoreError> {
+    if matches!(run.state, EngineRunState::Running | EngineRunState::Paused)
+        && !scope_is_available(tx, project, &run.scope)?
+    {
+        run.state = EngineRunState::Halted;
+        run.stop_reason = Some(SCOPE_UNAVAILABLE.into());
+        run.acknowledged_at = None;
+        run.updated_at = now.into();
+        tx.update_engine_run(run)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Absence is a store fact; an I/O or decoding error is never evidence of deletion.
+fn optional_lane_story(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    prefix: &str,
+    id: &str,
+) -> Result<Option<crate::store::StoryRow>, StoreError> {
+    match resolve_story(tx, project, prefix, id) {
+        Ok((_, row)) => Ok(Some(row)),
+        Err(AppError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Subprocess probes run outside the store. Their observations authorize a
+/// write only while both the lane and story still match the observed snapshot.
+fn observation_is_current(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    lane: &EngineLaneRecord,
+    head_global_seq: Option<i64>,
+) -> Result<bool, StoreError> {
+    if !tx
+        .engine_lanes(&lane.run_id)?
+        .iter()
+        .any(|current| current == lane)
+    {
+        return Ok(false);
+    }
+    let prefix = project_prefix(tx, project)?;
+    let story = lane.story_id.as_deref().expect("occupied lane has a story");
+    let current = optional_lane_story(tx, project, &prefix, story)?;
+    Ok(current.map(|row| row.head_global_seq.get()) == head_global_seq)
+}
+
+/// Capacity belongs to occupied lanes, including evidence retained by a halted
+/// run. Call inside the same write transaction that reserves the next lane.
+fn occupied_lane_count(tx: &impl ReadOps) -> Result<usize, StoreError> {
+    let mut occupied = 0;
+    for project in tx.projects()? {
+        for run in tx.engine_runs(&project.slug)? {
+            occupied += tx
+                .engine_lanes(&run.id)?
+                .iter()
+                .filter(|lane| {
+                    matches!(
+                        lane.state,
+                        EngineLaneState::Dispatching | EngineLaneState::Working
+                    )
+                })
+                .count();
+        }
+    }
+    Ok(occupied)
+}
+
+fn occupied_run_lane_count(lanes: &[EngineLaneRecord]) -> usize {
+    lanes
+        .iter()
+        .filter(|lane| {
+            matches!(
+                lane.state,
+                EngineLaneState::Dispatching | EngineLaneState::Working
+            )
+        })
+        .count()
+}
+
+fn put_or_retire_idle_lane(
+    tx: &mut impl WriteOps,
+    lane: &EngineLaneRecord,
+) -> Result<(), StoreError> {
+    debug_assert_eq!(lane.state, EngineLaneState::Idle);
+    let run = tx
+        .engine_run(&lane.run_id)?
+        .ok_or_else(|| StoreError::NotFound(format!("engine run `{}` not found", lane.run_id)))?;
+    if lane.lane_index >= run.lanes {
+        tx.delete_engine_lane(&lane.run_id, lane.lane_index)
+    } else {
+        tx.put_engine_lane(lane)
+    }
+}
+
+fn validate_configuration(
+    lanes: u32,
+    model: &Option<String>,
+    effort: &Option<String>,
+) -> Result<(), AppError> {
+    if !(1..=MAX_ENGINE_LANES).contains(&lanes) {
+        return Err(AppError::Validation(format!(
+            "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
+        )));
+    }
+    for (name, value) in [("model", model), ("effort", effort)] {
+        if let Some(value) = value {
+            validate_dispatch_option_token(value).map_err(|reason| {
+                AppError::Validation(format!("invalid engine {name} `{value}`: {reason}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn project_slug(tx: &impl ReadOps, project: crate::store::ProjectId) -> Result<String, StoreError> {
     Ok(tx
         .project(project)?
@@ -1836,15 +2570,19 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
-/// engine lane so that only the engine receives that identity and isolation
-/// boundary. Full Auto lanes copy their run's immutable provider options into
-/// `options`; attended dispatch supplies its request-scoped selections.
+/// engine lane so that only the engine — and, since SH-650, the verifier
+/// re-dispatching a story that engine lane holds — receives that identity and
+/// isolation boundary. Full Auto lanes copy their run's immutable provider
+/// options into `options`; attended dispatch supplies its request-scoped
+/// selections; `agent: None` names no provider and leaves the helper to read
+/// the one the dispatch being resumed recorded (`surviving_dispatch_provider`
+/// in `story.sh`), which only a resume has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
     story: &str,
-    agent: EngineAgent,
+    agent: Option<EngineAgent>,
     auto: bool,
     full_auto: bool,
     options: &DispatchOptions,
@@ -1884,8 +2622,10 @@ pub(crate) fn run_shell_dispatch(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story)
-        .arg(format!("--agent={}", agent.as_str()));
+        .arg(story);
+    if let Some(agent) = agent {
+        command.arg(format!("--agent={}", agent.as_str()));
+    }
     if options.resume {
         command.arg("--resume");
     }
@@ -1894,13 +2634,16 @@ pub(crate) fn run_shell_dispatch(
     }
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
-        debug_assert!(
-            !options.resume,
-            "Full Auto reuses its fresh engine-owned claim and never resumes artifacts"
-        );
-        // Full Auto dispatch follows the engine's atomic claim immediately. `--force`
-        // reuses that sole claim while the helper still rejects worktree, branch, or pane artifacts.
-        command.arg("--full-auto").arg("--force");
+        command.arg("--full-auto");
+        // The engine's own Full Auto dispatch follows its atomic claim
+        // immediately: `--force` reuses that sole claim while the helper still
+        // rejects worktree, branch, or pane artifacts. A RESUME of a lane's
+        // story (the verifier's re-dispatch, SH-650) reconstructs exactly those
+        // artifacts instead, and the helper refuses `--resume --force` as a
+        // contradiction, so the two flags never travel together.
+        if !options.resume {
+            command.arg("--force");
+        }
     }
     if let Some(model) = &options.model {
         command.arg(format!("--model={model}"));
@@ -1915,10 +2658,21 @@ pub(crate) fn run_shell_dispatch(
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
-        .env("STORYHOOK_STORE_PATH", env.store_path())
+        .envs(env.child_vars())
         .env("STORY_TARGET_SESSION", project)
         .env("STORY_CREATE_SESSION", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
+    if full_auto {
+        // The lane runs under the very ceiling its stall clock derives from
+        // (SH-657): story.sh hands this to the agent's window as
+        // `BASH_MAX_TIMEOUT_MS`, so the longest foreground tool call the
+        // agent can make and the silence the engine tolerates share one
+        // constant rather than one being a cited host default.
+        command.env(
+            LANE_TOOL_CEILING_ENV,
+            (HOST_TOOL_CALL_CEILING_SECS * 1000).to_string(),
+        );
+    }
 
     let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
         CaptureError::Stage(detail) => {
@@ -1966,7 +2720,7 @@ fn run_shell_unclaim(
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
-        .env("STORYHOOK_STORE_PATH", env.store_path())
+        .envs(env.child_vars())
         .env(CLEANUP_LEASE_ENV, encoded_lease)
         .env("STORY_TARGET_SESSION", project)
         .env("GIT_TERMINAL_PROMPT", "0");
@@ -2169,6 +2923,64 @@ pub(crate) fn prompt_override_violation(
         .map(|(name, _)| name)
 }
 
+/// The activity-journal line, if any, that a change in what the probe says
+/// about a lane earns (SH-626, council verdict on the story): an unanswered
+/// probe is an ERROR on entry and on every change of reason — the machine,
+/// not the window, is what failed, and the lane is judged by its stall clock
+/// alone until tmux answers — and the recovery is an INFO, so the two
+/// bracket the outage. Never one line per pass: a live run is reconciled
+/// roughly once a second (SH-263's self-noise shape). A `Gone` answer earns
+/// nothing here because it is a hard stop, written on the story and the
+/// quarantine record instead. `previous` is what the lane last recorded.
+fn probe_journal_edge(
+    previous: Option<&str>,
+    probe: &WindowProbe,
+) -> Option<(&'static str, String)> {
+    match probe {
+        WindowProbe::Unanswered { detail } if previous != Some(detail.as_str()) => Some((
+            "ERROR",
+            format!(
+                "window liveness unanswered; the lane is judged by its stall clock until tmux answers: {detail}"
+            ),
+        )),
+        // A Gone probe reaches `record_progress` only when it was deferred
+        // (SH-650: the story was just returned for repair); a Gone that is a
+        // hard stop is written on the story and the quarantine record and
+        // never comes here. So this IS the deferral's own edge, and a
+        // deferral nobody can see is the SH-306 shape.
+        WindowProbe::Gone { detail } if previous != Some(detail.as_str()) => Some((
+            "INFO",
+            format!(
+                "window gone on a story the verifier just returned; awaiting its resume re-dispatch, judged by the stall clock meanwhile: {detail}"
+            ),
+        )),
+        WindowProbe::Alive { .. } if previous.is_some() => {
+            Some(("INFO", "window liveness probe answers again".to_string()))
+        }
+        WindowProbe::Alive { .. } | WindowProbe::Gone { .. } | WindowProbe::Unanswered { .. } => {
+            None
+        }
+    }
+}
+
+/// Whether a nonzero tmux exit was tmux's own answer that the target does not
+/// exist, in tmux's own words: `cmd-find.c`'s "can't find <kind>: <target>",
+/// and `client.c`'s "no server running on <socket>" or "error connecting to
+/// <socket> (<errno>)" — the latter only for the two errnos that prove the
+/// server is gone, `ENOENT` (no socket) and `ECONNREFUSED` (a socket nobody
+/// listens on). tmux prints the same "error connecting to" line for `EACCES`
+/// and for a socket it cannot stat, which say nothing about the server, so
+/// those stay [`WindowProbe::Unanswered`] (SH-626's council condition). A
+/// window whose server is gone is gone; any other failure is a fact about
+/// the machine, not the window.
+fn tmux_reports_a_missing_target(stderr: &str) -> bool {
+    stderr.contains("can't find")
+        || stderr.contains("no server running")
+        || (stderr.contains("error connecting to")
+            && (stderr.contains("(No such file or directory)")
+                || stderr.contains("(Connection refused)")))
+}
+
 fn pid_is_live(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -2363,6 +3175,100 @@ mod tests {
         ));
     }
 
+    /// SH-626: the journal hears about a probe on the edge, never per pass.
+    #[test]
+    fn probe_journal_lines_are_edge_triggered() {
+        let broken = WindowProbe::Unanswered {
+            detail: "tmux exited 1".to_string(),
+        };
+        let also_broken = WindowProbe::Unanswered {
+            detail: "tmux timed out".to_string(),
+        };
+        let entry = probe_journal_edge(None, &broken).expect("entry is an edge");
+        assert_eq!(entry.0, "ERROR");
+        assert!(entry.1.contains("tmux exited 1"), "{}", entry.1);
+        assert_eq!(
+            probe_journal_edge(Some("tmux exited 1"), &broken),
+            None,
+            "the same reason on the next pass is not a new line"
+        );
+        assert_eq!(
+            probe_journal_edge(Some("tmux exited 1"), &also_broken).map(|line| line.0),
+            Some("ERROR"),
+            "a changed reason is a new line"
+        );
+        assert_eq!(
+            probe_journal_edge(
+                Some("tmux exited 1"),
+                &WindowProbe::Alive {
+                    last_output_at: None
+                }
+            )
+            .map(|line| line.0),
+            Some("INFO"),
+            "recovery closes the bracket"
+        );
+        assert_eq!(
+            probe_journal_edge(
+                None,
+                &WindowProbe::Alive {
+                    last_output_at: None
+                }
+            ),
+            None
+        );
+        // A Gone probe reaches the journal only when the reconciler deferred
+        // it (SH-650): a dead window that is a hard stop is written on the
+        // story instead and never comes here. The deferral is an INFO on its
+        // edge, and silent on repetition.
+        let gone = WindowProbe::Gone {
+            detail: "pane_dead=1".to_string(),
+        };
+        let entry = probe_journal_edge(None, &gone).expect("a deferral is an edge");
+        assert_eq!(entry.0, "INFO");
+        assert!(entry.1.contains("verifier just returned"), "{}", entry.1);
+        assert!(entry.1.contains("pane_dead=1"), "{}", entry.1);
+        assert_eq!(probe_journal_edge(Some("pane_dead=1"), &gone), None);
+        assert_eq!(
+            probe_journal_edge(
+                Some("pane_dead=1"),
+                &WindowProbe::Alive {
+                    last_output_at: None
+                }
+            )
+            .map(|line| line.0),
+            Some("INFO"),
+            "the respawned pane answering again is the deferral's closing edge"
+        );
+    }
+
+    /// SH-626's council condition: only tmux's own "no such target" and the
+    /// two errnos that prove the server is gone read as a missing target.
+    #[test]
+    fn tmux_missing_target_vocabulary_is_narrow() {
+        assert!(tmux_reports_a_missing_target("can't find pane: %7"));
+        assert!(tmux_reports_a_missing_target("can't find window: =s:=w"));
+        assert!(tmux_reports_a_missing_target(
+            "no server running on /private/tmp/tmux-501/default"
+        ));
+        assert!(tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (No such file or directory)"
+        ));
+        assert!(tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Connection refused)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Permission denied)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "error connecting to /private/tmp/tmux-501/default (Operation timed out)"
+        ));
+        assert!(!tmux_reports_a_missing_target(
+            "tmux: line 3: FAKE_TMUX_IMPLEMENTATION: unbound variable"
+        ));
+        assert!(!tmux_reports_a_missing_target(""));
+    }
+
     #[test]
     fn bounded_capture_terminates_a_process_group() {
         let mut command = Command::new("sh");
@@ -2379,23 +3285,187 @@ mod tests {
         let live = root.path().join("tmux-live");
         executable(
             &live,
-            &format!("printf '{}\\tcodex\\t0\\n'", std::process::id()),
+            &format!(
+                "printf '{}\\tcodex\\t0\\t1789066115\\n'",
+                std::process::id()
+            ),
         );
-        assert!(dispatcher_with_tmux(root.path(), &live).window_alive("@7"));
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &live).probe_window("@7"),
+            WindowProbe::Alive {
+                last_output_at: Some(1_789_066_115)
+            },
+            "the fourth field is tmux's #{{window_activity}}, carried as the pty channel (SH-657)"
+        );
+
+        // An empty or non-numeric activity stamp says nothing about a pane
+        // whose pid and identity checked out: alive, pty channel unknown.
+        let quiet = root.path().join("tmux-quiet");
+        executable(
+            &quiet,
+            &format!("printf '{}\\tcodex\\t0\\t\\n'", std::process::id()),
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &quiet).probe_window("@7"),
+            WindowProbe::Alive {
+                last_output_at: None
+            }
+        );
+        let garbled_stamp = root.path().join("tmux-garbled-stamp");
+        executable(
+            &garbled_stamp,
+            &format!("printf '{}\\tcodex\\t0\\tyesterday\\n'", std::process::id()),
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &garbled_stamp).probe_window("@7"),
+            WindowProbe::Alive {
+                last_output_at: None
+            }
+        );
 
         let shell = root.path().join("tmux-shell");
         executable(
             &shell,
-            &format!("printf '{}\\tzsh\\t0\\n'", std::process::id()),
+            &format!("printf '{}\\tzsh\\t0\\t1789066115\\n'", std::process::id()),
         );
-        assert!(!dispatcher_with_tmux(root.path(), &shell).window_alive("@7"));
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &shell).probe_window("@7")
+        else {
+            panic!("a pane running a shell is gone");
+        };
+        assert!(detail.contains("runs `zsh`"), "{detail}");
 
         let dead = root.path().join("tmux-dead");
         executable(
             &dead,
-            &format!("printf '{}\\tcodex\\t1\\n'", std::process::id()),
+            &format!(
+                "printf '{}\\tcodex\\t1\\t1789066115\\n'",
+                std::process::id()
+            ),
         );
-        assert!(!dispatcher_with_tmux(root.path(), &dead).window_alive("@7"));
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &dead).probe_window("@7")
+        else {
+            panic!("a dead pane is gone");
+        };
+        assert!(detail.contains("pane_dead=1"), "{detail}");
+
+        // tmux's own shape for a target it cannot find: `display-message -t`
+        // is CMD_FIND_CANFAIL, so the format expands empty at exit 0.
+        let unfound = root.path().join("tmux-unfound");
+        executable(&unfound, "printf '\\t\\t\\t\\n'");
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &unfound).probe_window("@7")
+        else {
+            panic!("every field empty at exit 0 is tmux saying the pane is gone");
+        };
+        assert!(detail.contains("finds no pane"), "{detail}");
+
+        let exited = root.path().join("tmux-exited");
+        executable(&exited, "printf 'can'\\''t find pane: @7\\n' >&2; exit 1");
+        let WindowProbe::Gone { detail } =
+            dispatcher_with_tmux(root.path(), &exited).probe_window("@7")
+        else {
+            panic!("tmux's own `can't find` is an answer: the target is gone");
+        };
+        assert!(detail.contains("can't find pane"), "{detail}");
+    }
+
+    /// SH-626: a tmux that cannot be asked is not a window that closed. Every
+    /// shape the browser harness's broken double produced -- a nonzero exit
+    /// with an unrelated message, an empty answer, a non-numeric pid, a
+    /// spawn failure -- is `Unanswered` and names its own cause.
+    /// SH-655: the dispatcher's census asks its OWN tmux program, on the
+    /// server its lanes live on, for every window carrying
+    /// `@storyhook-agent` with a live pane -- and a tmux it cannot ask is
+    /// unanswered, never an empty machine.
+    #[test]
+    fn shell_census_counts_live_agent_windows_on_its_own_server() {
+        let root = storyhook_test_support::scratch_dir();
+        let answering = root.path().join("tmux-answering");
+        executable(
+            &answering,
+            "case \" $* \" in (*' list-windows -a -F '*) \
+             printf 'storyhook:SH-1\\tclaude\\t0\\nstoryhook:SH-2\\tclaude\\t1\\nstoryhook:zsh\\t\\t0\\n'; exit 0;; \
+             esac; exit 1",
+        );
+        assert_eq!(
+            dispatcher_with_tmux(root.path(), &answering).census(),
+            WindowCensus::Counted {
+                windows: vec!["storyhook:SH-1".to_string()]
+            }
+        );
+
+        let broken = root.path().join("tmux-broken");
+        executable(
+            &broken,
+            "printf 'no server running on /tmp/tmux-501/default\n' >&2; exit 1",
+        );
+        let WindowCensus::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &broken).census()
+        else {
+            panic!("a tmux that could not be asked is not an empty server");
+        };
+        assert!(detail.contains("no server running"), "{detail}");
+    }
+
+    #[test]
+    fn shell_window_probe_reports_a_tmux_it_could_not_ask_as_unanswered() {
+        let root = storyhook_test_support::scratch_dir();
+        let broken = root.path().join("tmux-broken");
+        executable(
+            &broken,
+            "printf 'tmux: line 3: FAKE_TMUX_IMPLEMENTATION: unbound variable\\n' >&2; exit 1",
+        );
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &broken).probe_window("%1")
+        else {
+            panic!("an exit that is not tmux's `can't find` is not an answer about the window");
+        };
+        assert!(
+            detail.contains("exited") && detail.contains("unbound variable"),
+            "the probe carries tmux's exit and its stderr: {detail}"
+        );
+
+        let silent = root.path().join("tmux-silent");
+        executable(&silent, "exit 0");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &silent).probe_window("%1")
+        else {
+            panic!("an empty answer is not four fields");
+        };
+        assert!(detail.contains("not the four fields"), "{detail}");
+
+        // The three-field answer an older fixture gives is not an answer
+        // either: the probe asked four questions and got three.
+        let short = root.path().join("tmux-short");
+        executable(
+            &short,
+            &format!("printf '{}\\tcodex\\t0\\n'", std::process::id()),
+        );
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &short).probe_window("%1")
+        else {
+            panic!("three fields is not the four asked for");
+        };
+        assert!(detail.contains("not the four fields"), "{detail}");
+
+        let garbled = root.path().join("tmux-garbled");
+        executable(&garbled, "printf 'claude\\tclaude\\t0\\t1\\n'");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &garbled).probe_window("%1")
+        else {
+            panic!("a non-numeric pid is not an answer");
+        };
+        assert!(detail.contains("not a number"), "{detail}");
+
+        let missing = root.path().join("tmux-missing");
+        let WindowProbe::Unanswered { detail } =
+            dispatcher_with_tmux(root.path(), &missing).probe_window("%1")
+        else {
+            panic!("a tmux that cannot be spawned is not an answer");
+        };
+        assert!(detail.contains("could not be run"), "{detail}");
     }
 
     #[test]

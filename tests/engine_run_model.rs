@@ -16,7 +16,8 @@ use store_support::{create_story, new_store, raw, seed_project};
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
-    DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW, StartRequest,
+    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW,
+    StartRequest,
 };
 use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
 use storyhook::store::ids::StoryNo;
@@ -97,6 +98,7 @@ fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
         last_progress_at: None,
         outcome: None,
         outcome_detail: None,
+        probe_detail: None,
     }
 }
 
@@ -325,11 +327,11 @@ fn run_and_lane_records_round_trip_update_order_and_reopen() {
     let stored = store.read(|tx| tx.engine_run("run-b")).unwrap().unwrap();
     assert_eq!(stored.project_slug, "alpha");
     assert_eq!(stored.scope, EngineScope::Project);
-    assert_eq!(stored.lanes, 2);
-    assert_eq!(stored.agent, EngineAgent::Codex);
-    assert_eq!(stored.model.as_deref(), Some("gpt-5.3-codex"));
-    assert_eq!(stored.effort.as_deref(), Some("high"));
-    assert_eq!(stored.speed, Some(EngineSpeed::Fast));
+    assert_eq!(stored.lanes, 99);
+    assert_eq!(stored.agent, EngineAgent::Claude);
+    assert_eq!(stored.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(stored.effort.as_deref(), Some("max"));
+    assert_eq!(stored.speed, Some(EngineSpeed::Standard));
     assert_eq!(stored.state, EngineRunState::Halted);
     assert_eq!(stored.consecutive_hard_stops, 3);
     assert_eq!(stored.recent_quarantines, updated.recent_quarantines);
@@ -650,6 +652,16 @@ fn start_request(lanes: u32) -> StartRequest {
     }
 }
 
+fn configure_request(lanes: u32) -> ConfigureRequest {
+    ConfigureRequest {
+        lanes,
+        agent: EngineAgent::Claude,
+        model: Some("claude-opus-4-6".into()),
+        effort: Some("high".into()),
+        speed: Some(EngineSpeed::Fast),
+    }
+}
+
 fn ok_unclaim() -> DispatchOutcome {
     DispatchOutcome::from_payload(serde_json::json!({
         "ok": true,
@@ -747,6 +759,94 @@ fn engine_service_starts_project_and_epic_runs_with_atomic_idle_lanes() {
     assert_eq!(epic_run.scope, EngineScope::Epic(epic.id));
     assert_eq!(epic_run.agent, EngineAgent::Claude);
     assert_eq!(service.status(None).unwrap().len(), 2);
+}
+
+#[test]
+fn a_live_run_configuration_expands_and_contracts_without_interrupting_occupied_lanes() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = service.start(start_request(3)).unwrap();
+    for index in 0..3 {
+        occupy(
+            &fixture,
+            &run.id,
+            index,
+            &format!("SH-{}", index + 1),
+            &format!("/tmp/wt/SH-{}", index + 1),
+        );
+    }
+
+    let contracted = service.configure(&run.id, configure_request(2)).unwrap();
+    assert_eq!(contracted.run.lanes, 2);
+    assert_eq!(contracted.run.agent, EngineAgent::Claude);
+    assert_eq!(contracted.run.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(contracted.run.effort.as_deref(), Some("high"));
+    assert_eq!(contracted.run.speed, Some(EngineSpeed::Fast));
+    assert_eq!(
+        contracted.lanes.len(),
+        3,
+        "occupied surplus lanes stay visible"
+    );
+    assert!(
+        contracted
+            .lanes
+            .iter()
+            .all(|lane| lane.state == EngineLaneState::Working)
+    );
+
+    let mut surplus = contracted.lanes[2].clone();
+    surplus.state = EngineLaneState::Idle;
+    surplus.story_id = None;
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&surplus))
+        .unwrap();
+    let normalized = service.configure(&run.id, configure_request(2)).unwrap();
+    assert_eq!(
+        normalized
+            .lanes
+            .iter()
+            .map(|lane| lane.lane_index)
+            .collect::<Vec<_>>(),
+        [0, 1],
+        "an idle lane above the new cap is retired"
+    );
+
+    let expanded = service.configure(&run.id, configure_request(4)).unwrap();
+    assert_eq!(expanded.run.lanes, 4);
+    assert_eq!(
+        expanded
+            .lanes
+            .iter()
+            .map(|lane| lane.lane_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn configuring_a_run_refuses_invalid_values_and_non_claiming_states() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = service.start(start_request(1)).unwrap();
+
+    let lanes = service
+        .configure(&run.id, configure_request(0))
+        .unwrap_err()
+        .to_string();
+    assert!(lanes.contains("between 1 and 255 lanes"), "{lanes}");
+
+    service.stop(&run.id, false).unwrap();
+    let state = service
+        .configure(&run.id, configure_request(2))
+        .unwrap_err()
+        .to_string();
+    assert!(state.contains("cannot `configure`"), "{state}");
+    assert!(state.contains("finished"), "{state}");
 }
 
 #[test]

@@ -381,15 +381,23 @@ pub struct EngineLaneRecord {
     /// one-second RFC3339 timestamp is blind to a burst of agent writes inside
     /// one second (SH-336: a timestamp is not an ordering key).
     pub last_progress_seq: Option<GlobalSeq>,
-    /// When [`Self::last_progress_seq`] last advanced — the stall detector's
-    /// "how long since" half. `None` until the first observation, which the
-    /// reconciler seeds rather than reading as a stall (SH-372: absence states
-    /// nothing).
+    /// When the lane last showed observed activity on **either** channel —
+    /// [`Self::last_progress_seq`] advancing, or the pane writing to its pty
+    /// (tmux's `#{window_activity}`, SH-657) — the stall detector's "how long
+    /// since" half. The column keeps its name; its meaning widened when the
+    /// store-only clock proved to bound nothing an agent actually does.
+    /// `None` until the first observation, which the reconciler seeds rather
+    /// than reading as a stall (SH-372: absence states nothing).
     pub last_progress_at: Option<String>,
     /// Completion, skip, or hard-stop classification.
     pub outcome: Option<String>,
     /// Diagnostic detail accompanying the outcome.
     pub outcome_detail: Option<String>,
+    /// What the liveness probe last said when it did not say "alive" —
+    /// tmux's own words, or the reason it could not be asked (SH-626).
+    /// `None` after an "alive" answer, for an idle lane, and for a lane no
+    /// pass has probed. A diagnostic, never a lifecycle input.
+    pub probe_detail: Option<String>,
 }
 
 /// A git origin registered against a project.
@@ -775,6 +783,10 @@ pub struct ProjectSettings {
     pub sync_auto_transition: Option<bool>,
     /// `doctor.stale_threshold` — a duration string such as `14d`.
     pub doctor_stale_threshold: Option<String>,
+    /// `cleanup.auto` — whether the daemon cleans eligible story workspaces.
+    pub cleanup_auto: Option<bool>,
+    /// `cleanup.interval` — how often automatic cleanup runs.
+    pub cleanup_interval: Option<String>,
 }
 
 /// How [`crate::store::ReadOps::stories`] orders its results.

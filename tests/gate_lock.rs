@@ -76,6 +76,7 @@
 //! calls in this file's own fixture are the same defence applied one level
 //! down, and they are load-bearing for exactly that reason.
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -302,24 +303,49 @@ impl Fixture {
             std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
                 .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
-        // `run-tests.sh` reaches this non-shell parser only when progress is
-        // enabled. Derive its name from the tracked caller's source instead
-        // of extending the old hand-kept shell list with another exception.
+        // `run-tests.sh` reaches these non-shell observers only while running
+        // Cargo. Derive their names from the tracked callers instead of
+        // extending the old hand-kept shell list with another exception.
+        let mut observers = BTreeSet::new();
         for token in read_checkout_file("scripts/run-tests.sh").split('"') {
-            if !token.ends_with(".awk") {
+            if !token.ends_with(".py") && !token.ends_with(".awk") {
                 continue;
             }
             let name = Path::new(token)
                 .file_name()
-                .expect("a referenced awk script name")
+                .expect("a referenced helper script name")
                 .to_str()
-                .expect("a UTF-8 awk script name");
+                .expect("a UTF-8 helper script name");
+            observers.insert(name.to_string());
+        }
+        for line in read_checkout_file("scripts/activity-run.py").lines() {
+            let Some(imported) = line.strip_prefix("from ") else {
+                continue;
+            };
+            let Some((module, _)) = imported.split_once(" import ") else {
+                continue;
+            };
+            let name = format!("{module}.py");
+            if checkout().join("scripts").join(&name).is_file() {
+                observers.insert(name);
+            }
+        }
+        for name in observers {
             std::os::unix::fs::symlink(
-                checkout().join("scripts").join(name),
-                path.join("scripts").join(name),
+                checkout().join("scripts").join(&name),
+                path.join("scripts").join(&name),
             )
             .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
+        // A git repository, because `gate` is project-scoped (SH-648): the
+        // lock derives its key from the working directory's common dir and
+        // refuses a directory that has none.
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .output()
+            .expect("fixture: git init");
+        assert!(init.status.success(), "fixture: git init: {init:?}");
         let fixture = Self { root };
         // Refusing to answer is a path the tracked script already tolerates —
         // a tarball or a corrupt index produces it — and it is what keeps
@@ -339,9 +365,32 @@ impl Fixture {
         self.path().join("locks")
     }
 
-    /// The directory `machine-lock.sh` would use for `name`.
+    /// The directory `machine-lock.sh` would use for `name` from this
+    /// fixture, read from the script's own `--plan` rather than spelled here
+    /// (SH-136): the key carries a project component `tests/machine_lock.rs`
+    /// pins the derivation of.
     fn lock(&self, name: &str) -> PathBuf {
-        self.lock_root().join(format!("{name}.lock"))
+        PathBuf::from(self.plan_field(name, "lock"))
+    }
+
+    /// The `STORYHOOK_MACHINE_LOCKS` entry the script records for `name`.
+    fn key(&self, name: &str) -> String {
+        self.plan_field(name, "key")
+    }
+
+    fn plan_field(&self, name: &str, field: &str) -> String {
+        let out = self
+            .base_command("machine-lock.sh")
+            .args(["--plan", name, "--", "true"])
+            .output()
+            .unwrap_or_else(|e| panic!("planning the {name} lock: {e}"));
+        assert!(out.status.success(), "--plan {name}: {out:?}");
+        let printed = String::from_utf8_lossy(&out.stdout);
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{field}=")))
+            .unwrap_or_else(|| panic!("--plan must print `{field}=`\nstdout: {printed}"))
+            .to_string()
     }
 
     fn executable(&self, relative: &str, body: &str) -> PathBuf {
@@ -587,6 +636,10 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
         .expect("running the journalled suite");
 
     assert_eq!(code(&out), 0, "the journalled suite must pass: {out:?}");
+    assert!(
+        stdout(&out).contains("test proves_progress ... ok"),
+        "progress parsing must not remove raw test output from the full gate log: {out:?}"
+    );
     let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
     assert!(
         progress.contains(r#"{"kind":"case","path":"release gate/rust-suite","outcome":"pass"}"#),
@@ -614,6 +667,30 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
     assert!(
         !fixture.lock("gate").exists(),
         "a journalled run must release the gate normally"
+    );
+}
+
+#[test]
+fn a_journalled_compile_failure_remains_in_the_full_gate_output() {
+    let fixture = Fixture::new();
+    fixture.integration_test("does_not_compile");
+    fixture.fake_cargo(
+        "#!/bin/sh\nargs=\" $* \"\ncase \"$args\" in\n(*\" --list \"*)\n    case \"$args\" in\n    (*\" --ignored \"*) ;;\n    (*) printf 'never_runs: test\\n' ;;\n    esac\n    ;;\n(*)\n    printf 'error[E0425]: cannot find value `missing` in this scope\\n' >&2\n    printf 'error: could not compile `fixture` (test `does_not_compile`)\\n' >&2\n    exit 101\n    ;;\nesac\n",
+    );
+    let journal = fixture.path().join("gate-progress.ndjson");
+
+    let out = fixture
+        .command(&["--only-no-doc", "does_not_compile"])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running the journalled compile failure");
+
+    assert_eq!(code(&out), 101, "the compiler status must survive: {out:?}");
+    let output = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        output.contains("error[E0425]: cannot find value `missing` in this scope")
+            && output.contains("error: could not compile `fixture`"),
+        "compiler diagnostics must remain in the full gate output: {output}"
     );
 }
 
@@ -799,7 +876,7 @@ fn a_run_whose_process_tree_already_holds_the_gate_does_not_re_take_it() {
 
     let out = fixture
         .command(&["--only-no-doc"])
-        .env("STORYHOOK_MACHINE_LOCKS", "gate")
+        .env("STORYHOOK_MACHINE_LOCKS", fixture.key("gate"))
         .output()
         .expect("running under an inherited gate lock");
     let err = stderr(&out);

@@ -58,17 +58,15 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
         Self { ctx }
     }
 
-    /// Marks `id` as blocked by every story in `blockers`, and/or by a prose
-    /// `awaiting` reason — SH-398's origin fix, generalising [`Self::relate`]
-    /// from one target to N so a blocker that is a story can be recorded as a
-    /// `blocked-by` edge (cited, and self-clearing when the blocker closes)
-    /// in the SAME transaction as the reason, rather than as prose alone that
-    /// never clears itself.
+    /// Marks `id` as blocked by every story in `blockers`. With blockers,
+    /// the optional `awaiting` argument is an explanatory comment naming them;
+    /// without blockers, it sets an independent prose hold instead (SH-658).
+    /// An edge explanation never sets, replaces, or clears an existing hold.
     ///
-    /// `awaiting`, when `Some`, commits in the subject's own append —
+    /// The explanation, when present, commits in the subject's own append —
     /// alongside every new `blocked-by` edge, never as a second, non-atomic
     /// write. That is the reason this exists rather than a loop of
-    /// [`Self::relate`] calls plus a separate `set_awaiting`: the half-edge
+    /// [`Self::relate`] calls plus a separate comment: the half-edge
     /// hazard this module's own doc names is exactly "blocked by A and B"
     /// landing with only A actually recorded, or the edges landing without
     /// the reason that explained them.
@@ -109,7 +107,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
 
     /// Shared plumbing for [`Self::block_on`]/[`Self::unblock_from`]: batches
     /// every named blocker's own inverse-edge event and the subject's own
-    /// `blocked-by` events (plus, when adding, an optional `awaiting` event)
+    /// `blocked-by` events (plus an optional comment or independent hold)
     /// into one transaction — each blocker takes exactly one append (its own
     /// edge), and the subject takes exactly one append carrying everything
     /// that changes about it, mirroring [`Self::relate`]'s own per-story
@@ -208,9 +206,23 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                     )
                     .into());
                 }
-                a_events.push(StoryEvent::StoryAwaitingSet {
-                    at: now.clone(),
-                    awaiting: reason,
+                a_events.push(if blockers.is_empty() {
+                    StoryEvent::StoryAwaitingSet {
+                        at: now.clone(),
+                        awaiting: reason,
+                    }
+                } else {
+                    // The edge carries the blocking fact. Its explanation must
+                    // survive closure as history, never as a second hold.
+                    let names = blockers
+                        .iter()
+                        .map(|b| b.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    StoryEvent::StoryCommentAdded {
+                        at: now.clone(),
+                        text: format!("Blocked on {names}: {reason}"),
+                    }
                 });
             }
             if !a_events.is_empty() {

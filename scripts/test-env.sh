@@ -24,6 +24,7 @@
 #   storyhook_isolate "$root"                        # a wrapper around cargo/npm
 #   storyhook_isolate --home "$root"                 # a wrapper around story/git
 #   storyhook_isolate --parent-pid "$sentinel" "$root"
+#   storyhook_isolate --uninstalled-build "$root"    # a person driving THIS build
 #   storyhook_isolate_print --home "$root"           # emit it instead of adopting it
 #
 # `--home` ALSO REDIRECTS $HOME, AND MOST CALLERS MUST NOT PASS IT. Other tools
@@ -40,6 +41,24 @@
 # this shell's, for a caller that wants to end them earlier than it ends itself
 # (`scripts/coverage-map.sh` kills a sentinel between test binaries). The
 # default is `$$`, which is the ordinary case: the daemon dies with the run.
+#
+# `--uninstalled-build` RE-ARMS TWO PARAMETERS THE TABLE CLEARS, AFTER CLEARING
+# THEM: `STORYHOOK_ALLOW_UNINSTALLED_MIGRATION=1` and
+# `STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1`. The table clears both so a fixture
+# never inherits a developer's exported one and silently disarms a guard: the
+# SH-630 migration guard refuses a binary still in its build directory from
+# advancing a default-shaped store's schema, and the SH-634 seat guard refuses
+# the same binary from replacing a default-shaped store's daemon with itself.
+# A checkout binary never leaves its build directory, and a root under this
+# function IS default-shaped, so a store that outlives one schema bump would
+# be refused every command in here — and so would the first command after a
+# `cargo build` in the same shell, which changes the binary's mtime and makes
+# the daemon still serving the root "another build". Pass it only where the
+# store under the root belongs to the build being run, on purpose —
+# `make scratch` is the case, and the only one so far. A test harness never
+# needs it: a fresh store has no schema for the migration guard to protect, one
+# binary serves it for the seat guard, and a Rust fixture that plants an old
+# schema sets the variable on that one child (`storyhook_test_support::crash`).
 #
 # A FAILED ISOLATION EXITS RATHER THAN RETURNS. A caller that could carry on
 # past a refusal would carry on unisolated, which is the exact outcome the
@@ -79,6 +98,7 @@ STORYHOOK_ACTOR any clear -
 STORYHOOK_ALLOW_TEMP_PROJECT any clear -
 STORYHOOK_ALLOW_PROJECT_BURST any clear -
 STORYHOOK_ALLOW_UNINSTALLED_MIGRATION any clear -
+STORYHOOK_ALLOW_UNINSTALLED_DAEMON any clear -
 STORYHOOK_VERIFIER_MIRROR any literal 0
 TABLE
 }
@@ -123,16 +143,22 @@ EOF
     command env -i "${_sfg_environment[@]}" git "$@"
 }
 
-# Parses the shared options. Sets `_sti_root`, `_sti_home`, `_sti_pid`.
+# Parses the shared options. Sets `_sti_root`, `_sti_home`, `_sti_pid`,
+# `_sti_uninstalled`.
 _storyhook_isolate_args() {
     _sti_home=0
     _sti_pid="$$"
     _sti_root=""
+    _sti_uninstalled=0
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --home)
             _sti_home=1
+            shift
+            ;;
+        --uninstalled-build)
+            _sti_uninstalled=1
             shift
             ;;
         --parent-pid)
@@ -222,6 +248,12 @@ storyhook_isolate() {
 $(_storyhook_test_environment)
 EOF
 
+    # After the table, never before it: the table's `clear` would undo this.
+    if [ "$_sti_uninstalled" -eq 1 ]; then
+        export STORYHOOK_ALLOW_UNINSTALLED_MIGRATION=1
+        export STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1
+    fi
+
     # The directories a `story` process expects to find. Derived from the table
     # rather than listed, so a parameter added above cannot leave its directory
     # uncreated. The store file itself is not created — the daemon makes it, and
@@ -260,6 +292,11 @@ storyhook_isolate_print() {
     done <<EOF
 $(_storyhook_test_environment)
 EOF
+
+    if [ "$_sti_uninstalled" -eq 1 ]; then
+        printf "export STORYHOOK_ALLOW_UNINSTALLED_MIGRATION='1'\n"
+        printf "export STORYHOOK_ALLOW_UNINSTALLED_DAEMON='1'\n"
+    fi
 
     unset _name _scope _kind _arg _value
 }

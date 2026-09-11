@@ -104,6 +104,13 @@ impl Fixture {
             root.path().join("scripts/with-orphan-postlude.sh"),
         )
         .expect("fixture: linking the tracked wrapper");
+        // The checker reads the lease directory's name from binary-lease.sh
+        // (SH-635) rather than spelling it a second time.
+        std::os::unix::fs::symlink(
+            checkout().join("scripts/binary-lease.sh"),
+            root.path().join("scripts/binary-lease.sh"),
+        )
+        .expect("fixture: linking the tracked lease script");
         Self {
             root,
             _process_scan: process_scan,
@@ -127,6 +134,20 @@ impl Fixture {
     /// at.
     fn shim(&self, body: &str) -> PathBuf {
         let path = self.path().join("target/debug/story");
+        write_executable(&path, body);
+        path
+    }
+
+    /// Writes the shim where a LEASE of the binary lives (SH-532, SH-635):
+    /// `target/debug/<BINARY_SNAPSHOT_DIR>/<pid>-<nonce>/story`, the path the
+    /// Rust suite and the browser runner actually run their daemons from.
+    fn leased_shim(&self, body: &str) -> PathBuf {
+        let path = self
+            .path()
+            .join("target/debug")
+            .join(storyhook_test_support::BINARY_SNAPSHOT_DIR)
+            .join("4242-abcdef/story");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("fixture: creating the lease dir");
         write_executable(&path, body);
         path
     }
@@ -552,6 +573,73 @@ fn preflight_refuses_a_live_match_immediately_and_does_not_kill_it() {
         pid_alive(pid),
         "the preflight must never kill what it refuses on — that decision belongs to \
          whoever started it"
+    );
+}
+
+/// SH-635: a daemon running from a LEASE of this checkout's binary is this
+/// checkout's daemon. The pattern used to be anchored on the bare
+/// `target/debug/story`, so every Rust-suite daemon since SH-532 — and every
+/// browser-runner daemon since SH-635 — was invisible to the preflight's
+/// refusal and to the postlude's reaping, and fell through to the abandoned
+/// class only once its fixture directory was gone.
+#[test]
+fn a_daemon_run_from_a_lease_of_this_checkouts_binary_is_refused_and_reaped() {
+    let fixture = Fixture::new();
+    let shim = fixture.leased_shim("sleep 30");
+    let guard = spawn_matching(&shim, &fixture.live_store());
+    let pid = guard.pid();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+    assert!(
+        !out.status.success(),
+        "the preflight must refuse a live leased daemon of this checkout\nstderr: {err}"
+    );
+    assert!(
+        err.contains(&pid.to_string()),
+        "the refusal must name the leased daemon it found\nstderr: {err}"
+    );
+    assert!(pid_alive(pid), "the preflight refuses, it never kills");
+
+    let out = fixture.run(&["postlude"]);
+    let err = stderr(&out);
+    assert!(
+        out.status.success(),
+        "the postlude reaps a leased survivor and passes\nstderr: {err}"
+    );
+    assert!(
+        err.contains("reaping"),
+        "the postlude must say it reaped the leased daemon\nstderr: {err}"
+    );
+    assert!(
+        !fixture.anything_still_matches(),
+        "the leased daemon must be gone after the postlude"
+    );
+}
+
+/// The lease directory's name is read from `binary-lease.sh`, never spelled a
+/// second time in the checker (SH-136).
+#[test]
+fn the_checker_reads_the_lease_directory_name_from_the_lease_script() {
+    let script = read_checkout_file("scripts/check-no-orphan-servers.sh");
+    assert!(
+        script.contains(". \"${repo_root}/scripts/binary-lease.sh\""),
+        "check-no-orphan-servers.sh must source scripts/binary-lease.sh"
+    );
+    assert!(
+        script.contains("(${lease_dir_re}/[^/ ]+/)?story "),
+        "the own-tree pattern must admit an optional lease directory built from the sourced name"
+    );
+    let code: String = script
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains(storyhook_test_support::BINARY_SNAPSHOT_DIR),
+        "the lease directory name may not be spelled in the checker's code; it is read from \
+         binary-lease.sh"
     );
 }
 

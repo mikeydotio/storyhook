@@ -20,13 +20,13 @@
 # multi-minute suite was gating content that was never, on its own, the thing
 # landing — while doing nothing to make the merge itself safer.
 #
-# This hook now REPORTS on every non-`main`/`master` ref (which tier's receipt
+# This hook now REPORTS on every non-`dev`/`main`/`master` ref (which tier's receipt
 # it found, or that it found none — never refuses) and REFUSES ONLY a direct
-# push to `main` or `master` with no receipt, as defence in depth behind the
-# org's `protect-main` ruleset (which already blocks direct pushes there by
+# push to `dev`, `main`, or `master` with no receipt, as defence in depth behind
+# the repository rulesets (which already block direct pushes there by
 # policy; this is a second, independent no). `scripts/merge-preflight.sh`
-# remains the actual enforcement point for everything that reaches `main`
-# through a PR merge, which is the overwhelming majority of pushes.
+# remains the actual enforcement point for everything that reaches either
+# protected branch through a PR merge.
 #
 # `scripts/gate-receipt.sh` is what writes a receipt, as the last line of
 # `make test` / `make test-full` (SH-394) — or `make test-changed` (SH-429),
@@ -87,13 +87,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     }
 
     # `remote_ref` — the ref being updated on the remote, e.g. `refs/heads/
-    # main` — is what decides eligibility for a hard refusal; `main`/`master`
-    # only. Every other branch still has to pass through `merge-preflight.sh`
-    # to leave, which is where the real gate now lives (SH-429).
+    # main` — is what decides eligibility for a hard refusal. Both long-lived
+    # branches (plus legacy `master`) refuse; every other branch passes
+    # through `merge-preflight.sh` to land, which is where the real gate lives.
     branch="${remote_ref#refs/heads/}"
     is_protected_branch=0
     case "$branch" in
-    main | master) is_protected_branch=1 ;;
+    dev | main | master) is_protected_branch=1 ;;
     esac
 
     if [ ! -f "$receipts/$tree" ]; then
@@ -105,7 +105,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             refused=1
         else
             echo "pre-push: $local_ref (tree $tree) has no green receipt — reported, not refused (SH-429)." >&2
-            echo "  This push is not what gates $remote_ref reaching main: since SH-396 a" >&2
+            echo "  This push is not what gates $remote_ref reaching a protected branch: since SH-396 a" >&2
             echo "  merge is a server-side operation this hook never sees, so" >&2
             echo "  scripts/merge-preflight.sh decides that. Run 'make test' before merging." >&2
         fi

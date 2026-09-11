@@ -10,7 +10,7 @@
 # `cargo publish` strips path-only dev-dependencies, so the cycle never reaches
 # a published manifest.
 [workspace]
-members = ["crates/storyhook-test-support"]
+members = ["crates/storyhook-test-support", "crates/ste-lint"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -99,6 +99,7 @@ name = "story"
 path = "src/main.rs"
 
 [dependencies]
+ste-lint = { path = "crates/ste-lint" }
 chrono = { version = "0.4.42", features = ["clock", "serde"] }
 dialoguer = "0.12.0"
 fs4 = "0.8.4"

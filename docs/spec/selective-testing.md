@@ -4,7 +4,8 @@ Design of record for **SH-429**, bullet 2 ("Merge-gate tests should only be
 the tests that cover code paths that have been touched since the last green
 test"). Bullet 1 (push before test) and bullet 3 (release runs `make
 test-full`, already true since SH-394) are covered by
-`docs/spec/test-tiers.md`'s "The push gate narrowed to main/master" section.
+`docs/spec/test-tiers.md`'s "The push gate narrowed to long-lived branches"
+section.
 
 ## The problem, measured
 
@@ -63,30 +64,47 @@ that reads a tracked file directly (`CARGO_MANIFEST_DIR`-relative reads — 57
 of this repo's test files, measured) or shells out to `git ls-files` (19
 more) to scan the tree at runtime: the lines that execute there belong to
 `std::fs::read`'s own generic body or to the `git` binary, not to whichever
-*specific* file happened to be read. Three unconditional escape hatches sit
-on top of the map for exactly this reason, checked by `select-tests.sh`
-**before** the map is ever consulted:
+*specific* file happened to be read. `scripts/test-impact.tsv` complements
+coverage with reviewed `<test-target><TAB><Git pathspec>` dependencies for
+those checkout reads. `select-tests.sh` validates the manifest against the
+actual tracked tree and unions matching contracts into the coverage result.
+Three escape hatches sit on top of the map for exactly this reason:
 
 1. **No map for the resolved baseline → run everything.** A map is only
    ever a strengthening signal on top of "run everything"; its absence is
    never treated as "nothing changed."
-2. **Any changed path outside `src/**.rs`, `crates/**.rs`, `tests/*.rs` →
-   run everything.** This is what covers `Makefile`, `scripts/`,
-   `.githooks/`, `src/web_dashboard.html`, `plugin/`, `docs/`, `e2e/`, and
-   every `include_str!`ed asset — none of which coverage instrumentation
-   touches at all.
+2. **Any undeclared changed path outside `src/**.rs`, `crates/**.rs`,
+   `tests/*.rs` → run everything.** A matching manifest row can select its
+   named contract instead. Exact shell-script inputs expand through literal
+   repository-local `source`/`.` statements transitively, so a fixture mapped
+   to `scripts/release.sh` also follows newly sourced helpers. Dynamic or
+   otherwise undeclared inputs retain the conservative `ALL` result.
 3. **The derived tree-scanning set, always applied.** Every `tests/*.rs`
    file whose own source names `git ls-files`, `CARGO_MANIFEST_DIR` or
    `include_str!` runs regardless of what changed — derived by scanning
    `tests/*.rs` at selection time (`git grep`), never a hand-kept list.
    CLAUDE.md's own SH-136/SH-198/SH-258/SH-260-276/SH-360 are five recorded
    costs of exactly that hand-kept shape in this project alone; this is that
-   doctrine applied here rather than repeated a sixth time.
+   doctrine applied here rather than repeated a sixth time. The manifest must
+   name every member of this derived set; a new reader without a declaration,
+   stale target, unmatched pathspec, duplicate or unsorted row fails closed to
+   `ALL` with the broken invariant on stderr.
 
-Only once all three are checked does `select-tests.sh` consult the map:
-every binary the map names for a changed `src/**.rs`/`crates/**.rs` file,
-plus the binary for any changed `tests/*.rs` file itself (a file the map has
-never seen, because it is new), unioned and sorted.
+Only once these checks pass does `select-tests.sh` consult LLVM coverage:
+every binary the coverage map names for a changed Rust source, every matching
+declared contract, the always-on derived scanner set, and the binary for any
+changed `tests/*.rs` file itself are unioned, sorted and deduplicated.
+
+This declaration layer exists for pre-submission discovery as well as the
+`test-changed` target. A work lane in a repository that provides the selector
+runs it against its actual tracked tree before choosing direct test targets;
+`ALL` remains a statement that selection cannot safely narrow the run, never
+permission to claim a full gate. The centralized verifier still runs
+`make test` — the gate tier, the whole Rust suite and the plugin leg with the
+browser leg deferred by design (`test-tiers.md`, SH-394) — on the proposed
+merge, never a selection; a project that wants the browser tier in its gate
+names `make test-full` there once SH-649 makes the command configurable
+(`verification-workflow.md`).
 
 ### The tier, and where it does and does not gate
 
@@ -144,12 +162,12 @@ alternative — piggybacking coverage capture onto every worktree's own
 `gate-receipt.sh` postlude, so a map regenerates on every local green
 `make test`. That alternative was rejected on the same grounds SH-418's own
 council already used for the browser tier: it fires far more often than
-needed while doing nothing to guarantee freshness relative to `main`'s
+needed while doing nothing to guarantee freshness relative to `dev`'s
 actual tip, which is the fact that matters for what a **merge** — and
 therefore `select-tests.sh`'s own baseline resolution on the next branch cut
-from `main` — will see.
+from `dev` — will see.
 
-`scripts/coverage-status.sh` reports how far `origin/main`'s tip is from the
+`scripts/coverage-status.sh` reports how far `origin/dev`'s tip is from the
 last tree with a coverage map — `current` / `behind by N` / `never`, no
 staleness threshold (a ceiling on "how stale is too stale" would be a bare
 literal about one machine's cadence on one day, the same rule
@@ -158,8 +176,8 @@ literal about one machine's cadence on one day, the same rule
 locked worktree (`coverage-watch-worktree`, kept separate from
 `browser-watch-worktree` because an instrumented build lives in its own
 `target-coverage/`, so sharing a worktree would mean the two pollers evict
-each other's warm build on alternating runs), keyed to whether `origin/
-main`'s tip already has a map. If the tip has no `gate`/`full` receipt yet
+each other's warm build on alternating runs), keyed to whether `origin/dev`'s
+tip already has a map. If the tip has no `gate`/`full` receipt yet
 either (the ordinary case is that it does, since the centralized verifier
 certified it on the way to landing), it runs `make test` there first.
 

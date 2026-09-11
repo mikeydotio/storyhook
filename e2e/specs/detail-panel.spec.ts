@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import {
+  awaitSettled,
   expect,
   fullKeyboardAccess,
   openProject,
@@ -53,6 +54,12 @@ test("opening detail compresses only the content workspace and keeps the toolbar
     expect.arrayContaining(["transform", "width"]),
   );
   await expect(page.locator("#drawer")).toHaveClass(/open/);
+  // Settle the drawer's own motion, then state the width. The poll below
+  // used to be the wait as well as the claim (SH-623): a border-box width is
+  // quantised to layout units, so it reads exactly 480 while the transform,
+  // a float, is still a sub-pixel distance from rest -- and `panelLeft`/
+  // `panelRight` below are read from the transform with exact equality.
+  await awaitSettled(page.locator("#drawer"), "the story detail peer");
 
   await expect
     .poll(async () => (await workspaceGeometry(page)).panelWidth)
@@ -75,7 +82,10 @@ test("opening detail compresses only the content workspace and keeps the toolbar
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   const close = page.getByRole("button", { name: "Close story details" });
-  await expect(close.locator("svg")).toHaveCount(1);
+  // The close control's glyph, whatever it is drawn with. SH-620 replaced the
+  // private SVG system with emoji, so an `svg` count asserted a rendering
+  // mechanism rather than the presence of an icon (SH-622).
+  await expect(close.locator('.emoji-icon[data-emoji="close"]')).toHaveCount(1);
   const closingTransitions = await startedPanelTransitions(close);
   expect(closingTransitions).toEqual(
     expect.arrayContaining(["transform", "width"]),

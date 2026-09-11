@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support";
-import { requiredEnv } from "./support";
+import { requiredEnv, storyBinary } from "./support";
 
-const STORY_BINARY = resolve("../target/debug/story");
+const STORY_BINARY = storyBinary();
 const REPO_ROOT = resolve("..");
 const NAMED_TOKEN = requiredEnv("DASHBOARD_NAMED_TOKEN");
 const COOKIE_NAME = requiredEnv("DASHBOARD_COOKIE_NAME");
@@ -111,4 +111,10 @@ test("a named-token cookie survives reload, a new tab, and daemon restart on an 
   const restartedPage = await context.newPage();
   await restartedPage.goto("/");
   await expectAuthenticatedHome(restartedPage);
+});
+
+// The same image read must also work where Fetch Metadata is unavailable.
+test("attachment bytes decode through the Referer fallback on an untrusted origin", async ({ page }) => {
+  const { expectCookieAttachment } = await import("./attachment-fixture");
+  await expectCookieAttachment(page);
 });

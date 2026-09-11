@@ -166,6 +166,17 @@ pub enum EngineAction {
     },
 }
 
+/// The controls under `story verifier` (SH-666).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerifierAction {
+    /// Acknowledge one exact halted infrastructure incident so the verifier
+    /// queue may run again. The id is the one the halt comment prints.
+    Ack {
+        /// The incident to acknowledge, verbatim.
+        incident_id: String,
+    },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
@@ -184,6 +195,14 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
+  story daemon start [--port <PORT>]
+  story daemon restart                             (drain and replace the running daemon)
+  story daemon stop [--force]
+  story daemon status
+  story daemon install [--this-binary]
+  story daemon uninstall
+  story daemon token
+  story daemon gc [--force]                        (reclaim runtime dirs of stores that are gone)
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
@@ -217,6 +236,8 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
+  story verifier ack <incident-id>                  (release a halted verifier queue)
+  story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
   story search <query>
@@ -254,6 +275,7 @@ Usage:
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <claude|codex>
+  story plugin reinstall                            (every provider that has it registered, from this binary)
   story plugin run codex -- <helper-command> [args...]  (internal stable Codex launcher)
   story show <id>
   story log <id>
@@ -548,6 +570,15 @@ pub enum Invocation {
     Engine {
         action: EngineAction,
     },
+    /// `story verifier ack <incident-id>` (SH-666).
+    Verifier {
+        action: VerifierAction,
+    },
+    /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
+    Cleanup {
+        /// Preview eligible removals without changing Git or the filesystem.
+        dry_run: bool,
+    },
     Summary,
     Report {
         html: bool,
@@ -567,6 +598,11 @@ pub enum Invocation {
     /// is that the store will not open, or opens read-only, so a verb that
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
+    /// `story lane-budget` — the machine lane budget and the live agent
+    /// windows counted against it (SH-655). Store-free and daemon-free on
+    /// purpose: `cmd_dispatch` asks it before any claim exists, from inside
+    /// the operator's own tmux, whose server the daemon may not share.
+    LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
     },
@@ -843,6 +879,134 @@ pub enum Invocation {
     },
 }
 
+impl Invocation {
+    /// The same invocation, with its confirmation already given.
+    ///
+    /// The second half of the two-step a destructive command runs: the first
+    /// invocation answers `Response::ConfirmationRequired` and writes nothing,
+    /// the client asks the user, and this is what it sends back. The
+    /// invocation is otherwise untouched — the *same* target, resolved the
+    /// same way — so the thing that gets destroyed is the thing that was
+    /// described.
+    ///
+    /// An invocation with nothing to confirm is returned unchanged, which is
+    /// what makes this safe to call unconditionally.
+    ///
+    /// # Why every arm is exhaustive
+    ///
+    /// The `Project` arm used to be `ProjectAction::Deinit { force, .. }`
+    /// beside a `_ => {}`, and a destructive project verb added later would
+    /// have fallen through it silently — the client would ask the user, get a
+    /// yes, re-send an invocation that is still unforced, and be answered with
+    /// the same question forever. A confirmation loop with no error and no
+    /// compile failure. The top level then kept exactly that wildcard, and
+    /// `HideState` fell through it for as long as it existed (SH-638). Listing every variant of every
+    /// level means the next one is a compile error here instead.
+    ///
+    /// `DaemonAction::Stop { force }` is deliberately **not** set: that flag
+    /// means "signal the process", not "skip a confirmation", and `stop`
+    /// never asks one.
+    #[must_use]
+    pub fn forced(mut self) -> Self {
+        match &mut self {
+            Self::Project { action } => match action {
+                ProjectAction::Delete { force } => *force = true,
+                ProjectAction::SetPrefix { force, .. } => *force = true,
+                ProjectAction::New(_)
+                | ProjectAction::List
+                | ProjectAction::Show
+                | ProjectAction::Link(_)
+                | ProjectAction::Unlink(_)
+                | ProjectAction::Settings(_) => {}
+            },
+            Self::Delete { force, .. } => *force = true,
+            // Answers `ConfirmationRequired` too, and until SH-638 was never
+            // forced on the re-run: `story archive-state` at a terminal
+            // printed its plan twice and archived nothing.
+            Self::HideState { force, .. } => *force = true,
+            Self::Daemon { action } => match action {
+                DaemonAction::Logs { .. }
+                | DaemonAction::Serve { .. }
+                | DaemonAction::Start { .. }
+                | DaemonAction::Restart
+                | DaemonAction::Stop { .. }
+                | DaemonAction::Status
+                | DaemonAction::Install { .. }
+                | DaemonAction::Uninstall
+                | DaemonAction::Token => {}
+                DaemonAction::Gc { force } => *force = true,
+            },
+            Self::Help
+            | Self::New { .. }
+            | Self::Publish { .. }
+            | Self::MemberAdd { .. }
+            | Self::State { .. }
+            | Self::List { .. }
+            | Self::Search { .. }
+            | Self::Next { .. }
+            | Self::Claim { .. }
+            | Self::Unclaim { .. }
+            | Self::Engine { .. }
+            | Self::Verifier { .. }
+            | Self::Cleanup { .. }
+            | Self::Summary
+            | Self::Report { .. }
+            | Self::Doctor { .. }
+            | Self::DoctorInstall
+            | Self::LaneBudget
+            | Self::DoctorAbandoned { .. }
+            | Self::DoctorCrashes { .. }
+            | Self::Show { .. }
+            | Self::Log { .. }
+            | Self::Comment { .. }
+            | Self::Assign { .. }
+            | Self::SetState { .. }
+            | Self::SetAwaiting { .. }
+            | Self::ClearAwaiting { .. }
+            | Self::SetPriority { .. }
+            | Self::SetLabels { .. }
+            | Self::Reopen { .. }
+            | Self::Hide { .. }
+            | Self::Unhide { .. }
+            | Self::BulkUpdate { .. }
+            | Self::Import { .. }
+            | Self::Decompose { .. }
+            | Self::Export
+            | Self::ImportProject { .. }
+            | Self::Migrate { .. }
+            | Self::Context { .. }
+            | Self::Handoff { .. }
+            | Self::Phase { .. }
+            | Self::Type { .. }
+            | Self::Epic { .. }
+            | Self::Graph { .. }
+            | Self::SetFields { .. }
+            | Self::Relate { .. }
+            | Self::Hooks { .. }
+            | Self::Scaffold { .. }
+            | Self::CommitSync { .. }
+            | Self::LinkPr { .. }
+            | Self::UnlinkPr { .. }
+            | Self::PrCheck { .. }
+            | Self::GithubAuth { .. }
+            | Self::HelpTopic { .. }
+            | Self::HelpCompact
+            | Self::HelpAll
+            | Self::Plugin { .. }
+            | Self::Web { .. }
+            | Self::Token { .. }
+            | Self::Store { .. }
+            | Self::SessionStart { .. }
+            | Self::Update { .. }
+            | Self::Version
+            | Self::ProjectSnapshot { .. }
+            | Self::History { .. }
+            | Self::Attachment { .. } => {}
+        }
+        self
+    }
+}
+
 /// The four forms of `story attachment` (SH-315).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentAction {
@@ -897,6 +1061,10 @@ pub enum PluginAction {
     Uninstall {
         target: String,
     },
+    /// Reinstall the plugin for every provider that has the storyhook
+    /// marketplace registered, from this binary's embedded release (SH-667).
+    /// Takes no target: the providers' own configurations say which.
+    Reinstall,
     /// Run the installed provider plugin's deterministic helper through the
     /// stable `story` binary. The Codex integration's unversioned launcher is
     /// the intended caller; handling this in the client keeps the helper's
@@ -926,6 +1094,8 @@ pub enum DaemonAction {
         /// Bind this port instead of the environment's preferred one.
         port: Option<u16>,
     },
+    /// Gracefully replace the running daemon, preserving its loopback port.
+    Restart,
     /// Ask the running daemon to shut down.
     Stop {
         /// After a short grace period, signal the daemon's pid directly
@@ -954,6 +1124,12 @@ pub enum DaemonAction {
     /// puts in `X-Storyhook-Token` to reach `/api/v1/*` or the dashboard's
     /// dispatch endpoint from off-loopback.
     Token,
+    /// Reclaim the runtime directories of stores that no longer exist
+    /// (SH-638). Answers with what it would remove and asks, unless forced.
+    Gc {
+        /// Remove without asking — `--force`, or the confirmation given.
+        force: bool,
+    },
 }
 
 /// `story doctor abandoned …`.
@@ -1694,6 +1870,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("run")],
     },
     VerbFlags {
+        verb: "verifier",
+        subcommand: Some("ack"),
+        flags: &[],
+    },
+    VerbFlags {
+        verb: "cleanup",
+        subcommand: None,
+        flags: &[bare("dry-run")],
+    },
+    VerbFlags {
         verb: "set",
         subcommand: None,
         flags: &[
@@ -1857,6 +2043,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "daemon",
         subcommand: Some("install"),
         flags: &[bare("this-binary")],
+    },
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("gc"),
+        flags: &[bare("force")],
     },
     VerbFlags {
         verb: "daemon",
@@ -2165,6 +2356,8 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
         "engine" => parse_engine(args),
+        "verifier" => parse_verifier(args),
+        "cleanup" => parse_cleanup(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -2198,6 +2391,10 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "handoff" => parse_handoff(args),
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
+        "lane-budget" => {
+            expect_no_more(&args[1..], "usage: story lane-budget")?;
+            Ok(Invocation::LaneBudget)
+        }
         "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
         "commit-sync" | "sync-git" => parse_commit_sync(args),
@@ -2241,6 +2438,17 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
             args[0]
         ))),
     }
+}
+
+fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
+    let mut dry_run = false;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            _ => return Err(AppError::Usage("usage: story cleanup [--dry-run]".into())),
+        }
+    }
+    Ok(Invocation::Cleanup { dry_run })
 }
 
 const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
@@ -3414,6 +3622,38 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
+const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
+
+/// `story verifier ack <incident-id>` (SH-666).
+///
+/// The incident id is positional and required on purpose: the halt comment and
+/// the dashboard banner both print it, and an acknowledgement that named no
+/// incident would clear whichever one is current — the stale-page hazard the
+/// REST door already refuses. Same SH-357 contract as `parse_engine`: every
+/// complete arm ends in [`expect_no_more`] with its own usage string.
+fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
+    let Some(action) = args.get(1).map(String::as_str) else {
+        return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+    };
+    let action = match action {
+        "ack" => {
+            let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
+                return Err(AppError::Usage(format!(
+                    "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
+                )));
+            };
+            expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
+            VerifierAction::Ack {
+                incident_id: incident_id.clone(),
+            }
+        }
+        _ => {
+            return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+        }
+    };
+    Ok(Invocation::Verifier { action })
+}
+
 fn parse_engine_stop(args: &[String]) -> Result<EngineAction, AppError> {
     let mut run = None;
     let mut now = false;
@@ -4209,7 +4449,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin run codex -- <helper-command> [args...]";
+    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
     };
@@ -4224,6 +4464,10 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
             action: PluginAction::Uninstall {
                 target: args[2].clone(),
             },
+        }),
+        "reinstall" if args.len() != 2 => Err(AppError::Usage(USAGE.to_string())),
+        "reinstall" => Ok(Invocation::Plugin {
+            action: PluginAction::Reinstall,
         }),
         "run" if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
         "run" => Ok(Invocation::Plugin {
@@ -4289,8 +4533,8 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token | logs [--follow]";
+    let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
+                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -4305,6 +4549,10 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         "start" => DaemonAction::Start {
             port: parse_port_flag(&args[2..], usage)?,
         },
+        "restart" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Restart
+        }
         // Spelled as a flag rather than a subcommand because it is not one a
         // user runs: it is what the spawner execs, and what a launchd agent
         // runs, and both of those are storyhook talking to itself.
@@ -4312,6 +4560,13 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             port: parse_port_flag(&args[2..], usage)?,
         },
         "stop" => DaemonAction::Stop {
+            force: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--force" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
+        "gc" => DaemonAction::Gc {
             force: match &args[2..] {
                 [] => false,
                 [flag] if flag == "--force" => true,
@@ -4665,9 +4920,9 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// deliberately not completed, keeping it and everything it records.
 ///
 /// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
-/// it moves to is a real one ([`crate::domain::CLOSED_STATE_SLUG`]) and the
+/// it moves to is a real one ([`crate::domain::DROPPED_STATE_SLUG`]) and the
 /// reason is a real comment, so this needs no new event kind, no new snapshot
-/// field, no dispatch arm, and no MCP or wire surface — `story move <id> closed
+/// field, no dispatch arm, and no MCP or wire surface — `story move <id> dropped
 /// "<reason>"` does exactly the same thing and is the same story afterwards.
 ///
 /// What the sugar adds is the requirement: `move` takes an optional comment,
@@ -4689,7 +4944,7 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     }
     Ok(Invocation::SetState {
         id: args[1].clone(),
-        state: crate::domain::CLOSED_STATE_SLUG.to_string(),
+        state: crate::domain::DROPPED_STATE_SLUG.to_string(),
         comment: Some(reason),
         if_state: None,
         awaiting: None,
@@ -5033,6 +5288,52 @@ mod tests {
     };
     use crate::error::AppError;
 
+    /// Every verb that answers `ConfirmationRequired` must come back forced,
+    /// or the client asks, hears yes, and re-sends the same question
+    /// (SH-638: `story archive-state` printed its plan twice and archived
+    /// nothing). `daemon stop --force` is the negative control: that flag
+    /// signals a process rather than skipping a prompt, and `forced()` must
+    /// never invent it.
+    #[test]
+    fn forced_authorizes_every_confirming_verb_and_nothing_else() {
+        fn parse(args: &[&str]) -> Invocation {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+                .expect("a well-formed invocation")
+        }
+        let forced = parse(&["archive-state", "done"]).forced();
+        assert_eq!(
+            forced,
+            Invocation::HideState {
+                state: "done".into(),
+                force: true
+            }
+        );
+        assert!(matches!(
+            parse(&["delete", "SH-1"]).forced(),
+            Invocation::Delete { force: true, .. }
+        ));
+        assert!(matches!(
+            parse(&["project", "delete"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::Delete { force: true }
+            }
+        ));
+        assert!(matches!(
+            parse(&["project", "set-prefix", "NEW"]).forced(),
+            Invocation::Project {
+                action: super::ProjectAction::SetPrefix { force: true, .. }
+            }
+        ));
+        assert_eq!(
+            parse(&["daemon", "stop"]).forced(),
+            Invocation::Daemon {
+                action: super::DaemonAction::Stop { force: false }
+            }
+        );
+        let untouched = parse(&["list"]);
+        assert_eq!(untouched.clone().forced(), untouched);
+    }
+
     #[test]
     fn routes_move_command() {
         let invocation = parse_invocation(&[
@@ -5057,6 +5358,22 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_accepts_only_its_bare_dry_run_flag() {
+        assert_eq!(
+            parse_invocation(&["cleanup".to_string()]).unwrap(),
+            Invocation::Cleanup { dry_run: false }
+        );
+        assert_eq!(
+            parse_invocation(&["cleanup".to_string(), "--dry-run".to_string()]).unwrap(),
+            Invocation::Cleanup { dry_run: true }
+        );
+        assert!(
+            parse_invocation(&["cleanup".to_string(), "--force".to_string()]).is_err(),
+            "cleanup must not acquire a bypass for its safety gates"
+        );
+    }
+
+    #[test]
     fn plugin_run_preserves_helper_flags_after_the_terminator() {
         let invocation = parse_invocation(&words(&[
             "plugin",
@@ -5077,6 +5394,24 @@ mod tests {
                     args: words(&["dispatch", "SH-9", "--agent=codex", "--auto"]),
                 }
             }
+        );
+    }
+
+    /// `reinstall` takes no target: the providers' own configurations say
+    /// which are installed (SH-667). A target would invite `story plugin
+    /// reinstall codex` to mean "install", which `install` already means.
+    #[test]
+    fn plugin_reinstall_takes_no_target() {
+        assert_eq!(
+            parse_invocation(&words(&["plugin", "reinstall"])).unwrap(),
+            Invocation::Plugin {
+                action: PluginAction::Reinstall
+            }
+        );
+        let error = parse_invocation(&words(&["plugin", "reinstall", "codex"])).unwrap_err();
+        assert!(
+            error.to_string().contains("usage: story plugin"),
+            "a stray target is a usage error, not a silent install: {error}"
         );
     }
 

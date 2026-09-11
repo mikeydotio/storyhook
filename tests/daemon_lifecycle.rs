@@ -9,13 +9,15 @@
 //! `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` means none of them can bind the port a
 //! developer's own dashboard is on.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, OwnedProcesses};
 use storyhook_test_support::{
-    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, path_without_tailscale, scratch_dir, story_binary,
+    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, installed_copy, path_without_tailscale,
+    scratch_dir, story_binary,
 };
 
 /// Whether `info` describes a daemon running the `story` binary this build
@@ -32,6 +34,21 @@ fn is_the_binary_under_test(info: &DaemonInfo) -> bool {
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
     info.exe == story_binary() && Some(info.exe_mtime) == expected_mtime
+}
+
+/// Whether `info` describes a daemon running `installed_copy()` — the test
+/// binary copied out of its build directory, which is what `make install`
+/// produces and what the version-skew restart is *for* (SH-634). The two
+/// skew tests below drive the replacement through this shape, because after
+/// SH-630 the control for "an installed binary replaces a stale daemon" cannot
+/// be a binary the seat guard correctly refuses.
+fn is_the_installed_copy(info: &DaemonInfo) -> bool {
+    let expected_mtime = std::fs::metadata(installed_copy())
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    info.exe == installed_copy() && Some(info.exe_mtime) == expected_mtime
 }
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
@@ -59,15 +76,57 @@ fn start(env: &TestEnv) -> DaemonInfo {
 }
 
 /// Blocks until `ready`, or fails the test.
-fn wait_for(what: &str, ready: impl Fn() -> bool) {
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if ready() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(WAIT_POLL);
     }
     panic!("timed out waiting for {what}");
+}
+
+/// How often [`wait_for`] re-asks its question.
+const WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// Waits for `pidfile` to hold the positive pid its writer is publishing.
+///
+/// Existence alone is weaker: a shell's `>` creates the file before the
+/// command writes a byte into it, so a poll that fires in that window reads
+/// an empty file and parses nothing — which is how
+/// `a_forced_stop_kills_the_registered_verifier_group_and_its_descendant`
+/// went red under load in a verification run with `ParseIntError { kind:
+/// Empty }`. The same rule `tests/gate_lock.rs`'s `wait_for_pid` states.
+fn wait_for_pid(pidfile: &Path) -> u32 {
+    let mut found = None;
+    wait_for(&format!("a pid published to {}", pidfile.display()), || {
+        found = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 0);
+        found.is_some()
+    });
+    found.expect("wait_for returned only once a pid was read")
+}
+
+/// The reader is not fooled by the window between a pidfile being created
+/// and its pid being written.
+#[test]
+fn an_existing_empty_pidfile_is_not_ready_until_its_pid_is_published() {
+    let fixture = scratch_dir();
+    let pidfile = fixture.path().join("delayed.pid");
+    std::fs::write(&pidfile, "").expect("creating the not-yet-published pidfile");
+
+    let writer_path = pidfile.clone();
+    let writer = std::thread::spawn(move || {
+        // Several polls, so the reader provably sees the empty file first.
+        std::thread::sleep(WAIT_POLL * 4);
+        std::fs::write(writer_path, "4242\n").expect("publishing the delayed pid");
+    });
+
+    assert_eq!(wait_for_pid(&pidfile), 4242);
+    writer.join().expect("joining the delayed pid writer");
 }
 
 /// A `GET /api/v1/hello` with the given token, returning the status.
@@ -244,6 +303,246 @@ fn starting_twice_yields_one_daemon() {
     assert_eq!(first.port, second.port);
 }
 
+/// `daemon restart` is one transition, not a user-composed stop/start pair:
+/// it preserves the endpoint while replacing the daemon identity and returns
+/// only after the successor is healthy.
+#[test]
+fn restarting_replaces_the_daemon_on_the_same_port() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let first = start(&env);
+    let dir = scratch_dir();
+
+    env.story(dir.path())
+        .args(["daemon", "restart"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!("PID {}", first.pid)))
+        .stdout(predicates::str::contains("restarted"));
+
+    let replacement = env.daemon().expect("the replacement portfile");
+    assert_eq!(
+        replacement.port, first.port,
+        "restart must preserve the endpoint callers already use"
+    );
+    assert_ne!(
+        replacement.token, first.token,
+        "a new daemon lifetime must mint a new master token"
+    );
+    assert_eq!(hello_status(&replacement, &replacement.token), 200);
+    assert_eq!(
+        hello_status(&replacement, &first.token),
+        401,
+        "the predecessor's token must not authenticate to its successor"
+    );
+}
+
+/// A parseable portfile from an older build still carries the authenticated
+/// shutdown capability. Restart must use it to drain, then publish this build.
+#[test]
+fn restarting_a_parseable_older_daemon_installs_the_current_build() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let first = env.daemon().expect("the predecessor portfile");
+    let mut older = first.clone();
+    older.version = "0.0.0".to_string();
+    std::fs::write(
+        env.environment().daemon_file(),
+        serde_json::to_string_pretty(&older).expect("serializing the older portfile"),
+    )
+    .expect("publishing the older portfile");
+
+    // The installed shape restarts it: the test binary itself is uninstalled
+    // and would be refused the seat (SH-634, `tests/seat_guard.rs`).
+    let out = env
+        .raw_installed_story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "restart"])
+        .output()
+        .expect("running the installed copy");
+    assert!(
+        out.status.success(),
+        "an installed binary must restart an older daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let replacement = env.daemon().expect("the replacement portfile");
+    assert_eq!(replacement.version, env!("CARGO_PKG_VERSION"));
+    assert!(is_the_installed_copy(&replacement));
+    assert_ne!(replacement.token, first.token);
+    assert_eq!(replacement.port, first.port);
+}
+
+/// Restart is deliberately not an alias for start: saying that a daemon was
+/// restarted when none existed would fabricate the handover this command is
+/// specifically meant to guarantee.
+#[test]
+fn restarting_without_a_daemon_refuses_and_starts_nothing() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+
+    env.story(dir.path())
+        .args(["daemon", "restart"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not running"))
+        .stderr(predicates::str::contains("story daemon start"));
+
+    assert!(
+        !env.daemon_is_live(),
+        "a refused restart must leave the daemon absent"
+    );
+    assert!(
+        env.daemon().is_none(),
+        "a refused restart must not publish a portfile"
+    );
+}
+
+/// No force or endpoint override belongs on restart: force can abandon work,
+/// and changing endpoints is a separate stop/start configuration operation.
+#[test]
+fn restart_refuses_every_option() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+
+    for argument in ["--force", "--port", "unexpected"] {
+        let mut command = env.story(dir.path());
+        command.args(["daemon", "restart", argument]);
+        if argument == "--port" {
+            command.arg("4567");
+        }
+        command
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("usage: story daemon"));
+    }
+}
+
+/// A held lifetime lock with no readable portfile cannot be restarted without
+/// guessing a credential or escalating to a destructive signal.
+#[test]
+fn restart_refuses_an_unreadable_live_daemon_without_disturbing_it() {
+    let env = TestEnv::isolated();
+    let environment = env.environment();
+    let held = lifecycle::claim_pidfile(&environment).expect("holding the daemon pidfile");
+    let dir = scratch_dir();
+
+    env.story(dir.path())
+        .args(["daemon", "restart"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no readable portfile"))
+        .stderr(predicates::str::contains("stop --force"));
+
+    assert!(
+        lifecycle::is_live(&environment),
+        "restart must not signal a daemon it cannot authenticate"
+    );
+    assert!(
+        env.daemon().is_none(),
+        "restart must not fabricate a portfile"
+    );
+    drop(held);
+}
+
+/// The ordering in `lifecycle::run` is the admission barrier: the replacement
+/// is not discoverable until durable engine state has been classified.
+#[test]
+fn restart_reconciliation_precedes_daemon_publication() {
+    let source = include_str!("../src/daemon/lifecycle.rs");
+    let run = source
+        .split("pub fn run<S: crate::store::Store>")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn ensure(").next())
+        .expect("the daemon run function");
+    let reconcile = run
+        .find("engine::reconcile_restart_tick")
+        .expect("restart reconciliation");
+    let bind = run.find("bind_preferred(env)").expect("loopback bind");
+    let publish = run
+        .find("write_info(env, &info)")
+        .expect("portfile publish");
+    let serve = run.find("super::serve::serve(").expect("serve call");
+
+    assert!(
+        reconcile < bind && bind < publish && publish < serve,
+        "restart state must be reconciled before bind/publication/serving: \
+         reconcile={reconcile}, bind={bind}, publish={publish}, serve={serve}"
+    );
+}
+
+/// The seat guard's place in `spawn_locked` and `restart` is a contract, not a
+/// convenience (SH-634). After the spawn lock, because `tests/daemon_timeouts.rs`
+/// holds that lock and calls `ensure` in-process from an uninstalled binary on
+/// an `XdgDefault` origin, and must fail *at the lock*. After the adopt-a-verdict
+/// return, so a refusal is never mistaken for a peer's attempt. Before the first
+/// side effect — the stale login-agent note, the shutdown request — so a
+/// refused client leaves the incumbent exactly as it found it; a guard below
+/// `request_shutdown` would stop the daemon and then decline to replace it,
+/// which `tests/seat_guard.rs` observes only as "the incumbent still answers".
+/// Stated here as source order because two of the three properties have no
+/// runtime observable a test could wait on.
+#[test]
+fn the_seat_guard_sits_after_the_lock_and_before_every_side_effect() {
+    let source = include_str!("../src/daemon/lifecycle.rs");
+    let spawn_locked = source
+        .split("fn spawn_locked(env: &Environment)")
+        .nth(1)
+        .and_then(|tail| tail.split("fn stand_down_legacy_daemon(").next())
+        .expect("the spawn_locked function");
+    let lock = spawn_locked
+        .find("acquire_spawn_lock(")
+        .expect("the spawn lock");
+    let adopt = spawn_locked
+        .find("attempt_verdict(env, arrived)")
+        .expect("the adopted verdict");
+    let guard = spawn_locked
+        .find("seat_guard::check(env)")
+        .expect("the seat guard");
+    let note = spawn_locked
+        .find("note_stale_login_agent(env)")
+        .expect("the stale-agent note");
+    let shutdown = spawn_locked
+        .find("request_shutdown(&stale)")
+        .expect("the shutdown request");
+    let publish = spawn_locked
+        .find("publish_attempt(env, &outcome)")
+        .expect("the attempt publication");
+    assert!(
+        lock < adopt && adopt < guard && guard < note && note < shutdown && shutdown < publish,
+        "spawn_locked: lock={lock}, adopt={adopt}, guard={guard}, note={note}, \
+         shutdown={shutdown}, publish={publish}"
+    );
+
+    let restart = source
+        .split("pub fn restart(env: &Environment)")
+        .nth(1)
+        .and_then(|tail| tail.split("fn usable(").next())
+        .expect("the restart function");
+    let lock = restart.find("acquire_spawn_lock(").expect("the spawn lock");
+    let guard = restart
+        .find("seat_guard::check(env)")
+        .expect("the seat guard");
+    let closure = restart
+        .find("let outcome = (||")
+        .expect("the published closure");
+    let stop = restart
+        .find("stop(env, StopMode::Graceful)")
+        .expect("the stop");
+    assert!(
+        lock < guard && guard < closure && closure < stop,
+        "restart: lock={lock}, guard={guard}, closure={closure}, stop={stop}"
+    );
+}
+
 #[test]
 fn stopping_reports_what_it_stopped_and_clears_the_portfile() {
     let env = TestEnv::isolated();
@@ -404,6 +703,181 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
         .stdout(predicates::str::contains("trip the hook"));
 }
 
+/// Restart owns the same lossless drain as an ordinary graceful stop, then
+/// adds the successor. The blocked hook is the proof: neither the restart
+/// command nor the accepted client may finish while the gate is shut.
+#[test]
+fn restart_drains_in_flight_work_before_starting_the_successor() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+    let predecessor = env.daemon().expect("the project daemon");
+
+    let gate = project.path().join("release-the-restart-hook");
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(
+            format!(
+                "[settings]\ntimeout_seconds = 60\n\n\
+                 [on_comment]\ncommand = \"i=0; while [ ! -f '{}' ] && [ $i -lt 200 ]; \
+                 do sleep 0.1; i=$((i+1)); done\"\ntimeout_seconds = 60\n",
+                gate.display()
+            )
+            .as_bytes(),
+        )
+        .expect("writing the hook");
+    drop(hooks);
+    env.story(project.path())
+        .args(["new", "restart drain work"])
+        .assert()
+        .success();
+    env.story(project.path())
+        .args(["new", "must remain unclaimed"])
+        .assert()
+        .success();
+
+    let mut slow = env.raw_story(project.path());
+    slow.args(["comment", "PB-1", "survives restart"]);
+    let mut client = ChildGuard::spawn_with_output(&mut slow).expect("spawning the slow command");
+    let environment = env.environment();
+    wait_for(
+        "the daemon to publish the slow comment as in flight",
+        || {
+            lifecycle::read_inflight(&environment)
+                .iter()
+                .any(|request| request.command == "comment")
+        },
+    );
+
+    let mut restart_command = env.raw_story(project.path());
+    restart_command.args(["daemon", "restart"]);
+    let mut restart =
+        ChildGuard::spawn_with_output(&mut restart_command).expect("spawning daemon restart");
+
+    let watched_until = Instant::now() + Duration::from_millis(750);
+    while Instant::now() < watched_until {
+        if let Some(status) = restart.try_wait() {
+            panic!("`daemon restart` returned ({status}) while accepted work was still blocked");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        lifecycle::is_live(&environment),
+        "the predecessor must retain ownership while it drains"
+    );
+
+    // A successful read proves only that shutdown has not reached its
+    // dispatcher yet. Poll with a read until the daemon itself answers from
+    // the drain barrier; no timing assumption stands in for that state.
+    wait_for("the predecessor to reject newly dequeued work", || {
+        let output = env
+            .raw_story(project.path())
+            .args(["list"])
+            .output()
+            .expect("probing the drain barrier");
+        !output.status.success()
+            && String::from_utf8_lossy(&output.stderr).contains("http status: 503")
+    });
+    env.story(project.path())
+        .args(["claim", "PB-2", "--no-comment"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("http status: 503"));
+
+    // An explicit start is a competing lifecycle transition, not an ordinary
+    // request. It must wait on restart's spawn lock and report the successor,
+    // never return the predecessor that is visibly draining above.
+    let mut start_command = env.raw_story(project.path());
+    start_command.args(["daemon", "start"]);
+    let mut concurrent_start =
+        ChildGuard::spawn_with_output(&mut start_command).expect("spawning concurrent start");
+    let start_watch = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < start_watch {
+        if let Some(status) = concurrent_start.try_wait() {
+            panic!(
+                "concurrent `daemon start` returned ({status}) before restart installed its \
+                 successor"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    std::fs::File::create(&gate).expect("opening the gate");
+    let served = client.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "the in-flight comment did not finish after its hook was released".to_string()
+    });
+    assert!(
+        served.status.success(),
+        "restart abandoned accepted work ({}): {}",
+        served.status,
+        String::from_utf8_lossy(&served.stderr)
+    );
+    let restarted = restart.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "daemon restart did not finish after accepted work drained".to_string()
+    });
+    assert!(
+        restarted.status.success(),
+        "restart failed: {}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+
+    let successor = env.daemon().expect("the successor daemon");
+    assert_ne!(successor.token, predecessor.token);
+    let started = concurrent_start.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "concurrent daemon start did not adopt the successor".to_string()
+    });
+    assert!(
+        started.status.success(),
+        "concurrent start failed: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&started.stdout).contains(&format!("PID {}", successor.pid)),
+        "concurrent start reported a daemon other than the successor: {}",
+        String::from_utf8_lossy(&started.stdout)
+    );
+    env.story(project.path())
+        .args(["show", "PB-1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("survives restart"));
+    env.story(project.path())
+        .args(["show", "PB-2"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("state: todo"))
+        .stdout(predicates::str::contains("assignee: -"));
+}
+
+/// The engine loop's drain check is the claim-side half of restart: once the
+/// old daemon accepts shutdown, no later steady pass may take another story.
+#[test]
+fn full_auto_stops_scheduling_when_restart_begins_draining() {
+    let engine = include_str!("../src/daemon/engine.rs");
+    let poll = engine
+        .split("pub(crate) fn poll_engine")
+        .nth(1)
+        .expect("the engine poller");
+    assert!(
+        poll.contains("!draining.load(Ordering::Relaxed)"),
+        "the outer loop must refuse a new reconcile pass while draining"
+    );
+    assert!(
+        poll.contains("|| draining.load(Ordering::Relaxed)"),
+        "the wait loop must wake out permanently when draining begins"
+    );
+
+    let serve = include_str!("../src/daemon/serve.rs");
+    assert!(
+        serve.contains("poll_engine(store, &env, &bus, &stop, draining)"),
+        "the poller must receive the same draining flag the shutdown route sets"
+    );
+}
+
 /// `daemon stop --force` does not wait for a hook that outlives its grace
 /// period — it signals the daemon directly once that period elapses.
 ///
@@ -517,9 +991,11 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     let environment = env.environment();
     let descendant_file = scratch_dir();
     let descendant_path = descendant_file.path().join("descendant.pid");
+    // Published by rename so the file never exists without its content; the
+    // reader below refuses an empty one regardless (two mechanisms).
     let script = format!(
         "trap '' TERM; sh -c 'trap \"\" TERM; while :; do sleep 1; done' & \
-         echo $! > '{}'; while :; do sleep 1; done",
+         echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; while :; do sleep 1; done",
         descendant_path.display()
     );
     let mut command = std::process::Command::new("sh");
@@ -532,12 +1008,7 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     let _registration = registry
         .register("verifier", verifier_pid, Some("verify:fixture:SH-1:1"))
         .expect("publishing the verifier group");
-    wait_for("the verifier descendant pid", || descendant_path.exists());
-    let descendant_pid: u32 = std::fs::read_to_string(&descendant_path)
-        .expect("reading the descendant pid")
-        .trim()
-        .parse()
-        .expect("parsing the descendant pid");
+    let descendant_pid = wait_for_pid(&descendant_path);
     let descendant_start = lifecycle::process_start_time(descendant_pid)
         .expect("the verifier descendant's native identity");
 
@@ -574,11 +1045,19 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let daemon = start(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let daemon = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
     let environment = env.environment();
     std::fs::write(environment.daemon_file(), "not-json").expect("corrupting the daemon portfile");
 
-    let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "stop", "--force"])
         .assert()
@@ -593,11 +1072,19 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
 fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let daemon = start(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let daemon = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
     let environment = env.environment();
     std::fs::remove_file(environment.daemon_file()).expect("removing the daemon portfile");
 
-    let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "stop", "--force"])
         .assert()
@@ -929,15 +1416,25 @@ fn a_daemon_from_another_build_is_replaced_rather_than_reused() {
         .expect("rewriting the portfile");
     assert!(!is_the_binary_under_test(&stale));
 
-    env.story(dir.path())
+    // The installed shape replaces it. The test binary is uninstalled by
+    // construction and is refused this seat (SH-634, `tests/seat_guard.rs`),
+    // and after SH-630 the control for the skew restart is what `make install`
+    // produces, not the incident.
+    let out = env
+        .raw_installed_story(dir.path())
         .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
-        .assert()
-        .success();
+        .output()
+        .expect("running the installed copy");
+    assert!(
+        out.status.success(),
+        "an installed binary must replace a daemon from another build: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let replacement = env.daemon().expect("a portfile after the restart");
     assert!(
-        is_the_binary_under_test(&replacement),
+        is_the_installed_copy(&replacement),
         "a daemon serving another build must be replaced, never reused"
     );
     // The token, not the pid (SH-239, one layer down: ask what a process *is*,
@@ -1080,6 +1577,8 @@ fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
         let started = Instant::now();
         let out = env
             .raw_story(dir.path())
+            // The override, for the reason stated on the wave below.
+            .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
             .args(["summary"])
             .output()
             .expect("running a client");
@@ -1117,6 +1616,11 @@ fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
                 let dir = scratch_dir();
                 let out = env
                     .raw_story(dir.path())
+                    // The subject is the spawn-lock queue behind the wedge,
+                    // not the seat guard, which would otherwise refuse this
+                    // uninstalled client in microseconds and leave the
+                    // ceiling below vacuously met (SH-634).
+                    .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
                     .args(["summary"])
                     .output()
                     .expect("running a client");
@@ -1216,6 +1720,10 @@ fn a_refused_stand_down_is_named_above_the_failure_it_causes() {
     let dir = scratch_dir();
     let out = env
         .raw_story(dir.path())
+        // The subject is what `spawn_locked` reports *after* the seat guard,
+        // which would otherwise refuse this uninstalled client before the
+        // stand-down is ever attempted (SH-634).
+        .env(storyhook::daemon::seat_guard::OVERRIDE_VAR, "1")
         .args(["summary"])
         .output()
         .expect("running a client");

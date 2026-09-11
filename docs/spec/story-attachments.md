@@ -1,6 +1,9 @@
-# Story attachments: the storage and CLI foundation
+# Story attachments: storage, transport, and dashboard viewer
 
-Design of record for **SH-315** (the epic) and its foundation child **SH-387**. Written
+Design of record for **SH-315** (the epic), foundation child **SH-387**,
+byte-serving child **SH-388**, upload transport child **SH-389**, drawer/viewer
+child **SH-390**, create-modal paste child **SH-391**, existing-story drop child
+**SH-392**, and remote-image child **SH-393**. Written
 after implementation, for the reason [`dashboard-dispatch.md`](dashboard-dispatch.md) and
 [`responsive-dashboard.md`](responsive-dashboard.md) give: sharper against the actual code
 than against a proposal for it.
@@ -203,9 +206,320 @@ below carry.
 | **SH-392** | drag an image onto an existing story's description or comment field | SH-389, SH-390 |
 | **SH-393** | remote image URLs: CSP `img-src` relaxation, SSRF/privacy analysis, thumbnail strategy — deliberately reopens [`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)'s "no images" rule | SH-390 |
 
+## Browser upload transport (SH-389)
+
+The browser submits one image to
+`POST /api/repos/{repo}/story/{story}/attachments`. The request body is raw
+bytes: Fetch supports `Blob` directly, so neither multipart framing nor base64
+is needed. This endpoint attaches to an existing story; story creation, paste,
+drag/drop and viewing remain separate children of SH-315.
+
+| Contract | Behavior |
+|---|---|
+| Authentication | Existing API admission: master/named header token or same-origin named-token cookie, plus `X-Storyhook` and trusted Host |
+| Content-Type | Exactly one of `application/octet-stream`, `image/png`, `image/jpeg`, `image/gif`, `image/webp`; case-insensitive, parameters ignored |
+| Image format | Existing service sniffs magic bytes; the declared MIME type and filename never decide the stored format |
+| Size | At most `MAX_ATTACHMENT_BYTES` (10 MiB), including the boundary; ordinary requests retain the 64 KiB UTF-8 cap |
+| Filename | Optional `X-Storyhook-Attachment-Name`, encoded with `encodeURIComponent`; absence defaults to `attachment` |
+| Filename validation | Strict percent/UTF-8 decoding, once; `+` stays literal; duplicate, empty, malformed, and control-bearing values return 400 |
+| Filename normalization | Existing source-name basename rule; the name never causes filesystem access |
+| Success | 201 and the existing story JSON envelope (`result: "ok"`, `story.story.attachments`); project change published after commit |
+| Refusals | Admission 401/403; request media type 415; body over cap 413; body framing/read failure 400; unsupported image bytes 422; existing project/story errors unchanged |
+| Story restrictions | Canonical/numeric IDs use existing canonicalization; foreign prefixes are refused; closed stories and projects without a checkout remain uneditable |
+| Provenance | `command: "web:attachment"`, `actor: "web:user"` |
+
+```javascript
+// Run on the authenticated dashboard origin; `image` is a Blob or File.
+const response = await fetch(
+  `/api/repos/${encodeURIComponent(repo)}/story/${encodeURIComponent(story)}/attachments`,
+  {
+    method: "POST",
+    headers: {
+      "X-Storyhook": "1",
+      "Content-Type": "application/octet-stream",
+      "X-Storyhook-Attachment-Name": encodeURIComponent(filename),
+    },
+    body: image,
+  },
+);
+if (!response.ok) throw new Error(await response.text());
+const updated = await response.json();
+```
+
+The worker classifies the route after admission and acquires a `Text(String)`
+or `Binary(Vec<u8>)` body. Only the upload route receives the larger allowance;
+engine and RPC handlers only consume text. Reads use the existing HTTP framing
+decoder and absolute peer deadline. Declared oversize is refused before reading;
+chunked and fixed-length bodies are bounded to the cap plus one byte. Rejected
+bodies are never drained, preserving the transport's protection against stalled
+peers. A complete refusal response can therefore precede a TCP reset when
+unread request bytes remain; clients must respect HTTP response framing.
+
+The REST route uses the common project-resolution and change-publication path,
+then calls `AttachmentService::add`. Blob and event writes remain one transaction.
+There is no temporary-file, migration, or separate CLI invocation variant.
+
+| Verification | Coverage |
+|---|---|
+| Upload module unit/property tests | Filename decoding, Unicode round trips, duplicate media-type refusal |
+| `tests/attachment_upload.rs` | Real HTTP byte/hash round trip; all formats; 64 KiB and 10 MiB boundaries; chunked, incomplete and stalled bodies; admission, revocation, project/story rules, provenance and change signal |
+| `e2e/specs/attachment-upload.spec.ts` | Browser-generated PNG Blob, cookie admission, Unicode filename, SHA-256, and byte-for-byte authenticated download through real Fetch in Chromium and WebKit |
+| Existing targeted suites | REST routing/classification, CLI attachments, daemon RPC and deadline regressions |
+
 ## As built
 
 Matches this document as written — SH-387 shipped exactly the storage-and-CLI scope
 above, with the `next_attachment_id` counter added during implementation once
 `tests/story_attachments.rs` demonstrated the id-reuse defect a first draft would have
-shipped. SH-388 through SH-393 remain open; SH-315 itself stays open until they land.
+shipped.
+
+SH-389 adds the raw binary upload contract above without widening the ordinary
+JSON request limit. Display, paste, drag/drop and remote URL work remain with
+the sibling stories; SH-315 stays open until its children land.
+
+Targeted verification for SH-389: 10 upload integration tests, 121 relevant unit
+tests, 50 existing integration regressions, and 21 repository-fence tests passed.
+The real Blob test passed in Chromium and WebKit. Formatting and targeted Clippy
+checks passed with warnings treated as errors. Full-suite verification belongs
+to the centralized verifier.
+
+## As built — SH-388: authenticated bytes
+
+`GET /api/repos/{project}/story/{story}/attachments/{attachment}` resolves the
+project slug through the existing REST router and calls `AttachmentService::get`
+with that project's context. Attachment IDs are positive decimal `u32` values
+(leading zeroes are accepted); invalid syntax, signs, zero, and overflow return
+400. Missing resources return 404, missing backing blobs retain the service's
+contextual integrity error (500), and closed stories remain readable. Other
+methods follow the existing method/admission rules (405 after admission).
+
+`Reply` now stores `Vec<u8>` and feeds the HTTP response's byte constructor.
+Text constructors retain their UTF-8 behavior; `body()` exposes bytes and
+`text_body()` reports invalid UTF-8 explicitly. The finalizer still owns all
+security headers. Successful attachment responses add `Cache-Control: no-store`
+and `Cross-Origin-Resource-Policy: same-origin`, with the allowlisted stored MIME
+type and Content-Length computed from the actual bytes. The supplied filename
+never enters a header. Responses are complete: Range and conditional headers
+do not select partial or cached responses. The existing 10 MiB attachment limit
+bounds ordinary blob reads; no schema or upload change is involved.
+
+### The cookie decision
+
+No URL credential or new authentication path is needed. SH-319 already supplied
+the mechanism the original SH-388 description called out as unresolved:
+`same_origin_read` accepts a named cookie with `Sec-Fetch-Site: same-origin`,
+or, only when that header is absent, a Referer whose authority matches Host.
+The latter is needed on plain HTTP LAN/tailnet origins, where browsers do not
+send Fetch Metadata. The dashboard's existing `Referrer-Policy: same-origin`
+keeps that proof available for a same-origin image. Explicit master/named token
+headers continue to work. Missing or rejected proof fails closed, and query
+parameters cannot authenticate.
+
+This reuses the existing gate rather than weakening it. The browser restriction
+in the response adds defense against cross-origin embedding. References:
+[Fetch Metadata](https://www.w3.org/TR/fetch-metadata/) and
+[Fetch's Cross-Origin-Resource-Policy](https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header).
+The explicit `img-src 'self' blob:` policy allows both these same-origin images
+and SH-391's browser-local staged previews without relaxing any other resource
+type or admitting remote or `data:` image sources.
+
+### Metadata and consumers
+
+Both story-detail and board responses already serialize
+`StoryView.story.attachments`. Consumers build the relative route from the
+project slug, story ID, and attachment ID; metadata gains no duplicate fields,
+URLs, tokens, or byte payloads. Empty attachment lists remain omitted. Drawer
+markup and the viewer belong to SH-390, uploads to SH-389, and remote URLs to
+SH-393.
+
+### Verification
+
+`tests/attachment_http.rs` exercises the real socket/daemon path: each supported
+MIME type, arbitrary binary bytes and maximum size, shared security headers,
+origin-proof and token refusals (including expiry/revocation), project isolation,
+resource and method errors, closed stories, missing blobs, metadata parity,
+and no change-feed publication. HTTP unit tests also cover byte access, strict
+UTF-8 access, framing, and HEAD suppression. The original missing route was
+reproduced as four failing regressions before implementation; metadata tests
+already passed.
+
+The browser tests seed a real PNG through the CLI, sign in through the dashboard
+modal, then decode a plain image in the dashboard shell. They assert that no
+custom auth header accompanies the image request. The desktop spec covers
+Chromium/WebKit; the untrusted-origin cookie spec covers the Referer fallback.
+Only new and directly impacted tests are run here; the centralized verifier owns
+the full suite.
+
+Verification completed: 121 selected Rust integration tests, seven existing web
+response checks, the affected HTTP/admission/routes/handoff/token/framing unit
+tests and dispatch-log response test, and 34 source/fixture fences passed.
+Chromium and WebKit image tests passed; both tests in the plain-HTTP Chromium
+cookie spec passed. `cargo fmt --all -- --check`, `git diff --check`, and
+`cargo clippy --all-targets -- -D warnings` passed. The initial plain-HTTP browser
+fixture used Node's API client, which could not resolve Chromium's test-only
+hostname; it now reads the project slug from the dashboard's actual catalog
+response, keeping the test wholly on the browser's configured origin.
+
+
+## Drawer and modal viewer (SH-390)
+
+Attachments appear below the description, in addition order, as a horizontally
+scrollable strip of native buttons with contained lazy-loaded thumbnails and
+text filenames. An empty list has no section. The existing same-origin byte
+route supplies thumbnails and the viewer; no URL, token, thumbnail blob, schema,
+or CSP additions are required.
+
+The viewer shows one contained image, its filename, loading/error status, and
+Close. Long filenames use an ellipsis, with the full text retained in the dialog
+label and hover tooltip. It participates in the existing backdrop/overlay registry. Close,
+backdrop, and topmost Escape restore focus to the invoking thumbnail (its current
+replacement if a refresh replaced the section), or to the drawer if it vanished.
+Escape leaves story detail open. Existing notice-layer keyboard behavior remains.
+A fresh image node per opening owns its callbacks; closing invalidates them and
+removes the source, so delayed events cannot overwrite a later selection.
+Opening is synchronous, and shared backdrop helpers cancel obsolete fade timers.
+
+The board's live story metadata owns attachments. An absent board story has no
+attachments; retained detail metadata cannot resurrect deleted content. Attachment-only board changes
+trigger drawer reconciliation independently of card-animation fields. Unrelated
+refreshes preserve thumbnail nodes and an open viewer. Removing the selected
+attachment, closing detail, or leaving its story/project closes the viewer.
+
+Acceptance: real stored images decode on Chromium and WebKit; filenames remain
+text; keyboard activation, modal focus, all dismissal paths, live addition and
+removal, section replacement, errors/retry, delayed responses, rapid reopening,
+and viewport containment work through production UI. Rust structural checks pin
+the named dialog and shared overlay lifecycle. Only new and directly impacted
+tests run in this lane; the centralized verifier runs the full suite.
+
+Upload controls, paste, drag/drop, remote URLs, zoom, and gallery navigation are
+outside SH-390. SH-391, SH-392, and SH-393 retain their planned scope.
+
+## Existing-story file drops (SH-392)
+
+The open drawer's whole description section (rendered or editing) and comment
+textarea accept local file drops. A drop attaches bytes only: it never inserts
+text, changes the description, or submits the comment. The dashboard sends the
+existing raw upload request with the file's percent-encoded name; storage limits
+and magic-byte image validation remain server-authoritative.
+
+The handler claims a drag only when `DataTransfer.items` contains a file or the
+transfer advertises the `Files` type. It cancels `dragover`, shows a copy target,
+then reads `DataTransfer.files` during `drop`, when browser security permits it.
+Only that file branch prevents the default and stops propagation. The board's
+text/plain card payload therefore remains wholly owned by `bindColumnDrop`, and
+ordinary text/link drags retain native behavior. Closed stories consume file
+drops without uploading or allowing browser navigation and direct the user to
+reopen the story.
+
+Multiple files upload sequentially in selection order, one active batch per
+project/story. A definite file-specific refusal is reported with its filename
+and the batch continues. A transport failure with no response stops the batch
+without replay because the write may have landed; cancelling token exchange
+also stops because cancellation applies to the user's whole action. Successful
+responses update the current project only when it still matches the project
+captured at drop time. Navigation cannot apply a late response to another
+project, while the server still completes the upload against its original URL.
+
+`api()` keeps JSON serialization as its default and exposes raw-body delivery as
+an explicit internal option. It shares the existing CSRF marker, cookie/token
+authentication, mutation deadline, one safe retry after pre-handler 401, and
+error shape; there is no second transport implementation for dropped files.
+
+Acceptance is covered by `tests/web_test.rs` and the Chromium/WebKit
+`attachment-drop.spec.ts`: both field modes, ordered images, preserved value,
+selection and focus, validation continuation, ambiguous failure, project
+identity, closed stories, and file-only isolation from card drag/drop.
+
+## Create-modal paste (SH-391)
+
+The create description textarea reads image `File` entries from the synchronous
+`ClipboardEvent.clipboardData.items` interface. PNG, JPEG, GIF, and WebP are
+accepted; an image representation wins when the clipboard also exposes HTML or
+plain text, while a text-only paste keeps the browser's native textarea behavior.
+Multiple images retain clipboard order. Clipboard filenames are preserved;
+unnamed entries receive `pasted-image.<canonical extension>`.
+
+Pasted bytes remain browser-local until the user saves or publishes. The modal
+shows contained object-URL thumbnails with text filenames and Remove controls,
+and revokes every object URL when its item leaves the pending list or the modal
+session ends. Existing attachments on an edited draft render in the same strip
+as persisted, non-removable facts. The server remains authoritative for the
+10 MiB limit and magic-byte validation. CSP admits `blob:` only through
+`img-src`; scripts, connections, frames, remote images, and `data:` images keep
+their existing restrictions.
+
+The upload endpoint requires an existing story id, so a new submission with
+pending images is created as a draft first. The client then uploads one raw Blob
+at a time through the shared authenticated request helper, preserving attachment
+id order, and publishes only after every upload succeeds. A Save Draft action
+stops after upload. Existing drafts follow the same PATCH, label-diff, ordered
+upload sequence before an optional publish. Submissions without pending images
+keep their original one-request path.
+
+Each confirmed upload replaces its local preview with the returned attachment
+metadata. A definite refusal leaves the failed image and every later image
+pending in the now-persisted draft editor, so retry cannot create another story.
+An unconfirmed network outcome is never replayed automatically: the modal says
+the image may already be attached and directs the user to reload and inspect the
+persisted draft before retrying. Discarding that draft uses ordinary story
+deletion, whose store transaction removes its attachment blobs.
+
+The project selector is pinned only for this multi-request sequence. Every
+request uses the project base captured before the draft write; once the draft
+exists, the existing draft-editor rule keeps its owner immutable. This prevents
+one paste submission from creating a draft in one project and uploading its
+images to another.
+
+Acceptance: Chromium and WebKit exercise pre-create previews, mixed clipboard
+representations, all accepted MIME declarations, filename fallback, removal,
+ordered persistence, draft save/reopen/publish, partial refusal and retry,
+ambiguous failure, and cross-project ownership through production UI and API
+paths. SH-392 still owns drag-and-drop onto existing stories; SH-393 owns remote
+image URLs.
+
+## Remote description images (SH-393)
+
+A story description projects supported remote image URLs into the existing
+attachment strip without changing the description or storing attachment metadata.
+Stored attachments remain first in addition order; remote images follow in their
+first textual order. The markdown parser reports bare URLs, autolinks, link
+destinations and image-syntax destinations through an optional collector, so code
+spans and blocks stay non-operative and there is no second, drifting URL grammar.
+The image syntax itself remains literal in rendered prose rather than becoming an
+inline image.
+
+A candidate must be an absolute HTTPS URL with no URL credentials and a decoded
+path ending case-insensitively in `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp`.
+Queries remain part of identity; fragments are discarded before first-occurrence
+deduplication because they never reach the server. The decoded final path segment
+is the display name, falling back to the hostname. HTTP, SVG, malformed and
+credential-bearing URLs remain ordinary text or links and create no media control.
+
+Remote controls initially contain an unloaded placeholder, filename and hostname.
+Opening the drawer therefore sends no third-party image request. Activating the
+control is the consent boundary: it assigns the URL to a fresh modal image with
+`referrerPolicy="no-referrer"`; successful decoding then hydrates the strip preview
+for that browser session. Error and retry, obsolete callbacks, modal containment
+and focus restoration share SH-390's existing viewer lifecycle. Media identity is
+compared as dataset text, never interpolated into selector syntax. Accepted board
+snapshots compare the complete derived media list, so an external description edit
+can add, replace or remove the optional section and closes a viewer whose URL
+vanished without trusting retained detail data.
+
+The CSP adds `https:` to the existing `img-src 'self' blob:` policy. The daemon
+never resolves or fetches the URL, so this creates no server-side SSRF surface
+and no backup/export/schema work.
+The browser still reveals its IP and request time to the selected host and may send
+that host's own cookies; explicit activation makes that request intentional, and
+the per-image policy removes the dashboard/story URL from `Referer`. Using
+`crossorigin="anonymous"` would omit cross-origin credentials but require the image
+host to opt into CORS, rejecting ordinary image URLs; the viewer therefore uses the
+normal image request mode and states that residual privacy boundary explicitly.
+HTTP is excluded rather than relying on browser-dependent mixed-content upgrading.
+
+Acceptance is covered structurally in `tests/web_test.rs` and behaviorally in
+`remote-image-viewer.spec.ts` on Chromium and WebKit: consent-before-request,
+referrer omission, grammar and exclusions, stable ordering/deduplication, real
+decoding, retry, delayed-response invalidation, live description replacement,
+removal and focus fallback.

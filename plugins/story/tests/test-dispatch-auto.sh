@@ -33,7 +33,7 @@ dry() {
 # treats as special -- see tests/test-charter-inert.sh for the invariant and
 # why it has to be structural. The pin itself is unchanged in kind: it still
 # asserts the attended prompt byte-for-byte, which is what catches drift.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story $id, link it with ‘story link-pr $id PR-URL’, and comment the PR link on $id. Then move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move $id back to verifying, and stop again. Do not run make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -78,10 +78,10 @@ for marker in \
   "AUTONOMOUS" \
   "council-vote" \
   "new and directly impacted tests" \
-  "story link-pr $id PR-URL" \
+  "the verifier pushes your branch and opens or adopts the pull request" \
   "story block $id" \
   "story move $id verifying" \
-  "centralized verifier owns the full suite" \
+  "centralized verifier owns submission, the full suite" \
   "semver bump" \
   "prefer adopting it into" \
   "context window is still unused"; do
@@ -93,6 +93,12 @@ done
 case "$prompt" in
   *"gh pr merge"*) fail_test "auto+council-on: charter still permits the bare merge path" ;;
 esac
+# SH-647: the agent never pushes or opens the PR; the verifier does.
+for forbidden in "Commit and push" "story link-pr $id PR-URL"; do
+  case "$prompt" in
+    *"$forbidden"*) fail_test "auto+council-on: charter still tells the agent to [$forbidden]" ;;
+  esac
+done
 
 # SH-371: the verdict is recorded when the council CONCLUDES, not at the end of
 # the work. The council writes its trail into a directory this worktree owns, so
@@ -104,7 +110,7 @@ assert_contains "$prompt" "the moment the council concludes" \
   "auto+council-on: the verdict is recorded when the council concludes"
 assert_contains "$prompt" "before you resume the work" \
   "auto+council-on: recording the verdict precedes resuming the work"
-assert_contains "$prompt" "Do not run make test, land-pr.sh" \
+assert_contains "$prompt" "make test, land-pr.sh, story move $id done, reap" \
   "auto+council-on: the child is forbidden from taking the centralized gate"
 
 # --- SH-219: with no council reachable, the SOLO charter renders instead —
@@ -117,10 +123,10 @@ solo_prompt=$(jqf "$solo_out" .prompt)
 for marker in \
   "AUTONOMOUS" \
   "new and directly impacted tests" \
-  "story link-pr $id PR-URL" \
+  "the verifier pushes your branch and opens or adopts the pull request" \
   "story block $id" \
   "story move $id verifying" \
-  "centralized verifier owns the full suite" \
+  "centralized verifier owns submission, the full suite" \
   "semver bump" \
   "do not stall" \
   "prefer adopting it into" \
@@ -133,6 +139,11 @@ done
 case "$solo_prompt" in
   *"gh pr merge"*) fail_test "auto+council-off: charter still permits the bare merge path" ;;
 esac
+for forbidden in "Commit and push" "story link-pr $id PR-URL"; do
+  case "$solo_prompt" in
+    *"$forbidden"*) fail_test "auto+council-off: charter still tells the agent to [$forbidden]" ;;
+  esac
+done
 
 # SH-371: the two charters must never drift on an obligation they share. A solo
 # decision leaves no trail on disk at all, so it is gone with the session unless
@@ -141,7 +152,7 @@ assert_contains "$solo_prompt" "the moment you decide" \
   "auto+council-off: the solo decision is recorded when it is made"
 assert_contains "$solo_prompt" "before you resume the work" \
   "auto+council-off: recording the decision precedes resuming the work"
-assert_contains "$solo_prompt" "Do not run make test, land-pr.sh" \
+assert_contains "$solo_prompt" "make test, land-pr.sh, story move $id done, reap" \
   "auto+council-off: the child is forbidden from taking the centralized gate"
 case "$solo_prompt" in
   *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
@@ -152,7 +163,7 @@ for variant in "auto:$prompt" "solo:$solo_prompt"; do
   label="${variant%%:*}"; text="${variant#*:}"
   assert_contains "$text" "move $id back to verifying, and stop again" \
     "$label: repair resubmits the existing PR"
-  assert_contains "$text" "Do not run make test, land-pr.sh, story move $id done, reap" \
+  assert_contains "$text" "make test, land-pr.sh, story move $id done, reap" \
     "$label: completion and teardown remain verifier-owned"
 done
 

@@ -7,6 +7,7 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
+use crate::service::CleanupReport;
 use crate::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, EngineScope, PrLink,
 };
@@ -132,6 +133,17 @@ pub struct EngineLaneView {
     pub state: EngineLaneState,
     pub story: Option<String>,
     pub elapsed_seconds: Option<u64>,
+    /// Seconds since the lane last showed observed activity on either stall
+    /// channel — its story moving or its pane writing to the terminal
+    /// (SH-657); absent until the first observation and on an idle lane. The
+    /// stall verdict is made on this number, so it is shown before it is a
+    /// verdict rather than only after (SH-418).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_seconds: Option<u64>,
+    /// What the liveness probe last said when it did not say "alive"
+    /// (SH-626); absent while tmux answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,20 +198,19 @@ impl EngineRunView {
             .lanes
             .into_iter()
             .map(|lane| {
-                let elapsed_seconds = lane.dispatched_at.as_deref().and_then(|started| {
-                    let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
-                    Some(
-                        now.as_ref()?
-                            .signed_duration_since(started)
-                            .num_seconds()
-                            .max(0) as u64,
-                    )
-                });
+                let seconds_since = |at: &str| {
+                    let at = chrono::DateTime::parse_from_rfc3339(at).ok()?;
+                    Some(now.as_ref()?.signed_duration_since(at).num_seconds().max(0) as u64)
+                };
+                let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
+                let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
                     elapsed_seconds,
+                    quiet_seconds,
+                    probe_detail: lane.probe_detail,
                     outcome: lane.outcome,
                     outcome_detail: lane.outcome_detail,
                 }
@@ -449,6 +460,9 @@ pub enum ConfirmationPlan {
     /// A bulk "Archive" of every story in a CLOSED-superstate column
     /// (SH-43).
     HideState(HideStatePlan),
+    /// `story daemon gc` — the runtime directories of stores that no longer
+    /// exist, and everything inside them (SH-638).
+    RuntimeGc(crate::daemon::gc::RuntimeGcPlan),
 }
 
 impl ConfirmationPlan {
@@ -463,6 +477,9 @@ impl ConfirmationPlan {
             Self::DeleteStory(plan) => &plan.id,
             Self::SetPrefix(plan) => &plan.new_prefix,
             Self::HideState(plan) => &plan.state,
+            // Never typed: `RuntimeGc` confirms with one keystroke, and the
+            // refusal names `--force` rather than a token.
+            Self::RuntimeGc(_) => "reclaim",
         }
     }
 
@@ -490,6 +507,15 @@ impl ConfirmationPlan {
                 if plan.ids.len() == 1 { "y" } else { "ies" },
                 plan.state
             ),
+            Self::RuntimeGc(plan) => format!(
+                "this would remove {} runtime director{} for stores that no longer exist",
+                plan.candidates.len(),
+                if plan.candidates.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+            ),
         }
     }
 
@@ -499,10 +525,13 @@ impl ConfirmationPlan {
     /// [`Self::Delete`], [`Self::DeleteStory`] and [`Self::SetPrefix`] are each a
     /// one-way door, so the gate matches: prove the token was read by typing
     /// it. [`Self::HideState`] is reversible with `story unhide`, story by
-    /// story, so one keystroke is the right weight.
+    /// story, so one keystroke is the right weight. So is
+    /// [`Self::RuntimeGc`]: what it removes was throwaway by construction — a
+    /// store under a temp root, already gone — and the plan has named every
+    /// directory and every backup snapshot inside it.
     #[must_use]
     pub fn requires_typed_confirmation(&self) -> bool {
-        !matches!(self, Self::HideState(_))
+        !matches!(self, Self::HideState(_) | Self::RuntimeGc(_))
     }
 
     /// The yes/no prompt for a reversible plan. Kept with the plan so a new
@@ -511,6 +540,7 @@ impl ConfirmationPlan {
     pub fn confirmation_question(&self) -> &str {
         match self {
             Self::HideState(_) => "Archive these stories? [y/N] ",
+            Self::RuntimeGc(_) => "Reclaim these directories? [y/N] ",
             Self::Delete(_) | Self::DeleteStory(_) | Self::SetPrefix(_) => {
                 "Confirm this operation? [y/N] "
             }
@@ -855,6 +885,8 @@ pub enum Response {
     },
     /// One Full Auto engine run after a start, read, or control mutation.
     EngineRun(Box<EngineRunView>),
+    /// Result of `story cleanup`.
+    Cleanup(Box<CleanupReport>),
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
@@ -876,6 +908,10 @@ pub enum Response {
     /// project snapshot that a human would want — `story list` is that
     /// command — and inventing one would be a second, worse `list`.
     ProjectSnapshot(Box<ProjectSnapshotView>),
+    /// The machine lane budget and the live agent windows counted against
+    /// it (SH-655). JSON is what `cmd_dispatch` reads; the human form is one
+    /// line and the window list.
+    LaneBudget(Box<crate::lane_budget::LaneBudgetView>),
     /// One story's raw event history, oldest first.
     ///
     /// Rendered as JSON, for the same reason as [`Response::ProjectSnapshot`]:
@@ -1003,6 +1039,15 @@ pub fn render_error(error: &AppError, json: bool) -> String {
         // joined — so a caller reading it is unaffected, and a caller wanting
         // `field`/`persisted`/`rebuilt` reads them instead of regexing a
         // 1.68MB string for them.
+        if let AppError::TextLint(detail) = error {
+            return format!(
+                "{}\n",
+                serde_json::json!({
+                    "result": "error", "error": error.to_string(), "exit_code": error.exit_code(),
+                    "kind": "text_lint", "story_id": detail.story, "findings": detail.findings,
+                })
+            );
+        }
         if let AppError::Integrity(detail) = error {
             return format!(
                 "{}\n",
@@ -1154,6 +1199,10 @@ fn render_json(response: &Response) -> String {
             "result": "ok",
             "run": run,
         })),
+        Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
+            "result": "ok",
+            "cleanup": report,
+        })),
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1282,6 +1331,7 @@ fn render_json(response: &Response) -> String {
             return format!("{raw}\n");
         }
         Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
+        Response::LaneBudget(view) => serde_json::to_string_pretty(view.as_ref()),
         Response::StoryHistory(events) => serde_json::to_string_pretty(events),
         // `command` and `actor` stay separate fields rather than the rendered
         // "move (story.sh:dispatch)" a human sees: a script must be able to tell
@@ -1440,6 +1490,42 @@ fn render_human(response: &Response) -> String {
             body
         }
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Cleanup(report) => {
+            let action = if report.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            };
+            let mut body = format!(
+                "cleanup {}: {action} {} workspace(s), {} bytes; {} skipped, {} failed\n",
+                report.project,
+                report.removed.len(),
+                report.reclaimed_bytes,
+                report.skipped.len(),
+                report.failed.len()
+            );
+            for item in &report.removed {
+                body.push_str(&format!(
+                    "  {}: {} ({})\n",
+                    item.story_id,
+                    item.worktree.display(),
+                    item.branch
+                ));
+            }
+            for item in &report.skipped {
+                body.push_str(&format!(
+                    "  preserved {} [{}]: {}\n",
+                    item.story_id, item.reason, item.detail
+                ));
+            }
+            for item in &report.failed {
+                body.push_str(&format!(
+                    "  failed {} [{}]: {}\n",
+                    item.story_id, item.reason, item.detail
+                ));
+            }
+            body
+        }
         Response::Summary(summary) => render_summary(summary),
         Response::Graph(graph) => render_graph(graph),
         Response::Issues(issues) => {
@@ -1504,6 +1590,7 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::LaneBudget(view) => view.render_human(),
         Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
@@ -1536,17 +1623,40 @@ fn render_engine_run(run: &EngineRunView) -> String {
             run.acknowledged_at.as_deref().unwrap_or("no")
         ));
     }
-    body.push_str("\nlane  state        story       elapsed\n");
+    body.push_str("\nlane  state        story       elapsed     quiet\n");
     for lane in &run.lanes {
         body.push_str(&format!(
-            "{:<5} {:<12} {:<11} {}\n",
+            "{:<5} {:<12} {:<11} {:<11} {}\n",
             lane.index + 1,
             lane.state.as_str(),
             lane.story.as_deref().unwrap_or("-"),
             lane.elapsed_seconds
                 .map(format_elapsed)
+                .unwrap_or_else(|| "-".to_string()),
+            lane.quiet_seconds
+                .map(format_elapsed)
                 .unwrap_or_else(|| "-".to_string())
         ));
+    }
+    let unanswered: Vec<&EngineLaneView> = run
+        .lanes
+        .iter()
+        .filter(|lane| lane.probe_detail.is_some())
+        .collect();
+    if !unanswered.is_empty() {
+        // SH-626: a lane whose pane tmux could not be asked about is judged
+        // by its stall clock alone until tmux answers; say so where the
+        // operator is looking, not only in the daemon journal.
+        body.push_str(
+            "\nwindow liveness unanswered (judged by the stall clock until tmux answers):\n",
+        );
+        for lane in unanswered {
+            body.push_str(&format!(
+                "  lane {}: {}\n",
+                lane.index + 1,
+                lane.probe_detail.as_deref().unwrap_or_default()
+            ));
+        }
     }
     if !run.needs_human.is_empty() {
         body.push_str("\nneeds a human (no-auto):\n");
@@ -1625,6 +1735,9 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
         ConfirmationPlan::DeleteStory(plan) => render_story_delete_plan(plan),
         ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
         ConfirmationPlan::HideState(plan) => render_hide_state_plan(plan),
+        // The plan renders itself: the same body `story daemon gc` prints
+        // when there is nothing to confirm, so a reader sees one shape.
+        ConfirmationPlan::RuntimeGc(plan) => plan.render(),
     }
 }
 
@@ -2413,4 +2526,60 @@ fn build_table_rows(
         ));
     }
     html
+}
+
+#[cfg(test)]
+mod cleanup_render_tests {
+    use super::*;
+    use crate::service::{CleanupFailure, CleanupRemoval, CleanupSkip};
+
+    fn response() -> Response {
+        Response::Cleanup(Box::new(CleanupReport {
+            project: "fixture".into(),
+            dry_run: true,
+            candidates: 2,
+            reclaimed_bytes: 4096,
+            removed: vec![CleanupRemoval {
+                story_id: "SH-7".into(),
+                worktree: "/repo/.codex/worktrees/SH-7".into(),
+                branch: "worktree-SH-7".into(),
+                removed_worktree: true,
+                removed_local_branch: true,
+                removed_remote_branch: true,
+                reclaimed_bytes: 4096,
+            }],
+            skipped: vec![CleanupSkip {
+                story_id: "SH-8".into(),
+                reason: "dirty-worktree".into(),
+                detail: "uncommitted work".into(),
+            }],
+            failed: vec![CleanupFailure {
+                story_id: "SH-9".into(),
+                reason: "fetch-failed".into(),
+                detail: "authentication required".into(),
+            }],
+        }))
+    }
+
+    #[test]
+    fn cleanup_human_output_distinguishes_dry_run_and_preservation() {
+        let rendered = render_response(&response(), false, false);
+        assert!(rendered.contains("would remove 1 workspace(s), 4096 bytes"));
+        assert!(rendered.contains("preserved SH-8 [dirty-worktree]"));
+        assert!(rendered.contains("failed SH-9 [fetch-failed]"));
+    }
+
+    #[test]
+    fn cleanup_json_output_is_structured() {
+        let rendered: serde_json::Value =
+            serde_json::from_str(&render_response(&response(), true, false)).unwrap();
+        assert_eq!(rendered["result"], "ok");
+        assert_eq!(rendered["cleanup"]["dry_run"], true);
+        assert_eq!(rendered["cleanup"]["removed"][0]["story_id"], "SH-7");
+        assert_eq!(
+            rendered["cleanup"]["skipped"][0]["reason"],
+            "dirty-worktree"
+        );
+        assert_eq!(rendered["cleanup"]["failed"][0]["reason"], "fetch-failed");
+    }
 }

@@ -7,7 +7,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use storyhook::error::AppError;
-use storyhook::service::engine::{DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest};
+use storyhook::lane_budget::WindowCensus;
+use storyhook::service::engine::{
+    DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe,
+};
 
 /// One answer the fake will consume, in exact call order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,9 +19,25 @@ pub enum DispatcherStep {
     DispatchFailure(String),
     Unclaim(DispatchOutcome),
     UnclaimFailure(String),
+    /// A scripted answer from tmux: `alive` maps to [`WindowProbe::Alive`]
+    /// with no pty stamp (the pane is live, its terminal channel unknown —
+    /// the store-only judgement every pre-SH-657 fixture encodes), otherwise
+    /// to [`WindowProbe::Gone`] with a scripted reason.
     WindowAlive {
         window: String,
         alive: bool,
+    },
+    /// A scripted live pane whose pty last wrote at `last_output_at` (unix
+    /// seconds) — tmux's `#{window_activity}`, the second stall channel
+    /// (SH-657).
+    WindowActive {
+        window: String,
+        last_output_at: i64,
+    },
+    /// A scripted probe tmux could not answer (SH-626).
+    WindowUnanswered {
+        window: String,
+        detail: String,
     },
     KillWindow {
         window: String,
@@ -35,10 +54,26 @@ pub enum DispatcherCall {
     KillWindow(String),
 }
 
-#[derive(Default)]
 struct State {
     steps: VecDeque<DispatcherStep>,
     calls: Vec<DispatcherCall>,
+    /// What `census()` answers, every pass, without consuming a step: the
+    /// census runs on every fill and a scripted step would be eaten by it.
+    /// An empty server by default — no manual sessions — so a test that says
+    /// nothing about the budget sees the engine's own lanes alone.
+    census: WindowCensus,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            steps: VecDeque::new(),
+            calls: Vec::new(),
+            census: WindowCensus::Counted {
+                windows: Vec::new(),
+            },
+        }
+    }
 }
 
 /// A cloneable, thread-safe scripted dispatcher.
@@ -53,9 +88,14 @@ impl FakeDispatcher {
         Self {
             state: Arc::new(Mutex::new(State {
                 steps: steps.into_iter().collect(),
-                calls: Vec::new(),
+                ..State::default()
             })),
         }
+    }
+
+    /// What every later `census()` answers (SH-655).
+    pub fn set_census(&self, census: WindowCensus) {
+        self.state.lock().expect("fake dispatcher mutex").census = census;
     }
 
     #[must_use]
@@ -94,16 +134,40 @@ impl Dispatcher for FakeDispatcher {
         }
     }
 
-    fn window_alive(&self, window: &str) -> bool {
+    fn probe_window(&self, window: &str) -> WindowProbe {
         match self.next(DispatcherCall::WindowAlive(window.to_string())) {
             DispatcherStep::WindowAlive {
                 window: expected,
                 alive,
             } => {
                 assert_eq!(expected, window, "FakeDispatcher window probe target");
-                alive
+                if alive {
+                    WindowProbe::Alive {
+                        last_output_at: None,
+                    }
+                } else {
+                    WindowProbe::Gone {
+                        detail: format!("scripted: tmux reports `{window}` gone"),
+                    }
+                }
             }
-            step => panic!("FakeDispatcher expected a window-alive step, got {step:?}"),
+            DispatcherStep::WindowActive {
+                window: expected,
+                last_output_at,
+            } => {
+                assert_eq!(expected, window, "FakeDispatcher window probe target");
+                WindowProbe::Alive {
+                    last_output_at: Some(last_output_at),
+                }
+            }
+            DispatcherStep::WindowUnanswered {
+                window: expected,
+                detail,
+            } => {
+                assert_eq!(expected, window, "FakeDispatcher window probe target");
+                WindowProbe::Unanswered { detail }
+            }
+            step => panic!("FakeDispatcher expected a window probe step, got {step:?}"),
         }
     }
 
@@ -118,5 +182,13 @@ impl Dispatcher for FakeDispatcher {
             }
             step => panic!("FakeDispatcher expected a kill-window step, got {step:?}"),
         }
+    }
+
+    fn census(&self) -> WindowCensus {
+        self.state
+            .lock()
+            .expect("fake dispatcher mutex")
+            .census
+            .clone()
     }
 }

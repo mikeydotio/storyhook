@@ -97,7 +97,11 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # exercises the REAL `story` binary this build just produced (never a
 # possibly-stale globally-installed one, and never a fake -- a fake can't
 # catch a genuine CAS race or a real is_ready() interaction), so `cargo
-# build` runs first and target/debug is prepended to PATH for that one step.
+# build` runs first. Nothing is prepended to PATH here: `plugins/story/tests/
+# lib.sh` resolves the artifact from the checkout itself and puts a hard-link
+# LEASE of it on PATH (SH-639), so the gate and a hand-typed `bash test-foo.sh`
+# are one code path, and a `cargo` landing mid-leg cannot swap a test's binary
+# -- and its daemon's identity -- out from under it.
 #
 # The orphan check brackets the run: before, because a survivor of an earlier
 # run makes this one lie (SH-51), and after, because a run that leaks one has
@@ -203,7 +207,7 @@ _test-body:
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
+	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 
 # The selective tier (SH-429). Identical to `test` except the rust-suite leg
@@ -237,7 +241,7 @@ _test-changed-body:
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
 	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
+	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
@@ -374,9 +378,12 @@ release-build:
 # `./target/debug/story list`, typed here, resolves the REAL store and the real
 # daemon on 3456 -- `is_test_build` does not stop a `cargo build` binary, and
 # this repository's committed `.storyhook.toml` names the project storyhook
-# tracks itself with. Before this target the only way to exercise a change by
-# hand was `make install`, which replaces the binary everything else on the
-# machine runs.
+# tracks itself with. Since SH-634 that command is refused a daemon there (a
+# build still in its build directory may neither replace the installed daemon
+# nor start one for the default store), which is a loud stop rather than a
+# place to work. Before this target the only way to exercise a change by hand
+# was `make install`, which replaces the binary everything else on the machine
+# runs.
 #
 # The isolation is the test suite's own (`scripts/test-env.sh`, documented by
 # `story help test-environment`), so exercising a change by hand runs under the
@@ -406,14 +413,28 @@ scratch-clean:
 # install(1) replaces the file with a fresh inode: new invocations get a
 # cleanly-signed binary and the running process keeps its old mapping.
 #
-# Note this does NOT restart a running dashboard daemon; it keeps serving the
-# old code until restarted (see SH-54).
-#
 # Reports the WHOLE `--version` line, not just the bare semver -- SH-406
 # stamps every build with a build id derived from its tracked git content
 # (build.rs), so two installs of the same VERSION distinguish themselves here
 # whenever their tracked content differs.
+#
+# Then reinstalls the plugin for every provider that has it registered
+# (SH-667). The plugin travels inside the binary and is projected per version,
+# so until this line every `make install` left Claude Code and Codex pinned at
+# the previous release's projection -- the STALE RELEASE `story doctor
+# install` reports, and what SH-584's RCA found. It runs the binary JUST
+# INSTALLED, never whatever `story` is on PATH: only that binary embeds the
+# payload being installed. The verb is daemon-routed, and a daemon of another
+# build stands down for the new client, so this install implicitly reseats the
+# daemon on the new binary -- which `scripts/release.sh` does by hand anyway.
+#
+# `|| echo` on purpose: this target is the recovery `StoreError::SchemaTooNew`
+# prescribes and stays ungated (docs/spec/release-lockstep.md), and
+# `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+# start`. A plugin refresh that failed the install would leave that machine
+# with no daemon at all. The failure is named, with its retry, never swallowed.
 install: release-build
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
 	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"
+	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2

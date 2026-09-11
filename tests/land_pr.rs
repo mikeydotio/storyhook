@@ -189,6 +189,35 @@ impl LandRepo {
             .expect("running unlocked certification core")
     }
 
+    /// The directory `machine-lock.sh` uses for `name` from this repository,
+    /// read from its own `--plan`: the key carries the repository's project
+    /// component (SH-648), pinned in `tests/machine_lock.rs`, never spelled
+    /// here a second time.
+    fn lock_path(&self, name: &str) -> PathBuf {
+        let out = command(
+            self.path(),
+            "bash",
+            &[
+                &self.script("machine-lock.sh"),
+                "--plan",
+                name,
+                "--",
+                "true",
+            ],
+        )
+        .env("STORYHOOK_LOCK_DIR", self.lock_root())
+        .output()
+        .expect("planning the lock");
+        assert_ok(&out, "planning the merge lock");
+        let printed = String::from_utf8_lossy(&out.stdout);
+        PathBuf::from(
+            printed
+                .lines()
+                .find_map(|line| line.strip_prefix("lock="))
+                .unwrap_or_else(|| panic!("--plan must print `lock=`\nstdout: {printed}")),
+        )
+    }
+
     fn hold_merge_lock(&self, seconds: u64) -> ChildGuard {
         let seconds = seconds.to_string();
         let mut holder = command(
@@ -284,6 +313,7 @@ fn a_stale_pr_base_oid_does_not_veto_the_fetched_base_tip() {
             "main",
             &fetched_base,
             &fetched_head,
+            &fetched_head,
             &metadata,
         ],
     )
@@ -311,6 +341,7 @@ fn refresh_validation_still_rejects_a_moved_head() {
             "main",
             &fetched_base,
             "different-fetched-head",
+            "different-fetched-head",
             &metadata,
         ],
     )
@@ -319,6 +350,155 @@ fn refresh_validation_still_rejects_a_moved_head() {
 
     assert!(!out.status.success());
     assert!(stderr(&out).contains("head moved while it was being refreshed"));
+}
+
+/// SH-637: `refs/pull/N/head` and the API's `headRefOid` are two projections
+/// of one asynchronous GitHub job and lag together, so agreeing with each
+/// other proves nothing right after a push. The branch tip is the push. A
+/// branch ahead of both projections is refused by name — nothing is merged
+/// against a head the author has already replaced.
+#[test]
+fn refresh_validation_refuses_a_branch_the_projections_have_not_caught_up_with() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let stale_head = repo.branch("feature", "main", "g", "feature\n");
+    let pushed_tip = repo.branch("feature-pushed", "feature", "h", "the push\n");
+    let metadata = refresh_metadata(&stale_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &stale_head,
+            &pushed_tip,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating a branch ahead of the pull ref");
+
+    assert!(!out.status.success(), "{}", stderr(&out));
+    let diagnostic = stderr(&out);
+    assert!(diagnostic.contains("still propagating"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&stale_head) && diagnostic.contains(&pushed_tip),
+        "both readings are named: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("refs/heads/feature"),
+        "the branch that moved is named: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("nothing was merged"),
+        "the refusal says what did not happen: {diagnostic}"
+    );
+}
+
+/// The existing pull-vs-API check keeps its place and its message ahead of
+/// the branch comparison: a projection disagreement is reported as the head
+/// having moved, not as propagation, so SH-604's reconcile path still
+/// recognises it.
+#[test]
+fn refresh_validation_reports_a_projection_disagreement_before_the_branch() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let reported_head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&reported_head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            "different-fetched-head",
+            &reported_head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating a pull ref that disagrees with the API");
+
+    assert!(!out.status.success());
+    let diagnostic = stderr(&out);
+    assert!(
+        diagnostic.contains("head moved while it was being refreshed"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("still propagating"), "{diagnostic}");
+}
+
+/// The positive control: pull ref, branch tip and API agreeing on one head
+/// is what lets the fetched base through, exactly as before the branch was
+/// read at all.
+#[test]
+fn refresh_validation_accepts_three_readings_that_agree() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &head,
+            &head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating agreeing refs");
+
+    assert_ok(&out, "three agreeing readings of one head");
+    assert_eq!(stdout(&out), fetched_base);
+}
+
+/// The seam's arity is part of its contract: a caller still passing the old
+/// six arguments is refused by usage rather than silently comparing the
+/// metadata string as a branch tip.
+#[test]
+fn refresh_validation_refuses_the_pre_branch_argument_shape() {
+    let repo = LandRepo::new();
+    let fetched_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    let metadata = refresh_metadata(&head);
+
+    let out = command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-refresh",
+            "621",
+            "main",
+            &fetched_base,
+            &head,
+            &metadata,
+        ],
+    )
+    .output()
+    .expect("validating with the old argument shape");
+
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("<fetched-branch>"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -446,7 +626,7 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
 
     const HOLD_SECS: u64 = 2;
     let mut holder = repo.hold_merge_lock(HOLD_SECS);
-    wait_for(&repo.lock_root().join("merge.lock").join("pid"));
+    wait_for(&repo.lock_path("merge").join("pid"));
     let out = repo.run_core(
         &base,
         &head,

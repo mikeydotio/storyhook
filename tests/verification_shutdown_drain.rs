@@ -8,8 +8,9 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    TickResult, VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator,
-    VerificationOutcome, tick_with_activity, wait_for_reconciled_candidate,
+    NotifyDelivery, ResumePlan, SubmissionFailure, TickResult, VERIFICATION_IDLE_TIMEOUT,
+    VerificationActivity, VerificationActuator, VerificationOutcome, tick_with_activity,
+    wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
 use storyhook::error::AppError;
@@ -47,6 +48,18 @@ struct BlockingActuator {
 }
 
 impl VerificationActuator for BlockingActuator {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<storyhook::domain::SubmittedPullRequest, SubmissionFailure> {
+        // Every fixture here is submitted without a lease, so the daemon never
+        // asks; a call is a fixture change this file has not caught up with.
+        panic!(
+            "BlockingActuator never submits; {} arrived with a lease",
+            candidate.story_id
+        )
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -66,8 +79,20 @@ impl VerificationActuator for BlockingActuator {
         }
     }
 
-    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
-        Ok(())
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a blocking fixture never returns a story to a dead pane")
     }
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -106,6 +131,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
                 &actuator,
                 &activity,
                 &daemon_in_flight,
+                fixture.project(),
             )
         });
 
@@ -117,7 +143,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         );
         assert_eq!(
             activity
-                .active()
+                .active_for(fixture.project())
                 .expect("process-local ownership must be active")
                 .story_id,
             low
@@ -150,7 +176,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
 
     assert_eq!(result, TickResult::RetryLater);
     assert_eq!(
-        activity.active(),
+        activity.active_for(fixture.project()),
         None,
         "the low-priority story must leave active execution after its outcome is recorded"
     );
@@ -183,6 +209,90 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         VERIFICATION_IDLE_TIMEOUT.as_secs()
     );
     assert_eq!(observed.cwd, std::path::PathBuf::from("/checkouts/fixture"));
+}
+
+#[test]
+fn resubmission_transfers_the_single_in_flight_reservation_between_generations() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let story_id = submitted(&fixture, "resubmitted under test", Priority::High, LOW_PR);
+    let original = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let daemon_in_flight = InFlight::new(fixture.env().clone());
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let actuator = BlockingActuator {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    };
+
+    thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &daemon_in_flight,
+                fixture.project(),
+            )
+        });
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            story_id
+        );
+
+        StoryService::new(&fixture.ctx())
+            .set_state(&story_id, "verifying", None, Some("verifying"), None)
+            .unwrap();
+        let replacement = VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            replacement.verifying_generation,
+            original.verifying_generation
+        );
+        assert_eq!(
+            activity.active_for(fixture.project()).unwrap().generation,
+            original.verifying_generation
+        );
+        assert_eq!(daemon_in_flight.len(), 1);
+
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            story_id
+        );
+        assert_eq!(
+            activity.active_for(fixture.project()).unwrap().generation,
+            replacement.verifying_generation
+        );
+        let published = lifecycle::read_inflight(fixture.env());
+        assert_eq!(published.len(), 1);
+        assert_eq!(
+            published[0].request_id,
+            format!(
+                "verify:fixture:{story_id}:{}",
+                replacement.verifying_generation.unwrap().get()
+            )
+        );
+
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), TickResult::RetryLater);
+    });
+
+    assert_eq!(activity.active_for(fixture.project()), None);
+    assert_eq!(daemon_in_flight.len(), 0);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
 #[test]

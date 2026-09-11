@@ -10,33 +10,41 @@ FILTER="${1:-}"
 # shellcheck source=../../../scripts/gate-progress.sh
 . "$TESTS_DIR/../../../scripts/gate-progress.sh"
 
-# --- data-home isolation, verified before a single test runs ---------------
+# --- data-home isolation: the runner's own, never the tests' ----------------
 #
-# One workdir for the whole run, so every test sees the same isolated data
-# home and a leaked fixture has one place to be. lib.sh mints its own if this
-# is unset, which is what keeps `bash test-foo.sh` safe on its own; the point
-# of doing it here as well is the assertion below.
-export STORYHOOK_REAL_HOME="$HOME"
-STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-run.XXXXXX)"
-export STORYHOOK_TEST_HOME
-
+# Every test mints its OWN root, daemon and parent pid through lib.sh, exactly
+# as `bash test-foo.sh` does on its own -- one code path, not two. This runner
+# used to isolate once and export one STORYHOOK_TEST_HOME for the whole run,
+# which lib.sh reads as "already isolated": 74 tests then shared one store, one
+# daemon, and STORYHOOK_PARENT_PID = this runner, so a daemon that wedged in
+# test K failed every test after it (33 of 74 on the night SH-631 was filed)
+# and outlived the run by construction. So the variable lib.sh keys on is
+# deliberately NOT exported here.
+#
+# The runner still isolates ITSELF, at a root of its own that nothing writes
+# into: this process runs no `story`, but a harness that exports the data dir
+# is what `tests/store_isolation.rs` derives the containment set from, and a
+# runner that could reach a real store by accident is one refusal short.
+# `$STORYHOOK_REAL_HOME` is taken before HOME is rewritten so
+# `test-data-home-isolation.sh` can still name the real data home it asserts
+# nothing was written to; lib.sh preserves an inherited value.
+#
 # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own header
 # carries the parameters and the reason for each. `--home` IS passed: this
 # suite runs nothing but `story` and `git`, so a fake $HOME costs nothing here
 # and buys the strongest isolation available -- the harnesses that wrap cargo
 # or npm cannot do the same without costing those tools their caches.
-#
-# `$STORYHOOK_REAL_HOME` above survives it so `test-data-home-isolation.sh` can
-# still name the real data home it is asserting nothing was written to.
-#
-# The five-variable refusal loop that used to sit below this is gone: it
-# checked each derived path for a `/tmp` prefix, which is now checked once, on
-# the root every one of them is derived from.
+export STORYHOOK_REAL_HOME="$HOME"
+runner_root="$(mktemp -d /tmp/storyhook-plugin-run.XXXXXX)"
+
 # shellcheck source=../../../scripts/test-env.sh
 . "$TESTS_DIR/../../../scripts/test-env.sh"
-storyhook_isolate --home "$STORYHOOK_TEST_HOME"
+storyhook_isolate --home "$runner_root"
 
-trap 'rm -rf "$STORYHOOK_TEST_HOME"' EXIT
+# Nothing ever starts a daemon under this root, so deleting it is not deleting
+# a store from under one -- the case each test's own teardown handles for its
+# own root (lib.sh's `_cleanup`).
+trap 'rm -rf "$runner_root"' EXIT
 
 PASS=0
 FAIL=0

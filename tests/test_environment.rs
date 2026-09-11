@@ -448,6 +448,100 @@ fn the_printed_environment_is_the_one_the_function_applies() {
     }
 }
 
+/// `--uninstalled-build` re-arms exactly the uninstalled-build overrides — the
+/// migration guard's (SH-630) and the seat guard's (SH-634) — after the table
+/// has cleared them, in both the function and the printer.
+///
+/// Behavioural, like everything above: the child's environment with the
+/// option is the child's environment without it plus those variables, and the
+/// variables are the guards' own `OVERRIDE_VAR` constants rather than
+/// spellings this test invents. The poisoned parent proves the ordering — the
+/// table clears the parent's decoy values first, and what survives is the
+/// re-armed `1`, not the decoy.
+#[test]
+fn the_uninstalled_build_option_re_arms_only_the_uninstalled_build_overrides() {
+    let override_vars = [
+        storyhook::migration_guard::OVERRIDE_VAR,
+        storyhook::daemon::seat_guard::OVERRIDE_VAR,
+    ];
+    for override_var in override_vars {
+        assert!(
+            TEST_ENVIRONMENT.iter().any(|p| p.name == override_var),
+            "the option re-arms a parameter the table clears; if the table no longer \
+             carries {override_var}, the option has nothing to undo"
+        );
+    }
+
+    let fixture = scratch_dir();
+    let root = fixture.path();
+    let (plain, _) = isolate_in_bash(root, &[]);
+    let (armed, _) = isolate_in_bash(root, &["--uninstalled-build"]);
+
+    let mut expected = plain.clone();
+    for override_var in override_vars {
+        assert_eq!(
+            armed.get(override_var).map(String::as_str),
+            Some("1"),
+            "the option must export {override_var} as `1`, not the parent's decoy"
+        );
+        expected.insert(override_var.to_string(), "1".to_string());
+    }
+    // Two shells, two pids: the parent-pid parameter is the shell's own and
+    // differs between the runs by construction, so it is the one key left out.
+    let without_pid = |env: &BTreeMap<String, String>| -> Vec<(String, String)> {
+        env.iter()
+            .filter(|(name, _)| name.as_str() != "STORYHOOK_PARENT_PID")
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    };
+    let changed: Vec<String> = without_pid(&armed)
+        .iter()
+        .filter(|entry| !without_pid(&expected).contains(entry))
+        .map(|(name, _)| name.clone())
+        .chain(
+            without_pid(&expected)
+                .iter()
+                .filter(|entry| !without_pid(&armed).contains(entry))
+                .map(|(name, _)| name.clone()),
+        )
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "the option must change exactly the override variables and nothing else; it also \
+         changed {changed:?}"
+    );
+
+    // The printer says the same thing, in the same order: evaluated, not read.
+    let script = format!(
+        ". \"{}/scripts/test-env.sh\"\neval \"$(storyhook_isolate_print --uninstalled-build \"{}\")\"\nexec /usr/bin/env\n",
+        repo_root().display(),
+        root.display(),
+    );
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .envs(poison())
+        .output()
+        .expect("running bash");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: BTreeMap<String, String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    for override_var in override_vars {
+        assert_eq!(
+            printed.get(override_var).map(String::as_str),
+            Some("1"),
+            "the printed form must re-arm {override_var} after clearing it"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Nothing builds a storyhook environment by hand
 // ---------------------------------------------------------------------------

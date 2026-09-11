@@ -155,6 +155,21 @@ skills; current Codex discovers the shared `hooks/hooks.json` by convention. A l
 non-managed plugin may ask you to review/trust those SessionStart, PostToolUse(Bash), and
 Stop hooks before they run.
 
+#### Upgrading
+
+The plugin travels inside the binary, so a new `story` carries a new plugin. Every path
+that replaces the binary — `make install`, `story update`, and the installer script —
+finishes by reinstalling the plugin for every provider that has the storyhook
+marketplace registered, from the binary just installed. A provider that was never
+installed is left alone. To do the same by hand, or after a failed refresh:
+
+```bash
+story plugin reinstall
+```
+
+`story doctor install` reports a provider still registered at an older release as
+`STALE RELEASE`; a reinstall clears it.
+
 #### Lifecycle router verbs
 
 The `story` skill covers a story end to end. In Claude, these are `/story` commands;
@@ -406,6 +421,8 @@ story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
 story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
+story verifier ack <incident-id>
+story cleanup [--dry-run]
 story summary
 story report [--html]
 story search <query>
@@ -422,6 +439,7 @@ story decompose --stdin [--dry-run]
 story migrate [<path>] [--dry-run]
 
 story doctor [--fix]
+story lane-budget [--json]
 story doctor abandoned
 story doctor abandoned clear (--all | <request-id>)
 story doctor crashes
@@ -443,6 +461,7 @@ story pr-check [<id>]
 story github-auth login|status|logout
 story plugin install <target>
 story plugin uninstall <target>
+story plugin reinstall
 
 story web start [--port <PORT>]
 story web stop
@@ -453,11 +472,13 @@ story token new <name>
 story token list
 story token revoke <name>
 story daemon start [--port <PORT>]
+story daemon restart
 story daemon stop [--force]
 story daemon status
 story daemon install [--this-binary]
 story daemon uninstall
 story daemon token
+story daemon gc [--force]
 story store new <path>
 story store backup [--label <text>]
 story tui
@@ -471,6 +492,23 @@ the same label on write, removal, filtering, and queue exclusion.
 Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
+
+### Workspace cleanup
+
+Preview safe disk reclamation with `story cleanup --dry-run`, then run
+`story cleanup`. StoryHook considers only resources named by its versioned
+cleanup leases. It preserves a candidate unless the exact story tmux window
+is absent, the worktree is clean and unlocked, and every worktree, local, and
+origin branch tip is contained by the freshly fetched origin default branch.
+Eligible cleanup removes the worktree and its build artifacts plus the exact
+local and remote branches; it never removes the primary checkout.
+
+Automatic cleanup is enabled daily. Change it per project with
+`story project settings set cleanup.auto false` or
+`story project settings set cleanup.interval 12h`. Git authentication and
+network failures fail closed and are reported for later retry. See
+[`docs/spec/workspace-cleanup.md`](docs/spec/workspace-cleanup.md) for the
+complete safety and recovery contract.
 
 ### Story ids
 
@@ -507,8 +545,8 @@ Nothing has been read or written. Re-run it naming the story's own project:
 ## States
 
 - Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
-- Every project has `todo`, `in-progress` and `blocked` as `OPEN` states and
-  `done` as a `CLOSED` one. Those four cannot be removed and their superstates
+- Every project has `todo`, `in-progress`, `verifying` and `blocked` as `OPEN`
+  states and `done` and `dropped` as `CLOSED` states. Those six cannot be removed and their superstates
   cannot be changed; anything else you add is yours to arrange. A project
   created before this rule reports it in `story doctor`, and
   `story doctor --fix` adds whatever is missing.
@@ -524,11 +562,22 @@ Nothing has been read or written. Re-run it naming the story's own project:
   commit *claims* (`Closes SH-1`), as opposed to merely names (`Refs SH-1`).
 - There is no rename: a slug is recorded in every state-change event ever
   written. Add the new state, migrate to it, and remove the old one — which is
-  therefore not a way around the four states every project must have.
+  therefore not a way around the six states every project must have.
 
 Configure states from the CLI (`story state …`), the dashboard
 (**Settings → Statuses**), or the TUI (press `s`) — all three go through the
 same operations.
+
+### Dropped status
+
+`done` records completed work; `dropped` records deliberately abandoned work. Both
+have the `CLOSED` superstate. `story close <id> "reason"` moves a story to
+`dropped` and records the reason. The dashboard calls this action **Drop**.
+
+Existing `closed`/CLOSED statuses are migrated to `dropped`, preserving history.
+Conflicting custom `dropped` definitions must be resolved with the previous
+binary before upgrading; the migration reports the project and leaves it intact.
+See [the migration contract](docs/spec/dropped-state.md).
 
 ### Editing a state that still holds stories
 
@@ -681,7 +730,15 @@ $XDG_DATA_HOME/storyhook/store.db      # ~/.local/share/storyhook/store.db
 $XDG_STATE_HOME/storyhook/             # ~/.local/state/storyhook/
   daemon.json  daemon.pid  daemon.log
   backups/
+  daemons/<key>/                       # one per store this machine has served
 ```
+
+A store named with `--store-path` keeps its daemon's runtime files under
+`daemons/<key>/`. Those directories are never removed on their own: `story daemon gc`
+lists the ones whose store was under a temp root and no longer exists, and removes
+them once you confirm (or with `--force`). Anything it cannot prove throwaway — a
+store that still exists, one outside a temp root, one a daemon or login agent still
+holds — stays, and is named with the reason.
 
 What a repository carries is one committed file:
 
@@ -693,6 +750,12 @@ prefix = "SH"
 
 [plugin]          # optional, user-authored; storyhook reads it and never writes it
 enabled = true
+
+[github]          # optional REST API base override for this repository
+api_url = "https://github.example.com/api/v3"
+
+[verify]          # optional; the merge gate the verifier runs before landing a PR
+gate = "make test"
 ```
 
 Behavior:
@@ -714,6 +777,23 @@ Behavior:
   story number it would have used.
 - Migrating from the old per-repository layout: `story migrate`. It never writes
   to the `.storyhook/` directory it reads — that directory is your rollback.
+
+GitHub pull-request links use the host of a registered origin. Storyhook routes
+`github.com` to `https://api.github.com`, `<tenant>.ghe.com` to
+`https://api.<tenant>.ghe.com`, and other GitHub Enterprise hosts to their
+`/api/v3` endpoint. Set `[github].api_url` when an installation uses a custom
+REST base or proxy. The override must be an absolute HTTP(S) URL without
+credentials, a query, or a fragment, and one override cannot serve links on
+multiple GitHub hosts.
+
+`[verify].gate` names the command the verifier runs on a story's speculative
+merge tree before landing its pull request; `make test` when absent. It is a
+plain command line, run directly and never through a shell: words separated by
+spaces, made of letters, digits and `_ . : / = @ + , -` only — quotes, `$`,
+`&&`, `|`, `>` and the like are refused by name, as is a key the table does not
+have. The gate must certify the tree it ran on by ending in
+`scripts/gate-receipt.sh postlude` at tier `gate` or `full`, as `make test` and
+`make test-full` do; a gate that exits 0 without one is refused before landing.
 
 ## Web dashboard
 
@@ -968,14 +1048,17 @@ make scratch       # a shell with a throwaway store and this checkout's binary
 ```
 
 `make test` rather than a bare `cargo test`: the wrapper isolates the data
-directory, contains the daemons the suite starts, and takes a machine-wide lock
-so two suites do not contend. A bare `cargo test` is safe — a test build refuses
+directory, contains the daemons the suite starts, and takes the repository's
+`gate` lock so two suites of one clone do not contend (a different repository
+has its own). A bare `cargo test` is safe — a test build refuses
 to resolve a real store — but it is not the gate.
 
 `make scratch` is how to exercise a change by hand. `./target/debug/story`, run
-in a checkout, resolves your **real** store and the daemon on port 3456; the
-scratch environment gives it a disposable one instead, under the same isolation
-the test suite uses. `make scratch ARGS="--test-build"` runs a build carrying the
+in a checkout, resolves your **real** store — and is refused a daemon there: a
+binary still in its build directory may neither replace the installed daemon
+nor start one for the default store (`STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1` says
+you meant it). The scratch environment gives it a disposable store instead,
+under the same isolation the test suite uses. `make scratch ARGS="--test-build"` runs a build carrying the
 store's crash points. `story help test-environment` documents the parameters
 both of them apply.
 

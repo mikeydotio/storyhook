@@ -12,7 +12,10 @@
 //! usable daemon by its executable's path *and* modification time. A
 //! second binary would never match, would evict the daemon the real `story`
 //! binary is using, and the CLI's next command would evict that one back —
-//! forever. `story mcp` is therefore a mode of the one binary, dispatched
+//! forever (the exact ping-pong SH-634 later observed between an installed
+//! and an uninstalled build, and now refuses from the uninstalled side —
+//! `crate::daemon::seat_guard`). `story mcp` is therefore a mode of the one
+//! binary, dispatched
 //! in `main.rs` beside `tui` and the foreground daemon serve mode, never a
 //! new `Invocation` variant.
 //!

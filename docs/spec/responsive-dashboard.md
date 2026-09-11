@@ -1,5 +1,11 @@
 # The dashboard's shape at phone and tablet widths
 
+**Planned successor:** [Mobile visual tune-up](mobile-visual-tune-up.md), the
+SH-610 audit and SH-612 implementation epic, replaces the narrow-layout filter
+disclosure and horizontally scrolling phone list when its children land. This
+document remains the record of current behavior until those changes are built;
+the successor explicitly preserves the accessibility and interaction contracts.
+
 Design of record for **SH-235**. Written after implementation, the same reason
 [`dashboard-dispatch.md`](dashboard-dispatch.md) gives for the same choice: sharper
 against the actual measurements and the actual code than against a proposal for
@@ -184,6 +190,34 @@ that lost, described this same merged design. `story show SH-420` carries the
 verdict; per SH-363 no tracked file names the council's own directory, which
 survives no fresh clone.
 
+**As built — the settled box is the measured box (SH-623).** The settle wait
+above is now one instrument, `support.ts`'s `awaitSettled(root, surface)`;
+`settleAndReadTapMin` and `settledBoundingBox` (the coordinate-press preparer,
+SH-401/SH-422) both go through it, and `tests/tap_target_comparison.rs` pins
+that wiring on both callers — it had existed as two byte-similar copies for as
+long as the second one did. The story that forced the split is a different
+fault from SH-420's, one level up: not *when* the box was measured but *which*
+box the wait was pointed at. `notice-dock-geometry.spec.ts` waited on `#drawer`'s
+own right edge being inside the viewport and then hit-tested `#drawer-close`.
+Measured (`settle-the-measured-box.spec.ts`, which pauses the drawer's own
+transitions and seeks across them): the closed drawer is `width: 0; transform:
+translateX(100%)`, and 100% of a 0-wide box is 0px, so its right edge reads
+exactly `1280.00` at **t=0**, before the transition has moved at all — while
+the header lays its `nowrap` items out past that 0-wide box and the close
+button's centre sits at `1377`, outside the viewport, where `elementFromPoint`
+answers null. The retired predicate was true before the motion started; a
+proxy claim on an ancestor is a different claim from the one the test makes.
+Two more specs carried the shape as arithmetic rather than a sighting and were
+fixed alongside: `responsive.mobile.spec.ts` and `detail-panel.spec.ts` both
+polled the drawer's *width* to its final value and then read transform-derived
+edges with exact equality — a rounded width reaches 480 while the transform is
+still up to 0.5px from rest across the bezier's flat tail (~24ms), and even an
+exact width does, because a border-box width is quantised to layout units
+while the transform is a float (~3ms). `awaitSettled` filters `running` and a
+paused animation is deliberately not running: nothing in the dashboard pauses,
+the witness pauses on purpose, and `settledBoundingBox`'s centre-hit half is
+what refuses a held frame whose target is still off-screen.
+
 ### Overlay widths (D5)
 
 `.toast-stack`/`.dispatch-history` both read `max-width: min(<rem-ceiling>,
@@ -231,10 +265,14 @@ the *same* function right-click already calls, with the *same* `storyMenuModel` 
 as entries are added or removed later. `responsive.mobile.spec.ts`'s own parity test
 asserts this equality directly, not just that each button opens *some* menu.
 
-Both buttons are `display: none` outside `@media (pointer: coarse)` — right-click
-already reaches this exact menu on a fine pointer, so a mouse-only affordance on
-every card would be pure visual noise, and desktop's rendering is byte-identical to
-before this story.
+SH-600 corrected the original visibility policy: the card button is visible for
+every pointer because right-click can be difficult or unavailable even when a
+fine pointer is primary. Its `--tap-min` target remains 24px normally and 44px on
+coarse pointers. The list-row button remains coarse-pointer-only so desktop table
+geometry is unchanged. Both buttons use the decorative 🛠️ emoji and retain their
+purpose-based accessible names; the button boundary, not an emoji foreground
+color, identifies the control across all four palette resolutions. The
+coarse-pointer row action uses the same target-size contract.
 
 **The accessibility trade-off, stated plainly.** `.card` is `div[role="button"]`; a
 nested interactive element inside an ARIA `button` role is *presentational* to
@@ -335,60 +373,83 @@ whatever internal viewport-fit heuristic caused the divergence is not one WebKit
 shares -- the `contain: layout` fix stays in place regardless, since it is harmless
 where the bug it targets doesn't exist.
 
-### An icon is a shape the page draws, never a character (SH-444)
+### Control decoration is semantic emoji (SH-620)
 
-Found independently of SH-235, on the same controls this section names: the topbar's
-Home/Settings/Drafts icons (and, once swept, the board's column-sort control, the
-card/list-row actions menus, and the Settings-statuses back link) were single Unicode
-characters, rendered through whatever fallback font the platform picked for a
-codepoint `--sans` doesn't cover. U+2302 HOUSE and U+270E LOWER RIGHT PENCIL are not
-emoji at all; U+2699 GEAR is emoji-capable but shipped *unqualified* (no U+FE0F), so
-its text-vs-colour presentation was undetermined per platform on top of that. All
-three rendered at an arbitrary weight unrelated to the 600-weight text beside them —
-exactly what the reported screenshot showed.
+SH-444 and SH-447 replaced inconsistent font glyphs with a private set of inline SVG
+drawings. SH-620 changes the product direction: platform emoji provide the dashboard's
+visual character, but each choice must describe what its control *does*, not merely
+copy the removed drawing. The one `UI_EMOJI` vocabulary therefore names purposes:
+Home uses a house, Drafts uses a memo (saved writing, not the act of editing), story
+Actions use tools, Filters use control knobs, and a disabled action uses a warning.
+Dropdowns and submenus describe the direction they reveal; expandable sections use
+plus/minus to describe the state change.
 
-**The rule going forward:** every control icon in this file is an inline `<svg
-class="icon" stroke="currentColor">`, reusing the pattern the search box's icon
-already used (`.search-wrap svg`). `currentColor` inherits the button's own colour,
-so the icon themes and hovers with the rest of the control for free, across all four
-theme resolutions this file supports. The three topbar icons are static markup; a
-JS-constructed control builds one through the `svgIcon()` helper beside `el()` (SVG
-needs `createElementNS`, which `el()`'s own `document.createElement` can't provide).
-`tests/dashboard_icon_glyphs.rs::every_btn_icon_span_holds_a_shape` fences the
-topbar's own `.btn-icon` class; the other four controls are covered behaviorally, by
-`e2e/specs/icon-shapes.spec.ts` and `icon-shapes.mobile.spec.ts`.
+Every `.emoji-icon` uses the platform emoji font stack and is `aria-hidden="true"`.
+The adjacent visible label or the owning control's purpose-based `aria-label` remains
+its accessible name; the emoji never becomes an assistive-technology label. Likewise,
+`aria-expanded` and `aria-haspopup` remain authoritative. `data-emoji` exposes the
+semantic choice for inspection and tests, while `data-direction` retains disclosure
+state independently of the artwork.
 
-**The boundary against typographic marks was narrowed by SH-447.** Sort/reorder
-arrows, checks, bullets and close marks (`▲ ▼ ↑ ↓ ● ✓ ×`) stay characters: they are
-covered by UI fonts, have deterministic text presentation, and several remain pinned
-as exact text by existing e2e contracts. A disclosure indicator is different even
-though its presentation is also deterministic. The reported Filters and dropdown
-triangles sat in 9–10px font boxes and their visible ink occupied only a fraction of
-that box, making every adjacent hidden-content affordance look undersized. All controls
-whose indicator means “reveals hidden content” therefore use one 14px inline SVG
-chevron: project and filter dropdowns, the Filters and drawer-section disclosures, and
-context-menu submenus. `data-direction=right|down` names their visual state without
-making the decorative SVG part of the accessible name; the owning button's existing
-`aria-expanded` remains authoritative where the control is persistent.
-
-`tests/dashboard_icon_glyphs.rs::no_raw_disclosure_triangle_is_left` fences the source
-against restoring U+25B8/U+25BE through either static markup or JS construction.
-`filter-bar-disclosure.spec.ts` and `icon-shapes.spec.ts` verify the live SVG geometry,
-direction, inherited colour, accessible name and ARIA state. Native `<select>` carets
+`tests/dashboard_icon_glyphs.rs` pins the complete vocabulary, presentation sequences,
+decorative treatment, static control wiring, and absence of the retired SVG machinery.
+`e2e/specs/icon-shapes.spec.ts`, `icon-shapes.mobile.spec.ts`, and
+`filter-bar-disclosure.spec.ts` prove the emoji render under both browser engines,
+retain accessible names, and track live control state. Native `<select>` indicators
 remain browser-owned for the cross-engine reasons in “Tap targets (D3)” above.
 
-**The same undetermined-presentation defect, generalized:** any pictographic
-character anywhere in this file — not just an icon control — must carry a trailing
-U+FE0F or it doesn't belong here at all. `tests/dashboard_icon_glyphs.rs::
-no_pictographic_character_is_left_unqualified` fences the whole file for exactly this,
-with U+2713 CHECK MARK as the one documented, deliberate exception (not an emoji,
-universal font coverage, pinned e2e text). It caught a second, independent instance of
-the same defect during this same investigation: the archived flag/banner's U+1F5C4
-FILE CABINET shipped with no U+FE0F, unlike this file's other emoji (U+1F3F7 LABEL,
-`typeGlyph()`'s fallback), which was already correctly qualified — the convention
-already existed and simply wasn't applied everywhere. Fixed by qualifying it
-(`🗄` → `🗄️`) rather than converting it to a shape: it sits inline inside prose, not
-a standalone icon control.
+### A text assertion never rides an aria-hidden glyph (SH-622)
+
+The product above is correct, and the first release-tier run after it merged
+still failed four specs. `toHaveText` and `toContainText` compare `textContent`
+(or `innerText`), and both include an `aria-hidden` subtree; the accessible name
+excludes one by specification. Six assertions reading a control's own words
+through `toHaveText` therefore read the decoration too — `"Columns (1)"`
+received `"Columns (1)🔽"` — and a seventh counted an `svg` element as a proxy
+for an icon. SH-620's own sweep updated every spec whose subject *is* an icon
+and could not see a spec whose subject is a control. `make test` excludes the
+browser suite (SH-394), so it merged green: SH-418's thesis, SH-416 the
+precedent, paid a second time.
+
+The rule those four repairs established: **assert a control's own words with
+`toHaveAccessibleName()`; assert the words on the element that holds only the
+words; only a spec whose subject is the glyph asserts its text.** The fence
+that keeps it is hung on the door every spec already walks through —
+`e2e/specs/support.ts`'s exported `expect`, now
+`baseExpect.extend({ toHaveText, toContainText })` — because nothing static
+can see the subject: a third of the suite's 523 text assertions target a bare
+local variable, and the dashboard attaches glyphs to buttons it finds by
+`querySelector` as often as to ones it builds. Both shadowing matchers delegate
+to Playwright's own matcher first, in the caller's direction (`.not` included,
+so a negated assertion polls the right way), then judge the elements the
+locator actually resolved to. `toHaveText` is refused whenever its subject
+holds an `[aria-hidden="true"]` descendant with text, whether or not the
+comparison passed — a passing one has encoded decoration, a failing one is the
+SH-622 symptom. `toContainText` is refused only when the expectation *names*
+hidden text; a substring claim that never mentions the glyph does not ride it,
+and deciding anything finer would re-implement Playwright's matching in
+`support.ts`. The key is `aria-hidden`, not `.emoji-icon`: `.engine-lane-chip`
+is already a second producer of the class.
+
+Why shadowing a built-in matcher is sound, read from Playwright 1.63's
+`lib/matchers/expect.js` rather than assumed: `extend()` layers user matchers
+over the built-ins for `expect(x).<name>`, skips a built-in name only for the
+asymmetric-matcher registration, and returns a new `expect` without touching
+the base — so `baseExpect` inside the shadowing matcher is the unguarded
+original and delegation cannot recurse.
+
+Two limits are stated rather than glossed. A direct read — `textContent()`,
+`allTextContents()`, `node.textContent` inside `evaluate` — and the `hasText`
+filter never pass through an `expect` matcher and are outside the door
+(`story-context-menu-status.spec.ts` reads a `.ctxmenu-item`'s text that gains
+a warning glyph when the item is disabled, and stays as it is, named here). And
+the refusal reaches the browser tier only: `tests/e2e_text_assertion_door.rs`
+is a *wiring* fence in SH-360's sense — it proves on every merge that only
+`support.ts` takes Playwright's own `expect`, that the door registers both
+matchers, and that every text-asserting spec imports `expect` from
+`./support` — never that the door refuses. `e2e/specs/text-assertion-door.spec.ts`
+is what proves that, against the static project selector, including the case
+where Playwright's own comparison would have passed.
 
 ## What guards each defect
 
@@ -404,8 +465,9 @@ row says otherwise.
 | D4 (filter disclosure) | `web_serve_root_html_has_a_collapsible_filter_panel` | `filter-bar-disclosure.spec.ts` (desktop — not a mobile-only behavior) |
 | D5 (overlay widths) | `web_serve_root_html_clamps_overlay_widths_to_the_viewport` | `responsive.mobile.spec.ts`: "toast and dispatch-history overlays never exceed a narrow viewport" |
 | D8 (column peek) | `web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones` | `responsive.mobile.spec.ts`: "the next board column peeks on the narrowest supported phone" (plus its own "stays at 18rem" companion) |
-| D9 (actions menu) | `web_serve_root_html_has_coarse_pointer_actions_buttons` | `responsive.mobile.spec.ts`: "the card and list-row actions menus have the same items as right-click", "...is deliberately not a Tab stop..." |
+| D9 (actions menu) | `web_serve_root_html_exposes_card_actions_on_every_pointer` | `story-context-menu.spec.ts`: "the visible card actions button matches right-click without opening the drawer"; `responsive.mobile.spec.ts`: mobile card/list parity and focus policy |
 | Chrome budget (topbar + filter bar) | — | `responsive.mobile.spec.ts`: "the topbar and collapsed filter bar together stay within a measured chrome budget" |
+| Text assertion riding an aria-hidden glyph (SH-622) | `tests/e2e_text_assertion_door.rs` (not `web_test.rs`): only `support.ts` takes Playwright's `expect`, the door registers both text matchers, every text-asserting spec imports from `./support` | `text-assertion-door.spec.ts` (desktop, both engines): refusal even when the base comparison would pass, refusal of `.not`, label/glyph/name subjects legal, `toContainText` refused only when it names hidden text, delegation fidelity |
 
 ## Verification this design can't cover
 

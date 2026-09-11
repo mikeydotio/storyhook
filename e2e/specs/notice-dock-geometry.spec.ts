@@ -12,6 +12,7 @@ import {
   raiseDurableNotices,
   raiseNotice,
   seedToken,
+  settledBoundingBox,
 } from "./support";
 
 /**
@@ -343,16 +344,19 @@ test("the drawer's Close and its footer buttons are not overlapped", async ({
 
   await page.locator(".card", { hasText: title }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
-  // Settled, not merely open. Measured 30ms after `.open` lands, `#drawer-close`
-  // reads x=1601 — off-screen, mid-transition — and a hit test there proves
-  // nothing at all. This is the wait, and it is a property rather than a delay.
-  await page.waitForFunction(
-    () =>
-      document.getElementById("drawer")!.getBoundingClientRect().right <=
-      window.innerWidth + 0.5,
-    undefined,
-    { timeout: 5000 },
-  );
+  // Settled, not merely open — and settled on the box this test MEASURES, not
+  // on its ancestor. The wait here used to poll `#drawer`'s own right edge
+  // against the viewport, which is a different claim: `.drawer` transitions
+  // `width` and `transform` together over 0.2s, so the drawer's box can already
+  // sit inside a 1280px viewport while its header content, laid out for the
+  // final 30rem width, still pushes `#drawer-close` past the right edge. A hit
+  // test there reads `elementFromPoint` as null — reported as
+  // `nothing (rect {"x":1380.2,...})` at exactly x+width/2 = 1393, 113px
+  // outside the viewport. The ancestor was settled; the measured element was
+  // not. `settledBoundingBox` waits on running animations under the drawer and
+  // then requires the element's own centre to hit it, which is the property
+  // asserted below (SH-420, SH-401, SH-622).
+  await settledBoundingBox(page.locator("#drawer"), page.locator("#drawer-close"));
 
   expect(await overlapArea(page, "#drawer-close")).toBe(0);
   expect(await centreOwner(page, "#drawer-close")).toBe("self");

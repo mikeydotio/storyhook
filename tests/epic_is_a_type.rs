@@ -137,7 +137,7 @@ fn story_next_offers_a_normal_parent_and_never_an_epic() {
     let p = dir.path();
 
     let out = story(p)
-        .args(["list", "--ready", "--json"])
+        .args(["next", "--count", "10", "--json"])
         .output()
         .unwrap();
     let ready: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -155,6 +155,19 @@ fn story_next_offers_a_normal_parent_and_never_an_epic() {
     assert!(
         !ids.contains(&"SH-3".to_string()),
         "an epic is never offered as work: {ids:?}"
+    );
+}
+
+#[test]
+fn claim_next_takes_an_executable_parent() {
+    let dir = both_kinds_of_parent();
+    story(dir.path())
+        .args(["claim", "--next"])
+        .assert()
+        .success();
+    assert_eq!(
+        show(dir.path(), "SH-1")["story"]["story"]["state"],
+        "in-progress"
     );
 }
 

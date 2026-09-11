@@ -17,9 +17,10 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
-use crate::service::{Ctx, StoryService, VerificationCandidate, VerificationQueue};
+use crate::service::verification::GenerationWrite;
+use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::store::VerificationIncident;
-use crate::store::{ReadOps, Store};
+use crate::store::{GlobalSeq, ReadOps, Store};
 
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
@@ -46,6 +47,19 @@ pub enum VerificationStatus {
         #[serde(skip_serializing_if = "Option::is_none")]
         tests: Option<VerificationTests>,
     },
+    /// A newer submission is durably queued while this story's prior
+    /// generation still owns the serialized verifier process.
+    Superseding {
+        /// New generation reserved for the next attempt.
+        generation: GlobalSeq,
+        /// Prior generation whose process is still finishing.
+        superseded_generation: GlobalSeq,
+        /// Seconds the replacement generation has waited for the reservation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wait_seconds: Option<u64>,
+        /// Seconds the superseded attempt has held the verifier.
+        active_elapsed_seconds: u64,
+    },
     /// The head candidate is retrying infrastructure or has halted the queue.
     Stalled {
         /// Number of failed actuator attempts in this incident.
@@ -64,7 +78,11 @@ pub enum VerificationStatus {
 /// Infrastructure evidence inherited by candidates waiting behind the head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VerificationBlocker {
-    /// Display id of the candidate that encountered the failure.
+    /// The incident's own id — what `story verifier ack` takes (SH-666).
+    pub incident_id: String,
+    /// Display id of the candidate the failure was first hit on. It is the
+    /// story the verifier happened to be serving, never the cause: every
+    /// infrastructure incident is the verifier's own (SH-666).
     pub story_id: String,
     /// RFC3339 time of the first failed attempt.
     pub first_failed_at: String,
@@ -104,6 +122,14 @@ fn owns(candidate: &VerificationCandidate, active: &ActiveVerification) -> bool 
         && candidate.verifying_generation == active.generation
 }
 
+fn supersedes(candidate: &VerificationCandidate, active: &ActiveVerification) -> bool {
+    candidate.project == active.project
+        && candidate.story_id == active.story_id
+        && candidate.verifying_generation.is_some()
+        && active.generation.is_some()
+        && candidate.verifying_generation != active.generation
+}
+
 fn matching_progress(
     env: &Environment,
     candidate: &VerificationCandidate,
@@ -137,7 +163,9 @@ pub fn status_snapshot_with_incident(
 ) -> Vec<StoryVerificationStatus> {
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
-        .filter(|candidate| !active.is_some_and(|held| owns(candidate, held)))
+        .filter(|candidate| {
+            !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+        })
         .collect();
 
     ordered
@@ -180,6 +208,20 @@ pub fn status_snapshot_with_incident(
                     current_step,
                     tests,
                 }
+            } else if let Some(held) = active.filter(|held| supersedes(candidate, held)) {
+                VerificationStatus::Superseding {
+                    generation: candidate
+                        .verifying_generation
+                        .expect("a superseding candidate has a generation"),
+                    superseded_generation: held
+                        .generation
+                        .expect("a superseded active attempt has a generation"),
+                    wait_seconds: candidate
+                        .verifying_since
+                        .as_deref()
+                        .and_then(|since| elapsed_secs(since, now)),
+                    active_elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
+                }
             } else {
                 let position = waiting
                     .iter()
@@ -202,6 +244,7 @@ pub fn status_snapshot_with_incident(
                                 && candidate.verifying_generation == Some(incident.generation)
                         })?;
                         Some(VerificationBlocker {
+                            incident_id: incident.incident_id.clone(),
                             story_id: head.story_id.clone(),
                             first_failed_at: incident.first_failed_at.clone(),
                             last_failed_at: incident.last_failed_at.clone(),
@@ -307,9 +350,26 @@ pub fn publish_once(
     now: &str,
     activity: &VerificationActivity,
 ) -> Result<bool, AppError> {
-    let ordered = VerificationQueue::new(store).ordered()?;
-    let active = activity.active();
-    let incident = store.read(|tx| tx.verification_incident())?;
+    // Per project, so a queued story's position and blocker are its own
+    // project's (SH-648) — the same slices its worker and its dashboard read.
+    let projects = store.read(|tx| tx.projects())?;
+    let mut moved = false;
+    for project in projects {
+        moved |= publish_project(store, env, now, activity, project.id)?;
+    }
+    Ok(moved)
+}
+
+fn publish_project(
+    store: &impl Store,
+    env: &Environment,
+    now: &str,
+    activity: &VerificationActivity,
+    project: crate::store::ProjectId,
+) -> Result<bool, AppError> {
+    let ordered = VerificationQueue::new(store).ordered_for(project)?;
+    let active = activity.active_for(project);
+    let incident = store.read(|tx| tx.verification_incident(project))?;
     let statuses =
         status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
     let mut moved = false;
@@ -330,12 +390,13 @@ pub fn publish_once(
         } = &status
         {
             format!(
-                "{GATE_PROGRESS_PREFIX} last evidence {last_failed_at}\n\nVerification — {} after {attempts} attempt(s)\nFirst infrastructure failure: {first_failed_at}.\nReason: {detail}\n",
+                "{GATE_PROGRESS_PREFIX} last evidence {last_failed_at}\n\nVerification — {} after {attempts} attempt(s).\nFirst infrastructure failure: {first_failed_at}.\n\nReason:\n\n{}\n",
                 if *halted {
                     "HALTED"
                 } else {
                     "RETRYING INFRASTRUCTURE"
-                }
+                },
+                crate::text_lint::quote_evidence(detail)
             )
         } else if matches!(&status, VerificationStatus::Running { .. }) {
             let journal = journal_path(env, candidate);
@@ -353,6 +414,19 @@ pub fn publish_once(
                 },
                 now,
             )
+        } else if let VerificationStatus::Superseding {
+            generation,
+            superseded_generation,
+            active_elapsed_seconds,
+            ..
+        } = &status
+        {
+            format!(
+                "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — RESUBMITTED\nGeneration {} is reserved while superseded generation {} finishes its verifier process ({}s elapsed).\n",
+                generation.get(),
+                superseded_generation.get(),
+                active_elapsed_seconds
+            )
         } else {
             let VerificationStatus::Queued {
                 position,
@@ -364,7 +438,11 @@ pub fn publish_once(
             };
             let waiting: Vec<VerificationCandidate> = ordered
                 .iter()
-                .filter(|candidate| !active.as_ref().is_some_and(|held| owns(candidate, held)))
+                .filter(|candidate| {
+                    !active
+                        .as_ref()
+                        .is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+                })
                 .cloned()
                 .collect();
             let (ahead_higher_priority, ahead_equal_priority_older) =
@@ -381,24 +459,46 @@ pub fn publish_once(
                 evidence_at,
             );
             if let Some(blocker) = blocked_by {
-                rendered.push_str(&format!(
-                    "\nVerifier {} since {}; blocked by {}: {}\n",
-                    if blocker.halted { "HALTED" } else { "RETRYING" },
-                    blocker.first_failed_at,
-                    blocker.story_id,
-                    blocker.detail
-                ));
+                rendered.push_str(&render_blocker(&blocker));
             }
             rendered
         };
-        let (_, wrote) = StoryService::new(&ctx).upsert_marked_comment(
-            &candidate.story_id,
-            GATE_PROGRESS_PREFIX,
-            &body,
-        )?;
-        moved |= wrote;
+        if let GenerationWrite::Applied(wrote) = VerificationQueue::new(store)
+            .upsert_generation_comment(&ctx, candidate, GATE_PROGRESS_PREFIX, &body)?
+        {
+            moved |= wrote;
+        }
     }
     Ok(moved)
+}
+
+/// The line every waiting candidate carries while the head is stalled.
+///
+/// It names the incident as the **verifier's** and the head story as where it
+/// was first hit, never as a blocker: "blocked by SH-648" was read as a story
+/// dependency by the operator who filed SH-666, on a halt whose cause was the
+/// verifier's own script contract. The halted form also says how the queue
+/// resumes, because the reader is in a terminal.
+fn render_blocker(blocker: &VerificationBlocker) -> String {
+    let VerificationBlocker {
+        incident_id,
+        story_id,
+        first_failed_at,
+        detail,
+        halted,
+        ..
+    } = blocker;
+    if *halted {
+        format!(
+            "\nVerifier HALTED since {first_failed_at} on an infrastructure failure of the verifier itself.\nThe failure was first hit while verifying {story_id} ({story_id} is not at fault).\nFix the cause. Release the queue with `story verifier ack {incident_id}`.\n\n{}\n",
+            crate::text_lint::quote_evidence(detail)
+        )
+    } else {
+        format!(
+            "\nVerifier RETRYING since {first_failed_at} on an infrastructure failure of the verifier itself.\nThe failure was first hit while verifying {story_id} ({story_id} is not at fault).\n\n{}\n",
+            crate::text_lint::quote_evidence(detail)
+        )
+    }
 }
 
 /// Runs the publisher until daemon shutdown, sleeping in short increments so

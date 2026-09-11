@@ -1,8 +1,10 @@
-import { expect, test as base } from "@playwright/test";
+import { expect as baseExpect, test as base } from "@playwright/test";
 import type {
   APIRequestContext,
   APIResponse,
+  ExpectMatcherState,
   Locator,
+  MatcherReturnType,
   Page,
   Request,
   Route,
@@ -14,7 +16,226 @@ import {
   resetTestBudget,
 } from "../load-grace";
 
-export { expect };
+/** The expectation shapes Playwright's own text matchers accept. */
+type TextExpectation = string | RegExp | (string | RegExp)[];
+
+/** The two matchers the door shadows. Both read rendered text; neither is
+ * defined in terms of what a user is told. */
+type TextMatcher = "toHaveText" | "toContainText";
+
+/** The options both matchers accept, passed through untouched. */
+interface TextMatcherOptions {
+  ignoreCase?: boolean;
+  timeout?: number;
+  useInnerText?: boolean;
+}
+
+/** One `aria-hidden` descendant, with text, found under an assertion's
+ * subject: enough of its identity to name it in a refusal. */
+interface HiddenText {
+  node: string;
+  text: string;
+}
+
+/**
+ * Every spec's `expect`, and the door SH-622's fence is hung on.
+ *
+ * `toHaveText` and `toContainText` compare `textContent` (or `innerText`),
+ * and both include an `aria-hidden` subtree; the accessible name excludes
+ * one by specification. SH-620 put a decorative `aria-hidden` emoji inside
+ * every dashboard control that has one, and six assertions that read a
+ * control's own words through `toHaveText` started reading the decoration
+ * too -- `"Columns (1)"` received `"Columns (1)🔽"` -- while the sweep that
+ * updated the specs whose subject IS an icon could not see them. Nothing
+ * static can: a third of this suite's text assertions target a bare local
+ * variable, and the dashboard attaches glyphs to buttons it finds by
+ * `querySelector` as often as to ones it builds. The subject is only known
+ * once the locator has resolved, so the rule is applied there.
+ *
+ * The rule: **a text assertion never rides an `aria-hidden` glyph.**
+ *
+ *   - `toHaveText` is refused whenever its subject holds an `aria-hidden`
+ *     descendant with text, whether or not the comparison would have
+ *     passed: a passing one has encoded decoration, a failing one is the
+ *     SH-622 symptom. Assert a control's own words with
+ *     `toHaveAccessibleName()`; assert the words on the element that holds
+ *     only the words; only a spec whose SUBJECT is the glyph asserts its
+ *     text, and the glyph has no hidden descendants of its own.
+ *   - `toContainText` is refused only when the expectation *names* hidden
+ *     text -- a string that contains a hidden descendant's text, or a
+ *     pattern that matches one. A substring claim that never mentions the
+ *     glyph does not ride it (`#projsel-btn` `toContainText("Alpha
+ *     Project")`) and stays legal; deciding anything finer would mean
+ *     re-implementing Playwright's own matching here (SH-136).
+ *
+ * Keyed on `[aria-hidden="true"]`, not on `.emoji-icon`: the class is
+ * "hidden decoration inside rendered text", and `.engine-lane-chip` is
+ * already a second producer of it.
+ *
+ * Mechanism, read from Playwright 1.63's `lib/matchers/expect.js` rather
+ * than assumed: `expect.extend()` layers user matchers over the built-ins
+ * for `expect(x).<name>` (only the asymmetric-matcher registration skips a
+ * built-in name) and returns a new `expect` without touching the base one,
+ * so a shadowing matcher can delegate to `baseExpect` with no recursion --
+ * the documented custom-matcher idiom, `e.matcherResult` and all. Every
+ * assertion is delegated FIRST, in the direction the caller asked for
+ * (`.not` included, so the poll runs the right way and a negated assertion
+ * does not spend its whole deadline waiting for a match it never wanted),
+ * and judged only afterwards, on the elements the assertion actually
+ * resolved to.
+ *
+ * Outside the door, stated rather than glossed: a direct read --
+ * `textContent()`, `allTextContents()`, `node.textContent` inside
+ * `evaluate` -- and the `hasText` filter, none of which pass through an
+ * `expect` matcher. `tests/e2e_text_assertion_door.rs` fences that every
+ * spec's `expect` is this one; `text-assertion-door.spec.ts` is what proves
+ * the door refuses.
+ */
+export const expect = baseExpect.extend({
+  async toHaveText(
+    this: ExpectMatcherState,
+    locator: Locator,
+    expected: TextExpectation,
+    options?: TextMatcherOptions,
+  ): Promise<MatcherReturnType> {
+    return guardedTextAssertion.call(this, "toHaveText", locator, expected, options);
+  },
+  async toContainText(
+    this: ExpectMatcherState,
+    locator: Locator,
+    expected: TextExpectation,
+    options?: TextMatcherOptions,
+  ): Promise<MatcherReturnType> {
+    return guardedTextAssertion.call(this, "toContainText", locator, expected, options);
+  },
+});
+
+/** The shared body of both shadowing matchers. See `expect` above. */
+async function guardedTextAssertion(
+  this: ExpectMatcherState,
+  name: TextMatcher,
+  locator: Locator,
+  expected: TextExpectation,
+  options?: TextMatcherOptions,
+): Promise<MatcherReturnType> {
+  const isNot = this.isNot;
+  // Delegate in the caller's own direction. Playwright raises when
+  // `pass === isNot`, so a delegated success returns `!isNot` and a
+  // delegated failure returns `isNot`: the base verdict, reproduced.
+  const delegate = isNot ? baseExpect(locator).not : baseExpect(locator);
+  let delegatedFailure: { message?: string } | undefined;
+  try {
+    await delegate[name](expected, options);
+  } catch (error) {
+    delegatedFailure = matcherResultOf(error);
+  }
+
+  // Judge the subject only when there is one to judge. A value that is not
+  // a locator (a string, a promise) is the base matcher's own business.
+  const hidden =
+    typeof (locator as Partial<Locator>)?.evaluateAll === "function"
+      ? await hiddenTextUnder(locator)
+      : [];
+  const riding =
+    name === "toHaveText" ? hidden : hidden.filter((h) => expectationNames(expected, h.text));
+
+  if (riding.length > 0) {
+    const message = refusalMessage(name, locator, expected, riding, delegatedFailure);
+    return { name, pass: isNot, message: () => message };
+  }
+  if (delegatedFailure) {
+    const message = delegatedFailure.message ?? `${name} failed`;
+    return { name, pass: isNot, message: () => message };
+  }
+  return { name, pass: !isNot, message: () => "" };
+}
+
+/** Playwright attaches the matcher's own result to the error it throws, and
+ * that result's `message` is the text a spec author would have read. Anything
+ * else (a thrown string, a foreign error) is carried as its own message. */
+function matcherResultOf(error: unknown): { message?: string } {
+  if (error && typeof error === "object") {
+    const withResult = error as { matcherResult?: { message?: string }; message?: string };
+    if (withResult.matcherResult) return withResult.matcherResult;
+    return { message: withResult.message };
+  }
+  return { message: String(error) };
+}
+
+/** Every `aria-hidden` descendant with non-blank text under each element the
+ * locator resolves to. Computed in the page, after the delegated assertion
+ * has already waited for the subject, so it reflects the same elements. */
+function hiddenTextUnder(locator: Locator): Promise<HiddenText[]> {
+  return locator.evaluateAll((elements) =>
+    elements.flatMap((element) =>
+      Array.from(element.querySelectorAll('[aria-hidden="true"]'))
+        .map((node) => ({
+          node:
+            node.tagName.toLowerCase() +
+            (node.id ? "#" + node.id : "") +
+            Array.from(node.classList)
+              .map((c) => "." + c)
+              .join("") +
+            Object.entries((node as HTMLElement).dataset ?? {})
+              .map(([k, v]) => `[data-${k}=${JSON.stringify(v ?? "")}]`)
+              .join(""),
+          text: (node.textContent ?? "").trim(),
+        }))
+        .filter((found) => found.text.length > 0),
+    ),
+  );
+}
+
+/** Whether a `toContainText` expectation names the hidden text at all: a
+ * string that contains it, or a pattern that matches it. */
+function expectationNames(expected: TextExpectation, hiddenText: string): boolean {
+  const each = Array.isArray(expected) ? expected : [expected];
+  return each.some((item) =>
+    typeof item === "string"
+      ? item.includes(hiddenText)
+      : new RegExp(item.source, item.flags.replace("g", "")).test(hiddenText),
+  );
+}
+
+/** The refusal a spec author reads. Names what was found, where, what the
+ * base matcher would have said, and the remedy. */
+function refusalMessage(
+  name: TextMatcher,
+  locator: Locator,
+  expected: TextExpectation,
+  riding: HiddenText[],
+  delegatedFailure: { message?: string } | undefined,
+): string {
+  const found = riding.map((h) => `    ${h.node} ${JSON.stringify(h.text)}`).join("\n");
+  const verdict = delegatedFailure
+    ? "Playwright's own comparison had also failed:\n" + indent(delegatedFailure.message ?? "")
+    : "Playwright's own comparison would have PASSED -- the expectation has encoded the decoration.";
+  return [
+    `expect(locator).${name}() refused: the subject carries aria-hidden text that textContent includes and the accessible name excludes (SH-622).`,
+    ``,
+    `Locator: ${String(locator)}`,
+    `Expected: ${describeExpectation(expected)}`,
+    `Hidden text under the subject:`,
+    found,
+    ``,
+    verdict,
+    ``,
+    `Assert a control's own words with toHaveAccessibleName(); assert the words on the element that holds only the words; only a spec whose SUBJECT is the glyph asserts its text.`,
+  ].join("\n");
+}
+
+function describeExpectation(expected: TextExpectation): string {
+  const each = Array.isArray(expected) ? expected : [expected];
+  const parts = each.map((item) => (typeof item === "string" ? JSON.stringify(item) : String(item)));
+  return Array.isArray(expected) ? `[${parts.join(", ")}]` : parts[0];
+}
+
+function indent(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => "    " + line)
+    .join("\n");
+}
 
 /** How often the load-grace watchdog (below) re-samples contention during a
  * running test. Sub-second so a burst that begins mid-test is caught with
@@ -152,6 +373,22 @@ export function requiredEnv(name: string): string {
     );
   }
   return value;
+}
+
+/**
+ * The `story` binary a spec may run: the LEASED hard link `scripts/run-e2e.sh`
+ * made of `target/debug/story` after building it, exported as
+ * `DASHBOARD_STORY_BIN` (SH-635). Never `resolve("../target/debug/story")`:
+ * that is Cargo's mutable artifact, and any `cargo build|test|check` in the
+ * checkout while the suite is live replaces it -- after which a spec calling
+ * it would be the very client that finds the running daemon's identity is not
+ * its own and replaces the daemon on a new port, failing every later test.
+ * The runner, the daemon it started and every spec must run one inode; this
+ * is the specs' single door to it, and `tests/e2e_browser_coverage.rs` fails
+ * the build on any spec that names the artifact path itself.
+ */
+export function storyBinary(): string {
+  return requiredEnv("DASHBOARD_STORY_BIN");
 }
 
 /**
@@ -317,7 +554,7 @@ export async function openProject(page: Page, name: string): Promise<void> {
  * helper needs is built from that same catalog. */
 export async function openStatusesEditor(page: Page, name: string): Promise<void> {
   await expect(page.locator(".repo-card-name", { hasText: name })).toBeVisible();
-  await page.locator("#settings-btn").click();
+  await clickHeaderAction(page, "settings-btn");
   await expect(page.locator("#settings-view")).toBeVisible();
   await page
     .locator(".settings-table tbody tr", { hasText: name })
@@ -435,9 +672,9 @@ export async function resolvedTokenColor(
  * closed"/"Show archived"/"Hide empty columns") needs this first. Board
  * sort moved out of this panel entirely in SH-305 -- it's per-column now,
  * opened from each column header's own sort button, so a spec driving it
- * doesn't need this at all. `#filter-count` and `#filter-clear` are in the
- * always-visible `.filter-summary` row, not the panel -- specs that touch
- * only those don't need this at all.
+ * doesn't need this at all. `#filter-count` stays in the always-visible
+ * summary row. Clear stays there on desktop and moves into the open mobile
+ * sheet with the panel.
  */
 export async function openFilters(page: Page): Promise<void> {
   const panel = page.locator("#filter-panel");
@@ -445,6 +682,19 @@ export async function openFilters(page: Page): Promise<void> {
     await page.locator("#filter-toggle-btn").click();
   }
   await expect(panel).toBeVisible();
+}
+
+/** Activates a header action directly on desktop or through More on mobile. */
+export async function clickHeaderAction(
+  page: Page,
+  id: string,
+): Promise<void> {
+  const action = page.locator(`#${id}`);
+  if (await action.isHidden()) {
+    await page.locator("#more-btn").click();
+    await expect(action).toBeVisible();
+  }
+  await action.click();
 }
 
 /**
@@ -459,8 +709,9 @@ export async function openFilters(page: Page): Promise<void> {
  * "element not found" rather than as a filter doing its job. Call this
  * AFTER the child is added.
  *
- * Idempotent: an already-checked box is left alone rather than toggled off,
- * so a spec may call it without first knowing the state.
+ * Idempotent: an already-checked box is left alone rather than toggled off.
+ * The mobile sheet is then completed through Done because every caller's next
+ * step acts on the newly revealed story; desktop keeps its inline disclosure.
  */
 export async function showEpics(page: Page): Promise<void> {
   await openFilters(page);
@@ -469,6 +720,10 @@ export async function showEpics(page: Page): Promise<void> {
     await toggle.check();
   }
   await expect(toggle).toBeChecked();
+  if (await page.locator("#filter-sheet").isVisible()) {
+    await page.locator("#filter-sheet-done").click();
+    await expect(page.locator("#filter-sheet")).toBeHidden();
+  }
 }
 
 /**
@@ -1367,38 +1622,42 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
   );
 }
 
-/** Waits until no CSS animation or transition is still running under `root`,
- * then answers `locator`'s bounding box (SH-420, SH-401).
+/** Waits until no CSS animation or transition is still running under `root`
+ * (SH-420, SH-401, SH-623).
  *
- * A spec that drives a pointer by coordinate — `page.mouse.move/down/up`
- * rather than `locator.click()`, which is the only way to put a re-render
- * *between* mousedown and mouseup — aims at a box it read earlier. If the
- * surface is still moving when that read happens, the coordinates name where
- * the control *was*: the drawer alone slides in over `transition: transform
- * 0.2s`, so a box read the instant `#drawer` gains `open` is off by most of
- * the drawer's own width. That is SH-420's finding ("a threshold test
- * measures a settled box") one axis over — there a moving box produced a
- * wrong *measurement*, here it produces a press on the wrong *element*.
+ * The one settle instrument. It used to exist twice, byte-similar — here in
+ * `settledBoundingBox` and in `responsive.mobile.spec.ts`'s
+ * `settleAndReadTapMin` — which is the SH-136 shape this project has paid for
+ * repeatedly; `tests/tap_target_comparison.rs` now pins that both callers go
+ * through this door and that the poll here is scoped the way SH-420 measured
+ * it must be.
  *
- * The settle test is `getAnimations({ subtree: true })` filtered to
- * `running`, exactly as SH-420's own sweep does — polled rather than slept
- * against, per this suite's standing objection to a magic-number wait. The
- * residual race SH-420 names applies here unchanged: this board polls and
- * re-animates cards, so a live poll can restart an animation at any moment.
- * Scoped to `root` rather than the document for that reason — the drawer's
- * own transition is what a drawer spec must wait out, and an unrelated card
- * animating on the board behind it is not this spec's business.
+ * The settle test is `getAnimations({ subtree: true })` filtered to `running`
+ * — polled rather than slept against, per this suite's standing objection to
+ * a magic-number wait. **Scoped to `root`, never `document`**: this board
+ * polls and re-animates cards, so a document-wide wait would hold a drawer
+ * measurement hostage to a toast animating somewhere else, and a live poll can
+ * restart a card animation at any moment (the residual race SH-420 names; it
+ * is in the failure message so the next reader does not re-derive it).
  *
- * A settled box can still be outside a scrollport (SH-577: Comments at y=727
- * in a 720px viewport). Scroll without focusing or activating the control,
- * then require the exact centre the callers press to hit it or a descendant.
- * Visibility and viewport intersection alone cannot rule out an overlay or
- * ancestor clipping. This prepares input; it never sends the gesture itself. */
-export async function settledBoundingBox(
-  root: Locator,
-  locator: Locator,
-): Promise<{ x: number; y: number; width: number; height: number }> {
-  await locator.scrollIntoViewIfNeeded();
+ * `paused` is deliberately not `running`. A paused animation is not moving,
+ * so a box read under it IS settled — just not at its final position. Nothing
+ * in the dashboard pauses an animation; the one place this suite does
+ * (`settle-the-measured-box.spec.ts`, holding the drawer mid-flight on
+ * purpose) relies on exactly this, and `settledBoundingBox`'s centre-hit half
+ * is what refuses a held frame whose target is still off-screen.
+ *
+ * **What a caller must get right is WHICH box it settles** (SH-623). The
+ * drawer's own right edge was inside the viewport before its transition had
+ * moved at all — `translateX(100%)` of a 0-wide box is 0px — while its close
+ * button, laid out past that 0-wide header, sat 100px off-screen. Settle the
+ * surface whose motion you are waiting out, then measure the element you are
+ * actually asserting about; a proxy claim on an ancestor is a different
+ * claim, and can be true before the motion starts.
+ *
+ * `surface` names the root in the failure message; the default is the
+ * locator's own description, which is derived rather than typed. */
+export async function awaitSettled(root: Locator, surface: string = String(root)): Promise<void> {
   await expect
     .poll(
       async () =>
@@ -1418,11 +1677,41 @@ export async function settledBoundingBox(
         ),
       {
         message:
-          "animations under this surface never settled, so a coordinate-driven " +
-          "press would aim at a moving box (SH-420/SH-401)",
+          `${surface}: animations under this surface never settled, so a ` +
+          "measurement or a coordinate-driven press taken now would aim at a " +
+          "moving box (SH-420/SH-401/SH-623). A live poll can restart card " +
+          "animations at any moment -- if this is flaking rather than hanging, " +
+          "that is the residual race, not a new defect.",
       },
     )
     .toEqual([]);
+}
+
+/** Waits until nothing under `root` is still animating (`awaitSettled`), then
+ * answers `locator`'s bounding box once its centre really reaches it
+ * (SH-420, SH-401, SH-577).
+ *
+ * A spec that drives a pointer by coordinate — `page.mouse.move/down/up`
+ * rather than `locator.click()`, which is the only way to put a re-render
+ * *between* mousedown and mouseup — aims at a box it read earlier. If the
+ * surface is still moving when that read happens, the coordinates name where
+ * the control *was*: the drawer alone slides in over `transition: transform
+ * 0.2s`, so a box read the instant `#drawer` gains `open` is off by most of
+ * the drawer's own width. That is SH-420's finding ("a threshold test
+ * measures a settled box") one axis over — there a moving box produced a
+ * wrong *measurement*, here it produces a press on the wrong *element*.
+ *
+ * A settled box can still be outside a scrollport (SH-577: Comments at y=727
+ * in a 720px viewport). Scroll without focusing or activating the control,
+ * then require the exact centre the callers press to hit it or a descendant.
+ * Visibility and viewport intersection alone cannot rule out an overlay or
+ * ancestor clipping. This prepares input; it never sends the gesture itself. */
+export async function settledBoundingBox(
+  root: Locator,
+  locator: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  await locator.scrollIntoViewIfNeeded();
+  await awaitSettled(root);
 
   let box: { x: number; y: number; width: number; height: number } | null = null;
   await expect.poll(async () => {
@@ -1625,11 +1914,24 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
   }, selector);
 }
 
-/** Parses a computed colour string. Chromium serialises every computed
- * `<color>` as `rgb(r, g, b)` or `rgba(r, g, b, a)`, so the numbers are taken
- * positionally; anything else is a change in the platform rather than in this
- * page, and throwing names it instead of silently scoring it as black. */
+/** Parses a computed colour string into 0–255 sRGB channels.
+ *
+ * Browsers serialize legacy colours as `rgb()`/`rgba()`, but preserve the
+ * normalized 0–1 channels of CSS Color 4 `color(srgb …)` values produced by
+ * `color-mix()`. Keep both paths explicit so one unit system can never be
+ * silently scored as the other. */
 export function parseColor(css: string): Rgba {
+  const srgb = css.match(
+    /^color\(srgb\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s*\/\s*(-?[\d.]+))?\)$/,
+  );
+  if (srgb) {
+    return {
+      r: Number(srgb[1]) * 255,
+      g: Number(srgb[2]) * 255,
+      b: Number(srgb[3]) * 255,
+      a: srgb[4] === undefined ? 1 : Number(srgb[4]),
+    };
+  }
   const nums = css.match(/-?[\d.]+/g);
   if (!nums || nums.length < 3) throw new Error(`unparseable computed colour: ${css}`);
   return {

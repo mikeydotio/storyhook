@@ -47,6 +47,14 @@
 //! * `lock_root` changed to read `$XDG_STATE_HOME` — the plausible, wrong
 //!   implementation — → **1 red**:
 //!   `the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it`.
+//! * [`ProgressFeeder`] made to write nothing (SH-643) → **1 red**:
+//!   `a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject`, and
+//!   nothing else at idle — the right blast radius, since every other holder
+//!   starts in milliseconds on a quiet machine and only the constructed
+//!   straddle needs the feeder there. Under load the four cases the story
+//!   was filed on are what it protects. `RUNNING_SLACK_POLLS` set to 0 turns
+//!   nothing red at idle and is not a pin: it is a stated margin, which is
+//!   exactly what a mutation check cannot judge (SH-394).
 //!
 //! And in the other direction, to prove the suite is not vacuous: with the
 //! script as shipped, every test passes.
@@ -55,6 +63,8 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -76,6 +86,11 @@ fn read_checkout_file(relative: &str) -> String {
 /// A disposable root holding symlinks to the tracked scripts and its own lock
 /// directory. The symlink rather than a copy is the `tests/orphan_check.rs`
 /// rule: the artifact under test is the one that ships.
+///
+/// The root is a git repository (SH-648): `gate` and `merge` are project-scoped
+/// and derive their key from the working directory's git common dir, so a
+/// case that takes either from a non-repository is refused — which is its own
+/// test below, never an accident of the fixture.
 struct Fixture {
     root: TempDir,
 }
@@ -92,6 +107,7 @@ impl Fixture {
             .unwrap_or_else(|error| panic!("fixture: linking tracked {script}: {error}"));
         }
         std::fs::create_dir_all(root.path().join("locks")).expect("fixture: creating locks/");
+        git_init(root.path());
         Self { root }
     }
 
@@ -110,9 +126,44 @@ impl Fixture {
         self.path().join("locks")
     }
 
-    /// The directory the script would use for `name`.
+    /// The directory the script would use for `name`, taken from the working
+    /// directory `cwd` — read back from the script's own `--plan` rather than
+    /// spelled here a second time (SH-136); the derivation itself is pinned by
+    /// `the_project_component_is_the_hash_of_the_canonical_common_dir`, which
+    /// computes the expected key independently.
+    fn lock_from(&self, cwd: &Path, name: &str) -> PathBuf {
+        PathBuf::from(self.plan_field_from(cwd, name, "lock"))
+    }
+
+    /// The directory the script would use for `name` from the fixture root.
     fn lock(&self, name: &str) -> PathBuf {
-        self.lock_root().join(format!("{name}.lock"))
+        self.lock_from(self.path(), name)
+    }
+
+    /// The reentrancy entry the script would record for `name` from `cwd`.
+    fn key_from(&self, cwd: &Path, name: &str) -> String {
+        self.plan_field_from(cwd, name, "key")
+    }
+
+    fn plan_field_from(&self, cwd: &Path, name: &str, field: &str) -> String {
+        let mut cmd = self.command(&["--plan", name, "--", "true"]);
+        cmd.current_dir(cwd);
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("planning the {name} lock from {}: {e}", cwd.display()));
+        assert_eq!(
+            code(&out),
+            0,
+            "--plan {name} from {} must succeed: {}",
+            cwd.display(),
+            stderr(&out)
+        );
+        let printed = String::from_utf8_lossy(&out.stdout);
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{field}=")))
+            .unwrap_or_else(|| panic!("--plan must print `{field}=`\nstdout: {printed}"))
+            .to_string()
     }
 
     /// A `Command` for the script with this fixture's lock root bound. Every
@@ -174,6 +225,68 @@ impl Fixture {
     }
 }
 
+/// Initialises `path` as a git repository: what makes it a project a
+/// project-scoped lock can be taken from.
+fn git_init(path: &Path) {
+    git(path, &["init", "-q"]);
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap_or_else(|e| panic!("running git {args:?} in {}: {e}", cwd.display()));
+    assert!(
+        out.status.success(),
+        "git {args:?} in {} failed: {}",
+        cwd.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A live holder of `name` from `cwd`, for the cases whose subject is what a
+/// SECOND taker sees while the lock is genuinely held. Released by SIGTERM —
+/// the script's own trap — and reaped within the poll ceiling, so a holder
+/// that could not be told to stop turns the case red rather than sitting out
+/// the wrapped sleep (SH-528).
+struct Holder {
+    child: ChildGuard,
+}
+
+impl Holder {
+    fn take(fixture: &Fixture, cwd: &Path, name: &str) -> Self {
+        let mut cmd = fixture.command(&[name, "--", "sleep", "60"]);
+        cmd.current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = ChildGuard::spawn(&mut cmd).expect("spawning a lock holder");
+        wait_for(&fixture.lock_from(cwd, name).join("pid"));
+        Self { child }
+    }
+
+    fn pid_recorded(fixture: &Fixture, cwd: &Path, name: &str) -> String {
+        std::fs::read_to_string(fixture.lock_from(cwd, name).join("pid"))
+            .expect("reading the holder's pid")
+            .trim()
+            .to_string()
+    }
+
+    fn release(mut self) {
+        Command::new("kill")
+            .args(["-TERM", &self.child.pid().to_string()])
+            .status()
+            .expect("signalling the holder");
+        self.child.wait_within(poll_ceiling(), || {
+            "the lock holder did not die of the SIGTERM sent to release it".to_string()
+        });
+    }
+}
+
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
@@ -219,7 +332,7 @@ fn started_of(pid: u32) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The `--max-wait` a reclamation case gives the script.
+/// The `--max-wait` a holder-identity case gives the script.
 ///
 /// Not a speed assertion and not a bare literal (SH-394): reclaiming is decided
 /// on the **first** observation of a lock, so any positive multiple of the
@@ -230,6 +343,11 @@ fn started_of(pid: u32) -> String {
 /// forever, and an unbounded case would hang the whole suite instead of
 /// reporting the mutation. Measured: without this, deleting the start-time
 /// comparison hung `cargo test` indefinitely rather than turning one test red.
+///
+/// The live-holder control shares it rather than carrying its own: there a
+/// correct implementation waits the whole budget and a wrong one exits at
+/// once, so the number bounds only the case's own wall clock, and one
+/// derivation for all three identity cases is one fewer number to disagree.
 fn reclaim_deadline() -> String {
     (lock_poll_secs() * 2).to_string()
 }
@@ -299,6 +417,196 @@ const WAIT_POLLS_ALLOWED: u64 = 30;
 /// later. Raising `WAIT_POLLS_ALLOWED` past 60 would quietly cost that.
 fn poll_ceiling() -> std::time::Duration {
     std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED)
+}
+
+/// `--max-wait 0`: observe the lock exactly once and refuse if it is held. A
+/// semantic value, not a ceiling — named so the fence in
+/// `tests/timing_assertions.rs` needs no exemption for its spelling.
+const NO_WAIT: &str = "0";
+
+/// The journal path every holder in this file reports under. One name, so a
+/// holder's line can be told from anything else in the journal by path alone.
+const HOLDER_PATH: &str = "release gate/rust-suite";
+
+/// How many watchdog observations a one-poll progress cadence needs before
+/// it is provably observable as a reset. At 1 the watchdog fires on the first
+/// non-growth sample, and a writer on the same period can miss a sample by
+/// phase alone; at 2 one missed sample is tolerated.
+const OBSERVABLE_POLLS: u64 = 2;
+
+/// One poll of scheduling slack for a **running** holder between its progress
+/// writes — a `sleep 1` in a running `sh` is still a fork+exec. A stated
+/// margin (SH-394), not a claim about speed.
+///
+/// It does not cover the holder's *startup*, and no margin could: SH-643
+/// measured spawn-to-first-line at 8ms on this machine at a load ratio of
+/// 0.92 and at more than 2000ms at 2.5–6.4 — 250x the latency for 5x the
+/// contention, so neither a load multiplier nor an earlier sample bounds it.
+/// Startup is [`ProgressFeeder`]'s job. If a running holder's own `sleep`
+/// ever exceeds this slack, the fix is a spawn-free holder (`time.sleep`
+/// in-process), never a wider slack.
+const RUNNING_SLACK_POLLS: u64 = 1;
+
+/// The `--max-idle` a case gives the script when the watchdog **is** the
+/// subject: the smallest ceiling at which a one-poll cadence is observable as
+/// a reset, plus the running holder's stated slack.
+fn idle_ceiling() -> String {
+    (lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS)).to_string()
+}
+
+/// The `--max-idle` a case gives the script when the watchdog is **not** the
+/// subject: harness patience, the same observation cycles [`poll_ceiling`]
+/// spends, so a wedged fixture holder fails in seconds rather than after the
+/// gate default's twenty-nine minutes (SH-528). Proof of nothing about the
+/// watchdog, and no feeder covers it — the holder simply has that long.
+fn patience_ceiling() -> String {
+    poll_ceiling().as_secs().to_string()
+}
+
+/// Feeder writes per watchdog observation. Two, so every observation interval
+/// contains at least one write whatever the phase between the two clocks —
+/// one write per poll can straddle a sample and be read as silence.
+const FEEDS_PER_POLL: u64 = 2;
+
+/// The line [`ProgressFeeder`] appends: a legal `item` record in
+/// `scripts/gate-progress.sh`'s documented shape, under a path no holder in
+/// this file uses. Never `"kind":"activity"`, which one case counts exactly.
+const FEEDER_LINE: &str = "{\"kind\":\"item\",\"path\":\"release gate/fixture-feeder\",\"status\":\"running\",\"at\":\"fixture-feeder\"}\n";
+
+/// Why a [`ProgressFeeder`] stopped. Every case asserts the reason it expects,
+/// because a feeder that stopped for the wrong reason is a case whose subject
+/// never happened.
+#[derive(Debug, PartialEq, Eq)]
+enum FeederStop {
+    /// The holder reached its sentinel while the feeder was covering it.
+    SentinelReached,
+    /// The journal was removed under the feeder — the subject of exactly one
+    /// case, and never resurrected by it.
+    JournalGone,
+    /// [`ProgressFeeder::finish`] or `Drop` stopped it: the run ended first.
+    RunEnded,
+    /// [`poll_ceiling`] elapsed with no sentinel: the holder never got there.
+    Patience,
+}
+
+/// Keeps the gate journal growing until the holder has provably finished its
+/// setup, so the script's silence clock — which starts at **fork** — only ever
+/// measures a *running* holder (SH-643).
+///
+/// What it models: the production journal genuinely has many writers (every
+/// test case appends; `activity-run.py` appends), so a line from something
+/// other than the holder is an honest shape, not a fixture lying to the gate
+/// (SH-364). What it buys: the holder's startup, which the incident measured
+/// at more than a whole ceiling under load, is never under the clock. What it
+/// does not change: every case's subject, which was always a holder that is
+/// running and then silent, or running and then progressing.
+///
+/// Self-bounding on purpose (SH-528): a sentinel that never comes — a holder
+/// that died early, a wrong needle, a future edit — stops the feeder after
+/// [`poll_ceiling`] with [`FeederStop::Patience`], so the watchdog fires and
+/// the case fails with a reason instead of hanging the suite behind an
+/// unbounded `.output()`.
+struct ProgressFeeder {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<FeederStop>>,
+}
+
+impl ProgressFeeder {
+    /// Starts feeding `journal` until `sentinel` holds. Declare it **after**
+    /// the fixture at every site, so it drops — and joins — before the
+    /// `TempDir` it writes into is deleted.
+    fn start(journal: &Path, sentinel: impl Fn() -> bool + Send + 'static) -> Self {
+        // The script's own `: >> "$journal"` runs only after it has taken the
+        // lock, so the file does not exist yet. Created exactly once here;
+        // every later open refuses to create, so a journal the holder removed
+        // is never resurrected by its own fixture.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(journal)
+            .unwrap_or_else(|e| panic!("feeder: preparing {}: {e}", journal.display()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let journal = journal.to_path_buf();
+        let pause = std::time::Duration::from_millis(lock_poll_secs() * 1000 / FEEDS_PER_POLL);
+        let thread = std::thread::spawn(move || {
+            let give_up_at = std::time::Instant::now() + poll_ceiling();
+            loop {
+                if flag.load(Ordering::SeqCst) {
+                    return FeederStop::RunEnded;
+                }
+                if sentinel() {
+                    return FeederStop::SentinelReached;
+                }
+                if std::time::Instant::now() >= give_up_at {
+                    return FeederStop::Patience;
+                }
+                match std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(false)
+                    .open(&journal)
+                {
+                    Ok(mut file) => file
+                        .write_all(FEEDER_LINE.as_bytes())
+                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}")),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return FeederStop::JournalGone;
+                    }
+                    Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
+                }
+                std::thread::sleep(pause);
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stops the feeder and reports why it stopped. Called once the script has
+    /// returned; asserting the reason is what proves the holder reached the
+    /// state the case is about.
+    fn finish(mut self) -> FeederStop {
+        self.stop.store(true, Ordering::SeqCst);
+        self.thread
+            .take()
+            .expect("a feeder is finished at most once")
+            .join()
+            .expect("the feeder thread panicked")
+    }
+}
+
+impl Drop for ProgressFeeder {
+    /// A case that panics before `finish` must not leave a thread appending
+    /// into a directory being deleted. Bounded: the thread sleeps at most half
+    /// a poll between checks of the flag.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A sentinel: `journal` holds a line naming `needle`.
+fn journal_names(journal: &Path, needle: &'static str) -> impl Fn() -> bool + Send + 'static {
+    file_contains(journal, needle)
+}
+
+/// A sentinel: `path` exists.
+fn file_exists(path: &Path) -> impl Fn() -> bool + Send + 'static {
+    let path = path.to_path_buf();
+    move || path.exists()
+}
+
+/// A sentinel: `path` exists and contains `needle`.
+fn file_contains(path: &Path, needle: &'static str) -> impl Fn() -> bool + Send + 'static {
+    let path = path.to_path_buf();
+    move || {
+        std::fs::read_to_string(&path)
+            .map(|text| text.contains(needle))
+            .unwrap_or(false)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,15 +707,23 @@ fn the_lock_is_released_on_both_a_zero_and_a_nonzero_exit() {
 fn journal_progress_resets_the_idle_ceiling() {
     let fixture = Fixture::new();
     let journal = fixture.path().join("progress.ndjson");
+    let ceiling = idle_ceiling();
+    // One step per poll, and one more step than the ceiling has polls, so the
+    // holder's total wall clock outlives the ceiling however the slack moves.
+    let steps = OBSERVABLE_POLLS + RUNNING_SLACK_POLLS + 1;
     let helper = fixture.helper(
         "progressing.sh",
-        "#!/bin/sh\nfor step in 1 2 3 4; do\n  printf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\",\"step\":%s}\\n' \"$step\" >> \"$STORYHOOK_GATE_PROGRESS\"\n  sleep 1\ndone\n",
+        &format!(
+            "#!/bin/sh\nstep=0\nwhile [ \"$step\" -lt {steps} ]; do\n  step=$((step + 1))\n  printf '{{\"kind\":\"case\",\"path\":\"{HOLDER_PATH}\",\"outcome\":\"pass\",\"step\":%s}}\\n' \"$step\" >> \"$STORYHOOK_GATE_PROGRESS\"\n  sleep {poll}\ndone\n",
+            poll = lock_poll_secs()
+        ),
     );
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &ceiling,
             "gate",
             "--",
             &helper.display().to_string(),
@@ -417,14 +733,126 @@ fn journal_progress_resets_the_idle_ceiling() {
         .expect("running a progressing holder");
 
     assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never wrote its first step, so this case never happened: {out:?}"
+    );
+    assert_eq!(
         code(&out),
         0,
-        "four seconds of progress must outlive a two-second silence ceiling: {out:?}"
+        "{steps} polls of progress must outlive a {ceiling}-second silence ceiling: {out:?}"
     );
     assert!(
         !stderr(&out).contains("made no progress"),
         "progress must reset the watchdog, not merely be reported: {}",
         stderr(&out)
+    );
+}
+
+#[test]
+fn recognized_build_progress_renews_the_idle_ceiling() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let capture = fixture.path().join("test-output.log");
+    let script = checkout().join("scripts/activity-run.py");
+    let helper = fixture.helper(
+        "building.sh",
+        "#!/bin/sh\nfor crate in one two three four; do\n  printf '   Compiling %s v0.0.0\\n' \"$crate\"\n  sleep 1\ndone\n",
+    );
+    // activity-run.py turns the first `Compiling` line into a journal record
+    // under the holder's path; that record is the sentinel.
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &idle_ceiling(),
+            "gate",
+            "--",
+            "python3",
+            &script.display().to_string(),
+            "--capture",
+            &capture.display().to_string(),
+            "--test-progress",
+            "release gate/rust-suite",
+            "fixture-cargo",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a progressing build");
+
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the build never reported its first milestone, so this case never happened: {out:?}"
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "recognized build milestones must outlive the shorter silence ceiling: {out:?}"
+    );
+    let progress = std::fs::read_to_string(journal).unwrap();
+    assert_eq!(progress.matches(r#""kind":"activity""#).count(), 4);
+}
+
+#[test]
+fn arbitrary_output_does_not_renew_the_idle_ceiling() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let capture = fixture.path().join("test-output.log");
+    let script = checkout().join("scripts/activity-run.py");
+    let helper = fixture.helper(
+        "chattering.sh",
+        "#!/bin/sh\nwhile :; do printf 'still waiting\\n'; sleep 1; done\n",
+    );
+    // The chatter reaches the raw capture, never the journal; the first line
+    // there is what proves the chatterer actually ran.
+    let feeder = ProgressFeeder::start(&journal, file_contains(&capture, "still waiting"));
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &idle_ceiling(),
+            "gate",
+            "--",
+            "python3",
+            &script.display().to_string(),
+            "--capture",
+            &capture.display().to_string(),
+            "--test-progress",
+            "release gate/rust-suite",
+            "fixture-cargo",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running an untrusted chatterer");
+
+    // Without this the case is vacuous: a chatterer never scheduled inside
+    // the ceiling also times out, having proved nothing about chatter.
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the chatterer must have RUN for its chatter to have been ignored: {out:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&capture)
+            .expect("reading the raw capture")
+            .contains("still waiting"),
+        "the chatter must be in the raw capture even though it never renewed the watchdog"
+    );
+    assert_eq!(
+        code(&out),
+        124,
+        "arbitrary chatter must still time out: {out:?}"
+    );
+    assert!(
+        !std::fs::read_to_string(journal)
+            .unwrap()
+            .contains(r#""kind":"activity""#)
     );
 }
 
@@ -436,15 +864,22 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
     let fixture = Fixture::new();
     let journal = fixture.path().join("progress.ndjson");
     let descendant = fixture.path().join("descendant.pid");
+    let ceiling = idle_ceiling();
+    // Setup first, the journal line last: that line is the sentinel, so
+    // everything before it is under the feeder and only the silence is under
+    // the clock.
     let helper = fixture.helper(
         "stubborn-holder.sh",
-        "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\",\"at\":\"fixture-time\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsh -c 'trap \"\" TERM; while :; do sleep 1; done' &\nprintf '%s\\n' \"$!\" > \"$1\"\ntrap '' TERM\nwhile :; do sleep 1; done\n",
+        &format!(
+            "#!/bin/sh\nsh -c 'trap \"\" TERM; while :; do sleep 1; done' &\nprintf '%s\\n' \"$!\" > \"$1\"\ntrap '' TERM\nprintf '{{\"kind\":\"item\",\"path\":\"{HOLDER_PATH}\",\"status\":\"running\",\"at\":\"fixture-time\"}}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n"
+        ),
     );
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "2",
+            &ceiling,
             "gate",
             "--",
             &helper.display().to_string(),
@@ -455,16 +890,26 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         .expect("running a silent holder");
 
     assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never finished its setup, so this case never happened: {out:?}"
+    );
+    assert_eq!(
         code(&out),
         124,
         "a watchdog expiry has a distinct status: {out:?}"
     );
     let err = stderr(&out);
+    let journal_text = std::fs::read_to_string(&journal).expect("reading the journal");
+    assert!(
+        journal_text.contains(HOLDER_PATH),
+        "the holder's own line must have reached the journal: {journal_text}"
+    );
+    assert_last_progress_was_reported(&err, &journal_text);
     for expected in [
-        "made no progress for 2s",
+        format!("made no progress for {ceiling}s (ceiling {ceiling}s)").as_str(),
         "last gate progress",
-        "rust-suite",
-        "active process group",
+        "active descendant tree",
         "stubborn-holder.sh",
         "SIGTERM",
         "SIGKILL",
@@ -485,10 +930,59 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         "the lock must be released only after the stubborn group is gone"
     );
     assert_eq!(
-        code(&fixture.run(&["--max-idle", "2", "gate", "--", "true"])),
+        code(&fixture.run(&["--max-idle", &patience_ceiling(), "gate", "--", "true"])),
         0,
         "the next holder must be able to enter after cleanup"
     );
+}
+
+#[test]
+fn stall_diagnostics_include_descendants_in_another_process_group() {
+    struct EscapedProcess(u32);
+    impl Drop for EscapedProcess {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0 as i32, libc::SIGKILL);
+            }
+        }
+    }
+
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let escaped = fixture.path().join("escaped.pid");
+    let helper = fixture.helper(
+        "other-group.py",
+        "#!/usr/bin/env python3\nimport os, subprocess, sys, time\nchild = subprocess.Popen(['sleep', '30'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nwith open(sys.argv[1], 'w') as output:\n    output.write(str(child.pid))\nwhile True:\n    time.sleep(1)\n",
+    );
+    let feeder = ProgressFeeder::start(&journal, file_exists(&escaped));
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &idle_ceiling(),
+            "gate",
+            "--",
+            &helper.display().to_string(),
+            &escaped.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a holder with an escaped descendant");
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never recorded its escaped descendant, so this case never happened: {out:?}"
+    );
+    let escaped_pid: u32 = std::fs::read_to_string(escaped).unwrap().parse().unwrap();
+    let _cleanup = EscapedProcess(escaped_pid);
+
+    assert_eq!(code(&out), 124, "{out:?}");
+    let err = stderr(&out);
+    assert!(err.contains("active descendant tree"), "stderr: {err}");
+    assert!(err.contains(&escaped_pid.to_string()), "stderr: {err}");
+    for heading in ["PID", "PPID", "PGID", "STAT", "ELAPSED", "TIME", "COMMAND"] {
+        assert!(err.contains(heading), "missing {heading:?}\nstderr: {err}");
+    }
 }
 
 /// An interactive gate has no daemon-provided journal, so the lock must mint
@@ -502,9 +996,11 @@ fn a_gate_without_an_external_journal_exports_a_private_one() {
         "#!/bin/sh\nprintf '%s\\n' \"$STORYHOOK_GATE_PROGRESS\" > \"$1\"\nprintf '{\"kind\":\"case\",\"path\":\"release gate/rust-suite\",\"outcome\":\"pass\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\n",
     );
 
+    // The journal is the lock's own and its path is only known afterwards, so
+    // no feeder can reach it: the watchdog is a failsafe here, not the subject.
     let out = fixture.run(&[
         "--max-idle",
-        "2",
+        &patience_ceiling(),
         "gate",
         "--",
         &helper.display().to_string(),
@@ -538,11 +1034,14 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
         "remove-journal.sh",
         "#!/bin/sh\nprintf '{\"kind\":\"item\",\"path\":\"release gate/rust-suite\",\"status\":\"running\"}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep 1\nrm \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n",
     );
+    // Fed until the removal itself: nothing the holder does before the `rm`
+    // is under the clock, so the only expiry reachable is the journal's loss.
+    let feeder = ProgressFeeder::start(&journal, || false);
 
     let out = fixture
         .command(&[
             "--max-idle",
-            "5",
+            &idle_ceiling(),
             "gate",
             "--",
             &helper.display().to_string(),
@@ -551,6 +1050,11 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
         .output()
         .expect("running a holder that removes its journal");
 
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::JournalGone,
+        "the holder never removed the journal, so this case never happened: {out:?}"
+    );
     assert_eq!(
         code(&out),
         124,
@@ -565,6 +1069,91 @@ fn a_journal_that_disappears_fails_the_holder_loudly() {
     assert!(
         !fixture.lock("gate").exists(),
         "journal loss must still reap and release the holder"
+    );
+}
+
+/// SH-643, the constructed straddle (SH-420's posture): a holder whose
+/// **startup** outlasts the silence ceiling. On 2026-09-10, at load 25–64 on
+/// 10 cores, four cases in this file failed because their holder was never
+/// scheduled inside a bare `--max-idle 2` — `ps` showed ELAPSED 00:02, TIME
+/// 0:00.00, journal empty — so the fixture's own spawn latency, not the
+/// mechanism, decided the verdict. Here the starvation is a `sleep` one poll
+/// longer than the ceiling, deterministic on any machine. What the case is
+/// about is unchanged: a holder that is **running** and then silent is
+/// diagnosed with its own last line and reaped.
+#[test]
+fn a_holder_whose_startup_outlasts_the_ceiling_is_still_the_subject() {
+    let fixture = Fixture::new();
+    let journal = fixture.path().join("progress.ndjson");
+    let ceiling = idle_ceiling();
+    let starved_for = lock_poll_secs() * (OBSERVABLE_POLLS + RUNNING_SLACK_POLLS + 1);
+    let helper = fixture.helper(
+        "late-starter.sh",
+        &format!(
+            "#!/bin/sh\nsleep {starved_for}\nprintf '{{\"kind\":\"item\",\"path\":\"{HOLDER_PATH}\",\"status\":\"running\",\"at\":\"fixture-time\"}}\\n' >> \"$STORYHOOK_GATE_PROGRESS\"\nwhile :; do sleep 1; done\n"
+        ),
+    );
+
+    let feeder = ProgressFeeder::start(&journal, journal_names(&journal, HOLDER_PATH));
+
+    let out = fixture
+        .command(&[
+            "--max-idle",
+            &ceiling,
+            "gate",
+            "--",
+            &helper.display().to_string(),
+        ])
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .output()
+        .expect("running a late-starting holder");
+
+    assert_eq!(
+        feeder.finish(),
+        FeederStop::SentinelReached,
+        "the holder never started, so this case never happened: {out:?}"
+    );
+    assert_eq!(
+        code(&out),
+        124,
+        "a running-then-silent holder expires: {out:?}"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!(
+            "made no progress for {ceiling}s (ceiling {ceiling}s)"
+        )),
+        "stderr: {err}"
+    );
+    let text = std::fs::read_to_string(&journal).expect("reading the journal");
+    assert!(
+        text.contains(HOLDER_PATH),
+        "the holder's own line must have reached the journal before the silence was judged — \
+         a verdict reached during its startup is a verdict about the machine, not the holder\n\
+         journal: {text}"
+    );
+    assert_last_progress_was_reported(&err, &text);
+}
+
+/// The watchdog prints the journal's last record verbatim before it appends
+/// its own `failed` item (`machine-lock.sh`'s expiry path). Pinned against the
+/// journal actually written rather than a substring, so whichever writer's
+/// line happens to be last is the line the diagnosis must name.
+fn assert_last_progress_was_reported(err: &str, journal_text: &str) {
+    let lines: Vec<&str> = journal_text.lines().collect();
+    let (failed, before) = lines
+        .split_last()
+        .expect("the watchdog appends its own failed item to the journal");
+    assert!(
+        failed.contains(r#""path":"release gate","status":"failed""#),
+        "the journal's last line must be the watchdog's own failed item: {failed}"
+    );
+    let last_seen = before
+        .last()
+        .expect("something must have progressed before the stall");
+    assert!(
+        err.contains(&format!("last gate progress: {last_seen}")),
+        "the diagnosis must name the journal's true last record verbatim\nexpected: {last_seen}\nstderr: {err}"
     );
 }
 
@@ -784,7 +1373,14 @@ fn a_live_holder_whose_identity_matches_is_never_reclaimed() {
     let victim = ChildGuard::spawn(&mut command).expect("spawning a live holder");
     fixture.plant("gate", &victim.pid().to_string(), &started_of(victim.pid()));
 
-    let out = fixture.run(&["--max-wait", "1", "gate", "--", "echo", "MUST-NOT-RUN"]);
+    let out = fixture.run(&[
+        "--max-wait",
+        &reclaim_deadline(),
+        "gate",
+        "--",
+        "echo",
+        "MUST-NOT-RUN",
+    ]);
 
     assert_eq!(
         code(&out),
@@ -819,7 +1415,7 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
     wait_for(&fixture.lock("gate").join("pid"));
 
     let second = fixture
-        .command(&["--max-wait", "0", "gate", "--", "echo", "MUST-NOT-RUN"])
+        .command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"])
         .env("STORYHOOK_GATE_PROGRESS", &journal)
         .env("STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH", "release gate")
         .output()
@@ -1040,7 +1636,7 @@ fn plan_reports_the_resolved_lock_and_runs_nothing() {
         "--plan must print the command it would run\nstdout: {printed}"
     );
     assert!(
-        printed.contains("max_idle=288"),
+        printed.contains("max_idle=1746"),
         "the reserved gate's derived watchdog default must be inspectable\nstdout: {printed}"
     );
     assert!(!Path::new(&sentinel).exists(), "--plan must run nothing");
@@ -1087,12 +1683,15 @@ fn the_lock_root_ignores_xdg_state_home_because_the_gate_rewrites_it() {
         .expect("running the script with a decoy state home");
 
     let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    let expected_prefix = format!(
+        "lock={}/.local/state/storyhook/locks/gate.",
+        fake_home.display()
+    );
     assert!(
-        printed.contains(&format!(
-            "lock={}/.local/state/storyhook/locks/gate.lock",
-            fake_home.display()
-        )),
-        "the default lock root must derive from $HOME\nstdout: {printed}"
+        printed
+            .lines()
+            .any(|line| line.starts_with(&expected_prefix) && line.ends_with(".lock")),
+        "the default lock root must derive from $HOME, and the gate's key must carry its project component\nstdout: {printed}"
     );
     assert!(
         !printed.contains(&decoy.display().to_string()),
@@ -1185,30 +1784,36 @@ fn the_wait_report_cadence_still_matches_the_measured_gate_median() {
     );
 }
 
-/// The watchdog ceiling is a formula over three named facts, not a literal
-/// that happens to equal today's result.
+/// The watchdog ceiling is a formula over the measured contended gate, not a
+/// warm-run proxy or a literal that happens to equal today's result.
 #[test]
 fn the_gate_idle_ceiling_stays_derived() {
     let src = read_checkout_file("scripts/machine-lock.sh");
     assert!(
         src.contains(
-            "readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))"
+            "readonly GATE_IDLE_CEILING_SECS=$((GATE_CONTENDED_MAX_SECS * GATE_IDLE_MARGIN))"
         ),
         "the ceiling must preserve its derivation in source"
     );
-    assert_eq!(script_constant("GATE_CONCURRENT_RUNS"), 4);
     assert_eq!(script_constant("GATE_IDLE_MARGIN"), 2);
-    assert_eq!(
-        measured_gate_median_secs()
-            * script_constant("GATE_CONCURRENT_RUNS")
-            * script_constant("GATE_IDLE_MARGIN"),
-        288
-    );
+    let measured = script_constant("GATE_CONTENDED_MAX_SECS");
+    let gate_ceiling = measured * script_constant("GATE_IDLE_MARGIN");
+    assert_eq!(gate_ceiling, 1746);
 
-    let dispatch = read_checkout_file("src/api/dispatch.rs");
+    let verifier = read_checkout_file("src/daemon/verification.rs");
     assert!(
-        dispatch.contains("const MAX_RUNNING: usize = 4;"),
-        "GATE_CONCURRENT_RUNS must be re-derived when MAX_RUNNING changes"
+        verifier.contains(&format!(
+            "const MEASURED_CONTENDED_GATE_SECS: u64 = {measured};"
+        )),
+        "the gate and verifier watchdogs must use the same measured contended-gate fact"
+    );
+    assert!(
+        verifier.contains("+ RECOVERY_WAKE.as_secs()"),
+        "the outer verifier must derive its extra allowance from the existing recovery window"
+    );
+    assert!(
+        storyhook::daemon::verification::VERIFICATION_IDLE_TIMEOUT.as_secs() > gate_ceiling,
+        "the outer verifier must not race the gate watchdog that owns stall diagnostics"
     );
 }
 
@@ -1248,7 +1853,7 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
         std::fs::write(&journal, "").unwrap();
         fixture.plant("merge", &pid.to_string(), &started);
         let output = fixture
-            .command(&["--max-wait", "0", "merge", "--", "true"])
+            .command(&["--max-wait", NO_WAIT, "merge", "--", "true"])
             .env("STORYHOOK_GATE_PROGRESS", &journal)
             .output()
             .unwrap();
@@ -1270,4 +1875,345 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The project component (SH-648)
+// ---------------------------------------------------------------------------
+
+/// The positive control for every `lock()`/`key_from()` read above: the key
+/// this file's fixture reads back from `--plan` is the one D-B names — the
+/// canonical git common dir, hashed by git's own object hash — computed here
+/// independently of the script. Without this, deriving every expected path
+/// from `--plan` would make `plan_reports_the_resolved_lock_and_runs_nothing`
+/// tautological.
+///
+/// Pinned from three working directories that must agree: the repository,
+/// a linked worktree of it, and a symlink to the repository (the physical
+/// path is what identifies a clone, never the spelling the caller used).
+#[test]
+fn the_project_component_is_the_hash_of_the_canonical_common_dir() {
+    let fixture = Fixture::new();
+    git(
+        fixture.path(),
+        &["commit", "-q", "--allow-empty", "-m", "seed"],
+    );
+    let worktree = scratch_dir();
+    let worktree = worktree.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+        ],
+    );
+    let alias_dir = scratch_dir();
+    let alias = alias_dir.path().join("alias");
+    std::os::unix::fs::symlink(fixture.path(), &alias).expect("fixture: symlinking the repository");
+
+    let common_dir = git(fixture.path(), &["rev-parse", "--git-common-dir"]);
+    let common_dir = std::fs::canonicalize(fixture.path().join(common_dir))
+        .expect("canonicalizing the common dir");
+    // The script hashes the path from stdin; hashing a file holding exactly
+    // the same bytes is the same object hash, and needs no piped child
+    // (SH-535: every spawned test process is a `ChildGuard`'s).
+    let path_file = fixture.path().join("common-dir-bytes");
+    std::fs::write(&path_file, common_dir.display().to_string()).expect("writing the path bytes");
+    let hash = git(
+        fixture.path(),
+        &["hash-object", &path_file.display().to_string()],
+    );
+    let expected_key = format!("gate.{hash}");
+
+    for cwd in [fixture.path(), worktree.as_path(), alias.as_path()] {
+        assert_eq!(
+            fixture.key_from(cwd, "gate"),
+            expected_key,
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(
+            fixture.lock_from(cwd, "gate"),
+            fixture.lock_root().join(format!("{expected_key}.lock")),
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(
+            fixture.plan_field_from(cwd, "gate", "project"),
+            common_dir.display().to_string(),
+            "from {}",
+            cwd.display()
+        );
+        assert_eq!(fixture.plan_field_from(cwd, "gate", "scope"), "project");
+    }
+    assert_ne!(
+        fixture.key_from(fixture.path(), "merge"),
+        expected_key,
+        "merge and gate are different locks of the same project"
+    );
+    assert!(
+        fixture
+            .key_from(fixture.path(), "merge")
+            .starts_with("merge.")
+    );
+}
+
+/// D-B, half one: a second repository is a second project, so its suite does
+/// not wait on this one's. Both fixtures share ONE lock root, which is what
+/// the real default root is (`$HOME`), so the only thing keeping them apart is
+/// the key.
+#[test]
+fn two_repositories_do_not_serialize_on_gate() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "other-ran"]);
+    take.current_dir(other.path());
+    let out = take
+        .output()
+        .expect("taking gate from the other repository");
+    let err = stderr(&out);
+
+    assert_eq!(
+        code(&out),
+        0,
+        "a different repository's gate must be free while this one's is held\nstderr: {err}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("other-ran"),
+        "the command must have run: {out:?}"
+    );
+    assert!(
+        !err.contains("waiting for the 'gate' lock"),
+        "the other repository must not have queued behind this one\nstderr: {err}"
+    );
+    assert_ne!(
+        fixture.lock_from(other.path(), "gate"),
+        fixture.lock("gate"),
+        "the two repositories must resolve two lock directories"
+    );
+
+    holder.release();
+}
+
+/// D-B, half two: a linked worktree is the SAME project, so an interactive
+/// `make test` in any worktree of this clone still queues behind this clone's
+/// verifier — and says who it is waiting for.
+#[test]
+fn two_worktrees_of_one_clone_share_the_gate() {
+    let fixture = Fixture::new();
+    git(
+        fixture.path(),
+        &["commit", "-q", "--allow-empty", "-m", "seed"],
+    );
+    let container = scratch_dir();
+    let worktree = container.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &worktree.display().to_string(),
+        ],
+    );
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+    let holder_pid = Holder::pid_recorded(&fixture, fixture.path(), "gate");
+
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"]);
+    take.current_dir(&worktree);
+    let out = take.output().expect("taking gate from the linked worktree");
+    let err = stderr(&out);
+
+    assert_eq!(
+        code(&out),
+        75,
+        "a worktree of the same clone must find the gate held\nstderr: {err}"
+    );
+    assert!(
+        err.contains(&format!("held by pid {holder_pid}")),
+        "the waiter must name the holder\nstderr: {err}"
+    );
+    assert_eq!(fixture.lock_from(&worktree, "gate"), fixture.lock("gate"));
+
+    holder.release();
+}
+
+/// A project-scoped name with no project is refused by name, never widened
+/// to the machine (SH-576: an empty answer is refused, not resolved). The
+/// machine-scoped name from the same directory is fine, which is what proves
+/// the refusal is about scope rather than about the directory.
+#[test]
+fn a_project_scoped_name_outside_a_repository_is_refused() {
+    let fixture = Fixture::new();
+    let plain = scratch_dir();
+
+    for name in ["gate", "merge"] {
+        for args in [
+            vec![name, "--", "true"],
+            vec!["--plan", name, "--", "true"],
+            vec!["--held", name],
+        ] {
+            let mut cmd = fixture.command(&args);
+            cmd.current_dir(plain.path());
+            let out = cmd.output().expect("running from a non-repository");
+            let err = stderr(&out);
+            assert_eq!(code(&out), 2, "{args:?} must refuse: {out:?}");
+            assert!(
+                err.contains(&format!("'{name}' lock is scoped to a project"))
+                    && err.contains("not inside a git repository")
+                    && err.contains(&plain.path().display().to_string()),
+                "{args:?}: the refusal must name the lock, the rule and the directory\nstderr: {err}"
+            );
+        }
+    }
+    assert!(
+        std::fs::read_dir(fixture.lock_root())
+            .expect("reading the lock root")
+            .next()
+            .is_none(),
+        "a refusal must take nothing"
+    );
+
+    let mut cmd = fixture.command(&["release-observer", "--", "true"]);
+    cmd.current_dir(plain.path());
+    let out = cmd.output().expect("taking the machine-scoped name");
+    assert_eq!(
+        code(&out),
+        0,
+        "a machine-scoped name needs no project: {}",
+        stderr(&out)
+    );
+}
+
+/// `release-observer` serializes the one Lima guest, a machine resource: its
+/// key is the bare name from a repository and from a plain directory alike.
+#[test]
+fn release_observer_stays_machine_scoped() {
+    let fixture = Fixture::new();
+    let plain = scratch_dir();
+    for cwd in [fixture.path(), plain.path()] {
+        assert_eq!(
+            fixture.plan_field_from(cwd, "release-observer", "scope"),
+            "machine"
+        );
+        assert_eq!(
+            fixture.plan_field_from(cwd, "release-observer", "project"),
+            "none"
+        );
+        assert_eq!(
+            fixture.key_from(cwd, "release-observer"),
+            "release-observer"
+        );
+        assert_eq!(
+            fixture.lock_from(cwd, "release-observer"),
+            fixture.lock_root().join("release-observer.lock")
+        );
+    }
+}
+
+/// `--held` derives the key exactly as a take would, so it answers about the
+/// project the working directory resolves: yes inside the holder's own
+/// process tree and repository, no from another repository even inside that
+/// tree, no with nothing held — and it is a query, so a trailing word is
+/// refused (SH-357) and the machine-scoped name answers too.
+#[test]
+fn held_answers_for_the_project_the_cwd_resolves() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+    let script = fixture.script();
+
+    let out = fixture.run(&["--held", "gate"]);
+    assert_eq!(code(&out), 1, "nothing is held: {out:?}");
+
+    let out = fixture.run(&["gate", "--", "bash", &script, "--held", "gate"]);
+    assert_eq!(code(&out), 0, "held by this process tree: {out:?}");
+
+    let inner = format!(
+        "cd '{}' && bash '{script}' --held gate",
+        other.path().display()
+    );
+    let out = fixture.run(&["gate", "--", "sh", "-c", &inner]);
+    assert_eq!(
+        code(&out),
+        1,
+        "another repository's gate is not what this tree holds: {out:?}"
+    );
+
+    let out = fixture.run(&["gate", "--", "bash", &script, "--held", "merge"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "merge is a different lock of the same project: {out:?}"
+    );
+
+    let out = fixture.run(&[
+        "release-observer",
+        "--",
+        "bash",
+        &script,
+        "--held",
+        "release-observer",
+    ]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a machine-scoped hold is answered too: {out:?}"
+    );
+
+    let out = fixture.run(&["--held", "gate", "extra"]);
+    assert_eq!(code(&out), 2);
+    assert!(stderr(&out).contains("--held takes a lock name and nothing else"));
+    let out = fixture.run(&["--held", "--plan", "gate"]);
+    assert_eq!(code(&out), 2, "{out:?}");
+}
+
+/// Reentrancy is per (name, project): an inherited entry for another
+/// repository's `gate` — or the bare pre-SH-648 spelling — must not let a
+/// take skip the lock it has not actually got.
+#[test]
+fn reentrancy_is_per_project() {
+    let fixture = Fixture::new();
+    let other = scratch_dir();
+    git_init(other.path());
+    let other_key = fixture.key_from(other.path(), "gate");
+
+    let holder = Holder::take(&fixture, fixture.path(), "gate");
+
+    for inherited in [other_key.as_str(), "gate"] {
+        let mut take =
+            fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "MUST-NOT-RUN"]);
+        take.env("STORYHOOK_MACHINE_LOCKS", inherited);
+        let out = take.output().expect("taking gate under a foreign entry");
+        let err = stderr(&out);
+        assert_eq!(
+            code(&out),
+            75,
+            "an inherited `{inherited}` is not this project's gate, so the take must contend\nstderr: {err}"
+        );
+        assert!(
+            !err.contains("already held by this process tree"),
+            "inherited `{inherited}`\nstderr: {err}"
+        );
+    }
+
+    let own_key = fixture.key_from(fixture.path(), "gate");
+    let mut take = fixture.command(&["--max-wait", NO_WAIT, "gate", "--", "echo", "ran"]);
+    take.env("STORYHOOK_MACHINE_LOCKS", &own_key);
+    let out = take
+        .output()
+        .expect("taking gate under this project's own entry");
+    assert_eq!(code(&out), 0, "{out:?}");
+    assert!(stderr(&out).contains("already held by this process tree"));
+
+    holder.release();
 }

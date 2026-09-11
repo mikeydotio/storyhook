@@ -839,8 +839,15 @@ macro_rules! impl_read_ops {
                 read::live_engine_runs(&self.conn)
             }
 
-            fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError> {
-                read::verification_incident(&self.conn)
+            fn verification_incident(
+                &self,
+                project: ProjectId,
+            ) -> Result<Option<VerificationIncident>, StoreError> {
+                read::verification_incident(&self.conn, project)
+            }
+
+            fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
+                read::verification_incidents(&self.conn)
             }
 
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
@@ -1025,6 +1032,10 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
         write::put_engine_lane(&self.conn, lane)
+    }
+
+    fn delete_engine_lane(&mut self, run_id: &str, lane_index: u32) -> Result<(), StoreError> {
+        write::delete_engine_lane(&self.conn, run_id, lane_index)
     }
 
     fn put_verification_incident(

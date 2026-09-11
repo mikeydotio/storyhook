@@ -14,6 +14,8 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
     || {
         let mut m = BTreeMap::new();
 
+        m.insert("ste", include_str!("help/ste.txt"));
+
         m.insert(
             "daemon",
             "\
@@ -25,7 +27,19 @@ Manage the per-store daemon and inspect its operational journal.
   story daemon install [--this-binary]
   story daemon uninstall
   story daemon token
+  story daemon gc [--force]
   story daemon logs [--follow] [--json]
+
+gc reclaims the runtime directories under <state home>/daemons/ whose store no
+longer exists. It removes a directory only when everything inside it proves the
+store: the recorded store path hashes back to the directory's own name, the
+store was under a temp root (an absent store anywhere else may be an offline
+volume, and is left for you), the file is gone, no login agent still names it,
+nothing has changed there for longer than a spawn is allowed to take, and
+neither the pidfile nor the spawn lock is held. It lists what it would remove
+and asks; --force skips the question. A named store's backup snapshots live in
+that directory and go with it. Everything it keeps is named with a reason code.
+`story daemon status` says when there is something to reclaim.
 
 logs reads today's UTC activity journal directly, even while the daemon is
 stopped. --follow continues across midnight; --json emits one JSON record
@@ -78,7 +92,7 @@ NOT TO BE CONFUSED WITH
 
 new
   Creates the project in storyhook's store with the states every
-  project must have (todo, in-progress, verifying, blocked, done, closed) and default
+  project must have (todo, in-progress, verifying, blocked, done, dropped) and default
   types, writes .storyhook.toml naming it, and generates an AGENTS.md
   if the repository has none.
 
@@ -235,11 +249,36 @@ other two:
   story set <id> ...     — per STORY. Sets a story's fields (title,
                            state, priority, assignee). Nothing to do
                            with a project.
-  .storyhook.toml        — per REPOSITORY. Its [plugin] and [hooks]
-                           tables are decisions about this checkout,
-                           versioned with the branch and carried by a
-                           clone. Edit the file; storyhook does not
-                           write those for you.
+  .storyhook.toml        — per REPOSITORY. Its [plugin], [hooks],
+                           [github] and [verify] tables are decisions
+                           about this checkout, versioned with the
+                           branch and carried by a clone. Edit the
+                           file; storyhook does not write those for you.
+
+Repository configuration:
+  [verify]
+  gate = "make test"
+
+    The merge gate the verifier runs on a story's speculative merge
+    tree before landing its pull request; "make test" when absent. A
+    plain command line, run directly and never through a shell: words
+    separated by spaces, made of letters, digits and _ . : / = @ + , -
+    only. Anything else — quotes, $, &&, |, >, * — is refused by name.
+    The gate must certify the tree it ran on by ending in
+    scripts/gate-receipt.sh postlude at tier gate or full, as make test
+    and make test-full do; a gate that exits 0 without one is refused
+    before landing.
+
+  [github]
+  api_url = "https://github.example.com/api/v3"
+
+    Optional REST API base used by 'story pr-check' and the daemon's
+    unattended poll. Without it, storyhook derives the endpoint from
+    each registered GitHub remote: api.github.com for github.com,
+    api.<tenant>.ghe.com for <tenant>.ghe.com, and /api/v3 on any
+    other host. The value must be an absolute HTTP(S) URL without
+    credentials, a query, or a fragment. A single override cannot be
+    used when matching pull-request links span multiple GitHub hosts.
 
 Settings:
   sync.auto_transition    true|false, default true
@@ -254,6 +293,14 @@ Settings:
     How long a story may sit untouched before it counts as stale.
     NOTE: no command reads this yet. You can store a value, and
     'story doctor' will not act on it. The listing says so too.
+
+  cleanup.auto             true|false, default true
+    Whether the daemon runs safe project cleanup automatically.
+
+  cleanup.interval         a positive duration, default 1d
+    How often the daemon attempts automatic cleanup for this project.
+    Failed attempts wait for the next interval; use 'story cleanup' to
+    retry immediately after repairing the cause.
 
 list reports every setting with the value in force and where that value
 came from:
@@ -274,6 +321,8 @@ Examples:
   story project settings get sync.auto_transition
   story project settings set sync.auto_transition false
   story project settings set doctor.stale_threshold 14d
+  story project settings set cleanup.auto false
+  story project settings set cleanup.interval 12h
   story project settings unset doctor.stale_threshold
   story project settings list --json     # source and value as fields
 
@@ -281,6 +330,37 @@ Related:
   story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
   story set          — Change a STORY's fields, not a project's settings
+"#,
+        );
+
+        m.insert(
+            "cleanup",
+            r#"story cleanup [--dry-run]
+
+Safely remove inactive StoryHook-owned story workspaces. A candidate is
+eligible only when its versioned cleanup lease matches the current project,
+its exact tmux window is absent, the worktree is clean and unlocked, and
+every worktree/local/origin branch tip is contained by a freshly fetched
+origin default branch.
+
+Cleanup removes the exact leased worktree, its contained build artifacts,
+and the exact local and origin branches. It never removes the main checkout
+or shared build artifacts outside an eligible worktree. Missing or malformed
+leases, unverifiable tmux/Git state, dirty work, and unmerged commits are
+reported and preserved.
+
+--dry-run applies every read-only preflight and reports reclaimed bytes, but
+does not remove resources. JSON output includes removed and skipped arrays
+with stable reason strings.
+
+The daemon runs the same service daily by default. Configure it per project:
+
+  story project settings set cleanup.auto false
+  story project settings set cleanup.interval 12h
+
+Remote fetch and deletion use Git's configured origin credentials. An
+authentication or network failure fails closed: the report names the failed
+step and a later explicit or scheduled pass can retry idempotently.
 "#,
         );
 
@@ -573,7 +653,10 @@ superstate (OPEN or CLOSED) that decides whether stories in it count as
 open work; moving a story into a CLOSED state closes and archives it.
 
 State order matters: it is the column order on the web dashboard's
-board, and the first OPEN state is where new stories land.
+board, and the first OPEN state is where new stories land. Order is
+layout, never outcome: verified work always lands in the required
+'done' state, and reordering another CLOSED state ahead of it changes
+the board, not where the verifier writes.
 
 When to use:
   Setting a project up ('review', 'verifying', 'wont-fix'), or adjusting
@@ -585,7 +668,7 @@ Examples:
   story state add review --super OPEN --description "Waiting on a reviewer"
   story state set review --role active
   story state set review --no-description
-  story state reorder todo,in-progress,review,verifying,blocked,done,closed
+  story state reorder todo,in-progress,review,verifying,blocked,done,dropped
   story state remove review --move-stories-to todo
 
 Moving stories out of the way:
@@ -604,7 +687,7 @@ Rules:
   - Slugs are lowercase letters, digits, and single dashes ('in-review').
     They are typed as CLI arguments and appear in dashboard URLs.
   - Every project keeps 'todo', 'in-progress', 'verifying' and 'blocked'
-    as OPEN states, and 'done' and 'closed' as CLOSED states. They cannot be removed, and
+    as OPEN states, and 'done' and 'dropped' as CLOSED states. They cannot be removed, and
     their superstates cannot be changed; anything else you add is
     yours to arrange. A project that predates this rule reports it in
     'story doctor', and 'story doctor --fix' adds what is missing.
@@ -829,7 +912,7 @@ When to use:
 
   --fix is also how a project created before the required states
   existed gets them: it adds any of 'todo', 'in-progress', 'verifying',
-  'blocked', 'done' and 'closed' the project is missing, placing a new OPEN state at the
+  'blocked', 'done' and 'dropped' the project is missing, placing a new OPEN state at the
   end of the OPEN run so the state new stories land in does not move.
   It only ever adds. A project that already defines one of those slugs
   under the wrong superstate is reported rather than rewritten, because
@@ -1704,8 +1787,7 @@ reason without moving state at all, use `story block <id> "<text>"`.
 
 When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
-free-text comment, exactly like today, with no restrictions on its
-content.
+free-text comment. New comments must pass the checks in `story help ste`.
 
 When to use:
   To update the status of a story as you work on it, or to close
@@ -1743,15 +1825,16 @@ Two ways to say why, and they behave differently:
                     CLEARS ITSELF the moment <blocker> closes. Repeat
                     --on to name more than one blocker.
 
-  "<reason>"        Free text. Never clears itself — you (or
+  "<reason>"        Without --on: free text. Never clears itself — you (or
                     `story unblock`) have to notice and clear it by
                     hand.
 
-Both may be given together, in one call: the edge and the reason
-commit atomically. A reason is only required when no --on was given
-at all.
+With --on, the optional reason is saved as a comment naming the
+blockers, in the same transaction as the edges. It does not set or
+clear awaiting. Existing independent prose holds remain in effect.
+A reason is only required when no --on was given at all.
 
-If a reason names a story id with no --on recording it as the
+If an awaiting reason names a story id with no edge recording it as the
 blocker, the response carries a warning saying so — the edge is
 almost always what you meant.
 
@@ -1853,6 +1936,9 @@ Related:
 
 Add a timestamped comment to a story. Comments are append-only and
 form part of the audit trail.
+
+New comments must pass the STE checks. Run `story help ste` for the rules.
+On failure, repair the text and submit the command again.
 
 When to use:
   To record progress notes, decisions, blockers, or context that
@@ -2502,7 +2588,7 @@ Related:
             "close",
             r#"story close <id> "<reason>"
 
-Retire a story that will not be done. The story moves to the `closed`
+Retire a story that will not be done. The story moves to the `dropped`
 state — CLOSED superstate, so it stops counting as open, ready, or a
 blocker — and the reason is recorded as a comment on it.
 
@@ -2511,8 +2597,8 @@ labels and every relationship it has. That is the whole point. It is
 the record of a decision not to do something, which is worth as much
 as the record of doing it.
 
-`closed` behaves exactly like `done` in every other respect. The two
-differ in what they claim: `done` says the work was finished, `closed`
+`dropped` behaves exactly like `done` in every other respect. The two
+differ in what they claim: `done` says the work was finished, `dropped`
 says it was deliberately abandoned.
 
 Reopen one by moving it anywhere open — `story reopen <id>`, or
@@ -2620,6 +2706,34 @@ Examples:
   story engine resume --run 7d8f
   story engine stop --now
   story engine ack --run 7d8f
+"#,
+        );
+
+        m.insert(
+            "verifier",
+            r#"story verifier ack <incident-id>
+
+Release the centralized verifier after an infrastructure halt.
+
+  The verifier stops its whole queue when it cannot run at all -- its
+  script refused by name, the registered checkout unreadable, a gate that
+  cannot be spawned -- rather than reporting the same failure as a red
+  verdict on every story in turn. The halt is recorded as one incident,
+  named on the story it was first hit on and on every story waiting
+  behind it, with the incident id. No story is at fault for it.
+
+  ack names that exact incident and clears it, so the verifier's next
+  tick attempts the queue again. Acknowledging changes nothing about the
+  cause: fix what the halt comment names first, or the same incident
+  returns on the next attempt. A stale id (an older comment, a newer
+  incident) is refused rather than clearing whichever incident is
+  current; an incident still retrying on its own is refused too.
+
+  The dashboard's "Acknowledge and retry" button performs the same
+  acknowledgement.
+
+Examples:
+  story verifier ack 2:28821
 "#,
         );
 
@@ -2845,7 +2959,10 @@ Related:
 
 Update the story binary in place to the latest GitHub release. Downloads the
 release asset for your platform, verifies it runs, and atomically replaces the
-running executable.
+running executable — then reinstalls the plugin for every provider (Claude
+Code, Codex) that has the storyhook marketplace registered, from the binary
+just installed, so the plugins never need a separate update. A provider that
+was never installed is left alone.
 
 When to use:
   Periodically, to pick up new releases. Run 'story update --check' first to
@@ -2864,10 +2981,18 @@ Notes:
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
     the installer at https://github.com/mikeydotio/storyhook.
-  - Set STORYHOOK_GITHUB_TOKEN to raise the GitHub API rate limit (optional).
+  - If the binary was replaced but a plugin could not be reinstalled, the
+    update reports both and exits non-zero; 'story plugin reinstall' retries
+    the plugins alone. Start a new agent session afterwards so the host loads
+    the reinstalled plugin.
+  - The reinstall talks to the daemon, and a daemon of the old build stands
+    down for the new one, so a successful update leaves the daemon running
+    the new binary.
 
 Related:
-  story doctor  — Check project integrity
+  story plugin reinstall  — Reinstall the registered provider plugins by hand
+  story doctor install    — Report which release each provider's plugin is at
+  story doctor            — Check project integrity
 "#,
         );
 
@@ -3068,6 +3193,40 @@ Related:
         // `priority` became an alias for `prioritize` and stopped being
         // available.
         m.insert(
+            "lane-budget",
+            r#"story lane-budget [--json]
+
+The machine lane budget, and the live agent sessions counted against it.
+
+A live agent session is a tmux window that a dispatch opened -- its
+@storyhook-agent option is set -- and whose pane is not dead. Every
+dispatch counts, whether the Full Auto engine filled the lane or a person
+ran /story do; a finished session's window stays around (remain-on-exit)
+and no longer counts. The budget is the engine's own machine-wide lane
+budget, so the two doors measure one number.
+
+When to use:
+  Before dispatching by hand on a busy machine, and by /story do itself,
+  which refuses a new session past the budget unless --over-budget says
+  you meant it. The census is taken from the tmux server your own shell
+  is attached to; a daemon on another socket cannot answer for it, which
+  is why this command never starts one.
+
+  If tmux cannot be asked, the answer is "unanswered", not zero: --json
+  then carries "probe": "unanswered" with the probe's own words, and no
+  "live" or "available" field at all. A caller must not read silence as
+  room.
+
+Examples:
+  story lane-budget          # 6 of 4 lanes in use on this machine -- at the budget
+  story lane-budget --json   # {"budget": 4, "probe": "counted", "live": 6, ...}
+
+Related:
+  story engine status  -- The engine's own lanes and runs
+"#,
+        );
+
+        m.insert(
             "test-environment",
             crate::env::test_environment::HELP_TOPIC.as_str(),
         );
@@ -3121,6 +3280,7 @@ BULK & INTEGRATION
 PROJECT MANAGEMENT
   story phase list|show|add|remove  Manage story phases
   story doctor [--fix]            Integrity checks and repair
+  story lane-budget               Live agent sessions against the machine lane budget
   story report [--html]           Generate project report
   story scaffold <variant>        Generate agent instruction files
   story hooks install|uninstall   Manage git hooks

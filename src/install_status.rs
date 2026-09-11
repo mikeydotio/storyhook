@@ -21,7 +21,11 @@
 //! positively confirm prints a named negative — `unknown`, `unregistered`,
 //! `not recorded` — never a blank and never `ok`. A provider CLI that is not
 //! installed is a row this tool could not check, which is a fact about the
-//! report's completeness rather than an all-clear.
+//! report's completeness rather than an all-clear. And **an absent
+//! registration is resolved against the disk, never read as "never installed"**
+//! (SH-640): a provider whose installed copies are still present lost its
+//! registration, and that row is flagged — the quiet `not registered` is
+//! reserved for a provider that left nothing behind.
 //!
 //! **It never says "revert."** A change sitting in the checkout is a change
 //! aimed at the next release, so the remedy named is always the release, never
@@ -51,6 +55,8 @@ use std::path::{Path, PathBuf};
 
 use crate::env::Environment;
 use crate::error::AppError;
+use crate::plugin::PluginTarget;
+use crate::plugin::registration::{config_path, configured_source};
 
 /// One line of the report.
 struct Row {
@@ -80,6 +86,28 @@ impl Row {
 
 /// The `story` this machine's `$PATH` resolves, and what it reports.
 fn installed_binary() -> Row {
+    // Before `$PATH` is consulted at all (SH-630): `$PATH` agreeing with the
+    // running binary is the caller's own doing, and this row answered `ok`
+    // for exactly the invocation that migrated the production store. A
+    // binary still where cargo wrote it is not installed by any mechanism
+    // this tree has, and the row says so ahead of anything `$PATH` claims.
+    if let Some(build_dir) = crate::path_identity::build_dir()
+        && let Some(running) = crate::path_identity::running_exe()
+        && crate::path_identity::is_inside_build_dir(&running.canonical, &build_dir)
+    {
+        return Row::flagged(
+            "binary",
+            format!(
+                "{}  [{}]",
+                crate::version::full(),
+                running.spelling.display()
+            ),
+            format!(
+                "not installed — still where cargo built it ({}); `make install` copies it out",
+                build_dir.display()
+            ),
+        );
+    }
     let Some(path) = crate::path_identity::installed_story() else {
         return Row::flagged(
             "binary",
@@ -160,65 +188,86 @@ fn store_row(env: &Environment) -> Row {
     Row::ok("store", format!("schema {found}"))
 }
 
-#[derive(Clone, Copy)]
-enum ProviderConfig {
-    Claude,
-    Codex,
-}
-
-fn configured_source(body: &str, format: ProviderConfig) -> Result<Option<String>, String> {
-    match format {
-        ProviderConfig::Claude => {
-            let value: serde_json::Value = serde_json::from_str(body)
-                .map_err(|error| format!("its configuration is invalid JSON: {error}"))?;
-            let Some(marketplace) = value.get("storyhook") else {
-                return Ok(None);
-            };
-            let source = marketplace
-                .get("source")
-                .ok_or_else(|| "its storyhook marketplace has no `source` record".to_string())?;
-            if let Some(source) = source.as_str() {
-                return Ok(Some(source.to_string()));
-            }
-            for key in ["path", "repo", "url"] {
-                if let Some(source) = source.get(key).and_then(serde_json::Value::as_str) {
-                    return Ok(Some(source.to_string()));
-                }
-            }
-            Err("its storyhook marketplace source has no path, repository or URL".to_string())
+/// No registration for storyhook in the provider's configuration — which
+/// means one of two things, and the row says which (SH-640, SH-671).
+///
+/// A provider that was never installed here is the quiet case this row exists
+/// for: a Codex-only or Claude-only machine must not carry a finding. A
+/// provider that *was* installed here and has since lost its registration —
+/// a new session of that provider gets no `/story` at all — is a finding,
+/// never an `ok`. Absence is resolved against evidence rather than promoted
+/// to "never" (the SH-372 rule), and there are two kinds: the provider's own
+/// surviving copies (SH-640), and storyhook's own install receipt (SH-671),
+/// which is the one that is still there after the provider sweeps its copies
+/// too — as Claude Code 2.1.268 did on 2026-09-10, when this row read a
+/// broken machine as a never-installed one.
+fn unregistered(label: &'static str, target: PluginTarget) -> Row {
+    let residue = match crate::plugin::install_residue(target) {
+        Ok(residue) => residue,
+        Err(_) => {
+            return Row::flagged(
+                label,
+                "unknown",
+                "its installed copies could not be looked for: the home directory could \
+                 not be resolved",
+            );
         }
-        ProviderConfig::Codex => {
-            let value: toml::Value = toml::from_str(body)
-                .map_err(|error| format!("its configuration is invalid TOML: {error}"))?;
-            let Some(marketplace) = value
-                .get("marketplaces")
-                .and_then(|value| value.get("storyhook"))
-            else {
-                return Ok(None);
-            };
-            marketplace
-                .get("source")
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-                .map(Some)
-                .ok_or_else(|| "its storyhook marketplace has no string `source`".to_string())
-        }
+    };
+    let receipt = match crate::plugin::install_receipt(target) {
+        Ok(receipt) => receipt,
+        Err(error) => return Row::flagged(label, "unknown", error.to_string()),
+    };
+    if residue.is_empty() && receipt.is_none() {
+        return Row::ok(label, "not registered");
     }
+    let mut evidence = Vec::new();
+    if let Some(body) = receipt {
+        let path = crate::plugin::install_receipt_path(target)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "its install receipt".to_string());
+        let installed_at = body
+            .lines()
+            .find_map(|line| line.strip_prefix("installed_at "))
+            .unwrap_or("an unrecorded time");
+        evidence.push(format!(
+            "`story plugin install {}` recorded an install here at {installed_at} ({path})",
+            target.install_token()
+        ));
+    }
+    if !residue.is_empty() {
+        let copies = residue
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        evidence.push(format!("installed copies remain at {copies}"));
+    }
+    Row::flagged(
+        label,
+        "not registered",
+        format!(
+            "DEREGISTERED: {} no longer lists the storyhook marketplace, but {} — run \
+             `story plugin install {}`",
+            target.display_name(),
+            evidence.join(", and "),
+            target.install_token()
+        ),
+    )
 }
 
 /// A provider's registered marketplace source, read from the provider's own
 /// configuration rather than by invoking it — this must answer on a machine
 /// where the provider CLI is not installed, and must not pay a subprocess.
-fn provider_row(label: &'static str, config: &Path, format: ProviderConfig) -> Row {
+fn provider_row(label: &'static str, config: &Path, target: PluginTarget) -> Row {
     if !config.exists() {
-        return Row::ok(label, "not registered");
+        return unregistered(label, target);
     }
     let Ok(body) = std::fs::read_to_string(config) else {
         return Row::flagged(label, "unknown", "its configuration could not be read");
     };
-    let source = match configured_source(&body, format) {
+    let source = match configured_source(&body, target) {
         Ok(Some(source)) => source,
-        Ok(None) => return Row::ok(label, "not registered"),
+        Ok(None) => return unregistered(label, target),
         Err(finding) => return Row::flagged(label, "unknown", finding),
     };
     let expected = crate::plugin::release_marketplace_root().ok();
@@ -298,13 +347,13 @@ pub fn report() -> Result<String, AppError> {
         store_row(&env),
         provider_row(
             "claude plugin",
-            &home.join(".claude/plugins/known_marketplaces.json"),
-            ProviderConfig::Claude,
+            &config_path(&home, PluginTarget::ClaudeCode),
+            PluginTarget::ClaudeCode,
         ),
         provider_row(
             "codex plugin",
-            &home.join(".codex/config.toml"),
-            ProviderConfig::Codex,
+            &config_path(&home, PluginTarget::Codex),
+            PluginTarget::Codex,
         ),
         hook_row(),
     ];

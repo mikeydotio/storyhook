@@ -1,15 +1,41 @@
 #!/usr/bin/env bash
 #
-# A pid-checked, stale-tolerant, machine-wide advisory lock — SH-456.
+# A pid-checked, stale-tolerant advisory lock, keyed by name and -- for the
+# two names that protect a project -- by project (SH-456, SH-648).
 #
 #   machine-lock.sh [--plan] [--max-wait <seconds>]
 #                   [--max-idle <seconds>] <name> -- <command...>
+#   machine-lock.sh --held <name>
 #
 # Runs <command...> with <name> held, and exits with the command's own status.
-# Two names are reserved by later stories in the Full Auto epic (SH-452):
-# `gate`, taken inside `scripts/run-tests.sh` so every `make test` on this
-# machine serializes (D4), and `merge`, taken by `scripts/land-pr.sh` (D5).
-# Neither caller exists yet; this ships the primitive alone.
+# Three names are live (`docs/spec/verification-workflow.md`, "The locks"),
+# and the SCOPE of each is a property of the name, declared in this script:
+#
+#   gate               project   `scripts/run-tests.sh` (every `make test`)
+#                                and `scripts/verify-pr.sh` around the whole
+#                                speculative run (SH-589)
+#   merge              project   `scripts/land-pr.sh` (D5)
+#   release-observer   machine   `scripts/release-watch.sh` around one
+#                                observer pass -- it drives the one Lima
+#                                guest (`docs/spec/release-observer.md`)
+#
+# A project-scoped key carries the canonical git common dir of the working
+# directory, so every worktree of one clone -- and the verifier's own
+# speculative checkout -- serializes with that clone, and a second clone or an
+# unrelated repository does not (D-B: "project-wide, not machine-wide").
+# `--plan` prints the resolved scope, project, key and lock directory without
+# taking anything; `--held <name>` exits 0 when this process tree already
+# holds <name> for the project the working directory resolves, and is the one
+# reader of `STORYHOOK_MACHINE_LOCKS` outside this script's own take.
+#
+# THE REENTRANCY LIST CROSSES `scripts/merge-watch.sh`'S ENVIRONMENT SCRUB.
+# `verify-pr.sh` holds `gate`, `merge-watch.sh` execs the project's gate (`make
+# test` by default, SH-649) inside it, and `run-tests.sh` re-execs under
+# `machine-lock.sh gate`: that inner take
+# runs only because `STORYHOOK_MACHINE_LOCKS` (set below on a successful take)
+# survived `merge-watch.sh`'s `env -u` list. Strip it there and every
+# verification waits on its own outer holder for ever — see the comment on
+# that list, and the spec section named above.
 #
 # WHY. `make test` is 36.375s median warm and idle
 # (`docs/rearch/baseline/timings.md`) and has been measured at 873s under the
@@ -56,8 +82,10 @@
 #
 # EXIT CODES
 #   <the command's own>   the command ran
+#   0 / 1                 `--held <name>`: held / not held by this process tree
 #   2                     refused before anything ran (bad name, missing `--`,
-#                         empty command, unknown flag, no resolvable lock root)
+#                         empty command, unknown flag, no resolvable lock root,
+#                         a project-scoped name outside a git repository)
 #   75                    --max-wait elapsed with the lock still held
 #                         (EX_TEMPFAIL). The command did NOT run, and the
 #                         stderr line says so.
@@ -76,8 +104,8 @@
 #     takes. Anyone who can hand-write a lock directory can also just not call
 #     this script.
 #
-# Design of record: `docs/spec/full-auto-engine.md`, section "The machine
-# locks".
+# Design of record: `docs/spec/verification-workflow.md`, section "The locks,
+# and the one invariant every verification depends on".
 
 set -uo pipefail
 
@@ -89,7 +117,8 @@ else
     gate_progress_emit_activity() { :; }
 fi
 
-readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>"
+readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>
+       machine-lock.sh --held <name>"
 
 die() {
     printf 'machine-lock: %s\n' "$1" >&2
@@ -117,18 +146,19 @@ readonly LOCK_POLL_SECS=1
 # disagree with the first).
 readonly GATE_MEDIAN_SECS=36
 #
-# The number of Full Auto runs which can be live at once. It is the shell
-# rendering of api::dispatch::MAX_RUNNING; tests/machine_lock.rs binds the two
-# so changing the dispatch budget cannot leave this derivation stale.
-readonly GATE_CONCURRENT_RUNS=4
+# The largest observed contended gate (SH-347 and SH-536). Unlike the warm
+# median, this measurement includes the cold/contended work whose legitimate
+# silence the holder watchdog must tolerate. tests/machine_lock.rs binds this
+# to the verifier's copy of the same measured fact.
+readonly GATE_CONTENDED_MAX_SECS=873
 #
-# One further whole concurrency window is deliberate tolerance for the build,
-# fmt and clippy work other worktrees can still perform outside this lock.
+# One further complete measured window covers a quiet compiler/linker phase
+# without turning the silence watchdog into an unbounded heartbeat.
 readonly GATE_IDLE_MARGIN=2
 #
 # This is a ceiling on SILENCE, never on the suite. Every journal append resets
 # it, so a progressing gate may run indefinitely (SH-536).
-readonly GATE_IDLE_CEILING_SECS=$((GATE_MEDIAN_SECS * GATE_CONCURRENT_RUNS * GATE_IDLE_MARGIN))
+readonly GATE_IDLE_CEILING_SECS=$((GATE_CONTENDED_MAX_SECS * GATE_IDLE_MARGIN))
 #
 # A waiter is told immediately, then once per typical suite it is queued
 # behind — so every follow-up line means "another whole nominal `make test`
@@ -151,12 +181,17 @@ readonly TERMINATION_GRACE_SECS=$((LOCK_POLL_SECS * IDENTITY_GRACE_POLLS))
 # its own derivation at its own call site.
 
 plan=0
+held_query=0
 max_wait=""
 max_idle=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     (--plan)
         plan=1
+        shift
+        ;;
+    (--held)
+        held_query=1
         shift
         ;;
     (--max-wait)
@@ -204,15 +239,74 @@ case "$name" in
 esac
 shift
 
-# SH-357: an argument that lands nowhere is refused, not dropped. The `--` is
-# required even though the name is a single token, so that a command whose
-# first word begins with `-` can never be read as this script's own option.
-[ "${1:-}" = "--" ] || die "the command must follow a literal '--' -- $USAGE"
-shift
-[ "$#" -gt 0 ] || die "'--' must be followed by a command to run -- $USAGE"
+if [ "$held_query" = 1 ]; then
+    # SH-357: a query takes exactly one word. Anything after the name would
+    # land nowhere.
+    [ "$#" -eq 0 ] || die "--held takes a lock name and nothing else, not '$1' -- $USAGE"
+    [ "$plan" = 0 ] && [ -z "$max_wait" ] && [ -z "$max_idle" ] \
+        || die "--held cannot be combined with --plan, --max-wait or --max-idle -- $USAGE"
+else
+    # SH-357: an argument that lands nowhere is refused, not dropped. The `--` is
+    # required even though the name is a single token, so that a command whose
+    # first word begins with `-` can never be read as this script's own option.
+    [ "${1:-}" = "--" ] || die "the command must follow a literal '--' -- $USAGE"
+    shift
+    [ "$#" -gt 0 ] || die "'--' must be followed by a command to run -- $USAGE"
+fi
 
 if [ -z "$max_idle" ] && [ "$name" = gate ]; then
     max_idle="$GATE_IDLE_CEILING_SECS"
+fi
+
+# THE SCOPE OF A LOCK IS A PROPERTY OF ITS NAME (SH-648), declared here rather
+# than chosen by the caller: a caller that forgot a flag would silently
+# over-serialize, and this script already applies name-specific policy (the
+# reserved gate's idle ceiling above). `gate` and `merge` protect one
+# PROJECT's suite and one project's merges, so their key carries the project;
+# every other name protects a machine resource (`release-observer` drives the
+# one Lima guest) and keeps the bare name.
+case "$name" in
+(gate | merge) scope=project ;;
+(*) scope=machine ;;
+esac
+
+# THE PROJECT COMPONENT IS DERIVED, NEVER PICKED: the canonical git common
+# dir of the working directory -- identical for every worktree of one clone
+# (a linked worktree's `--git-common-dir` is the main repository's `.git`),
+# and for `merge-watch.sh`'s speculative checkout, whose swapped gitlink's
+# `commondir` names the same directory -- and different for a second clone or
+# an unrelated repository. It is the exact derivation `verify-pr.sh` keys its
+# receipts and logs by, resolved physically so a symlinked checkout and its
+# target agree. Hashed with git's own object hash -- whole, never truncated to
+# a chosen width (SH-394) -- so no second tool is required and the lock name
+# stays one fixed-width word; `--plan` prints the directory it stands for.
+#
+# A project-scoped name taken outside a repository is REFUSED, never widened
+# to the machine: an empty answer is refused by name rather than resolved
+# (SH-576), because a lock that silently changed scope is a gate whose verdict
+# depends on state it never reported (SH-306).
+project=none
+key="$name"
+if [ "$scope" = project ]; then
+    common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" \
+        || die "the '$name' lock is scoped to a project, and $PWD is not inside a git repository -- run it from the checkout it protects"
+    project="$(cd "$common_dir" 2>/dev/null && pwd -P)" \
+        || die "the '$name' lock is scoped to a project, but its git common dir '$common_dir' (from $PWD) cannot be entered"
+    project_hash="$(printf '%s' "$project" | git hash-object --stdin 2>/dev/null)"
+    [ -n "$project_hash" ] \
+        || die "could not hash the project component for the '$name' lock (git hash-object failed under $PWD)"
+    key="$name.$project_hash"
+fi
+
+if [ "$held_query" = 1 ]; then
+    # Whether THIS process tree holds `<name>` for the project the working
+    # directory resolves. The only reader of `STORYHOOK_MACHINE_LOCKS` outside
+    # the take below, so the variable's format stays known to one file
+    # (SH-136); `land-pr.sh` asks this rather than parsing.
+    case ":${STORYHOOK_MACHINE_LOCKS:-}:" in
+    (*":$key:"*) exit 0 ;;
+    (*) exit 1 ;;
+    esac
 fi
 
 lock_root="${STORYHOOK_LOCK_DIR:-}"
@@ -221,10 +315,13 @@ if [ -z "$lock_root" ]; then
         || die "neither STORYHOOK_LOCK_DIR nor HOME is set, so there is no per-user place to put a machine-wide lock"
     lock_root="$HOME/.local/state/storyhook/locks"
 fi
-lock="$lock_root/$name.lock"
+lock="$lock_root/$key.lock"
 
 if [ "$plan" = 1 ]; then
     printf 'name=%s\n' "$name"
+    printf 'scope=%s\n' "$scope"
+    printf 'project=%s\n' "$project"
+    printf 'key=%s\n' "$key"
     printf 'lock=%s\n' "$lock"
     printf 'max_wait=%s\n' "${max_wait:-none}"
     printf 'max_idle=%s\n' "${max_idle:-none}"
@@ -241,7 +338,7 @@ lock_activity_path="${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}"
 unset STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH
 held="${STORYHOOK_MACHINE_LOCKS:-}"
 case ":$held:" in
-(*":$name:"*)
+(*":$key:"*)
     note "'$name' is already held by this process tree ($held) -- running without re-taking it"
     exec "$@"
     ;;
@@ -258,6 +355,35 @@ emit_lock_activity() {
 # longer exists.
 process_started() {
     ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//; s/ *$//'
+}
+
+descendant_snapshot() {
+    root_pid="$1"
+    ps -axo pid=,ppid=,pgid=,stat=,etime=,time=,command= 2>/dev/null \
+        | awk -v root="$root_pid" '
+            {
+                pid = $1
+                parent[pid] = $2
+                row[pid] = $0
+            }
+            END {
+                selected[root] = 1
+                changed = 1
+                while (changed) {
+                    changed = 0
+                    for (pid in parent) {
+                        if (!selected[pid] && selected[parent[pid]]) {
+                            selected[pid] = 1
+                            changed = 1
+                        }
+                    }
+                }
+                print "  PID  PPID  PGID STAT ELAPSED      TIME COMMAND"
+                for (pid in row) {
+                    if (selected[pid]) print row[pid]
+                }
+            }
+        '
 }
 
 mkdir -p "$lock_root" || die "could not create the lock root at $lock_root"
@@ -390,7 +516,7 @@ printf '%s\n' "$(process_started $$)" > "$lock/started" \
         emit_lock_activity failed
         die "could not record the holder's start time in $lock"
     }
-printf '%s %s -- %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$*" > "$lock/meta" \
+printf '%s %s project=%s -- %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$project" "$*" > "$lock/meta" \
     || {
         emit_lock_activity failed
         die "could not record the holder's description in $lock"
@@ -412,10 +538,13 @@ if [ "$waited" -gt 0 ]; then
     note "took the '$name' lock after waiting ${waited}s"
 fi
 
+# The entry is the KEY, not the bare name: a process tree holding one
+# project's `gate` that reaches a different project's `gate` has not taken
+# that lock, and must.
 if [ -n "$held" ]; then
-    STORYHOOK_MACHINE_LOCKS="$held:$name"
+    STORYHOOK_MACHINE_LOCKS="$held:$key"
 else
-    STORYHOOK_MACHINE_LOCKS="$name"
+    STORYHOOK_MACHINE_LOCKS="$key"
 fi
 export STORYHOOK_MACHINE_LOCKS
 
@@ -482,9 +611,9 @@ if [ -n "$max_idle" ]; then
                 note "the '$name' holder made no progress for ${idle}s (ceiling ${max_idle}s)"
                 last="$(tail -n 1 "$journal" 2>/dev/null || true)"
                 note "last gate progress: ${last:-<journal is empty>}"
-                note "active process group $child:"
-                ps -o pid=,ppid=,etime=,command= -g "$child" >&2 2>/dev/null \
-                    || note "could not inspect process group $child"
+                note "active descendant tree rooted at $child:"
+                descendant_snapshot "$child" >&2 \
+                    || note "could not inspect descendant tree rooted at $child"
                 printf 'stalled after %ss\n' "$idle" > "$stalled"
                 printf '{"kind":"item","path":"release gate","status":"failed","at":"%s","seconds":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$idle" >> "$journal" 2>/dev/null || true

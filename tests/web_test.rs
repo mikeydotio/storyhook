@@ -20,6 +20,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
+use storyhook::api::http::CSP;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
@@ -1064,6 +1065,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="delete-confirmation""#));
     assert!(body.contains(r#"id="delete-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-error""#));
+    // SH-670: each launcher names why a provider's Model/Effort/Speed hold
+    // nothing but "Default" -- a degraded `{ok:false, reason}` catalog slot
+    // or a failed fetch used to be indistinguishable from "no options".
+    assert!(body.contains(r#"id="dispatch-options-notice" role="status" aria-live="polite""#));
+    assert!(body.contains(r#"id="engine-options-notice" role="status" aria-live="polite""#));
+    assert!(body.contains("function providerOptionsNotice"));
     assert!(body.contains(r#"id="close-modal""#));
     assert!(body.contains(r#"id="close-reason""#));
     assert!(body.contains(r#"id="close-modal-submit""#));
@@ -2002,7 +2009,9 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
 /// worded differently from the badge's ("● blocked", "(no reason)") so the
 /// two fences' literal sets never overlap and neither can go vacuous by
 /// matching the wrong function. Same technique -- find the function by its
-/// exact signature, insist every owned literal falls inside its bounds.
+/// exact signature, insist every owned banner literal falls inside its bounds.
+/// Ordinary UI labels named "Blocked" are not banner sentences and therefore
+/// are deliberately outside this fence (SH-614).
 ///
 /// Comment lines (trimmed to start with `*` or `//`) are exempt, for the
 /// same reason the badge's own fence exempts them.
@@ -2041,7 +2050,7 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
     // different reason (assistive-tech text, not the rendered banner), so a
     // bare "no reason recorded" would false-positive there. The em dash is
     // what `blockBanner()` alone prefixes it with.
-    for needle in ["— no reason recorded", "\"Blocked\""] {
+    for needle in ["— no reason recorded"] {
         for (at, _) in script.match_indices(needle) {
             let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line = script[line_start..].lines().next().unwrap_or("");
@@ -2055,6 +2064,20 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
                  hand-written a second time"
             );
         }
+    }
+
+    for (at, _) in script.match_indices("\"Blocked\"") {
+        let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line = script[line_start..].lines().next().unwrap_or("");
+        if !line.contains("headline") {
+            continue;
+        }
+        assert!(
+            at >= fn_start && at < fn_end,
+            "a blocked-banner headline outside blockBanner() at script byte {at}: {line:?} \
+             -- every blocked-banner sentence must be derived from blockCauses(), not \
+             hand-written a second time"
+        );
     }
 
     // blockCauses() is the one deriver: neither blockedFlag() nor
@@ -2237,6 +2260,247 @@ fn declarations(css: &str, selector: &str) -> String {
         "no `{selector}` rule in the dashboard's stylesheet"
     );
     grouped
+}
+
+/// SH-601: persistent controls must not borrow `--fg-faint`, whose light
+/// palette contrast is below both the text and non-text WCAG floors on the
+/// raised and sunken surfaces these controls occupy. The browser test in
+/// `e2e/specs/control-contrast.spec.ts` measures the rendered colours; this
+/// cheap fence pins the semantic token choice that makes those measurements
+/// hold without weakening the global palette.
+#[test]
+fn web_serve_root_html_gives_persistent_controls_contrast_safe_tokens() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, token) in [
+        (".status-reorder button", "--fg-muted"),
+        (".column-archive-btn", "--fg"),
+        (".column-sort-btn", "--fg-muted"),
+        (".section-toggle", "--fg-functional"),
+        (".label-chip button", "--fg"),
+        (".rel-remove", "--fg-muted"),
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains(&format!("color: var({token})")),
+            "`{selector}` must use contrast-safe `{token}`; declarations were `{rule}`"
+        );
+        assert!(
+            !rule.contains("color: var(--fg-faint)"),
+            "`{selector}` must not use low-contrast --fg-faint"
+        );
+    }
+
+    let section_hover = declarations(css, ".section-toggle:hover");
+    for declaration in ["color: var(--fg)", "background: var(--bg-sunken)"] {
+        assert!(
+            section_hover.contains(declaration),
+            "the section toggle needs `{declaration}` for visible hover feedback after its resting ink becomes --fg-functional"
+        );
+    }
+
+    let archive_hover = declarations(css, ".column-archive-btn:hover");
+    for declaration in ["color: var(--accent)", "background: var(--bg-raised)"] {
+        assert!(
+            archive_hover.contains(declaration),
+            "Archive hover needs `{declaration}` so its small text remains above 4.5:1"
+        );
+    }
+}
+
+/// SH-615: hierarchy values are roles shared by every dashboard surface, not
+/// one-off literals that drift independently. Browser tests prove their
+/// resolved geometry and contrast; this source contract pins the shared
+/// vocabulary, its representative consumers, and the connection-state hook.
+#[test]
+fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    let root = declarations(css, ":root");
+    for declaration in [
+        "--space-label: 0.25rem;",
+        "--space-control: 0.5rem;",
+        "--space-card: 0.75rem;",
+        "--space-section: 1rem;",
+        "--inset-main: 1.25rem;",
+        "--type-functional: 0.8125rem;",
+        "--type-metadata: 0.8125rem;",
+        "--line-metadata: 1.4;",
+        "--fg-functional: var(--fg);",
+        "--fg-metadata: color-mix(in srgb, var(--fg-muted) 80%, var(--fg));",
+        "--control-boundary: var(--fg-metadata);",
+        "--danger-text: color-mix(in srgb, var(--danger) 75%, var(--fg));",
+    ] {
+        assert!(
+            root.contains(declaration),
+            "the root hierarchy vocabulary must define `{declaration}`"
+        );
+    }
+
+    for selector in [
+        ".field label",
+        ".section-label",
+        ".section-toggle",
+        "thead th",
+        ".settings-table th",
+        ".column-header",
+        ".mobile-sort-control",
+        ".mobile-story-details-btn",
+    ] {
+        let rule = declarations(css, selector);
+        for declaration in [
+            "font-size: var(--type-functional)",
+            "font-weight: 600",
+            "text-transform: none",
+            "letter-spacing: normal",
+            "color: var(--fg-functional)",
+        ] {
+            assert!(
+                rule.contains(declaration),
+                "`{selector}` must share functional-label `{declaration}`; declarations were `{rule}`"
+            );
+        }
+    }
+
+    for (selector, declaration) in [
+        (".home, .settings", "padding: var(--inset-main)"),
+        (".board", "padding: var(--space-section) var(--inset-main)"),
+        (".list", "padding: 0 var(--inset-main) var(--inset-main)"),
+        (".card", "padding: var(--space-card)"),
+        (".repo-card", "padding: var(--space-card)"),
+        (".mobile-list", "margin-top: var(--space-card)"),
+        (".mobile-sort-controls", "gap: var(--space-control)"),
+        (".mobile-list-body", "gap: var(--space-card)"),
+        (".mobile-story-row", "padding: var(--space-card)"),
+        (".mobile-story-primary", "gap: var(--space-control)"),
+        (".mobile-story-identity", "gap: var(--space-label)"),
+        (
+            ".mobile-story-details",
+            "gap: var(--space-label) var(--space-card)",
+        ),
+        (".create-attachments", "margin-top: var(--space-label)"),
+        (".create-attachment-strip", "gap: var(--space-control)"),
+        (
+            ".create-attachment-preview",
+            "padding: var(--space-control)",
+        ),
+        (".field", "gap: var(--space-label)"),
+        (".card-id", "font-size: var(--type-metadata)"),
+        (".state-pill", "font-size: var(--type-metadata)"),
+        (".modal-error", "color: var(--danger-text)"),
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains(declaration),
+            "`{selector}` must consume `{declaration}`; declarations were `{rule}`"
+        );
+    }
+
+    for selector in [
+        ".connection",
+        ".home-stat span",
+        ".repo-card-path",
+        ".repo-card-stats",
+        ".repo-card-error",
+        ".settings-path",
+        ".settings-prefs .settings-hint",
+        ".settings-about-list",
+        ".settings-head .settings-hint",
+        ".status-counts",
+        ".filter-count",
+        ".card-id",
+        ".chip",
+        ".avatar",
+        ".flag",
+        ".col-order",
+        ".col-date",
+        ".state-pill",
+        ".column-empty",
+        ".empty",
+        ".comment-meta",
+        ".modal-error",
+        ".modal-body p",
+        ".mobile-story-primary",
+        ".mobile-story-id",
+        ".mobile-story-type",
+        ".mobile-story-details",
+        ".create-attachment-name",
+        ".create-attachment-state",
+        "#create-attachment-status",
+    ] {
+        let rule = declarations(css, selector);
+        for declaration in [
+            "font-size: var(--type-metadata)",
+            "line-height: var(--line-metadata)",
+        ] {
+            assert!(
+                rule.contains(declaration),
+                "`{selector}` must share metadata `{declaration}`; declarations were `{rule}`"
+            );
+        }
+    }
+
+    for selector in [
+        ".projsel-btn",
+        ".settings-form input",
+        ".status-row select, .status-row input[type=text]",
+        ".status-add input[type=text], .status-add select",
+        ".filter-toggle-btn",
+        ".fdd-btn",
+        ".engine-lanes-input",
+        ".field select, .field input[type=text], .field textarea",
+        ".inline-add input, .inline-add select",
+        ".comment-add textarea",
+        ".description-field",
+        ".modal-body input[type=text], .modal-body select",
+        ".modal-body textarea",
+        ".mobile-sort-control select",
+    ] {
+        let rule = declarations(css, selector);
+        assert!(
+            rule.contains("border: 1px solid var(--control-boundary)"),
+            "`{selector}` must use the contrast-safe control boundary; declarations were `{rule}`"
+        );
+    }
+
+    let unavailable = declarations(css, ".repo-card.unavailable");
+    assert!(unavailable.contains("border-style: dashed"));
+    assert!(
+        !unavailable.contains("opacity:"),
+        "unavailable-card feedback must not lower every descendant's text contrast"
+    );
+
+    let mobile = css
+        .find("@media (max-width: 768px) {")
+        .map(|start| &css[start..])
+        .expect("the mobile hierarchy override exists");
+    assert!(mobile.contains(":root { --inset-main: 0.75rem; }"));
+    assert!(
+        mobile.contains(".connection:not(.disconnected) .conn-text"),
+        "mobile may hide healthy copy, but must not hide disconnected feedback"
+    );
+    assert!(
+        body.contains("connection.classList.toggle(\"disconnected\", !live);"),
+        "updateConnection must expose unhealthy state on the wrapper for responsive styling"
+    );
 }
 
 /// SH-256: on a coarse pointer, no text-entry control may compute under 16
@@ -2538,6 +2802,7 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".filter-toggle",
         ".filter-clear",
         ".engine-lanes-input",
+        ".open-pr-chip",
         ".column-archive-btn",
         ".section-toggle",
         ".field select, .field input[type=text], .field textarea",
@@ -3040,6 +3305,108 @@ fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
     );
 }
 
+/// SH-614: the List view has one data model and two responsive presentations.
+/// The desktop table remains complete and horizontally reachable, while the
+/// phone presentation is a semantic list whose title and controls are native
+/// buttons. `hidden` is the accessibility boundary: CSS alone must not leave
+/// the inactive copy focusable or exposed to assistive technology.
+#[test]
+fn sh_614_mobile_list_has_semantic_markup_and_shared_controls() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for markup in [
+        r#"<div class="list-desktop" id="list-desktop">"#,
+        r#"<div class="mobile-list" id="mobile-list" hidden>"#,
+        r#"<ul class="mobile-list-body" id="mobile-list-body" aria-label="Stories" aria-describedby="list-kbd-hint"></ul>"#,
+        r#"<select id="mobile-sort-column" aria-label="Sort stories by">"#,
+        r#"<select id="mobile-sort-direction" aria-label="Sort direction">"#,
+    ] {
+        assert!(
+            body.contains(markup),
+            "missing SH-614 list markup: {markup}"
+        );
+    }
+
+    let desktop_title = declarations(css, ".col-title");
+    assert!(
+        desktop_title.contains("min-inline-size: 20ch"),
+        "the desktop title column must retain a readable 20ch floor"
+    );
+
+    let mobile_title = declarations(css, ".mobile-story-title");
+    for declaration in [
+        "width: 100%",
+        "font-size: 1rem",
+        "line-height: 1.4",
+        "white-space: normal",
+        "overflow-wrap: anywhere",
+    ] {
+        assert!(
+            mobile_title.contains(declaration),
+            ".mobile-story-title must carry `{declaration}`; declarations were `{mobile_title}`"
+        );
+    }
+
+    let source = script(&body);
+    for function in [
+        "sortedListStories",
+        "renderDesktopList",
+        "renderMobileList",
+        "syncListPresentation",
+        "populateMobileListItem",
+    ] {
+        assert!(
+            source.contains(&format!("function {function}(")),
+            "missing SH-614 shared list function `{function}`"
+        );
+    }
+    assert!(
+        source.contains("state.sort.col = this.value;")
+            && source.contains("state.sort.dir = Number(this.value);"),
+        "both mobile sort controls must write the existing state.sort model"
+    );
+}
+
+/// SH-614's Details state is deliberately ephemeral and project-scoped: it
+/// survives polling and responsive presentation changes, but never follows a
+/// reader to another project or across a reload.
+#[test]
+fn sh_614_mobile_details_state_is_in_memory_and_cleared_on_project_exit() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+
+    assert!(
+        source.contains("mobileListDetails: Object.create(null)"),
+        "mobile disclosure state must live only in the page's in-memory state"
+    );
+    assert!(
+        source.contains("function clearMobileListDetails()"),
+        "mobile disclosure state needs one clearing helper"
+    );
+    for function in ["selectRepo", "goHome", "goSettings"] {
+        assert!(
+            function_body(source, function).contains("clearMobileListDetails();"),
+            "{function} must clear every mobile disclosure"
+        );
+    }
+    assert!(
+        !source.contains("storyhook.mobileListDetails"),
+        "mobile disclosure state must not be persisted across reloads"
+    );
+}
+
 /// SH-217: three CSS rules ARE the description's read/edit mechanism --
 /// the field is `display: none` by default, shown only under `.editing`,
 /// while the read view flips the opposite way. A selector rename here
@@ -3164,19 +3531,17 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
-/// SH-235 (D9): HTML5 native drag-and-drop (`card.draggable` + `dragstart`)
-/// never fires on touch, so before this the only touch path to a card's
-/// actions was an undocumented long-press. `.card-actions-btn` (board) and
-/// `.row-actions-btn` (list) open the exact same menu right-click does
-/// (`openStoryMenu`) -- coarse-pointer visible only, so desktop's rendering
-/// is untouched.
+/// SH-235/SH-600/SH-614: board cards and stacked mobile list rows expose the
+/// same menu as right-click through a visible action button on every pointer
+/// type. Desktop table rows retain SH-235's coarse-pointer-only actions
+/// column.
 ///
 /// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
 /// menu items actually match right-click's and that the coarse-pointer
 /// sizing resolves correctly in a real browser; this is the cheap,
 /// browser-free layer pinning the source text of the mechanism.
 #[test]
-fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
+fn web_serve_root_html_exposes_card_actions_on_every_pointer() {
     let fixture = served();
     let port = fixture.port;
 
@@ -3212,34 +3577,31 @@ fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
     // role="button" and the button is a normal part of the a11y tree there.
     assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
     assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+    assert!(body.contains("class: \"mobile-story-actions row-actions-btn\""));
 
-    // Hidden on a fine pointer (right-click already reaches this menu
-    // there); coarse-pointer-only, both axes -- an icon-only button is
-    // narrower than --tap-min once nothing else sets its width. Each
-    // button gets its own dedicated `@media (pointer: coarse)` block right
-    // beside its base rule (a third such block in the sheet, after the
-    // `:root` tokens' and `.card-actions-btn`'s own) -- checked as one
-    // literal snippet per button, the same way this file already pins
-    // `--tap-min`'s and `--control-font-*`'s own coarse-pointer values.
-    for (selector, coarse_block) in [
-        (
-            ".card-actions-btn",
-            "@media (pointer: coarse) {\n  .card-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
-        ),
-        (
-            ".row-actions-btn",
-            "@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
-        ),
+    let card_actions = declarations(css, ".card-actions-btn");
+    for declaration in [
+        "display: inline-flex",
+        "align-items: center",
+        "justify-content: center",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
     ] {
-        assert!(
-            declarations(css, selector).contains("display: none"),
-            "`{selector}` must default to display: none on a fine pointer"
-        );
-        assert!(
-            css.contains(coarse_block),
-            "`{selector}` must be revealed and sized to --tap-min inside its own coarse-pointer block"
-        );
+        assert!(card_actions.contains(declaration));
     }
+    assert!(!card_actions.contains("display: none"));
+
+    let mobile_row_actions = declarations(css, ".mobile-story-actions");
+    for declaration in [
+        "display: inline-flex",
+        "min-width: var(--tap-min)",
+        "min-height: var(--tap-min)",
+    ] {
+        assert!(mobile_row_actions.contains(declaration));
+    }
+
+    assert!(declarations(css, ".col-actions .row-actions-btn").contains("display: none"));
+    assert!(css.contains("@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .col-actions .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}"));
 
     // The list table's own overflow-x scroll must not let the browser's
     // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
@@ -4081,7 +4443,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             "archived"
         ],
         "states must be in configured order, not alphabetical"
@@ -4448,6 +4810,29 @@ fn engine_http_serves_every_control_and_stable_run_views() {
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
     let run = started["run"]["id"].as_str().unwrap().to_string();
 
+    let configured = patch_json(
+        &fixture,
+        &base,
+        &serde_json::json!({
+            "run": run,
+            "lanes": 3,
+            "agent": "claude",
+            "model": "claude-opus-4-6",
+            "effort": "high",
+            "speed": "standard"
+        })
+        .to_string(),
+    )
+    .expect("configuring a live engine run");
+    assert_eq!(configured.status(), 200);
+    let configured = response_json(configured);
+    assert_eq!(configured["run"]["lane_count"], 3);
+    assert_eq!(configured["run"]["agent"], "claude");
+    assert_eq!(configured["run"]["model"], "claude-opus-4-6");
+    assert_eq!(configured["run"]["effort"], "high");
+    assert_eq!(configured["run"]["speed"], "standard");
+    assert_eq!(configured["run"]["lanes"].as_array().unwrap().len(), 3);
+
     let duplicate = post_json(&fixture, &base, "{}").unwrap_err();
     assert_eq!(status_of(duplicate), 409);
 
@@ -4531,6 +4916,17 @@ fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
     );
     assert_eq!(
         status_of(
+            patch_json(
+                &fixture,
+                &base,
+                r#"{"run":"missing","lanes":1,"agent":"codex","unknown":true}"#,
+            )
+            .unwrap_err()
+        ),
+        400
+    );
+    assert_eq!(
+        status_of(
             post_json(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#).unwrap_err()
         ),
         404
@@ -4596,6 +4992,16 @@ fn engine_http_collection_and_actions_keep_the_existing_authorization_chain() {
                 .header("X-Storyhook", "1")
                 .content_type("application/json")
                 .send("{}")
+                .unwrap_err()
+        ),
+        401
+    );
+    assert_eq!(
+        status_of(
+            ureq::patch(base.as_str())
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send(r#"{"run":"missing","lanes":1,"agent":"codex"}"#)
                 .unwrap_err()
         ),
         401
@@ -4990,14 +5396,14 @@ fn web_move_story_to_closed_with_comment_records_the_closing_reason() {
     let resp = post_json(
         &fixture,
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
-        r#"{"state":"closed","comment":"Superseded by SH-2"}"#,
+        r#"{"state":"dropped","comment":"Superseded by SH-2"}"#,
     )
     .unwrap();
     assert_eq!(resp.status(), 200);
 
     let json: serde_json::Value =
         serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&json, "state"), "closed");
+    assert_eq!(story_field(&json, "state"), "dropped");
     let comments = json["story"]["story"]["comments"].as_array().unwrap();
     assert!(
         comments
@@ -6100,7 +6506,7 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 
@@ -6137,7 +6543,7 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
             "verifying",
             "blocked",
             "done",
-            "closed",
+            "dropped",
             "review"
         ]
     );
@@ -6255,7 +6661,7 @@ fn web_states_patch_reorders_the_collection() {
         patch_json(
             &fixture,
             &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
-            r#"{"order":["done","todo","verifying","blocked","in-progress","closed"]}"#,
+            r#"{"order":["done","todo","verifying","blocked","in-progress","dropped"]}"#,
         )
         .unwrap(),
     );
@@ -6267,7 +6673,7 @@ fn web_states_patch_reorders_the_collection() {
             "verifying",
             "blocked",
             "in-progress",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(slugs(&get_states(&fixture, port, repo_id)), slugs(&json));
@@ -6350,7 +6756,7 @@ fn web_states_delete_removes_and_migrates() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     assert_eq!(json["states"][1]["open_count"], 1);
@@ -9216,4 +9622,168 @@ fn story_detail_is_a_non_modal_workspace_peer() {
         html.contains(r#"aria-label="Close story details""#),
         "the panel's icon-only X needs a stable accessible name"
     );
+}
+
+/// Attachment viewing must use the same modal and authenticated-image contract
+/// as the rest of the dashboard; browser tests exercise the interactions.
+#[test]
+fn attachment_viewer_is_a_registered_named_dialog() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let at = html
+        .find(r#"id="attachment-modal""#)
+        .expect("attachment viewer exists");
+    let tag = enclosing_tag(&html, at);
+    assert_eq!(attribute(tag, "role"), Some("dialog"));
+    assert_eq!(attribute(tag, "aria-modal"), Some("true"));
+    assert_eq!(attribute(tag, "aria-labelledby"), Some("attachment-title"));
+    assert!(html.contains(r#"data-overlay="attachment-modal""#));
+    assert!(html.contains(r#"id="attachment-close""#));
+    assert!(html.contains(r#"id="attachment-status" role="status""#));
+}
+
+/// SH-393: remote description images widen only image loading and remain a
+/// consent-gated browser concern; Playwright proves the runtime boundary.
+#[test]
+fn remote_description_images_are_constrained_to_https_and_explicit_activation() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert_eq!(
+        CSP,
+        "default-src 'self'; img-src 'self' blob: https:; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    );
+    assert!(html.contains("function remoteImagesFromDescription"));
+    assert!(html.contains("function drawerMedia"));
+    assert!(html.contains(r#"referrerPolicy: "no-referrer""#));
+    assert!(html.contains("var dataset = { mediaKey: media.key, mediaKind: media.kind }"));
+
+    let build = function_body(script, "buildAttachmentsSection");
+    assert!(
+        build.contains("media.kind === \"remote\"")
+            && build.contains("remote-image-placeholder")
+            && build.contains("openAttachmentModal(repoId, storyId, media.key)"),
+        "remote controls must begin as explicit, unloaded activation targets"
+    );
+    assert!(
+        !build.contains("querySelector('[data-media-key=\"")
+            && !build.contains("querySelector(\"[data-media-key="),
+        "untrusted URLs must never be interpolated into selectors"
+    );
+}
+
+/// SH-392: attachment drops are a file-only layer over the existing card
+/// drag-and-drop behavior. This fast fence pins the shared transport and event
+/// boundaries; Playwright exercises the browser behavior end to end.
+#[test]
+fn attachment_drop_targets_preserve_json_and_card_drag_contracts() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let css = stylesheet(&html);
+    let script = script(&html);
+    let api = function_body(script, "api");
+    let transfer_has_files = function_body(script, "transferHasFiles");
+    let bind_drop = function_body(script, "bindAttachmentDrop");
+    let upload = function_body(script, "uploadDroppedAttachments");
+    let column_drop = function_body(script, "bindColumnDrop");
+
+    assert!(
+        api.contains("opts.rawBody")
+            && api.contains(
+                r#"Content-Type", opts.rawBody ? "application/octet-stream" : "application/json"#
+            )
+            && api.contains("xhr.send(opts.rawBody ? body : (body ? JSON.stringify(body) : null))"),
+        "api() must make raw uploads explicit while preserving JSON as its default"
+    );
+    assert!(
+        transfer_has_files.contains("item.kind === \"file\"")
+            && transfer_has_files.contains("types.indexOf(\"Files\")"),
+        "file-drag detection needs DataTransfer.items plus the Files-type fallback"
+    );
+    assert!(
+        bind_drop.contains("if (!transferHasFiles(e.dataTransfer)) return")
+            && bind_drop.contains("e.preventDefault()")
+            && bind_drop.contains("e.stopPropagation()")
+            && bind_drop.contains("e.dataTransfer.dropEffect = \"copy\"")
+            && bind_drop.contains("Array.prototype.slice.call(e.dataTransfer.files)")
+            && bind_drop.contains("findStory(storyId)")
+            && bind_drop.contains("current.story.superstate === \"OPEN\""),
+        "drop targets must claim only files and read them from the drop event"
+    );
+    assert!(
+        declarations(css, ".attachment-drop-target").contains("outline")
+            && declarations(css, ".attachment-drop-refused").contains("cursor: not-allowed"),
+        "accepted and refused file drops both need visible feedback"
+    );
+    assert!(
+        upload.contains("state.repoId === repoId")
+            && upload.contains("err.status === 0")
+            && upload.matches("return next()").count() >= 2,
+        "the upload batch must guard project identity, stop on ambiguity, and continue after definite refusals"
+    );
+    assert!(
+        column_drop.contains(r#"getData("text/plain")"#)
+            && !column_drop.contains("transferHasFiles"),
+        "the existing card-move handler must remain independent of attachment drops"
+    );
+}
+
+/// SH-391: clipboard images stay local to the create modal until the story
+/// has an id, then travel through the authenticated raw upload path. Browser
+/// tests prove the complete lifecycle; this fast fence pins the wiring and
+/// cleanup boundaries that make the lifecycle possible.
+#[test]
+fn create_modal_stages_pasted_images_and_cleans_up_blob_urls() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let script = script(&html);
+
+    assert!(html.contains(r#"id="create-attachments""#));
+    assert!(html.contains(r#"id="create-attachment-list""#));
+    assert!(html.contains(r#"id="create-attachment-status" role="status""#));
+
+    let paste = function_body(script, "stagePastedCreateAttachments");
+    assert!(paste.contains("clipboardData") && paste.contains("items"));
+    assert!(paste.contains("getAsFile") && paste.contains("preventDefault"));
+
+    let reset = function_body(script, "resetCreateAttachments");
+    assert!(reset.contains("URL.revokeObjectURL"));
+    let remove = function_body(script, "removePendingCreateAttachment");
+    assert!(remove.contains("URL.revokeObjectURL"));
+    let upload = function_body(script, "uploadPendingCreateAttachments");
+    assert!(upload.contains("URL.revokeObjectURL") && upload.contains("rawBody: true"));
+    let close = function_body(script, "closeCreateModal");
+    assert!(close.contains("resetCreateAttachments"));
+
+    let submit = function_body(script, "submitCreate");
+    assert!(submit.contains("persistCreateDraftWithAttachments"));
+}
+
+/// SH-391: staged previews can make the create modal taller than a narrow
+/// viewport. Its actions must remain reachable without changing every modal.
+#[test]
+fn create_modal_alone_keeps_its_footer_sticky() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading dashboard");
+    let rule = html
+        .split_once("#create-modal .modal-footer {")
+        .expect("the create modal needs its scoped footer rule")
+        .1
+        .split_once('}')
+        .expect("the scoped footer rule must close")
+        .0;
+
+    assert!(rule.contains("position: sticky"));
+    assert!(rule.contains("bottom: 0"));
 }

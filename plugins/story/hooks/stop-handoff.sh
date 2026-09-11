@@ -5,6 +5,13 @@ set -euo pipefail
 # Automatically generates a session handoff when the agent session ends.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/codex-bootstrap.sh"
+
+# Initialization is not a story session handoff, even if the provider emits Stop.
+if codex_bootstrap_active; then
+  printf '{}'
+  exit 0
+fi
 
 # Whether this directory is a storyhook project is storyhook's question, not a
 # shell walk's: a fresh clone with no committed pointer file resolves by its

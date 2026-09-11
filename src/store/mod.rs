@@ -285,8 +285,16 @@ pub trait ReadOps {
     /// projects before either can make a safe decision.
     fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
 
-    /// The machine-wide verifier incident, if infrastructure owns the queue.
-    fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError>;
+    /// This project's verifier incident, if infrastructure owns its queue
+    /// (SH-648: one worker, one queue and one incident per project).
+    fn verification_incident(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<VerificationIncident>, StoreError>;
+
+    /// Every project's verifier incident, ordered by project — for the
+    /// surfaces that report across projects (the progress publisher).
+    fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
 
     /// Every lane belonging to a run, ordered by lane index.
     fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
@@ -515,7 +523,14 @@ pub trait WriteOps: ReadOps {
     /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;
 
-    /// Creates or replaces the one machine-wide verifier incident.
+    /// Deletes one lane under its `(run_id, lane_index)` identity.
+    ///
+    /// Used when a live run's desired concurrency shrinks. Occupied lanes are
+    /// retained until they settle; only an idle lane may reach this operation.
+    fn delete_engine_lane(&mut self, run_id: &str, lane_index: u32) -> Result<(), StoreError>;
+
+    /// Creates or replaces the incident of the project it names — one per
+    /// project, never one per machine.
     fn put_verification_incident(
         &mut self,
         incident: &VerificationIncident,

@@ -7,23 +7,87 @@
 
 use std::path::PathBuf;
 
-use crate::domain::{Priority, StoryCleanupLease, StoryEvent, SuperState, VERIFYING_STATE_SLUG};
+use crate::domain::pr_url::parse_pr_url;
+use crate::domain::{
+    COMPLETION_STATE_SLUG, Priority, StateDef, StoryCleanupLease, StoryEvent, SubmittedPullRequest,
+    SuperState, VERIFYING_STATE_SLUG, completion_state,
+};
 use crate::error::AppError;
 use crate::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoryNo, StoryQuery,
+    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
+    StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
-use super::story::state_transition_events;
+use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
 /// The required OPEN state that hands a published PR to the verifier.
 pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
+
+/// The required OPEN state a story is returned to when verification hands it
+/// back to its agent (conflict, red, or an invalid submission). Named once so
+/// the Full Auto reconciler recognises "returned for repair" by the same
+/// spelling the verifier writes (SH-650, `returned_for_repair`).
+pub const RETURNED_STATE: &str = "in-progress";
+
+/// Whether the story's own state history ends with the verifier's return:
+/// its latest `StoryStateChanged` is [`RETURNED_STATE`] and the one before it
+/// is [`VERIFYING_STATE`], with no state change since (SH-650).
+///
+/// This is the store-derived fact the engine reads instead of a lane mark the
+/// verifier would have to write: between `record_generation_returned` and the
+/// respawned pane coming alive, the story is `in-progress` with no `awaiting`
+/// and a dead window, and a reconciler that took the dead window as evidence
+/// would quarantine the lane and strike the breaker for the very remediation
+/// the verifier is delivering. The fact ends, by construction, at the story's
+/// next state change — the agent resubmitting to `verifying`, or a person
+/// moving it — and is overridden earlier by `awaiting` (the verifier's own
+/// refusal to re-dispatch), which the engine classifies ahead of the window.
+pub fn returned_for_repair(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<bool, StoreError> {
+    let events = tx.events_for(project, story)?;
+    let mut changes = events.iter().rev().filter_map(|event| match event.known() {
+        Some(StoryEvent::StoryStateChanged { state, .. }) => Some(state.as_str()),
+        _ => None,
+    });
+    Ok(changes.next() == Some(RETURNED_STATE) && changes.next() == Some(VERIFYING_STATE))
+}
 
 /// Durable comment prefix proving the centralized release gate landed a PR.
 pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
 /// Durable comment prefix proving post-merge resources were reclaimed.
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
+
+/// Durable comment prefix for verifier infrastructure failures.
+pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
+
+/// Durable comment prefix recording that the verifier pushed a leased branch
+/// and opened or adopted its pull request (SH-647). One marked comment per
+/// generation: a resubmission that moves the branch replaces it.
+pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
+/// Result of a write whose authority belongs to one verification generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GenerationWrite<T> {
+    /// The candidate remained current and the write committed.
+    Applied(T),
+    /// A later state transition superseded the candidate before the write.
+    Superseded,
+}
+
+impl<T> GenerationWrite<T> {
+    /// Maps the applied value, leaving a superseded write superseded.
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> GenerationWrite<U> {
+        match self {
+            GenerationWrite::Applied(value) => GenerationWrite::Applied(f(value)),
+            GenerationWrite::Superseded => GenerationWrite::Superseded,
+        }
+    }
+}
 
 /// A malformed verification submission that must return to its author.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +112,7 @@ impl VerificationProblem {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::MissingCheckout => "verification cannot run because this project has no registered checkout; run `story project link checkout <path>` from an operator session".to_string(),
+            Self::MissingCheckout => "Verification cannot run because this project has no registered checkout. Run `story project link checkout <path>` from an operator session.".to_string(),
             Self::MissingPullRequest => "verification needs exactly one open close-on-merge pull request linked with `story link-pr`; none is linked".to_string(),
             Self::MultiplePullRequests(urls) => format!(
                 "verification needs exactly one open close-on-merge pull request; found {}: {}",
@@ -111,6 +175,49 @@ pub struct VerificationQueue<'a, S: Store> {
     store: &'a S,
 }
 
+/// Acknowledges exactly the halted verification incident `incident_id` for the
+/// project `ctx` selects, releasing the queue for another attempt (SH-573).
+///
+/// One function for both doors — `POST .../verification/ack` and
+/// `story verifier ack <incident-id>` (SH-666) — so their contract cannot
+/// drift (SH-136): the id must name the incident that is *current*, still
+/// halted rather than retrying, and this project's. A reader of a stale
+/// comment therefore cannot acknowledge a newer incident by accident, and an
+/// acknowledgement retries nothing by itself: the verifier's next tick does.
+pub fn acknowledge_verification_incident<S: Store>(
+    ctx: &Ctx<'_, S>,
+    incident_id: &str,
+) -> Result<VerificationIncident, AppError> {
+    let current = ctx
+        .store()
+        .read(|tx| tx.verification_incident(ctx.project()))?;
+    let Some(current) = current else {
+        return Err(AppError::Validation(
+            "no verification incident is active for this project".into(),
+        ));
+    };
+    if !current.halted {
+        return Err(AppError::Validation(
+            "the verification incident is still retrying".into(),
+        ));
+    }
+    if current.incident_id != incident_id {
+        return Err(AppError::Validation(format!(
+            "verification incident `{incident_id}` is stale; current incident is `{}`",
+            current.incident_id
+        )));
+    }
+    // The read above is keyed by this project (SH-648), so an incident of
+    // another project can only ever answer as "stale" here — but the
+    // invariant is stated, not assumed.
+    debug_assert_eq!(current.project, ctx.project());
+    ctx.store().write(|tx| {
+        tx.clear_verification_incident(incident_id)?;
+        Ok(())
+    })?;
+    Ok(current)
+}
+
 impl<'a, S: Store> VerificationQueue<'a, S> {
     /// Creates a queue over every project in one daemon store.
     #[must_use]
@@ -127,71 +234,490 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         Ok(self.ordered()?.into_iter().next())
     }
 
-    /// Returns every submitted story across every project, in the exact order
-    /// [`Self::next`] would drain them (SH-524): priority, then creation time,
-    /// then project/story identity. A queued candidate's position and wait are
-    /// computed from this list, never re-derived from a second query that
-    /// could race the one [`Self::next`] itself used.
+    /// Returns every submitted story across every project, in one global
+    /// order (SH-524): priority, then creation time, then project/story
+    /// identity. Each project's worker drains [`Self::ordered_for`]; this is
+    /// the cross-project view.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
     }
 
-    /// Returns a completed story whose post-merge resources still need reap.
+    /// Returns one project's submitted stories in the exact order its worker
+    /// drains them (SH-648). A queued candidate's position and wait are
+    /// computed from this list, never re-derived from a second query that
+    /// could race the one the worker itself used.
+    pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| ordered_candidates_for(tx, project))?)
+    }
+
+    /// Returns this story's current submitted generation, if it still has one.
+    pub(crate) fn current_for(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| {
+            Ok(ordered_candidates_for(tx, candidate.project)?
+                .into_iter()
+                .find(|current| current.story_id == candidate.story_id))
+        })?)
+    }
+
+    /// Atomically records a green result only while `candidate` is current.
+    pub(crate) fn record_generation_merged(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        pull_request_url: &str,
+        green_comment: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let linked = tx
+                .open_pr_links_for_story(project, story_no)?
+                .into_iter()
+                .any(|link| link.close_on_merge && link.url == pull_request_url);
+            if !linked {
+                return Err(AppError::Validation(format!(
+                    "story `{}` no longer links submitted pull request `{pull_request_url}`",
+                    candidate.story_id
+                ))
+                .into());
+            }
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
+            let states = tx.state_map(project)?;
+            clear_candidate_incident(tx, candidate)?;
+            append_state_transition(
+                tx,
+                project,
+                story_no,
+                &row,
+                &prefix,
+                &states,
+                &done,
+                &now,
+                vec![
+                    StoryEvent::StoryCommentAdded {
+                        at: now.clone(),
+                        text: green_comment.to_string(),
+                    },
+                    StoryEvent::StoryPrMerged {
+                        at: now.clone(),
+                        url: pull_request_url.to_string(),
+                    },
+                ],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Atomically records a submission the verifier just made (SH-647): the
+    /// pull request link, `close_on_merge`, and one marked SUBMITTED comment,
+    /// only while `candidate` is current. Hands back the open link as the
+    /// store now folds it, so the caller proceeds on a store fact rather than
+    /// on a `PrLink` it assembled by hand.
     ///
-    /// Active verification is intentionally queried separately and first by
-    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    /// The cross-repository rule is `PrLinkService::link`'s: a project with
+    /// registered GitHub origins accepts only a pull request on one of them;
+    /// a project with none registered has nothing to check against. Re-linking
+    /// a URL the story already links upserts, which is what makes recording
+    /// the adopted pull request on every generation idempotent.
+    pub(crate) fn record_generation_submitted(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        pull_request: &SubmittedPullRequest,
+    ) -> Result<GenerationWrite<PrLink>, AppError> {
+        let reference = parse_pr_url(&pull_request.url)?;
+        let branch = candidate
+            .cleanup_lease
+            .as_ref()
+            .map(|lease| lease.branch.clone())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "story `{}` has no cleanup lease; nothing was submitted on its behalf",
+                    candidate.story_id
+                ))
+            })?;
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let registered =
+                super::pr_link::github_repos_from_remotes(&tx.project_remotes(project)?);
+            if !registered.is_empty()
+                && !registered.iter().any(|repo| {
+                    repo.host.eq_ignore_ascii_case(&reference.host)
+                        && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                        && repo.repo.eq_ignore_ascii_case(&reference.repo)
+                })
+            {
+                return Err(AppError::Validation(format!(
+                    "the verifier opened pull request `{}` on a repository this project has not registered ({}); refusing to link it",
+                    pull_request.url,
+                    registered
+                        .iter()
+                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .into());
+            }
+            let body = format!(
+                "{VERIFICATION_SUBMITTED_PREFIX} `{branch}` is on origin at {}; {} pull request {}.",
+                pull_request.head_oid,
+                if pull_request.adopted {
+                    "adopted open"
+                } else {
+                    "opened"
+                },
+                pull_request.url
+            );
+            let mut events = vec![StoryEvent::StoryPrLinked {
+                at: now.clone(),
+                url: pull_request.url.clone(),
+                owner: reference.owner.clone(),
+                repo: reference.repo.clone(),
+                number: reference.number,
+                close_on_merge: true,
+            }];
+            events.extend(marked_comment_events(
+                &row,
+                VERIFICATION_SUBMITTED_PREFIX,
+                &body,
+                &now,
+            ));
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            let link = tx
+                .open_pr_links_for_story(project, story_no)?
+                .into_iter()
+                .find(|link| link.close_on_merge && link.url == pull_request.url)
+                .ok_or_else(|| {
+                    StoreError::Corrupt(format!(
+                        "pull request `{}` was just linked to `{}` and does not read back open",
+                        pull_request.url, candidate.story_id
+                    ))
+                })?;
+            Ok(GenerationWrite::Applied(link))
+        })?)
+    }
+
+    /// Atomically records a diagnosis and returns only the current generation.
+    pub(crate) fn record_generation_returned(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        diagnosis: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let states = tx.state_map(project)?;
+            let target = states.get(RETURNED_STATE).cloned().ok_or_else(|| {
+                AppError::Validation(format!(
+                    "project has no required OPEN `{RETURNED_STATE}` state; run `story doctor --fix`"
+                ))
+            })?;
+            clear_candidate_incident(tx, candidate)?;
+            append_state_transition(
+                tx,
+                project,
+                story_no,
+                &row,
+                &prefix,
+                &states,
+                &target,
+                &now,
+                vec![StoryEvent::StoryCommentAdded {
+                    at: now.clone(),
+                    text: diagnosis.to_string(),
+                }],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Records a failed remediation delivery only if no later submission has
+    /// replaced the generation that was returned for repair.
+    pub(crate) fn set_generation_awaiting(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        reason: &str,
+    ) -> Result<GenerationWrite<()>, AppError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(AppError::Validation(
+                "awaiting reason must not be empty".to_string(),
+            ));
+        }
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if row.state != "in-progress" || !candidate_is_latest_generation(&*tx, &row, candidate)?
+            {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryAwaitingSet {
+                    at: now,
+                    awaiting: reason.to_string(),
+                }],
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(()))
+        })?)
+    }
+
+    /// Atomically records an infrastructure incident for the current generation.
+    pub(crate) fn record_generation_incident(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        disposition: VerificationFailureDisposition,
+        detail: &str,
+        retry_attempts: u32,
+    ) -> Result<GenerationWrite<VerificationIncident>, AppError> {
+        let generation = candidate.verifying_generation.ok_or_else(|| {
+            AppError::Storage(format!(
+                "{} has no verification generation",
+                candidate.story_id
+            ))
+        })?;
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let incident_id = format!("{}:{}", candidate.project.get(), generation.get());
+            let mut incident = tx
+                .verification_incident(project)?
+                .filter(|current| current.incident_id == incident_id)
+                .unwrap_or(VerificationIncident {
+                    incident_id,
+                    project: candidate.project,
+                    story: story_no,
+                    generation,
+                    disposition,
+                    halted: false,
+                    attempts: 0,
+                    detail: String::new(),
+                    first_failed_at: now.clone(),
+                    last_failed_at: now.clone(),
+                });
+            incident.attempts = incident.attempts.saturating_add(1);
+            incident.disposition = disposition;
+            incident.detail = detail.to_string();
+            incident.last_failed_at = now.clone();
+            incident.halted = disposition == VerificationFailureDisposition::Permanent
+                || incident.attempts >= retry_attempts;
+            let state = if incident.halted {
+                "HALTED"
+            } else {
+                "RETRYING"
+            };
+            // What the reader must not conclude: that this story is the
+            // cause, or that the verifier is still serving anyone. An
+            // infrastructure incident is the verifier's own, it stops the
+            // whole queue, and the reader is in a terminal — so the halted
+            // form names the exact command that releases it (SH-666).
+            let consequence = if incident.halted {
+                format!(
+                    "This halt stops the verifier's whole queue. No story is at fault. The verifier could not run. The failure first occurred at {}. Fix the cause below. Release the queue with: `story verifier ack {}`.",
+                    candidate.story_id, incident.incident_id
+                )
+            } else {
+                "The verifier is retrying on its own; every story behind this one waits until it recovers or halts.".to_string()
+            };
+            let body = format!(
+                "{VERIFICATION_INFRASTRUCTURE_PREFIX} {state}\n\nAttempt {} of {retry_attempts}. First failure: {}. Latest attempt: {}.\nThe story remains verifying; its code was not classified red.\n{consequence}\n\n{}",
+                incident.attempts,
+                incident.first_failed_at,
+                incident.last_failed_at,
+                crate::text_lint::quote_evidence(&incident.detail)
+            );
+            let events = marked_comment_events(
+                &row,
+                VERIFICATION_INFRASTRUCTURE_PREFIX,
+                &body,
+                &now,
+            );
+            if !events.is_empty() {
+                let states = tx.state_map(project)?;
+                append_and_fold(
+                    tx,
+                    project,
+                    story_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &events,
+                    ctx.provenance(),
+                )?;
+            }
+            tx.put_verification_incident(&incident)?;
+            Ok(GenerationWrite::Applied(incident))
+        })?)
+    }
+
+    /// Rewrites a marked comment only while `candidate` remains current.
+    pub(crate) fn upsert_generation_comment(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        marker: &str,
+        body: &str,
+    ) -> Result<GenerationWrite<bool>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(self.store.write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let events = marked_comment_events(&row, marker, body, &now);
+            if events.is_empty() {
+                return Ok(GenerationWrite::Applied(false));
+            }
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            Ok(GenerationWrite::Applied(true))
+        })?)
+    }
+
+    /// Returns a completed story, in any project, whose post-merge resources
+    /// still need reap. Each project's worker asks [`Self::next_cleanup_for`];
+    /// this is the cross-project view.
     pub fn next_cleanup(&self) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = Vec::new();
             for project in tx.projects()? {
-                let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
-                let links = tx.pr_links(project.id)?;
-                let rows = tx.stories(project.id, &StoryQuery::all().state("done"))?;
-                for row in rows {
-                    let passed = row
-                        .snapshot
-                        .comments
-                        .iter()
-                        .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-                    let reaped = row.snapshot.comments.iter().any(|comment| {
-                        comment
-                            .text
-                            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-                    });
-                    if !passed || reaped {
-                        continue;
-                    }
-                    let pull_request = links
-                        .iter()
-                        .find(|(story_no, link)| {
-                            *story_no == row.story_no
-                                && link.close_on_merge
-                                && link.status == "merged"
-                        })
-                        .map(|(_, link)| link.clone())
-                        .ok_or(VerificationProblem::MissingPullRequest);
-                    candidates.push(VerificationCandidate {
-                        project: project.id,
-                        project_slug: project.slug.clone(),
-                        story_id: row.story_no.to_id(&project.prefix),
-                        title: row.title,
-                        priority: row.priority,
-                        created_at: row.created_at,
-                        // The cleanup pass runs over stories already `done` —
-                        // there is no queue wait left to report.
-                        verifying_since: None,
-                        verifying_generation: None,
-                        checkout: checkout.clone(),
-                        cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
-                        pull_request,
-                    });
-                }
+                candidates.extend(cleanup_candidates_for(tx, project.id)?);
             }
             sort_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
 
+    /// Returns one project's completed story whose post-merge resources still
+    /// need reap.
+    ///
+    /// Active verification is intentionally queried separately and first by
+    /// the daemon so a transient cleanup fault cannot starve the release gate.
+    pub fn next_cleanup_for(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<VerificationCandidate>, AppError> {
+        Ok(self.store.read(|tx| {
+            let mut candidates = cleanup_candidates_for(tx, project)?;
+            sort_candidates(&mut candidates);
+            Ok(candidates.into_iter().next())
+        })?)
+    }
+}
+
+/// One project's `done` stories that passed central verification and have
+/// not yet been reaped (SH-648: the cleanup pass is per project, like the
+/// queue it follows).
+fn cleanup_candidates_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, StoreError> {
+    let mut candidates = Vec::new();
+    if let Some(project) = tx.project(project)? {
+        let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
+        let links = tx.pr_links(project.id)?;
+        let rows = tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
+        for row in rows {
+            let passed = row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
+            let reaped = row.snapshot.comments.iter().any(|comment| {
+                comment
+                    .text
+                    .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
+            });
+            if !passed || reaped {
+                continue;
+            }
+            let pull_request = links
+                .iter()
+                .find(|(story_no, link)| {
+                    *story_no == row.story_no && link.close_on_merge && link.status == "merged"
+                })
+                .map(|(_, link)| link.clone())
+                .ok_or(VerificationProblem::MissingPullRequest);
+            candidates.push(VerificationCandidate {
+                project: project.id,
+                project_slug: project.slug.clone(),
+                story_id: row.story_no.to_id(&project.prefix),
+                title: row.title,
+                priority: row.priority,
+                created_at: row.created_at,
+                // The cleanup pass runs over stories already `done` —
+                // there is no queue wait left to report.
+                verifying_since: None,
+                verifying_generation: None,
+                checkout: checkout.clone(),
+                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                pull_request,
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+impl<S: Store> VerificationQueue<'_, S> {
     /// Records the verifier-observed merge and closes the submitted story.
     ///
     /// The exact PR URL is checked inside the write transaction. A stale
@@ -227,17 +753,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 ))
                 .into());
             }
-            let ordered_states = tx.states(project)?;
-            let done = ordered_states
-                .iter()
-                .find(|state| state.slug == "done" && state.super_state == SuperState::Closed)
-                .cloned()
-                .ok_or_else(|| {
-                    AppError::Validation(
-                        "project has no required CLOSED `done` state; run `story doctor --fix`"
-                            .to_string(),
-                    )
-                })?;
+            let done = completion_state_or_refuse(&tx.states(project)?)?;
             let states = tx.state_map(project)?;
             let mut events = vec![StoryEvent::StoryPrMerged {
                 at: now.clone(),
@@ -274,6 +790,82 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 }
 
+/// The state a green merge lands a story in, or the refusal that names the
+/// repair (SH-652).
+///
+/// One door for both writers so the verifier cannot disagree with itself, and
+/// a refusal rather than a fallback: a catalog with no CLOSED `done` is below
+/// the SH-125 floor, and writing verified work into any other CLOSED state
+/// would record the wrong business outcome — the reason SH-521 chose the
+/// required slug over "whichever CLOSED state sorts first" in the first place.
+fn completion_state_or_refuse(states: &[StateDef]) -> Result<StateDef, AppError> {
+    completion_state(states).ok_or_else(|| {
+        AppError::Validation(format!(
+            "project has no required CLOSED `{COMPLETION_STATE_SLUG}` state; run `story doctor --fix`"
+        ))
+    })
+}
+
+fn candidate_is_current(
+    tx: &impl ReadOps,
+    row: &StoryRow,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    if row.state != VERIFYING_STATE {
+        return Ok(false);
+    }
+    candidate_is_latest_generation(tx, row, candidate)
+}
+
+fn candidate_is_latest_generation(
+    tx: &impl ReadOps,
+    row: &StoryRow,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    Ok(
+        verifying_entry(tx, candidate.project, row.story_no)?.map(|(_, generation)| generation)
+            == candidate.verifying_generation,
+    )
+}
+
+fn clear_candidate_incident(
+    tx: &mut impl WriteOps,
+    candidate: &VerificationCandidate,
+) -> Result<(), StoreError> {
+    if let Some(incident) = tx
+        .verification_incident(candidate.project)?
+        .filter(|incident| candidate.verifying_generation == Some(incident.generation))
+    {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    Ok(())
+}
+
+fn marked_comment_events(row: &StoryRow, marker: &str, body: &str, now: &str) -> Vec<StoryEvent> {
+    let existing = row
+        .snapshot
+        .comments
+        .iter()
+        .rev()
+        .find(|comment| comment.text.starts_with(marker));
+    if existing.is_some_and(|comment| comment.text == body) {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    if let Some(existing) = existing {
+        events.push(StoryEvent::StoryCommentRetracted {
+            at: now.to_string(),
+            comment_at: existing.at.clone(),
+            text: existing.text.clone(),
+        });
+    }
+    events.push(StoryEvent::StoryCommentAdded {
+        at: now.to_string(),
+        text: body.to_string(),
+    });
+    events
+}
+
 /// The timestamp `story` most recently entered [`VERIFYING_STATE`], read from
 /// the story's own `StoryStateChanged` history. `None` for the vanishingly
 /// unlikely case no such event survives (SH-372: absence states nothing —
@@ -283,7 +875,7 @@ fn verifying_entry(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
-) -> Result<Option<(String, GlobalSeq)>, AppError> {
+) -> Result<Option<(String, GlobalSeq)>, StoreError> {
     let events = tx.events_for(project, story)?;
     Ok(events.iter().rev().find_map(|event| match event.known() {
         Some(StoryEvent::StoryStateChanged { at, state }) if state == VERIFYING_STATE => {
@@ -294,14 +886,33 @@ fn verifying_entry(
 }
 
 /// Every submitted story across every project, read from an existing
-/// transaction. The dashboard combines this queue snapshot with its story
-/// snapshot in one transaction; [`VerificationQueue::ordered`] delegates here
-/// so verifier and dashboard ordering cannot drift (SH-549).
+/// transaction, in one global order. Kept for the surfaces that look across
+/// projects; each project's own worker and dashboard use
+/// [`ordered_candidates_for`], which is what this concatenates (SH-648).
 pub(crate) fn ordered_candidates(
     tx: &impl ReadOps,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     let mut candidates = Vec::new();
     for project in tx.projects()? {
+        candidates.extend(ordered_candidates_for(tx, project.id)?);
+    }
+    sort_candidates(&mut candidates);
+    Ok(candidates)
+}
+
+/// One project's submitted stories, read from an existing transaction, in
+/// the order its verifier drains them. The dashboard combines this queue
+/// snapshot with its story snapshot in one transaction;
+/// [`VerificationQueue::ordered_for`] delegates here so verifier and dashboard
+/// ordering cannot drift (SH-549). A project the store does not know yields
+/// an empty queue rather than an error: a worker whose project was deleted
+/// reads that as "nothing to do" and retires itself.
+pub(crate) fn ordered_candidates_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    let mut candidates = Vec::new();
+    if let Some(project) = tx.project(project)? {
         let checkout = tx.checkout_path(project.id)?;
         let registered =
             super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
@@ -315,9 +926,12 @@ pub(crate) fn ordered_candidates(
             let pull_request = match (&checkout, links.as_slice()) {
                 (None, _) => Err(VerificationProblem::MissingCheckout),
                 (Some(_), [link])
-                    if registered.iter().any(|repo| {
-                        repo.owner.eq_ignore_ascii_case(&link.owner)
-                            && repo.repo.eq_ignore_ascii_case(&link.repo)
+                    if parse_pr_url(&link.url).is_ok_and(|reference| {
+                        registered.iter().any(|repo| {
+                            repo.host.eq_ignore_ascii_case(&reference.host)
+                                && repo.owner.eq_ignore_ascii_case(&reference.owner)
+                                && repo.repo.eq_ignore_ascii_case(&reference.repo)
+                        })
                     }) =>
                 {
                     Ok(link.clone())
@@ -326,7 +940,7 @@ pub(crate) fn ordered_candidates(
                     url: link.url.clone(),
                     registered: registered
                         .iter()
-                        .map(|repo| format!("{}/{}", repo.owner, repo.repo))
+                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
                         .collect(),
                 }),
                 (Some(_), []) => Err(VerificationProblem::MissingPullRequest),

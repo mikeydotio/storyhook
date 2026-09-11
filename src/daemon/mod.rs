@@ -10,13 +10,16 @@
 //! * [`backup`] — the daily verified snapshot of the store.
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
-//! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
+//! * [`commands`] — `story daemon start|restart|stop|status|install|uninstall|token|gc`.
 //! * [`crash`] — the panic hook and the crash ledger: what the daemon leaves
 //!   behind when it does not exit cleanly, and what the next one does about
 //!   it (SH-287).
-//! * [`engine`] — wakes the Full Auto reconcile loop: a restart sweep once at
-//!   startup (D11), then the ordinary pass on every project-change bus event
-//!   or a coarse tick (SH-466).
+//! * [`engine`] — reconciles persisted Full Auto state before publication
+//!   (D11), then wakes the ordinary pass on every project-change bus event or
+//!   a coarse tick (SH-466, SH-617).
+//! * [`gc`] — `story daemon gc`: reclaims the runtime directory of a store
+//!   that no longer exists, and keeps everything it cannot prove throwaway
+//!   (SH-638).
 //! * [`github_poll`] — the unattended background poll for merged pull
 //!   requests (SH-212), spending the credential `story github-auth login`
 //!   stored in the OS keychain. `github-pr`-gated: absent entirely from a
@@ -26,6 +29,8 @@
 //! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
 //!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
+//! * [`seat_guard`] — what an *uninstalled* build is refused on the default
+//!   store: replacing its daemon, or starting one at all (SH-634).
 //! * [`serve`] — the listeners and the accept loop.
 //! * [`subscribe`] — a client for [`bus`]'s change feed: what
 //!   [`crate::tui::event::EventSource`] uses instead of a store handle of its
@@ -40,17 +45,21 @@ pub mod activity;
 pub mod agent;
 pub mod backup;
 pub mod bus;
+pub mod cleanup;
 pub mod commands;
 pub mod crash;
 pub mod engine;
+pub mod gc;
 #[cfg(feature = "github-pr")]
 pub mod github_poll;
 pub mod http1;
 pub mod install_guard;
 pub mod lifecycle;
+pub mod seat_guard;
 pub mod serve;
 pub mod subscribe;
 pub mod tailnet;
 pub mod verification;
 pub mod verification_progress;
+pub mod verifier_bundle;
 pub mod watch;

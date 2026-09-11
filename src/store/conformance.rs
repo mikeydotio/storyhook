@@ -3652,6 +3652,21 @@ macro_rules! store_conformance_suite {
                 );
             }
 
+            #[test]
+            fn cleanup_settings_round_trip() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let settings = ProjectSettings {
+                    cleanup_auto: Some(false),
+                    cleanup_interval: Some("6h".into()),
+                    ..ProjectSettings::default()
+                };
+                f.store()
+                    .write(|tx| tx.put_settings(project, &settings))
+                    .unwrap();
+                assert_eq!(f.store().read(|tx| tx.settings(project)).unwrap(), settings);
+            }
+
             /// Every setting written every time, from the caller's value. The
             /// pattern this rules out is read-modify-write of a serialized
             /// document, which is how SH-49 destroyed a field the struct in
@@ -3663,6 +3678,8 @@ macro_rules! store_conformance_suite {
                 let full = ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
+                    cleanup_auto: Some(false),
+                    cleanup_interval: Some("6h".into()),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &full))
@@ -4454,6 +4471,8 @@ macro_rules! store_conformance_suite {
                 let settings = ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
+                    cleanup_auto: Some(false),
+                    cleanup_interval: Some("6h".into()),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &settings))

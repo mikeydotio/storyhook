@@ -28,7 +28,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::provenance::Provenance;
-use crate::domain::{StateDef, StoryEvent, SuperState, TypeDef};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, StateDef, StoryEvent, SuperState, TypeDef, completion_state,
+};
 use crate::env::git_env::output as git_output;
 use crate::error::AppError;
 use crate::output::{DeletePlan, SetPrefixPlan};
@@ -285,20 +287,21 @@ fn refuse_project_burst(
 ///   [`prefix`](Self::prefix), written once by `story project new` so that a fresh
 ///   clone on another machine knows which project it is looking at before it
 ///   has any local database row to consult.
-/// * **Configuration** — the optional [`plugin`](Self::plugin) and
-///   [`hooks`](Self::hooks) tables, which are *user-authored* and which
-///   storyhook reads and never writes. They used to be
-///   `.storyhook/plugin-config.toml` and `.storyhook/hooks.toml`; they belong
-///   in the repository because they are decisions about *this* repository, not
-///   data about its stories, and folding them into the pointer means the
-///   directory can die without taking a shipped feature with it.
+/// * **Configuration** — the optional [`plugin`](Self::plugin),
+///   [`hooks`](Self::hooks), and [`github`](Self::github) tables, which are
+///   *user-authored* and which storyhook reads and never writes. The first two
+///   used to be `.storyhook/plugin-config.toml` and `.storyhook/hooks.toml`;
+///   all three belong in the repository because they are decisions about
+///   *this* repository, not data about its stories, and folding them into the
+///   pointer means the directory can die without taking a shipped feature
+///   with it.
 ///
 /// It deliberately does not carry states, types, members or stories. Those
 /// live in the store; a repository that carried its own copy would be a second
 /// source of truth, which is the thing this whole rearchitecture exists to
 /// delete.
 ///
-/// # Why the two config tables are untyped here
+/// # Why the config tables are untyped here
 ///
 /// They are [`toml::Value`], not typed structs, for two reasons that both
 /// matter. First, **resolution must not depend on configuration**: a typo in a
@@ -326,6 +329,15 @@ pub struct ProjectPointer {
     /// storyhook never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<toml::Value>,
+    /// The `[github]` table, if the repository has one. User-authored;
+    /// storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<toml::Value>,
+    /// The `[verify]` table, if the repository has one — the merge gate the
+    /// verifier runs (SH-649, read by [`super::gate_command::gate_command_for`]).
+    /// User-authored; storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<toml::Value>,
 }
 
 impl ProjectPointer {
@@ -339,6 +351,8 @@ impl ProjectPointer {
             prefix,
             plugin: None,
             hooks: None,
+            github: None,
+            verify: None,
         }
     }
 }
@@ -917,7 +931,7 @@ pub fn pointer_path(root: &Path) -> PathBuf {
 ///
 /// Every failure names the file. That is not politeness: `.storyhook.toml` is
 /// **committed to the repository and hand-authored** — it carries the user's
-/// `[plugin]` and `[hooks]` tables beside the project's identity — so a syntax
+/// `[plugin]`, `[hooks]`, `[github]` and `[verify]` tables beside the project's identity — so a syntax
 /// error in it is an ordinary mistake made in an ordinary editor. Left to
 /// `toml`'s own words, `story list` reports `TOML parse error at line 1, column
 /// 6` and the user has no file to open. Resolution runs this on almost every
@@ -1248,7 +1262,8 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })?;
 
         // Never overwritten. The file is user-authored the moment it carries a
-        // `[plugin]` or `[hooks]` table, and `story project new` is idempotent — so a
+        // `[plugin]`, `[hooks]`, or `[github]` table, and `story project new` is
+        // idempotent — so a
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.
@@ -1265,7 +1280,9 @@ impl<'a, S: Store> ProjectService<'a, S> {
             write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
         }
 
-        let done_state = self.store.read(|tx| Ok(closed_state(tx, project)?))?;
+        let done_state = self
+            .store
+            .read(|tx| Ok(completion_state_slug(tx, project)?))?;
         let agents_md = options.agents_md && self.write_agents_md(&root, &prefix, &done_state)?;
 
         // Read after the transaction, because the holder is only interesting
@@ -1756,7 +1773,7 @@ pub fn default_states() -> Vec<StateDef> {
             description: None,
         },
         StateDef {
-            slug: "closed".to_string(),
+            slug: "dropped".to_string(),
             super_state: SuperState::Closed,
             role: None,
             description: None,
@@ -1799,17 +1816,18 @@ pub fn default_types() -> Vec<TypeDef> {
     .collect()
 }
 
-/// The project's first CLOSED state, for the templates that name "done".
+/// The project's completion state, for the templates that name it — the
+/// same answer the verifier writes (`domain::completion_state`, SH-652).
 ///
-/// Falls back to the literal `done` for a project that has none — a template
-/// is documentation, and documentation that fails to render is worse than
-/// documentation naming a state the reader can correct.
-pub fn closed_state(tx: &impl ReadOps, project: ProjectId) -> Result<String, AppError> {
-    Ok(tx
-        .states(project)?
-        .into_iter()
-        .find(|state| state.super_state == SuperState::Closed)
-        .map_or_else(|| "done".to_string(), |state| state.slug))
+/// Renders the constant for a project below the floor rather than refusing:
+/// a template is documentation, and documentation that fails to render is
+/// worse than documentation naming a state the reader can add with
+/// `story doctor --fix`. Until SH-652 this answered the project's *first*
+/// CLOSED state, which is a layout fact, and disagreed with the verifier the
+/// moment a project ordered another CLOSED state ahead of `done`.
+pub fn completion_state_slug(tx: &impl ReadOps, project: ProjectId) -> Result<String, AppError> {
+    Ok(completion_state(&tx.states(project)?)
+        .map_or_else(|| COMPLETION_STATE_SLUG.to_string(), |state| state.slug))
 }
 
 /// A checkout's canonical path, falling back to the path as given.
