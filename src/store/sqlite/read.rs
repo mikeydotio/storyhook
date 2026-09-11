@@ -1405,3 +1405,18 @@ fn one<T>(
         .transpose()
         .map_err(|e| StoreError::from_sqlite(e, context))
 }
+
+/// Absence is the historical always-running default.
+pub(super) fn verification_enabled(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<bool, StoreError> {
+    sql(
+        conn.query_row(
+            "SELECT COALESCE((SELECT enabled FROM verification_control WHERE project_id = ?1), 1)",
+            [project.get()],
+            |row| row.get(0),
+        ),
+        "reading verifier admission permission",
+    )
+}

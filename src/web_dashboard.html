@@ -681,13 +681,14 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
   margin-left: auto;
 }
 .column-archive-btn:hover { color: var(--accent); background: var(--bg-raised); }
-.column-sort-btn {
+.column-sort-btn, .verification-control-btn {
   border: none; background: none; color: var(--fg-muted); font-size: 0.8125rem;
   padding: 0.0625rem 0.25rem; cursor: pointer; border-radius: var(--radius-sm);
   display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
-.column-sort-btn:hover { color: var(--accent); background: var(--bg-raised); }
+.column-sort-btn:hover, .verification-control-btn:hover { color: var(--accent); background: var(--bg-raised); }
+.verification-control-status { padding: 0 var(--space-card) var(--space-control); color: var(--fg-metadata); font-size: var(--type-metadata); }
 .column-cards { flex: 1; overflow-y: auto; padding: 0.125rem var(--space-control) var(--space-card); display: flex; flex-direction: column; gap: var(--space-control); min-height: 3rem; }
 .column-empty { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); text-align: center; padding: var(--space-section) 0; border: 1.5px dashed var(--control-boundary); border-radius: var(--radius-sm); }
 
@@ -2764,7 +2765,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // while a newer run is live, and because abandon owns a stop-then-ack
     // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
-    verificationAcknowledgement: null,
+    verificationRequests: Object.create(null),
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -2867,6 +2868,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     expand: "➕",
     filters: "🎛️",
     home: "🏠",
+    play: "▶️",
+    stop: "⏹️",
     search: "🔍",
     settings: "⚙️",
     sort: "↕️",
@@ -5158,10 +5161,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var visible = !!(incident && incident.halted);
     mount.hidden = !visible;
     if (!visible) {
+      delete mount.dataset.fingerprint;
       if (mount.firstChild) clear(mount);
       return;
     }
-    var pending = state.verificationAcknowledgement === incident.incident_id;
+    var pending = state.verificationRequests[state.repoId];
     var fingerprint = JSON.stringify([incident, pending]);
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
@@ -5170,8 +5174,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
         el("button", {
           type: "button", class: "btn btn-warn", disabled: pending,
-          onClick: function() { acknowledgeVerificationIncident(incident.incident_id); }
-        }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id, "retry"); }
+        }, [pending && pending.action === "retry" ? "Acknowledging…" : "Acknowledge and retry"]),
+        el("button", {
+          type: "button", class: "btn", disabled: !!pending,
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id, "leave-stopped"); }
+        }, [pending && pending.action === "leave-stopped" ? "Acknowledging…" : "Leave verifier stopped"])
       ]),
       el("div", { class: "engine-banner-meta" }, [
         el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
@@ -5184,18 +5192,121 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     measureNoticeBands();
   }
 
-  function acknowledgeVerificationIncident(incidentId) {
-    if (!state.repoId || state.verificationAcknowledgement) return;
-    state.verificationAcknowledgement = incidentId;
+  function acknowledgeVerificationIncident(incidentId, action) {
+    submitVerificationRequest("ack", { incident_id: incidentId, action: action });
+  }
+
+  /** Every verifier write captures its project, so a late response cannot
+   * change the board the operator navigated to while it was pending. */
+  function submitVerificationRequest(verb, body) {
+    var project = state.repoId;
+    if (!project || state.verificationRequests[project]) return;
+    state.verificationRequests[project] = body;
     renderVerificationBanner();
-    api("POST", apiBase() + "/verification/ack", { incident_id: incidentId }).then(function() {
-      state.verificationAcknowledgement = null;
+    renderVerificationControl();
+    api("POST", apiBase() + "/verification/" + verb, body).then(function(response) {
+      delete state.verificationRequests[project];
+      if (state.repoId !== project) return;
+      boardFetchFloor = boardFetchTicket;
+      if (state.data) {
+        if (response.state) state.data.verification_control = { state: response.state };
+        var incident = state.data.verification_incident;
+        if (incident && incident.incident_id === response.acknowledged) state.data.verification_incident = null;
+      }
+      renderVerificationBanner();
+      renderVerificationControl();
       fetchData();
     }).catch(function(err) {
-      state.verificationAcknowledgement = null;
+      delete state.verificationRequests[project];
       toastError(err);
+      if (state.repoId !== project) return;
+      renderVerificationBanner();
+      renderVerificationControl();
       fetchData();
     });
+  }
+
+  function verifierControlState() {
+    var control = state.data && state.data.verification_control;
+    var mode = control ? control.state : "loading";
+    var incident = state.data && state.data.verification_incident;
+    return mode === "running" && incident && incident.halted ? "halted" : mode;
+  }
+
+  /** The shell survives board refreshes; only confirmed state changes its glyph. */
+  function renderVerificationControl() {
+    var column = document.querySelector('.column[data-state="verifying"]');
+    if (!column) return;
+    var button = column.querySelector(".verification-control-btn");
+    if (!button) return;
+    var mode = verifierControlState();
+    var pending = state.verificationRequests[state.repoId];
+    var canStop = mode === "running" || mode === "draining";
+    var label = canStop ? "Stop verifier" : mode === "stopping" ? "Stopping verifier…" : "Start verifier";
+    button.disabled = !!pending || mode === "stopping" || mode === "halted" || mode === "loading";
+    button.title = mode === "halted" ? "Acknowledge the verification failure before starting" : label;
+    button.setAttribute("aria-label", label);
+    if (canStop) button.setAttribute("aria-haspopup", "menu");
+    else button.removeAttribute("aria-haspopup");
+    var icon = canStop || mode === "stopping" ? "stop" : "play";
+    if (button.dataset.icon !== icon) {
+      clear(button);
+      button.appendChild(emojiIcon(icon));
+      button.dataset.icon = icon;
+    }
+    var status = column.querySelector(".verification-control-status");
+    var text = pending ? "Updating verifier…" : mode === "draining" ? "Finishing inflight verification…"
+      : mode === "stopping" ? "Stopping inflight verification…" : mode === "stopped" ? "Verifier stopped"
+      : mode === "halted" ? "Verification needs acknowledgement" : "";
+    status.textContent = text;
+    status.hidden = !text;
+    if (verificationMenuNode && (mode !== verificationMenuMode || !!pending)) closeVerificationMenu(true);
+  }
+
+  var verificationMenuNode = null;
+  var verificationMenuInvoker = null;
+  var verificationMenuFocusIndex = -1;
+  var verificationMenuMode = null;
+
+  function openVerificationMenu(e, invoker) {
+    closeAllPopovers();
+    var mode = verifierControlState();
+    if (state.verificationRequests[state.repoId]) return;
+    if (mode === "stopped") {
+      submitVerificationRequest("control", { action: "start" });
+      return;
+    }
+    if (mode !== "running" && mode !== "draining") return;
+    var project = state.repoId;
+    function select(action) {
+      if (state.repoId === project) submitVerificationRequest("control", { action: action });
+    }
+    verificationMenuInvoker = invoker;
+    verificationMenuMode = mode;
+    verificationMenuNode = renderMenuNode([
+      { label: "Let inflight verifications finish", disabled: mode === "draining", onSelect: function() { select("drain"); } },
+      { label: "Stop inflight verifications", danger: true, onSelect: function() { select("stop"); } }
+    ], "Stop verifier", function() { closeVerificationMenu(true); }, null);
+    verificationMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
+    verificationMenuNode.addEventListener("keydown", function(evt) {
+      handleMenuKeydown(evt, verificationMenuNode, verificationMenuFocusIndex, function(index) { verificationMenuFocusIndex = index; }, closeVerificationMenu);
+    });
+    document.body.appendChild(verificationMenuNode);
+    invoker.setAttribute("aria-expanded", "true");
+    var anchor = menuAnchor(e, invoker);
+    placeMenu(verificationMenuNode, anchor.x, anchor.y);
+    verificationMenuFocusIndex = focusMenuItem(verificationMenuNode, mode === "draining" ? 1 : 0, -1);
+  }
+
+  function closeVerificationMenu(restoreFocus) {
+    var invoker = verificationMenuInvoker;
+    if (verificationMenuNode) detach(verificationMenuNode);
+    verificationMenuNode = null;
+    verificationMenuInvoker = null;
+    verificationMenuMode = null;
+    verificationMenuFocusIndex = -1;
+    if (invoker) invoker.setAttribute("aria-expanded", "false");
+    if (restoreFocus) restoreOverlayFocus(invoker);
   }
 
   function currentEngineStartPending() {
@@ -8051,6 +8162,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     closeMoreMenu(false);
     closeStoryMenu(false);
     closeColumnSortMenu(false);
+    closeVerificationMenu(false);
   }
 
   /** The document-wide click listener that dismisses every popover (below)
@@ -8671,6 +8783,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // `ensureColumnShells`'s one-time shell -- that only rebuilds when the
       // *set* of states changes, not on every render, so a stale label
       // would otherwise survive any sort change made after the first paint.
+      if (stateDef.slug === "verifying") renderVerificationControl();
       var sortLabel = "Sort: " + columnSortLabel(stateDef.slug);
       var sortBtn = column.querySelector(".column-sort-btn");
       sortBtn.title = sortLabel;
@@ -8712,6 +8825,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             class: "column-archive-btn", type: "button", title: "Archive every story in this column",
             onClick: function() { openArchiveColumn(stateDef.slug); }
           }, ["Archive"]) : null,
+          stateDef.slug === "verifying" ? el("button", {
+            type: "button", class: "verification-control-btn", "aria-expanded": "false",
+            onClick: function(e) { e.stopPropagation(); openVerificationMenu(e, e.currentTarget); }
+          }, []) : null,
           el("span", { class: "column-count" }, ["0"]),
           // SH-305: opens a popup of Added/Modified/Priority x asc/desc for
           // this column alone. `stopPropagation` keeps the click from
@@ -8730,6 +8847,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             }
           }, [emojiIcon("sort")])
         ]),
+        stateDef.slug === "verifying" ? el("div", { class: "verification-control-status", role: "status", hidden: true }, []) : null,
         el("div", { class: "column-cards" }, [])
       ]);
       bindColumnDrop(column, stateDef.slug, isClosed);
