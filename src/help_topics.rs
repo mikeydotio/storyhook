@@ -1824,15 +1824,16 @@ Two ways to say why, and they behave differently:
                     CLEARS ITSELF the moment <blocker> closes. Repeat
                     --on to name more than one blocker.
 
-  "<reason>"        Free text. Never clears itself — you (or
+  "<reason>"        Without --on: free text. Never clears itself — you (or
                     `story unblock`) have to notice and clear it by
                     hand.
 
-Both may be given together, in one call: the edge and the reason
-commit atomically. A reason is only required when no --on was given
-at all.
+With --on, the optional reason is saved as a comment naming the
+blockers, in the same transaction as the edges. It does not set or
+clear awaiting. Existing independent prose holds remain in effect.
+A reason is only required when no --on was given at all.
 
-If a reason names a story id with no --on recording it as the
+If an awaiting reason names a story id with no edge recording it as the
 blocker, the response carries a warning saying so — the edge is
 almost always what you meant.
 
