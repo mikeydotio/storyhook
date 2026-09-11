@@ -112,7 +112,7 @@ $ story context --format
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story load-context [--format markdown|json]
+error: usage: story load-context [--format markdown|json] [--story <id>]
 
 
 $ story handoff --since
