@@ -248,6 +248,48 @@ exit 101
 }
 
 #[test]
+fn verifier_does_not_promote_test_output_to_compiler_diagnostics() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf '     Running tests/daemon_lifecycle.rs (target/debug/deps/daemon_lifecycle-fixture)\n'
+printf 'test replacement ... ok\n'
+printf 'error: the storyhook daemon stopped answering: io: Peer disconnected.\n'
+printf 'error[E0425]: printed by a test, not rustc\n'
+printf '{"reason":"compiler-message","message":{"level":"error","message":"test-printed JSON"}}\n'
+printf 'test forced_stop ... ok\n'
+printf 'test actual_failure ... FAILED\n'
+exit 101
+"#;
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+    assert_ok(&outcome, "classifying intentional test errors");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    let summary = detail.split("\nAncillary context").next().unwrap();
+    assert!(
+        summary.contains("daemon_lifecycle::actual_failure"),
+        "{detail}"
+    );
+    assert!(
+        !summary.contains("Compiler/build diagnostics") && !summary.contains("Peer disconnected"),
+        "test-owned error output was promoted to a compiler diagnostic: {detail}"
+    );
+    let log = fs::read_to_string(payload["log"].as_str().unwrap()).unwrap();
+    for printed in [
+        "Peer disconnected",
+        "printed by a test",
+        "test-printed JSON",
+    ] {
+        assert!(log.contains(printed), "full log lost {printed}: {log}");
+    }
+}
+
+#[test]
 fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let repo = MergeRepo::new();
     let base = repo.rev_parse("main");
@@ -255,6 +297,21 @@ fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let tree = stdout(&repo.preflight(&base, &head));
     let poller_container = repo.poller(&base);
     let poller = poller_container.path().join("poller");
+    let compiler = scratch_dir();
+    fs::create_dir(compiler.path().join("src")).unwrap();
+    fs::write(
+        compiler.path().join("Cargo.toml"),
+        "[package]\nname=\"diagnostics\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[workspace]\n",
+    )
+    .unwrap();
+    let errors = (1..=12)
+        .map(|i| format!("compiler_diagnostic_{i:02};\n"))
+        .collect::<String>();
+    fs::write(
+        compiler.path().join("src/lib.rs"),
+        format!("pub fn fails() {{\n{errors}}}\n"),
+    )
+    .unwrap();
     let command = r#"
 printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
 printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
@@ -264,16 +321,30 @@ while [ "$i" -le 25 ]; do
     printf 'test failure_%02d ... FAILED\n' "$i"
     i=$((i + 1))
 done
-i=1
-while [ "$i" -le 12 ]; do
-    printf 'error[E%04d]: compiler diagnostic %02d\n' "$i" "$i"
-    i=$((i + 1))
-done
+python3 "$1" -- cargo check --offline --manifest-path "$2"
+printf 'error: intentional test output\n'
+printf 'error[E0425]: another test impostor\n'
+printf '{"reason":"compiler-message","message":{"level":"error","message":"test JSON impostor"}}\n'
 printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (300):\n'
 exit 101
 "#;
 
-    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+    let adapter = checkout().join("scripts/cargo_diagnostics.py");
+    let manifest = compiler.path().join("Cargo.toml");
+    let outcome = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            command,
+            "probe",
+            adapter.to_str().unwrap(),
+            manifest.to_str().unwrap(),
+        ],
+    );
 
     assert_ok(&outcome, "summarizing bounded verification diagnostics");
     let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
@@ -296,8 +367,12 @@ exit 101
         summary.contains("Compiler/build diagnostics (12; showing first 10)"),
         "{detail}"
     );
-    assert!(summary.contains("compiler diagnostic 10"), "{detail}");
-    assert!(!summary.contains("compiler diagnostic 11"), "{detail}");
+    assert!(summary.contains("compiler_diagnostic_10"), "{detail}");
+    assert!(!summary.contains("compiler_diagnostic_11"), "{detail}");
+    assert!(
+        !summary.contains("impostor") && !summary.contains("intentional test output"),
+        "{detail}"
+    );
     assert!(
         summary.contains("2 additional compiler/build diagnostics omitted"),
         "{detail}"
@@ -307,6 +382,38 @@ exit 101
         detail.contains("Not re-run (300): status unknown; not counted as pass or failure"),
         "{detail}"
     );
+    let next = repo.verification_gate(&tree, &base, &head, &poller, &["sh", "-c", "exit 7"]);
+    assert_ok(&next, "a new attempt must have its own diagnostic artifact");
+    let next: serde_json::Value = serde_json::from_slice(&next.stdout).unwrap();
+    assert_ne!(next["log"], payload["log"]);
+    assert!(
+        !next["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Compiler/build diagnostics"),
+        "{next}"
+    );
+}
+
+#[test]
+fn verifier_reports_unreadable_compiler_evidence_without_inventing_errors() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"printf 'malformed artifact\n' > "$STORYHOOK_COMPILER_DIAGNOSTICS"; exit 9"#;
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["sh", "-c", command]);
+    assert_ok(&outcome, "reporting corrupt compiler evidence");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("exit status 9"), "{detail}");
+    assert!(
+        detail.contains("Compiler diagnostic collection unavailable"),
+        "{detail}"
+    );
+    assert!(!detail.contains("Compiler/build diagnostics ("), "{detail}");
 }
 
 #[test]
@@ -413,15 +520,32 @@ fn same_tree_verification_attempts_keep_distinct_logs() {
         assert_ok(&outcome, "running a same-tree verification attempt");
     }
 
-    let logs = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
+    let evidence = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        evidence.len(),
+        4,
+        "two logs and two compiler artifacts: {evidence:?}"
+    );
+    let logs = evidence
+        .iter()
+        .filter(|path| path.extension().is_none_or(|ext| ext != "jsonl"))
         .collect::<Vec<_>>();
     assert_eq!(
         logs.len(),
         2,
         "each attempt needs its own evidence: {logs:?}"
     );
+    for log in &logs {
+        let artifact = PathBuf::from(format!("{}.compiler.jsonl", log.display()));
+        assert!(
+            evidence.contains(&artifact),
+            "missing compiler artifact for {log:?}"
+        );
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "");
+    }
     let contents = logs
         .iter()
         .map(|path| fs::read_to_string(path).unwrap())

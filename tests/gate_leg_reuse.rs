@@ -24,6 +24,35 @@ struct Repo {
     path: PathBuf,
 }
 
+#[test]
+fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
+    let repo = Repo::new();
+    repo.write(
+        "scripts/cargo_diagnostics.py",
+        "# initial collector contract\n",
+    );
+    repo.git(&["add", "scripts/cargo_diagnostics.py"]);
+    repo.git(&["commit", "-qm", "collector input"]);
+    for leg in ["clippy", "build", "rust-suite"] {
+        assert!(repo.run_leg(leg, true).status.success());
+        assert!(repo.run_leg(leg, true).status.success());
+        assert_eq!(repo.executions(leg), 1);
+    }
+    repo.write(
+        "scripts/cargo_diagnostics.py",
+        "# changed collector contract\n",
+    );
+    for leg in ["clippy", "build", "rust-suite"] {
+        let result = repo.run_leg(leg, true);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            repo.executions(leg),
+            2,
+            "{leg} reused stale collector evidence"
+        );
+    }
+}
+
 impl Repo {
     fn new() -> Self {
         let root = storyhook_test_support::scratch_dir();

@@ -169,6 +169,7 @@ fn write_embedded_marketplace() -> io::Result<()> {
 const VERIFIER_SCRIPTS: &[&str] = &[
     "activity-log.sh",
     "activity-run.py",
+    "cargo_diagnostics.py",
     "gate-progress.sh",
     "land-pr.sh",
     "machine-lock.sh",
