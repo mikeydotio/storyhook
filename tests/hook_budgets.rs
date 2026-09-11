@@ -350,6 +350,7 @@ fn the_manifest_currently_declares_exactly_these_hooks() {
     assert_eq!(
         scripts,
         vec![
+            "codex-stop.sh",
             "full-auto.sh",
             "full-auto.sh",
             "full-auto.sh",
@@ -415,34 +416,41 @@ fn hook_manifest_has_the_shared_provider_contract() {
         ("PreToolUse", "request_user_input", "full-auto.sh", 10),
         ("PostToolUse", "Bash", "post-git.sh", 10),
         ("Stop", "*", "stop-handoff.sh", 15),
+        ("Stop", "*", "codex-stop.sh", 50),
     ];
 
     // Compared as a set in both directions, because looking each expected entry
     // up by matcher below can only ever prove the manifest has AT LEAST these --
     // a fourth PreToolUse matcher wiring some other tool would otherwise be
     // invisible here.
-    let mut declared_pairs: Vec<(String, String)> = hooks
+    let mut declared_pairs: Vec<(String, String, String)> = hooks
         .iter()
         .flat_map(|(event, matchers)| {
             matchers
                 .as_array()
                 .unwrap_or_else(|| panic!("{event} must be an array of matchers"))
                 .iter()
-                .map(move |entry| {
-                    (
-                        event.clone(),
-                        entry["matcher"]
-                            .as_str()
-                            .unwrap_or_else(|| panic!("{event} entry declares no matcher"))
-                            .to_string(),
-                    )
+                .flat_map(move |entry| {
+                    entry["hooks"].as_array().unwrap().iter().map(move |hook| {
+                        (
+                            event.clone(),
+                            entry["matcher"].as_str().unwrap().to_string(),
+                            hook["command"].as_str().unwrap().to_string(),
+                        )
+                    })
                 })
         })
         .collect();
     declared_pairs.sort();
-    let mut expected_pairs: Vec<(String, String)> = expected
+    let mut expected_pairs: Vec<(String, String, String)> = expected
         .iter()
-        .map(|(event, matcher, _, _)| ((*event).to_string(), (*matcher).to_string()))
+        .map(|(event, matcher, script, _)| {
+            (
+                (*event).to_string(),
+                (*matcher).to_string(),
+                format!("bash \"${{PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/hooks/{script}\""),
+            )
+        })
         .collect();
     expected_pairs.sort();
     assert_eq!(
@@ -457,9 +465,18 @@ fn hook_manifest_has_the_shared_provider_contract() {
             .as_array()
             .unwrap_or_else(|| panic!("hooks.json's {event} entry must be an array"))
             .iter()
-            .find(|entry| entry["matcher"] == matcher)
-            .unwrap_or_else(|| panic!("hooks.json declares no {event} matcher `{matcher}`"));
-        let command = &declaration["hooks"][0];
+            .filter(|entry| entry["matcher"] == matcher)
+            .flat_map(|entry| entry["hooks"].as_array().unwrap())
+            .find(|hook| {
+                hook["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("/hooks/{script}\""))
+            })
+            .unwrap_or_else(|| {
+                panic!("hooks.json declares no {event} matcher `{matcher}` for {script}")
+            });
+        let command = declaration;
         assert_eq!(
             command["type"], "command",
             "{event} must remain a command hook"

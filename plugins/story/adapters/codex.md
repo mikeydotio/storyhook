@@ -58,6 +58,15 @@ that exact plan to the story its first implementation step. Custom `STORY_PROMPT
 and must carry any equivalent requirement themselves; `STORY_PROMPT_EXTRA` still
 appends after the built-in requirement.
 
+SH-676 supplements that menu with a synchronous, autonomous-only Codex Stop hook.
+A bounded, tool-free Luna classifier recognizes completed plans awaiting prose
+approval. In Default mode it supplies native continuation; in Plan mode it asks
+for the same plan in `proposed_plan` tags so the existing menu watcher can approve.
+Session/story checks and a persistent receipt allow at most one prose continuation.
+The classifier capability contract is currently verified only for Codex 0.154.0;
+other runtimes emit a diagnostic and retain the native menu path. See
+[the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
+
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.
 
