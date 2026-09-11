@@ -1074,6 +1074,7 @@ claim_rollback_note() {
   else
     printf ' WARNING: story %s is now stranded at `%s` with no worktree/window — run `story unclaim %s`, or `story move %s %s --if-state %s` if that refuses.' \
       "$id" "$claimed_state" "$id" "$id" "$pre_state" "$claimed_state"
+    return 1
   fi
 }
 
@@ -1155,6 +1156,29 @@ cleanup_dispatch_git() {
     return 1
   fi
   return 0
+}
+
+# Called only within cmd_dispatch: its local resource-ownership facts are the
+# transaction this rollback consumes. An uncertain stop must not release work.
+rollback_dispatch_attempt() {
+  local stopped stop_error
+  DISPATCH_ROLLBACK_CLAIMED="$reused_claim"
+  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" 2>&1) || true
+  if [ "$(printf '%s' "$stopped" | jq -r '.ok // false' 2>/dev/null || printf false)" != true ]; then
+    stop_error=$(printf '%s' "$stopped" | jq -r '.error // "no termination result"' 2>/dev/null) || stop_error="${stopped:-no termination result}"
+    DISPATCH_CLEANUP_NOTE="WARNING: startup cleanup could not be confirmed: $stop_error; claim and Git resources were preserved"
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=""
+    return
+  fi
+  if cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"; then
+    DISPATCH_CLEANUP_NOTE="the owned startup pane and processes were stopped; $DISPATCH_CLEANUP_NOTE"
+    DISPATCH_ROLLBACK_NOTE=$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state") \
+      || DISPATCH_ROLLBACK_CLAIMED=true
+  else
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=" The claim was preserved because Git cleanup is incomplete."
+  fi
 }
 
 dispatch_cleanup_note() {
@@ -2441,6 +2465,8 @@ cmd_dispatch() {
   local pane_pid
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
+  local DISPATCH_ROLLBACK_CLAIMED="$reused_claim" DISPATCH_ROLLBACK_NOTE=""
+
   # Publish the durable-cleanup handoff before any gate that can leave this
   # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
   # which removes this attempt's marker before preserving or deleting Git
@@ -2449,20 +2475,16 @@ cmd_dispatch() {
   # the project's mutable checkout registration.
   if ! write_cleanup_lease_marker \
       "$PROJECT_SLUG" "$id" "$dir" "$worktree_path" "$worktree_branch" "$pane"; then
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse "cleanup-lease-unavailable" \
-      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note). The diagnostic window was preserved."
+      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE"
   fi
 
-  # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
-  # used to only annotate. An unconfirmed pane gets no text at all: the charter
-  # is an autonomous instruction document whose backticked spans a shell executes
-  # as commands, so "type it anyway and warn" is not a safe default when nobody
-  # is watching the pane. The window is deliberately left standing — it is the
-  # only place the launch failure's own words survive — while the worktree,
-  # branch and any claim created by this dispatch are rolled back so an
-  # immediate retry is not answered with "already dispatched?" (the collision
-  # guard keys on worktree/branch). A forced pre-existing claim stays put.
+  # Step 11: the charter needs both process identity and provider readiness.
+  # Codex first sends a task-free initialization turn to trigger its deferred
+  # hook. Capture failure evidence before terminating this attempt's process
+  # tree; only confirmed termination permits Git/claim rollback. An uncertain
+  # owner or a potentially submitted charter preserves resources instead.
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
     codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
@@ -2475,13 +2497,13 @@ cmd_dispatch() {
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). No story charter was delivered. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$reused_claim" \
+            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
@@ -2496,12 +2518,12 @@ cmd_dispatch() {
   if ! ensure_provider_plan_mode "$pane"; then
     local mode_tail
     mode_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). No story charter was delivered. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
-            --argjson claimed "$reused_claim" \
+            --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:false,
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
@@ -2514,11 +2536,11 @@ cmd_dispatch() {
      && ! schedule_plan_approval "$pane" "$pane_pid" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-approval-unarmed \
-      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. No story charter was delivered. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
+            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
@@ -2540,11 +2562,11 @@ cmd_dispatch() {
       # Nothing reached the input box, so nothing was submitted (guaranteed by
       # send_prompt_confirmed: no Enter is sent before receipt is observed).
       # Safe to roll everything back, exactly as a failed window-open does.
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      rollback_dispatch_attempt
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
+              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
                 readiness_confirmed:true, delivery_phase:"undelivered",
                 pane_tail:$tail, claimed:$claimed}')"
