@@ -136,10 +136,10 @@ render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>]
   #           rather than left for the child to reconstruct — an autonomous
   #           session knows neither this script's own path nor its project's
   #           slug reliably, and both are needed to self-reap correctly.
-  # <done-state> -> the project-specific CLOSED state that means completed
-  #           work, resolved by story_closed_state. Empty when not passed.
-  #           Autonomous overrides may use it too, so they do not have to
-  #           guess which CLOSED state represents completion.
+  # <done-state> -> the completion state: the required `done` the verifier
+  #           writes, resolved by story_completion_state (SH-652). Empty when
+  #           not passed. Autonomous overrides may use it too, so they do not
+  #           have to guess which CLOSED state represents completion.
   local tpl="$1" n="$2" name="${3:-}" dir="${4:-}" reap="${5:-}" done_state="${6:-}"
   tpl="${tpl//<name>/$name}"
   tpl="${tpl//<dir>/$dir}"
