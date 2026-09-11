@@ -222,6 +222,23 @@ if [ ! -d "$FAKE_TMUX_STATE" ]; then
   exit 64
 fi
 STATE="$FAKE_TMUX_STATE"
+# Explicit sockets used by pane-identity receipts must stay inside this fake.
+if [ "${1:-}" = -S ]; then
+  [ "${2:-}" = "$STATE/tmux.sock" ] || { printf 'unknown fixture socket\n' >&2; exit 1; }
+  shift 2
+fi
+
+identity_row() {
+  local pid dead command
+  pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
+  [ -n "$pid" ] || return 0
+  dead=1
+  kill -0 "$pid" 2>/dev/null && dead=0
+  command="${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command")}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(cat "$STATE/window_name")" "$(cat "$STATE/pane_id")" "$pid" "$dead" "$(cat "$STATE/pane_cwd")" \
+    "$command" "$(cat "$STATE/pane_launch")" "$STATE/tmux.sock"
+}
 NL='
 '   # a single literal newline, for splitting -l keystroke text on line breaks
 
@@ -425,12 +442,16 @@ case "${1:-}" in
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
           "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" "$STATE/pid_reads" \
+          "$STATE/pane_identity" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
     printf '%s' "$nw_bootstrap" > "$STATE/bootstrap_file"
+    printf '%s' "$nw_cwd" > "$STATE/pane_cwd"
+    printf '%%1' > "$STATE/pane_id"
+    printf '%s' "$launch_line" > "$STATE/pane_launch"
     printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
     if [ -n "$launch_line" ]; then
       # EXEC form: derive the occupant from the launch line NOW, the way a
@@ -581,6 +602,8 @@ case "${1:-}" in
       "${rp_env[@]}" -c "$rp_cwd" -n __respawn__ -P -F '#{pane_id}' "$rp_launch" \; \
       set-window-option -t "$rp_pane" remain-on-exit on \
       >/dev/null
+    printf '%s' "$rp_pane" > "$STATE/pane_id"
+    printf '%b\n' "${FAKE_TMUX_PANES:-}" | awk -F '\t' -v pane="$rp_pane" '$3 == pane { print $1; exit }' > "$STATE/window_name"
     ;;
   has-session)
     # `-t <name>` — SH-50: exit 0 iff <name> is in the virtual session set.
@@ -671,6 +694,7 @@ case "${1:-}" in
       shift || true
     done
     case "$dm_fmt" in
+      *'#{pane_start_command}'*) identity_row ;;
       *'#{pane_pid}'*'#{pane_current_command}'*'#{pane_dead}'*'#{window_activity}'*)
         # The engine's four-field liveness probe (WINDOW_PROBE_FORMAT). The
         # fourth field is tmux's own last-pty-output stamp, the second stall
@@ -731,8 +755,36 @@ case "${1:-}" in
     esac
     ;;
   show-options)
-    [ -f "$STATE/storyhook_agent" ] || exit 1
-    cat "$STATE/storyhook_agent"
+    case " $* " in
+      *" -p "*)
+        if [ -s "$STATE/pane_identity" ]; then
+          case " $* " in
+            *" -v "*) cat "$STATE/pane_identity" ;;
+            *) printf '@storyhook-identity-v1 %s\n' "$(cat "$STATE/pane_identity")" ;;
+          esac
+        fi
+        ;;
+      *)
+        [ -f "$STATE/storyhook_agent" ] || exit 0
+        cat "$STATE/storyhook_agent"
+        ;;
+    esac
+    ;;
+  set-option)
+    case " $* " in
+      *" -p "*)
+        if [ "${FAKE_TMUX_FAIL_IDENTITY_WRITE:-}" = 1 ]; then
+          printf 'fixture identity write failed\n' >&2
+          exit 1
+        fi
+        args=("$@")
+        printf '%s' "${args[$(($# - 1))]}" > "$STATE/pane_identity"
+        ;;
+      *" @storyhook-agent "*)
+        args=("$@")
+        printf '%s' "${args[$(($# - 1))]}" > "$STATE/storyhook_agent"
+        ;;
+    esac
     ;;
   set-window-option)
     swo_args="$*"
@@ -887,6 +939,7 @@ case "${1:-}" in
     # one pane, so terminate only the exact placeholder PID it recorded; do not
     # leave a fixture-owned process alive past the window ownership boundary.
     killed_pid="$(cat "$STATE/pane_pid" 2>/dev/null || printf '')"
+    printf '%s' "$killed_pid" > "$STATE/stopped_pid"
     case "$killed_pid" in
       '' | *[!0-9]*) : ;;
       *) kill -9 "$killed_pid" >/dev/null 2>&1 || true ;;
@@ -925,7 +978,10 @@ case "${1:-}" in
     # (→ no matching window found).
     killed_panes=$(cat "$STATE/killed_window" 2>/dev/null || printf '__none__')
     if [ "$killed_panes" != "${FAKE_TMUX_PANES:-}" ] && [ -n "${FAKE_TMUX_PANES:-}" ]; then
-      printf '%s\n' "$FAKE_TMUX_PANES"
+      case " $* " in
+        *'#{pane_start_command}'*) identity_row ;;
+        *) printf '%s\n' "$FAKE_TMUX_PANES" ;;
+      esac
     fi
     ;;
   capture-pane)

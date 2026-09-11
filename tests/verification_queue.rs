@@ -1842,7 +1842,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
         detail: "both modified src/lib.rs".into(),
     })
     .with_notify_script([
-        NotifyScript::Absent("pane-changed"),
+        NotifyScript::Absent("pane-dead"),
         NotifyScript::Fail("tmux refused the submit key"),
     ]);
     let entered = Mutex::new(false);
@@ -2391,6 +2391,40 @@ fn shell_cleanup_requires_a_latest_generation_lease_before_spawning() {
 }
 
 #[test]
+fn shell_notification_passes_its_own_lease_to_the_helper() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let mut candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("notify-helper.sh");
+    let captured = root.path().join("lease.json");
+    std::fs::write(&helper, format!(
+        "#!/bin/bash\nprintf '%s' \"${{STORYHOOK_NOTIFY_LEASE_V1:-null}}\" > '{}'\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+        captured.display()
+    )).unwrap();
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    );
+    assert_eq!(
+        actuator.notify(&candidate, "diagnosis").unwrap(),
+        NotifyDelivery::Delivered
+    );
+    let observed: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&captured).unwrap()).unwrap();
+    assert_eq!(
+        observed,
+        serde_json::to_value(&candidate.cleanup_lease).unwrap()
+    );
+    candidate.cleanup_lease = None;
+    assert_eq!(
+        actuator.notify(&candidate, "diagnosis").unwrap(),
+        NotifyDelivery::Delivered
+    );
+    assert_eq!(std::fs::read_to_string(captured).unwrap(), "null");
+}
+
+#[test]
 fn shell_notification_rejects_success_json_from_a_failed_process() {
     let fixture = ServiceFixture::new();
     let root = scratch_dir();
@@ -2473,6 +2507,12 @@ fn shell_notification_classifies_absence_by_the_helpers_reason_slug() {
     .unwrap();
     assert!(actuator.notify(&candidate, "diagnosis").is_err());
     assert_eq!(agent_presence(None), AgentPresence::NotAbsent);
+    // A live process replacement is conflicting ownership, never permission
+    // to resume over that process (SH-677).
+    assert_eq!(
+        agent_presence(Some("pane-changed")),
+        AgentPresence::NotAbsent
+    );
     assert_eq!(
         agent_presence(Some("pane-vaporised")),
         AgentPresence::NotAbsent
