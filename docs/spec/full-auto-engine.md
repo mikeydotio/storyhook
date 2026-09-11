@@ -69,6 +69,18 @@ keyed by name alone today, and SH-648 keys them by project, so two projects'
 suites may overlap on one machine — a trade-off that spec states rather than
 this table.
 
+**Amended by SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
+enforced over `engine_lanes` rows alone, so a session `/story do` opened by
+hand — the same `cmd_dispatch`, worktree, window and cold workspace build —
+counted for nothing, and the dashboard's own in-memory cap (`MAX_RUNNING`, a
+bound on dispatches *in flight*, never on sessions) was a third counter over
+one machine. Three producers, three counters. The budget is now measured by
+every door against one census: the live agent windows on the tmux server —
+`@storyhook-agent` set, pane not dead — which `story lane-budget` reports,
+`cmd_dispatch` refuses past ahead of any claim (`--over-budget` says you meant
+it), and the engine's fill counts alongside its own lanes. See the SH-655
+As-built entry below.
+
 ## Assumptions recorded rather than asked
 
 | # | Assumption |
@@ -2582,3 +2594,74 @@ separately, gated on that measurement. Codex CLI's render cadence during tool
 execution is unmeasured; its arm relies on the pty channel on Claude's terms
 until it is.
 
+### SH-655 — one census for every door the lane budget guards
+
+**A lane is a live window, and every door counts the same windows.** D14
+promised a machine-wide budget and enforced it over `engine_lanes` rows; a
+manual dispatch was in no table, so seven of them were measured at load 33 on
+ten cores while the engine would have opened four more. `src/lane_budget.rs`
+is the census both doors now read: `tmux list-windows -a -F` for every window
+whose `@storyhook-agent` option is set (every `cmd_dispatch` sets it, engine
+or manual) and whose pane tmux does not report dead — `remain-on-exit on`
+keeps a finished session's window around, which is why `pane_dead` is
+load-bearing. Ask what a process is, never what it is spelled (SH-226/239); a
+store-side lease was rejected because a manual session has no reconciler to
+close it, while a window census is self-correcting. The budget number stays
+`ENGINE_LANE_BUDGET` (= `api::dispatch::MAX_RUNNING`), one number in one
+place, reached from shell through a new store-free, daemon-free verb rather
+than copied.
+
+**The manual door.** `story lane-budget [--json]` is answered client-side on
+the `needs_no_store` path, because the census must come from the server the
+caller's own `$TMUX` names — the daemon may be attached elsewhere — and must
+never start a daemon to ask. `cmd_dispatch` calls it ahead of BOTH modes'
+claim writes, exactly where the ready gate stands, so a refusal (`reason:
+lane-budget`, the census carried as data) leaves no claim, no worktree and no
+window. It applies only when the dispatch would *add* a session: a new window
+is about to open (a `--resume` that found its pane reuses one) and the caller
+is not the engine (`--full-auto` lanes are counted inside the engine's own
+transaction; a second refusal here would read to it as a dispatch failure).
+`--over-budget` dispatches past it and says so on stderr; the installed
+plugin's hook admits the flag by name, the dashboard route types the reason,
+and the router skill routes it without ever retrying on its own.
+
+**The engine door.** `Dispatcher::census()` takes the same census through the
+dispatcher's own tmux program on the server its lanes live on — once per
+fill pass, outside the claim transaction (a subprocess inside a write
+transaction would hold the store for as long as tmux takes to answer) — and
+`fill_idle_lanes` requires `census_live + dispatched_this_pass <
+ENGINE_LANE_BUDGET` beside the store's own count, the second term standing in
+for the windows this pass has opened that the census cannot yet see. The fake
+dispatcher answers it from a configurable field, never a scripted step,
+because the census runs every pass.
+
+**No evidence is not zero.** The census is three-valued (SH-626): counted, or
+unanswered with the probe's own words. `story lane-budget --json` then carries
+neither `live` nor `available`; `cmd_dispatch` proceeds and says so on stderr
+— the same reading for an older binary that lacks the verb, so plugin/binary
+skew turns the gate off loudly rather than into a refusal; the engine fills on
+the store's count alone and the daemon journals the outage on its EDGE (ERROR
+on entry and on a change of reason, INFO on recovery, never per pass) through
+a process-wide marker rather than a store column — the census is a fact about
+the machine, not a lane, and `EngineService` is rebuilt every sweep, so a
+daemon restart journals it once more, the price of needing no migration.
+
+**Limits, stated.** A window on another tmux socket is invisible to whichever
+door is not attached there — the client verb sees `$TMUX`'s server, the daemon
+sees the default socket — and they agree only when the operator's session is
+on the default socket. An agent started outside `cmd_dispatch`, and a
+worktree with no window, are outside the census. The dashboard's
+`MAX_RUNNING` registry still bounds dispatches in flight, deliberately: that
+is what it was for.
+
+**Found on the way, fixed in the same commit.** Fourteen files in the plugin
+shell suite dispatched — mostly dry-run — against the developer's *real* tmux
+server, and every one turned load-dependent the day the gate landed: green on
+a quiet machine, refused at the budget on this one — the very verdict SH-655
+removes from the merge gate, manufactured inside the suite that tests it.
+`plugins/story/tests/lib.sh` now puts the fake tmux on `PATH` for every test,
+the way it already mints `FAKE_TMUX_STATE` for every test (SH-263), because a
+fixture you can forget is one that will be forgotten again; those files had
+already been leaking resume inventory's `list-panes -a` to the real server.
+The compile bound that shipped alongside is in `docs/spec/test-tiers.md`,
+"The compile bound". Council verdict, plan and decisions: `story show SH-655`.

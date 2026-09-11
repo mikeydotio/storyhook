@@ -61,4 +61,5 @@ pub mod subscribe;
 pub mod tailnet;
 pub mod verification;
 pub mod verification_progress;
+pub mod verifier_bundle;
 pub mod watch;

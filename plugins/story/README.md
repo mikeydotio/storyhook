@@ -74,7 +74,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim |
+| `dispatch <id> [--auto] [--force] [--resume] [--over-budget] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Refuses (`lane-budget`) to open a new session past `story lane-budget`'s machine ceiling unless `--over-budget` says you meant it |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, then records its window, worktree, and branch after confirmed handoff |
 | `create --title …` | `/story new` |
