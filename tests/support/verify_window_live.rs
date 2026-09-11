@@ -50,6 +50,8 @@ impl Mirror {
             .arg(&self.socket)
             .args(["-f", "/dev/null"])
             .args(args)
+            .env("HOME", self.root.path().join("home"))
+            .env_remove("XDG_STATE_HOME")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .output()
@@ -68,6 +70,7 @@ impl Mirror {
             .env("PATH", path)
             .env("HOME", self.root.path().join("home"))
             .env("STORYHOOK_VERIFIER_MIRROR", "1")
+            .env_remove("XDG_STATE_HOME")
             .env_remove("STORYHOOK_ACTIVITY_LOG_DIR")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
@@ -256,4 +259,127 @@ fn non_repository_never_falls_back_to_a_shared_project_window() {
         !mirror.socket.exists(),
         "failed identity must not even start tmux"
     );
+}
+
+/// Populate the same daily JSONL input the production log reader consumes.
+fn journal(home: &Path, store: &Path, message: &str) {
+    let location = storyhook::env::StoreLocation::resolve(
+        Some(store),
+        &storyhook::env::StoreVars::default(),
+        home,
+    )
+    .unwrap();
+    let env = storyhook::env::Environment::at(home).with_store(location);
+    let directory = env.daemon_state_dir().join("activity");
+    fs::create_dir_all(&directory).unwrap();
+    let now = chrono::Utc::now();
+    let row = serde_json::json!({"at": now.to_rfc3339(), "level": "INFO",
+        "source": "fixture", "stream": "event", "pid": 1, "context": "", "message": message});
+    writeln!(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(directory.join(format!("{}.jsonl", now.format("%Y-%m-%d"))))
+            .unwrap(),
+        "{row}"
+    )
+    .unwrap();
+}
+
+#[test]
+fn stores_keep_continuous_readers_alongside_project_and_legacy_windows() {
+    let mirror = Mirror::new();
+    let project = mirror.project("project");
+    let first = mirror.root.path().join("one/store's $(inert).db");
+    let second = mirror.root.path().join("two/store's $(inert).db");
+    for store in [&first, &second] {
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        fs::write(store, "").unwrap();
+    }
+    journal(&mirror.root.path().join("home"), &first, "STORE_A_BEGIN");
+    journal(&mirror.root.path().join("home"), &second, "STORE_B_BEGIN");
+    let legacy = mirror.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "storyhook-verifier",
+        "-n",
+        "verification",
+        "sleep",
+        "2147483647",
+    ]);
+    assert!(legacy.status.success(), "{legacy:?}");
+    let legacy_pid = mirror
+        .tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=storyhook-verifier:=verification",
+            "#{pane_pid}",
+        ])
+        .stdout;
+    let binary = storyhook_test_support::story_binary();
+    let mirror = &mirror;
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = [&first, &second]
+            .into_iter()
+            .map(|store| {
+                scope.spawn(move || {
+                    mirror
+                        .command(
+                            mirror.root.path(),
+                            &["logs", binary.to_str().unwrap(), store.to_str().unwrap()],
+                        )
+                        .output()
+                        .unwrap()
+                })
+            })
+            .collect();
+        for run in runs {
+            let out = run.join().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+    });
+    assert_eq!(mirror.windows().len(), 3);
+    let a = mirror.pane_with("STORE_A_BEGIN");
+    let b = mirror.pane_with("STORE_B_BEGIN");
+    assert_ne!(a, b);
+    assert!(a.starts_with("activity-") && b.starts_with("activity-"));
+    let out = mirror
+        .command(&project, &["banner", "PROJECT_PHASE"])
+        .env("STORYHOOK_ACTIVITY_LOG_DIR", mirror.root.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("PROJECT_PHASE"));
+    assert!(
+        mirror
+            .pane_with("PROJECT_PHASE")
+            .starts_with("verification-")
+    );
+    journal(&mirror.root.path().join("home"), &first, "STORE_A_LIVE");
+    journal(&mirror.root.path().join("home"), &second, "STORE_B_LIVE");
+    assert_eq!(mirror.pane_with("STORE_A_LIVE"), a);
+    assert_eq!(mirror.pane_with("STORE_B_LIVE"), b);
+    let alias = mirror.root.path().join("store-alias.db");
+    symlink(&first, &alias).unwrap();
+    let out = mirror
+        .command(
+            mirror.root.path(),
+            &["logs", binary.to_str().unwrap(), "store-alias.db"],
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(mirror.windows().len(), 4);
+    assert_eq!(mirror.pane_with("STORE_A_LIVE"), a);
+    let out = mirror.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=storyhook-verifier:=verification",
+        "#{pane_pid}",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out.stdout, legacy_pid, "legacy reader must not be replaced");
 }

@@ -108,9 +108,27 @@ verifier_window_banner() {
 
 # The daemon uses its own executable and explicit store; neither is shell code.
 verifier_window_logs() {
-    verifier_window_ensure verification || return 1
-    tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=verification" \
-        "$1" --store-path "$2" daemon logs --follow || return 1
+    local store="$2" name
+    verifier_window_enabled || return 1
+    # Resolve relative manual invocations before changing the reader's cwd.
+    case "$store" in /*) ;; *) store="$PWD/$store" ;; esac
+    # The journal can start outside Git. Canonicalize file symlinks too, then
+    # hash path bytes independently of any enclosing repository's object format.
+    name="$(python3 - "$store" <<'PY'
+import hashlib
+import os
+import re
+import sys
+
+store = os.path.realpath(sys.argv[1], strict=True)
+label = re.sub(r"[^A-Za-z0-9_-]", "-", os.path.basename(os.path.dirname(store)))
+digest = hashlib.sha256(os.fsencode(store)).hexdigest()
+print(f"activity-{label}-{digest}")
+PY
+    )" || return 1
+    verifier_window_ensure "$name" || return 1
+    tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+        "$1" --store-path "$store" daemon logs --follow || return 1
 }
 
 # Direct-invocation form, for manual smoke testing:
