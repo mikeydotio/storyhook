@@ -1410,8 +1410,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         updated.last_observed_at = observed_at.clone();
         // What tmux last said, when it did not say "alive" (SH-626). Written
         // every pass so status reads the current truth; JOURNALED only on
-        // the edge, because a live run is reconciled roughly once a second
-        // and a line per pass is the SH-263 self-noise shape.
+        // the edge, because a burst of project changes can wake several
+        // passes and a line per pass is the SH-263 self-noise shape.
         updated.probe_detail = probe.detail().map(str::to_string);
         if updated.probe_detail != lane.probe_detail {
             self.journal_probe_edge(lane, probe);

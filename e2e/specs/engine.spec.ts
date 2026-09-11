@@ -558,10 +558,11 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
 
   // SH-626: wait for the daemon's OWN steady pass to observe the lane and
   // leave it working. A lane matched by story id alone is satisfied by a
-  // `dispatching` lane that no pass has looked at yet, and the very next
-  // pass runs within one change-poll interval of dispatch returning -- so
-  // that shape only ever proved the browser beat the reconciler, and lost
-  // 1 run in 5 under load. `last_progress_at` is seeded by the first pass
+  // `dispatching` lane that no pass has looked at yet. Before SH-642, lane
+  // writes immediately woke another pass, so that shape only proved the
+  // browser beat the reconciler, and lost 1 run in 5 under load. Observation
+  // writes no longer wake a pass; this assertion relies on positive evidence
+  // rather than that accidental cadence. `last_progress_at` is seeded by the first pass
   // that finds the lane alive (never by dispatch itself), so `working` with
   // it set is positive evidence the daemon's liveness probe answered
   // "alive", where a one-second `last_observed_at` cannot be ordered against

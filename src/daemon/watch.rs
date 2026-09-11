@@ -283,7 +283,7 @@ mod tests {
         let subscriber = bus.subscribe();
 
         // A configuration write: it moves `PRAGMA data_version` without
-        // touching anything `project_sequences` can see move. Through
+        // changing a story sequence or live engine run. Through
         // `ConfigService::add_type` rather than `WriteOps::put_types`
         // directly — `tests/type_slug_call_sites.rs` allowlists every raw
         // writer of story types, and a test fixture manufacturing a change
