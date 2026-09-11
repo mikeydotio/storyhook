@@ -158,6 +158,15 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
+    // `update::reinstall_plugins_via` — the executable just swapped in, run as
+    // `plugin install <provider>` once per registered provider (SH-667).
+    // `Reads`: both streams are captured so the provider's exact outcome can
+    // be folded into the update's own result rather than interleaved with
+    // it. What the child leaves behind is bounded: its provider CLIs are
+    // `Reads` children of its own that finish before it does, and the only
+    // thing it may leave alive is a daemon, which `lifecycle::spawn_child`
+    // starts with nothing inherited — so no descendant holds this pipe.
+    ("src/update.rs", "exe", Kind::Reads),
     // `clipboard::pipe_to_command` — `pbcopy`/`xclip`/`wl-copy`, or whatever
     // `$STORYHOOK_CLIPBOARD_CMD` names. `Waited`: stdout and stderr are both
     // `Stdio::null()`, so there is no pipe for a descendant to hold, and the

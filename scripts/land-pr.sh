@@ -49,13 +49,18 @@ readonly USAGE="usage: land-pr.sh <pr>"
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
-script="$root/scripts/land-pr.sh"
+# Siblings are reached through this file's own directory, never the
+# checkout's `scripts/`: the verifier runs this from the bundle its daemon
+# projected (SH-654), against a checkout that need not be storyhook's.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
+    || die "could not resolve the directory holding land-pr.sh"
+script="$script_dir/land-pr.sh"
 
 # Asked of the lock itself rather than read from `STORYHOOK_MACHINE_LOCKS`:
 # the key carries this repository's project component (SH-648), and only
 # `machine-lock.sh` knows how it is spelled (SH-136).
 require_merge_lock() {
-    bash "$root/scripts/machine-lock.sh" --held merge \
+    bash "$script_dir/machine-lock.sh" --held merge \
         || die "the private landing phase must run under machine-lock.sh merge"
 }
 
@@ -148,7 +153,7 @@ if [ "${1:-}" = "--certified-run" ]; then
     head="$3"
     shift 4
 
-    tree="$(bash "$root/scripts/merge-preflight.sh" "$base" "$head")"
+    tree="$(bash "$script_dir/merge-preflight.sh" "$base" "$head")"
     status=$?
     [ "$status" -eq 0 ] || exit "$status"
 
@@ -268,4 +273,4 @@ case "$pr" in
 ('' | -*) die "$USAGE" ;;
 esac
 
-exec bash "$root/scripts/machine-lock.sh" merge -- bash "$script" --locked "$pr"
+exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked "$pr"

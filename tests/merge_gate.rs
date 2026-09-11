@@ -3120,6 +3120,74 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
 }
 
+/// SH-666's second incident, reconstructed: the gate ran green on the tree
+/// preflight computed and certified it through the production writer — and
+/// while it ran, a fetch in the shared repository (a `/story do` creating a
+/// worktree, a poller, anything) moved `refs/remotes/origin/main` to a tip
+/// that conflicts with the PR. The post-gate certification check then
+/// re-resolved that REF instead of the commit the gate ran on, computed a
+/// different merge, met the conflict, and reported "certified nothing" as a
+/// PERMANENT halt of the whole queue. A base that moved is the story's own
+/// business: landing refreshes it under the merge lock and answers CONFLICT,
+/// which the daemon holds the queue on while the implementer reconciles — so
+/// the check must ask exactly "did the gate certify the tree it ran on",
+/// against the pinned commits, and let landing find the moved base.
+#[test]
+fn a_base_that_moves_during_the_gate_is_a_conflict_for_the_story_never_a_halt() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    // Main will move here during the gate: `f` diverges from NEW's reconcile.
+    let later = repo.branch("later", "main", "f", "main moves again during the gate\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let hooks = checkout().join(".githooks");
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    let fixture = repo.path().display().to_string();
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{writer}' preflight && bash '{writer}' postlude || exit $?\n\
+             git -C '{fixture}' update-ref refs/heads/main {later}\n\
+             git -C '{fixture}' update-ref refs/remotes/origin/main {later}\n",
+            hooks.display(),
+            writer = writer.display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
+    // The gate certified the tree it ran on: preflight of the pinned parents.
+    let gate_tree = {
+        let base_before = repo.rev_parse("later~1");
+        stdout(&repo.preflight(&base_before, &new))
+    };
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(gate_tree.trim());
+    assert!(
+        fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("the gate certified the tree it ran on: {e}"))
+            .contains("tier gate"),
+        "the production writer minted a gate-tier receipt for the gate's own tree"
+    );
+    assert_eq!(
+        payload["result"], "conflict",
+        "a base that moved into conflict is the story's to reconcile: {payload}"
+    );
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+    assert!(
+        !detail.contains("certified nothing"),
+        "a certified tree is never reported as uncertified because the base moved: {detail}"
+    );
+    assert!(
+        repo.fake_gh_calls() >= 2,
+        "the conflict was found by landing's own refresh, after the gate: {payload}"
+    );
+}
+
 /// The positive control, without which a check that always refused would
 /// pass the test above: a gate that certifies through the production writer
 /// (`gate-receipt.sh preflight` then `postlude`, inside the speculative

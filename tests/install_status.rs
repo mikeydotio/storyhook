@@ -384,6 +384,76 @@ fn a_provider_that_was_never_installed_stays_quiet() {
     );
 }
 
+/// The receipt `story plugin install <target>` leaves in storyhook's own data
+/// directory — the evidence that survives when the provider sweeps every
+/// copy it made (SH-671).
+fn plant_install_receipt(env: &TestEnv, target: &str) -> std::path::PathBuf {
+    let receipt = env.data_dir().join("provider-installs").join(target);
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    std::fs::write(
+        &receipt,
+        "version 2.4.2\ninstalled_at 2026-09-11T02:51:39Z\n",
+    )
+    .unwrap();
+    receipt
+}
+
+/// The 2026-09-10 loss (SH-671): Claude Code 2.1.268 rewrote its registry
+/// without storyhook AND swept `~/.claude/plugins/cache/storyhook`, so no
+/// residue survived and the SH-640 detector read the machine as
+/// never-installed — `claude plugin  not registered`, `every component
+/// agrees`, exit 0 — while dashboard dispatch was broken. storyhook's own
+/// install receipt is what tells the two apart now.
+#[test]
+fn a_claude_registration_lost_with_its_cache_swept_is_still_flagged() {
+    let control = doctor_install(&TestEnv::isolated());
+    let env = TestEnv::isolated();
+    let receipt = plant_install_receipt(&env, "claude");
+    write_claude_config_without_storyhook(&env);
+    assert!(
+        !env.home().join(".claude/plugins/cache/storyhook").exists(),
+        "premise: no residue at all"
+    );
+    let report = doctor_install(&env);
+
+    let finding = finding_for(&report, "claude plugin")
+        .unwrap_or_else(|| panic!("the claude row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+    assert!(
+        finding.contains(&receipt.display().to_string()),
+        "the finding must name the receipt it read:\n{report}"
+    );
+    assert!(finding.contains("2026-09-11T02:51:39Z"), "{report}");
+    assert!(finding.contains("story plugin install claude"), "{report}");
+    assert!(
+        !finding.contains("installed copies remain"),
+        "no copies survived, so none may be claimed:\n{report}"
+    );
+    assert_eq!(
+        finding_count(&report),
+        finding_count(&control) + 1,
+        "the summary must count the flagged row:\n{report}"
+    );
+}
+
+/// Same rule, other provider: the receipt is per target, so a Codex receipt
+/// flags the Codex row and leaves the Claude row quiet.
+#[test]
+fn a_codex_registration_lost_with_its_cache_swept_is_still_flagged() {
+    let env = TestEnv::isolated();
+    plant_install_receipt(&env, "codex");
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "codex plugin")
+        .unwrap_or_else(|| panic!("the codex row must carry a finding:\n{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{report}");
+    assert!(finding.contains("story plugin install codex"), "{report}");
+    assert!(
+        finding_for(&report, "claude plugin").is_none(),
+        "a Codex receipt says nothing about Claude:\n{report}"
+    );
+}
+
 /// The Codex row has the identical shape and the identical defect.
 #[test]
 fn a_codex_registration_that_was_lost_is_flagged_with_or_without_its_config() {

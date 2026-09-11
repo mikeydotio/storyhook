@@ -5,9 +5,9 @@
 
 #![cfg(feature = "github-pr")]
 
-use storyhook::domain::StoryEvent;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::secret::GithubToken;
+use storyhook::domain::{COMPLETION_STATE_SLUG, StoryEvent, SuperState};
 use storyhook::service::pr_check::run_check;
 use storyhook::service::{
     ConfigService, NewStoryInput, PrLinkService, RelationService, StoryService,
@@ -137,6 +137,66 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
             .filter_map(storyhook::store::StoredEvent::known)
             .any(|e| matches!(e, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
         "a StoryPrMerged event must have been appended"
+    );
+}
+
+/// A merged close-on-merge PR closes its story into the completion state,
+/// `done` — never the abandonment state (SH-652).
+///
+/// Before the fix the close searched `state_map`, a `BTreeMap`, for the first
+/// CLOSED state, which is the *alphabetically* first: `closed` on every default
+/// catalog. Three comments claimed catalog order kept it answering `done`;
+/// `check_closes_the_story_when_a_close_on_merge_link_merges` above could not
+/// see the misfiling because it asserts only `archived`. This catalog is the
+/// straddle — `shipped` first by position, `abandoned` first by name — so
+/// both wrong searches answer wrong here, and only the named slug passes.
+#[test]
+fn check_closes_a_merged_story_into_done_not_the_first_closed_state() {
+    let fixture = ServiceFixture::new();
+    let config_ctx = fixture.ctx();
+    let config = ConfigService::new(&config_ctx);
+    config
+        .add_state("shipped", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .add_state("abandoned", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .reorder_states(
+            &[
+                "todo",
+                "in-progress",
+                "verifying",
+                "blocked",
+                "shipped",
+                "abandoned",
+                "done",
+                "closed",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+    configure_remote(&fixture, "acme", "widgets");
+    let id = create(&fixture, "Merges into done");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx).link(&id, URL, true).unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+
+    run_check(&ctx, &fake, Some(id.as_str())).expect("checking pull requests");
+
+    let project = fixture.project();
+    let story_no = storyhook::store::StoryNo::parse_id("SH", &id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(project, story_no))
+        .unwrap()
+        .expect("story exists");
+    assert!(row.archived);
+    assert_eq!(
+        row.state, COMPLETION_STATE_SLUG,
+        "a merged PR completes its story; it never abandons it"
     );
 }
 

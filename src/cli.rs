@@ -166,6 +166,17 @@ pub enum EngineAction {
     },
 }
 
+/// The controls under `story verifier` (SH-666).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerifierAction {
+    /// Acknowledge one exact halted infrastructure incident so the verifier
+    /// queue may run again. The id is the one the halt comment prints.
+    Ack {
+        /// The incident to acknowledge, verbatim.
+        incident_id: String,
+    },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
@@ -225,6 +236,7 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
+  story verifier ack <incident-id>                  (release a halted verifier queue)
   story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
@@ -263,6 +275,7 @@ Usage:
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <claude|codex>
+  story plugin reinstall                            (every provider that has it registered, from this binary)
   story plugin run codex -- <helper-command> [args...]  (internal stable Codex launcher)
   story show <id>
   story log <id>
@@ -556,6 +569,10 @@ pub enum Invocation {
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
         action: EngineAction,
+    },
+    /// `story verifier ack <incident-id>` (SH-666).
+    Verifier {
+        action: VerifierAction,
     },
     /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
     Cleanup {
@@ -930,6 +947,7 @@ impl Invocation {
             | Self::Claim { .. }
             | Self::Unclaim { .. }
             | Self::Engine { .. }
+            | Self::Verifier { .. }
             | Self::Cleanup { .. }
             | Self::Summary
             | Self::Report { .. }
@@ -1043,6 +1061,10 @@ pub enum PluginAction {
     Uninstall {
         target: String,
     },
+    /// Reinstall the plugin for every provider that has the storyhook
+    /// marketplace registered, from this binary's embedded release (SH-667).
+    /// Takes no target: the providers' own configurations say which.
+    Reinstall,
     /// Run the installed provider plugin's deterministic helper through the
     /// stable `story` binary. The Codex integration's unversioned launcher is
     /// the intended caller; handling this in the client keeps the helper's
@@ -1848,6 +1870,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("run")],
     },
     VerbFlags {
+        verb: "verifier",
+        subcommand: Some("ack"),
+        flags: &[],
+    },
+    VerbFlags {
         verb: "cleanup",
         subcommand: None,
         flags: &[bare("dry-run")],
@@ -2329,6 +2356,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
         "engine" => parse_engine(args),
+        "verifier" => parse_verifier(args),
         "cleanup" => parse_cleanup(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
@@ -3594,6 +3622,38 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
+const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
+
+/// `story verifier ack <incident-id>` (SH-666).
+///
+/// The incident id is positional and required on purpose: the halt comment and
+/// the dashboard banner both print it, and an acknowledgement that named no
+/// incident would clear whichever one is current — the stale-page hazard the
+/// REST door already refuses. Same SH-357 contract as `parse_engine`: every
+/// complete arm ends in [`expect_no_more`] with its own usage string.
+fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
+    let Some(action) = args.get(1).map(String::as_str) else {
+        return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+    };
+    let action = match action {
+        "ack" => {
+            let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
+                return Err(AppError::Usage(format!(
+                    "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
+                )));
+            };
+            expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
+            VerifierAction::Ack {
+                incident_id: incident_id.clone(),
+            }
+        }
+        _ => {
+            return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+        }
+    };
+    Ok(Invocation::Verifier { action })
+}
+
 fn parse_engine_stop(args: &[String]) -> Result<EngineAction, AppError> {
     let mut run = None;
     let mut now = false;
@@ -4389,7 +4449,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin run codex -- <helper-command> [args...]";
+    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin reinstall | story plugin run codex -- <helper-command> [args...]";
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
     };
@@ -4404,6 +4464,10 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
             action: PluginAction::Uninstall {
                 target: args[2].clone(),
             },
+        }),
+        "reinstall" if args.len() != 2 => Err(AppError::Usage(USAGE.to_string())),
+        "reinstall" => Ok(Invocation::Plugin {
+            action: PluginAction::Reinstall,
         }),
         "run" if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
         "run" => Ok(Invocation::Plugin {
@@ -5330,6 +5394,24 @@ mod tests {
                     args: words(&["dispatch", "SH-9", "--agent=codex", "--auto"]),
                 }
             }
+        );
+    }
+
+    /// `reinstall` takes no target: the providers' own configurations say
+    /// which are installed (SH-667). A target would invite `story plugin
+    /// reinstall codex` to mean "install", which `install` already means.
+    #[test]
+    fn plugin_reinstall_takes_no_target() {
+        assert_eq!(
+            parse_invocation(&words(&["plugin", "reinstall"])).unwrap(),
+            Invocation::Plugin {
+                action: PluginAction::Reinstall
+            }
+        );
+        let error = parse_invocation(&words(&["plugin", "reinstall", "codex"])).unwrap_err();
+        assert!(
+            error.to_string().contains("usage: story plugin"),
+            "a stray target is a usage error, not a silent install: {error}"
         );
     }
 
