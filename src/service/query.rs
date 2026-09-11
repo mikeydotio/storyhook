@@ -51,7 +51,9 @@ use crate::store::{GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow,
 
 use super::project_prefix;
 
+mod eligibility;
 mod obviation;
+pub use eligibility::{EligibilityReason, SessionEligibility};
 
 /// The `story list` filter grammar, as one value.
 ///

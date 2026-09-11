@@ -702,6 +702,14 @@ pub fn dispatch<S: Store>(
         Invocation::Graph { mode } => {
             query(ctx, |service| service.graph(&mode)).map(|graph| Response::Graph(Box::new(graph)))
         }
+        Invocation::SessionEligibility { id } => {
+            let eligibility = query(ctx, |service| service.session_eligibility(&id))?;
+            Ok(Response::RawJson(serde_json::to_string(
+                &serde_json::json!({
+                    "result": "ok", "session_eligibility": eligibility
+                }),
+            )?))
+        }
         Invocation::Context { format, story } => {
             let json = format.as_deref() == Some("json");
             let document = query(ctx, |service| match story.as_deref() {
@@ -2815,6 +2823,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }
@@ -3019,6 +3028,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Decompose { .. } => "decompose",
         Invocation::Export => "export",
         Invocation::ImportProject { .. } => "import-project",
+        Invocation::SessionEligibility { .. } => "session-eligibility",
         Invocation::Context { .. } => "context",
         Invocation::Handoff { .. } => "handoff",
         Invocation::Phase { .. } => "phase",
@@ -4148,6 +4158,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }
         | Invocation::Export
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }

@@ -10,6 +10,7 @@ import stat
 import sys
 
 from codex_classifier import classify, run_process
+from plan_request import parse_plan_request
 
 MAX_MESSAGE = 64 * 1024
 MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024
@@ -19,7 +20,7 @@ STORY_ID = re.compile(r'^[A-Za-z][A-Za-z0-9]*-[0-9]+$')
 
 def diagnostic(reason):
     """Expose a failure without manufacturing permission or continuing a turn."""
-    return {'systemMessage': 'StoryHook prose plan approval unavailable: ' + str(reason)
+    return {'systemMessage': 'StoryHook plan approval unavailable: ' + str(reason)
             + '. No approval was sent; the native plan-menu watcher remains available.'}
 
 
@@ -75,24 +76,22 @@ def story_json(cwd, *args):
 
 def eligible(cwd, story_id):
     """Require an active, unblocked story in the hook's own project."""
-    states = story_json(cwd, 'state', 'list')
-    shown = story_json(cwd, 'show', story_id)
-    blocked = story_json(cwd, 'list', '--blocked')
-    if any(result.get('result') != 'ok' for result in (states, shown, blocked)):
-        raise RuntimeError('story state lookup failed')
-    # Same public state-list contract used by story.sh::story_active_state.
-    active = re.findall(r'^([^\s]+) \(OPEN, active\)', states.get('message', ''), re.M)
-    if len(active) != 1:
-        raise RuntimeError('project has no unambiguous active state role')
-    story = shown['story']['story']
-    blocked_ids = {item['story']['id'] for item in blocked['stories']}
-    return (story['id'] == story_id and story['superstate'] == 'OPEN'
-            and story['state'] == active[0] and not story.get('awaiting')
-            and story_id not in blocked_ids)
+    response = story_json(cwd, 'session-eligibility', story_id)
+    if response.get('result') != 'ok':
+        raise RuntimeError('session eligibility lookup failed: ' + str(response.get('error', 'no result')))
+    answer = response.get('session_eligibility')
+    if (not isinstance(answer, dict)
+            or type(answer.get('schema_version')) is not int or answer['schema_version'] != 1
+            or answer.get('story_id') != story_id
+            or type(answer.get('eligible')) is not bool
+            or answer.get('reason') not in ('eligible', 'closed', 'inactive', 'awaiting', 'blocked')
+            or answer['eligible'] != (answer['reason'] == 'eligible')):
+        raise RuntimeError('invalid session eligibility response schema or story identity')
+    return answer['eligible']
 
 
 def handle(payload, env, classify=classify, eligible=eligible):
-    """Return at most one prose-plan continuation per root autonomous session."""
+    """Return at most one plan continuation per root autonomous session."""
     marker = env.get('STORYHOOK_FULL_AUTO') or env.get('STORYHOOK_AUTO') or ''
     if not STORY_ID.fullmatch(marker) or not isinstance(payload, dict):
         return {}
@@ -114,6 +113,7 @@ def handle(payload, env, classify=classify, eligible=eligible):
         return {}
     try:
         mode = transcript_mode(payload)
+        plan = parse_plan_request(message, marker)
         # A sidecar to the provider-owned transcript survives worktree cleanup,
         # requires no repository files, and shares the transcript's lifetime.
         journal = payload['transcript_path'] + '.storyhook-plan-approval'
@@ -130,18 +130,19 @@ def handle(payload, env, classify=classify, eligible=eligible):
                 return {}
             if not eligible(payload['cwd'], marker):
                 return {}
-            answer = classify(message)
-            if (not isinstance(answer, dict) or set(answer) != {'decision', 'evidence'}
-                    or answer['decision'] not in ('approve_plan', 'other', 'uncertain')
-                    or not isinstance(answer['evidence'], str)):
-                raise RuntimeError('invalid Luna classification schema')
-            if answer['decision'] == 'other':
-                return {}
-            if answer['decision'] == 'uncertain':
-                return diagnostic('Luna could not identify an unambiguous implementation-plan approval')
-            evidence = answer['evidence'].strip()
-            if not evidence or evidence not in message:
-                raise RuntimeError('Luna approval evidence is absent from the assistant message')
+            if plan is None:
+                answer = classify(message)
+                if (not isinstance(answer, dict) or set(answer) != {'decision', 'evidence'}
+                        or answer['decision'] not in ('approve_plan', 'other', 'uncertain')
+                        or not isinstance(answer['evidence'], str)):
+                    raise RuntimeError('invalid Luna classification schema')
+                if answer['decision'] == 'other':
+                    return {}
+                if answer['decision'] == 'uncertain':
+                    return diagnostic('Luna could not identify an unambiguous implementation-plan approval')
+                evidence = answer['evidence'].strip()
+                if not evidence or evidence not in message:
+                    raise RuntimeError('Luna approval evidence is absent from the assistant message')
             # Classification may have taken twenty seconds. Revalidate both the
             # provider turn and the story before issuing authority to continue.
             if transcript_mode(payload) != mode or not eligible(payload['cwd'], marker):
@@ -149,6 +150,8 @@ def handle(payload, env, classify=classify, eligible=eligible):
             record.seek(0)
             json.dump({'session_id': payload['session_id'], 'turn_id': payload['turn_id'],
                        'story_id': marker, 'message_sha256': hashlib.sha256(message.encode()).hexdigest(),
+                       'source': 'structured' if plan is not None else 'prose',
+                       'plan_sha256': hashlib.sha256((plan if plan is not None else message).encode()).hexdigest(),
                        'mode': mode}, record)
             record.flush()
             os.fsync(record.fileno())
@@ -164,6 +167,13 @@ def handle(payload, env, classify=classify, eligible=eligible):
                       f'{marker}, then implement it under the original task instructions. '
                       'This approves only the implementation plan, not additional operational '
                       'permissions, scope changes, or choices left unresolved in the plan.')
+        if plan is not None:
+            reason += (' The approved content is the decoded plan string in your JSON request; '
+                       'preserve its text verbatim, not the JSON envelope. Schema validation '
+                       'records your readiness declaration, not semantic proof of completeness. '
+                       'This grants no additional operational permissions: network, credentials, '
+                       'deletion, deployment, scope changes, and unresolved choices remain '
+                       'subject to the original instructions and independent permission controls.')
         return {'decision': 'block', 'reason': reason}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         return diagnostic(exc)
