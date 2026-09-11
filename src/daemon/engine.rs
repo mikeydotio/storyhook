@@ -10,15 +10,15 @@
 //! `EngineService::reconcile` had zero production callers before this file.
 //!
 //! [`reconcile_restart_tick`] runs synchronously before daemon publication;
-//! then the ordinary pass runs on every bus change or on a coarse tick derived
-//! from [`crate::service::engine::STALL_CEILING_SECS`] — the shape
+//! then the ordinary pass runs on project/catalog changes, missed messages,
+//! or on a coarse tick derived from [`crate::service::engine::STALL_CEILING_SECS`] — the shape
 //! [`crate::daemon::verification::poll_verification`] already uses for its
 //! own event-driven worker.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::bus::{Change, ChangeBus};
+use super::bus::{Change, ChangeBus, Subscription};
 use crate::api::dispatch::resolve_engine_dispatch_script;
 use crate::env::Environment;
 use crate::error::AppError;
@@ -205,7 +205,7 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
     }
 }
 
-/// Runs the steady pass on every bus wake or tick, until daemon shutdown.
+/// Runs the steady pass on relevant bus changes or a tick, until shutdown.
 ///
 /// # Why not `poll_verification`'s own wait idiom
 ///
@@ -216,10 +216,13 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
 /// fire on schedule under that shape. This loop computes one deadline before
 /// waiting and re-derives the remaining wait from it on every wake instead —
 /// the shape `daemon::serve`'s own chopped-sleep helpers already use — so a
-/// run of pings cannot push the tick back. Any non-`Ping` change (a
-/// `story move`, or a control command through `api::engine::EngineController`,
-/// which already publishes [`Change::Project`] on every mutation) still
-/// breaks the wait immediately.
+/// run of ignored notices cannot push the tick back. Project and catalog
+/// changes wake every live run, including one started since the last pass.
+/// The watcher attributes CLI controls from run records, separately from
+/// lane observations: an ordinary [`Change::Resync`] must not turn the
+/// engine's own observation writes into another pass (SH-642). Overflow is
+/// different: the subscriber's dropped counter proves a notification was
+/// lost and earns a recovery pass without changing the shared UI feed.
 pub(crate) fn poll_engine<S: Store>(
     store: &S,
     env: &Environment,
@@ -228,24 +231,46 @@ pub(crate) fn poll_engine<S: Store>(
     draining: &AtomicBool,
 ) {
     let subscription = bus.subscribe();
+    let mut observed_drops = 0;
     while !stop.load(Ordering::Relaxed) && !draining.load(Ordering::Relaxed) {
         reconcile_tick(store, env);
         let deadline = Instant::now() + reconcile_tick_interval();
-        loop {
-            if stop.load(Ordering::Relaxed) || draining.load(Ordering::Relaxed) {
-                return;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match subscription.recv(remaining) {
-                Some(Change::Ping) | None => continue,
-                Some(_) => break,
-            }
+        if !wait_for_reconcile(&subscription, &mut observed_drops, deadline, stop, draining) {
+            return;
         }
     }
 }
+
+/// True when another pass is due; false when shutdown forbids another pass.
+fn wait_for_reconcile(
+    subscription: &Subscription,
+    observed_drops: &mut u64,
+    deadline: Instant,
+    stop: &AtomicBool,
+    draining: &AtomicBool,
+) -> bool {
+    loop {
+        if stop.load(Ordering::Relaxed) || draining.load(Ordering::Relaxed) {
+            return false;
+        }
+        let dropped = subscription.dropped();
+        if dropped != *observed_drops {
+            *observed_drops = dropped;
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        match subscription.recv(remaining) {
+            Some(Change::Project(_) | Change::Catalog) => return true,
+            Some(Change::Ping | Change::Resync | Change::Reload) | None => continue,
+        }
+    }
+}
+
+#[cfg(test)]
+mod wait_tests;
 
 #[cfg(test)]
 mod census_edge_tests {
