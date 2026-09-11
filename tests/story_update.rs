@@ -76,6 +76,23 @@ fn help_update_topic_exists() {
         .stdout(contains("story update"));
 }
 
+/// The help must say what the update does to the plugins, because the
+/// person deciding whether to run it is the one whose host session the
+/// reinstall affects (SH-667).
+#[test]
+fn help_update_names_the_plugin_reinstall_and_its_retry() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["help", "update"])
+        .assert()
+        .success()
+        .stdout(
+            contains("reinstalls the plugin")
+                .and(contains("story plugin reinstall"))
+                .and(contains("story doctor install")),
+        );
+}
+
 #[test]
 fn top_level_help_lists_update() {
     story(TestEnv::shared().home())

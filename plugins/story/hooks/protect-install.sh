@@ -117,7 +117,7 @@ def dispatch_preserves_artifacts(args):
         name, _, value = arg.partition("=")
         if name in options:
             return False
-        if arg in {"--auto", "--full-auto", "--force", "--resume"}:
+        if arg in {"--auto", "--full-auto", "--force", "--resume", "--over-budget"}:
             pass
         elif name == "--agent" and value in {"claude", "codex"}:
             pass

@@ -16,6 +16,7 @@
 mod store_support;
 
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
+use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, ENGINE_LANE_BUDGET,
     EngineService, HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
@@ -64,6 +65,7 @@ fn progressing() -> LaneObservation {
         seconds_since_progress: Some(5),
         seconds_since_output: None,
         awaiting_reason: None,
+        returned_for_repair: false,
     }
 }
 
@@ -105,6 +107,86 @@ fn a_missing_window_on_an_open_story_is_a_hard_stop() {
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::WindowGone)
+    );
+}
+
+/// SH-650: a window gone on a story the verifier has just returned for
+/// repair is the verifier's own resume re-dispatch in flight, not a hard
+/// stop. It contributes no evidence on a steady pass, exactly as an
+/// unanswered probe does.
+#[test]
+fn a_missing_window_on_a_story_just_returned_for_repair_is_deferred() {
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::Progressing
+    );
+}
+
+/// SH-650: the deferral is bounded by the stall clock, which a re-dispatch
+/// that never comes cannot advance — `DISPATCH_TIMEOUT` sits inside the
+/// ceiling, so a re-dispatch has either shown a live pane or parked the story
+/// with `awaiting` before this fires.
+#[test]
+fn a_deferred_missing_window_still_lets_the_stall_ceiling_catch_a_dead_lane() {
+    assert!(
+        storyhook::service::engine::DISPATCH_TIMEOUT.as_secs() < STALL_CEILING_SECS,
+        "the resume re-dispatch must be able to finish inside the stall ceiling"
+    );
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::Stalled)
+    );
+}
+
+/// SH-650: a daemon that died mid-re-dispatch has nobody left to finish it,
+/// so a restart pass still reports the missing window as `Interrupted`.
+#[test]
+fn a_missing_window_on_a_returned_story_is_interrupted_across_a_restart() {
+    let observation = LaneObservation {
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Restart),
+        LaneClassification::HardStop(HardStopKind::Interrupted)
+    );
+}
+
+/// SH-650: the verifier's own refusal to re-dispatch sets `awaiting`, and
+/// that still outranks the deferral — a parked story is a hard stop.
+#[test]
+fn an_agent_block_wins_over_a_deferred_missing_window() {
+    let observation = LaneObservation {
+        agent_blocked: true,
+        window: WindowProbe::Gone {
+            detail: "scripted: gone".to_string(),
+        },
+        returned_for_repair: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+        LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
 
@@ -441,6 +523,7 @@ fn a_closed_story_wins_over_every_other_signal() {
         seconds_since_progress: Some(STALL_CEILING_SECS * 10),
         seconds_since_output: Some(STALL_CEILING_SECS * 10),
         awaiting_reason: Some("the agent said why".to_string()),
+        returned_for_repair: true,
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
@@ -1003,6 +1086,100 @@ fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
         awaiting.contains("scripted: tmux reports `=fixture:=story-SH-1` gone"),
         "the reason carries what tmux actually said: {awaiting}"
     );
+}
+
+/// SH-650, wired: the fact is read from the story's own state history. A
+/// lane whose story went `verifying` → `in-progress` (the verifier's return)
+/// keeps a dead window out of the verdict on a steady pass and reports the
+/// deferral; once the story changes state again the same dead window is a
+/// hard stop; and a restart pass never defers.
+#[test]
+fn a_dead_window_on_a_story_the_verifier_just_returned_is_deferred_not_quarantined() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "returned for repair", &[]);
+    let gone = || DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    };
+    let fake = FakeDispatcher::new([gone(), gone(), gone()]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(report.quarantined, [], "the return is not a hard stop");
+    assert_eq!(
+        report.deferred.len(),
+        1,
+        "the deferral is reported, never silent"
+    );
+    assert_eq!(report.deferred[0].0, 0);
+    assert!(
+        report.deferred[0].1.contains("gone"),
+        "{:?}",
+        report.deferred
+    );
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert!(
+        lane.probe_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("gone")),
+        "status surfaces what tmux said: {:?}",
+        lane.probe_detail
+    );
+    assert_eq!(awaiting_of(&fixture, 1), None);
+
+    // A restart pass never defers: nobody is left to finish the re-dispatch.
+    let restart_ctx = Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        fixture.cwd(),
+        fixture.env().clone(),
+    )
+    .clock(Clock::Fixed(FIXTURE_NOW.to_string()));
+    let report = EngineService::new(&restart_ctx, &fake)
+        .reconcile_after_restart(&run_id.to_string())
+        .unwrap();
+    assert_eq!(report.quarantined, [(0, HardStopKind::Interrupted)]);
+}
+
+/// SH-650, wired: the deferral ends with the story's next state change. A
+/// story a person moved out of `in-progress` after the return is judged by
+/// its window again.
+#[test]
+fn a_dead_window_is_a_hard_stop_again_once_the_returned_story_moves_on() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "moved on after the return", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+    service.set_state(&story, "todo", None, None, None).unwrap();
+    service
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(report.quarantined, [(0, HardStopKind::WindowGone)]);
+    assert_eq!(report.deferred, []);
 }
 
 /// D10 is a continuation policy, not only a counter: below the breaker
@@ -2338,5 +2515,107 @@ fn fill_stops_at_the_machine_lane_budget() {
             .count(),
         ENGINE_LANE_BUDGET,
         "and the engine asked the dispatcher exactly that many times"
+    );
+}
+
+/// SH-655: a session `/story do` opened by hand is in no table, so the fill
+/// also measures the budget against the live agent windows on the tmux
+/// server — and a window this pass opened, which the census taken at the
+/// start of the pass cannot yet see, counts too.
+#[test]
+fn fill_counts_manually_dispatched_windows_against_the_budget() {
+    let fixture = ServiceFixture::new();
+    let manual = 2;
+    let room = ENGINE_LANE_BUDGET - manual;
+    let over = ENGINE_LANE_BUDGET + 2;
+    for n in 0..over {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..room)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..manual).map(|n| format!("storyhook:SH-9{n}")).collect(),
+    });
+    let run_id = started_run(&fixture, &fake, u32::try_from(over).unwrap());
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(
+        report.filled.len(),
+        room,
+        "{manual} manual sessions leave room for {room} engine lanes under a budget of {ENGINE_LANE_BUDGET}"
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, DispatcherCall::Dispatch(_)))
+            .count(),
+        room,
+        "the pass stopped asking once the census plus its own dispatches reached the budget"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Counted { windows }) if windows.len() == manual),
+        "the pass reports the census it measured against: {:?}",
+        report.census
+    );
+}
+
+/// SH-655: a full machine of manual sessions leaves the engine nothing to
+/// fill, and an unanswered census is no evidence — the store's own count
+/// alone bounds the pass, so the fill is unchanged from before the census
+/// existed.
+#[test]
+fn a_full_machine_fills_nothing_and_an_unanswered_census_changes_nothing() {
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let fake = FakeDispatcher::new(Vec::new());
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..ENGINE_LANE_BUDGET)
+            .map(|n| format!("storyhook:SH-9{n}"))
+            .collect(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(
+        report.filled.is_empty(),
+        "a machine already at its budget of manual sessions fills nothing: {:?}",
+        report.filled
+    );
+    assert!(fake.calls().is_empty(), "and never asked the dispatcher");
+
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..2)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Unanswered {
+        detail: "no server running".to_string(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        report.filled.len(),
+        2,
+        "no evidence is not a full machine: both lanes fill on the store's count alone"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Unanswered { detail }) if detail == "no server running"),
+        "the unanswered census travels on the report for the daemon to journal: {:?}",
+        report.census
     );
 }

@@ -102,6 +102,10 @@ grep -qF -- "--resume" "$SKILL" \
   || fail_test "router skill never mentions --resume (dispatch recovery permission)"
 grep -qF -- 'resume-available' "$SKILL" \
   || fail_test "router skill never routes the interactive resume confirmation"
+grep -qF -- "--over-budget" "$SKILL" \
+  || fail_test "router skill never mentions --over-budget (SH-655's lane-budget override)"
+grep -qF -- 'lane-budget' "$SKILL" \
+  || fail_test "router skill never routes the lane-budget refusal"
 grep -qF "STORY_AUTO_PROMPT" "${docs[@]}" \
   || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
 

@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use storyhook::error::AppError;
+use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
     DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe,
 };
@@ -53,10 +54,26 @@ pub enum DispatcherCall {
     KillWindow(String),
 }
 
-#[derive(Default)]
 struct State {
     steps: VecDeque<DispatcherStep>,
     calls: Vec<DispatcherCall>,
+    /// What `census()` answers, every pass, without consuming a step: the
+    /// census runs on every fill and a scripted step would be eaten by it.
+    /// An empty server by default — no manual sessions — so a test that says
+    /// nothing about the budget sees the engine's own lanes alone.
+    census: WindowCensus,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            steps: VecDeque::new(),
+            calls: Vec::new(),
+            census: WindowCensus::Counted {
+                windows: Vec::new(),
+            },
+        }
+    }
 }
 
 /// A cloneable, thread-safe scripted dispatcher.
@@ -71,9 +88,14 @@ impl FakeDispatcher {
         Self {
             state: Arc::new(Mutex::new(State {
                 steps: steps.into_iter().collect(),
-                calls: Vec::new(),
+                ..State::default()
             })),
         }
+    }
+
+    /// What every later `census()` answers (SH-655).
+    pub fn set_census(&self, census: WindowCensus) {
+        self.state.lock().expect("fake dispatcher mutex").census = census;
     }
 
     #[must_use]
@@ -160,5 +182,13 @@ impl Dispatcher for FakeDispatcher {
             }
             step => panic!("FakeDispatcher expected a kill-window step, got {step:?}"),
         }
+    }
+
+    fn census(&self) -> WindowCensus {
+        self.state
+            .lock()
+            .expect("fake dispatcher mutex")
+            .census
+            .clone()
     }
 }

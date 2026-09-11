@@ -413,14 +413,28 @@ scratch-clean:
 # install(1) replaces the file with a fresh inode: new invocations get a
 # cleanly-signed binary and the running process keeps its old mapping.
 #
-# Note this does NOT restart a running dashboard daemon; it keeps serving the
-# old code until restarted (see SH-54).
-#
 # Reports the WHOLE `--version` line, not just the bare semver -- SH-406
 # stamps every build with a build id derived from its tracked git content
 # (build.rs), so two installs of the same VERSION distinguish themselves here
 # whenever their tracked content differs.
+#
+# Then reinstalls the plugin for every provider that has it registered
+# (SH-667). The plugin travels inside the binary and is projected per version,
+# so until this line every `make install` left Claude Code and Codex pinned at
+# the previous release's projection -- the STALE RELEASE `story doctor
+# install` reports, and what SH-584's RCA found. It runs the binary JUST
+# INSTALLED, never whatever `story` is on PATH: only that binary embeds the
+# payload being installed. The verb is daemon-routed, and a daemon of another
+# build stands down for the new client, so this install implicitly reseats the
+# daemon on the new binary -- which `scripts/release.sh` does by hand anyway.
+#
+# `|| echo` on purpose: this target is the recovery `StoreError::SchemaTooNew`
+# prescribes and stays ungated (docs/spec/release-lockstep.md), and
+# `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+# start`. A plugin refresh that failed the install would leave that machine
+# with no daemon at all. The failure is named, with its retry, never swallowed.
 install: release-build
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
 	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"
+	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2

@@ -134,18 +134,29 @@ assert_eq "$(jqf "$out" .ok)" "true" "nothing-to-reclaim: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing-to-reclaim: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing-to-reclaim: no branch to remove"
 
-# --- project-specific completion: first CLOSED state, never hard-coded done -
-custom=$(new_story "$repo" "Custom completion state")
+# --- completion is the required `done`, never the first CLOSED state (SH-652)
+# `shipped` is ordered ahead of `done`; a story a person moved into it is not
+# completed work and reap refuses it, while `done` is still accepted.
+custom=$(new_story "$repo" "Custom closed state is not completion")
 wcustom=$(mk_dispatched "$repo" "$custom")
 (cd "$repo" \
   && story state add shipped --super CLOSED >/dev/null \
   && story state reorder todo,in-progress,verifying,blocked,shipped,done,closed >/dev/null \
   && story move "$custom" shipped >/dev/null)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "custom completion: ok:true"
-assert_eq "$(jqf "$out" .dry_run)" "true" "custom completion: reaches the dry-run cleanup"
+assert_eq "$(jqf "$out" .ok)" "false" "shipped-first catalog: a story in shipped is refused"
+assert_eq "$(jqf "$out" .reason)" "not-completion-state" "shipped-first catalog: names the reason"
+assert_eq "$(jqf "$out" .completion_state)" "done" "shipped-first catalog: names done as completion"
 [ -d "$repo/.claude/worktrees/$wcustom" ] \
-  || fail_test "custom completion: dry run removed the worktree"
+  || fail_test "shipped-first catalog: a refused reap removed the worktree"
+stilldone=$(new_story "$repo" "Done under a shipped-first catalog")
+wdone=$(mk_dispatched "$repo" "$stilldone")
+close_story "$stilldone"
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$stilldone" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "shipped-first catalog: done is still completion"
+assert_eq "$(jqf "$out" .dry_run)" "true" "shipped-first catalog: reaches the dry-run cleanup"
+[ -d "$repo/.claude/worktrees/$wdone" ] \
+  || fail_test "shipped-first catalog: dry run removed the worktree"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reap 2>&1)

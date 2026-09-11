@@ -1956,6 +1956,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="dispatch-speed">Speed</label>
         <select id="dispatch-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="modal-error" id="dispatch-options-notice" role="status" aria-live="polite"></div>
     <label class="dispatch-auto-option" for="dispatch-auto">
       <input type="checkbox" id="dispatch-auto">
       <span class="dispatch-auto-copy">
@@ -1987,6 +1988,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="engine-speed">Speed</label>
         <select id="engine-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="modal-error" id="engine-options-notice" role="status" aria-live="polite"></div>
     <div class="engine-modal-lanes" id="engine-modal-lanes" hidden>
       <div class="engine-modal-lanes-summary" id="engine-modal-lanes-summary"></div>
       <div class="engine-lane-strip" id="engine-modal-lane-strip" aria-label="Full Auto lanes"></div>
@@ -5171,7 +5173,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
       ]),
       el("div", { class: "engine-banner-meta" }, [
-        el("span", {}, ["Story ", el("code", {}, [incident.story_id])]),
+        el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
         el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
         el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
       ]),
@@ -5327,7 +5329,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       queued.push("position " + verification.position);
       if (verification.blocked_by) {
         queued.push("verifier " + (verification.blocked_by.halted ? "halted" : "retrying") +
-          " at " + verification.blocked_by.story_id);
+          " (infrastructure; first hit on " + verification.blocked_by.story_id + ", not its fault)");
       }
       return queued.join(" · ");
     }
@@ -5718,6 +5720,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * permanent failure for the rest of the page's life. */
   var dispatchOptionsCache = null;
   var dispatchOptionsPromise = null;
+  /** SH-670: why the last catalog fetch failed, as `describeFailure` words
+   * it, or `null` after a success. The failure path hands
+   * `applyDispatchAvailability` a `null` catalog on purpose (availability is
+   * unknown, not negative), so this is the only place the reason survives
+   * for the options notice to read. */
+  var dispatchOptionsFailure = null;
   var DISPATCH_FALLBACK_AGENTS = [
     { id: "claude", label: "Claude", installed: true },
     { id: "codex", label: "Codex", installed: true }
@@ -5728,14 +5736,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     dispatchOptionsPromise = api("GET", "/api/dispatch-options")
       .then(function(resp) {
         dispatchOptionsCache = resp;
+        dispatchOptionsFailure = null;
         dispatchOptionsPromise = null;
         return resp;
       })
       .catch(function(err) {
+        dispatchOptionsFailure = describeFailure(err);
         dispatchOptionsPromise = null;
         throw err;
       });
     return dispatchOptionsPromise;
+  }
+
+  var OPTIONS_NOTICE_TAIL = " Model, Effort and Speed will use the provider's defaults.";
+
+  /** `text` as a sentence: the resolver's reason ends without a period,
+   * `describeFailure`'s unprovable-outcome sentence already carries one. */
+  function asSentence(text) {
+    return /[.!?]$/.test(text) ? text : text + ".";
+  }
+
+  /** SH-670: the sentence explaining why `agent`'s Model/Effort/Speed hold
+   * nothing but "Default", or "" when the catalog is healthy. A provider
+   * slot the daemon degraded to `{ok:false, reason}` (helper not installed,
+   * timed out, predates the `capabilities` verb) used to render exactly like
+   * a provider with no options -- and the `reason` it carried was the one
+   * line naming the fix (`story plugin install claude`). A failed fetch is
+   * the same silence one layer up. Neither gates Submit: SH-517 degrades
+   * the selector rather than dispatch, and SH-616's availability row owns
+   * whether a provider is launchable at all. */
+  function providerOptionsNotice(agent, caps) {
+    if (!caps) {
+      return dispatchOptionsFailure
+        ? "Provider options could not be loaded: " + asSentence(dispatchOptionsFailure) + OPTIONS_NOTICE_TAIL
+        : "";
+    }
+    var slot = agent ? caps[agent] : null;
+    if (!slot || slot.ok !== false) return "";
+    var label = dispatchAgentsFrom(caps).reduce(function(found, entry) {
+      return entry.id === agent ? entry.label : found;
+    }, agent);
+    var reason = typeof slot.reason === "string" && slot.reason
+      ? slot.reason
+      : "the helper reported no catalog";
+    return label + " options unavailable: " + asSentence(reason) + OPTIONS_NOTICE_TAIL;
+  }
+
+  function renderProviderOptionsNotice(prefix, agent, caps) {
+    $(prefix + "-options-notice").textContent = providerOptionsNotice(agent, caps);
   }
 
   /** Repopulates one dispatch selector from `entries` (an array of
@@ -5832,6 +5880,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     populateDispatchSelector(prefix + "-model", providerCaps.models, remembered.model);
     populateDispatchSelector(prefix + "-effort", providerCaps.efforts, remembered.effort);
     populateDispatchSelector(prefix + "-speed", providerCaps.speeds, remembered.speed);
+    renderProviderOptionsNotice(prefix, agent, caps);
   }
 
   /** Opens with the last submitted configuration. Localhost remains the only
@@ -5886,6 +5935,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeDispatchModal() {
     dispatchModalStoryId = null;
+    $("dispatch-options-notice").textContent = "";
     hideBackdrop("dispatch-modal-backdrop");
     $("dispatch-modal").classList.remove("open");
     $("dispatch-modal").setAttribute("aria-hidden", "true");
@@ -5930,6 +5980,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     populateCurrentEngineSelector("engine-model", providerCaps.models, run.model || "");
     populateCurrentEngineSelector("engine-effort", providerCaps.efforts, run.effort || "");
     populateCurrentEngineSelector("engine-speed", providerCaps.speeds, run.speed || "");
+    renderProviderOptionsNotice("engine", run.agent, caps);
   }
 
   function renderEngineModalLanes(run) {
@@ -6081,6 +6132,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     engineModalRunId = null;
     engineAvailabilityPending = false;
     engineProviderAvailable = true;
+    $("engine-options-notice").textContent = "";
     hideBackdrop("engine-modal-backdrop");
     $("engine-modal").classList.remove("open");
     $("engine-modal").setAttribute("aria-hidden", "true");

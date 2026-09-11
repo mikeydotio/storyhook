@@ -651,7 +651,10 @@ superstate (OPEN or CLOSED) that decides whether stories in it count as
 open work; moving a story into a CLOSED state closes and archives it.
 
 State order matters: it is the column order on the web dashboard's
-board, and the first OPEN state is where new stories land.
+board, and the first OPEN state is where new stories land. Order is
+layout, never outcome: verified work always lands in the required
+'done' state, and reordering another CLOSED state ahead of it changes
+the board, not where the verifier writes.
 
 When to use:
   Setting a project up ('review', 'verifying', 'wont-fix'), or adjusting
@@ -2702,6 +2705,34 @@ Examples:
         );
 
         m.insert(
+            "verifier",
+            r#"story verifier ack <incident-id>
+
+Release the centralized verifier after an infrastructure halt.
+
+  The verifier stops its whole queue when it cannot run at all -- its
+  script refused by name, the registered checkout unreadable, a gate that
+  cannot be spawned -- rather than reporting the same failure as a red
+  verdict on every story in turn. The halt is recorded as one incident,
+  named on the story it was first hit on and on every story waiting
+  behind it, with the incident id. No story is at fault for it.
+
+  ack names that exact incident and clears it, so the verifier's next
+  tick attempts the queue again. Acknowledging changes nothing about the
+  cause: fix what the halt comment names first, or the same incident
+  returns on the next attempt. A stale id (an older comment, a newer
+  incident) is refused rather than clearing whichever incident is
+  current; an incident still retrying on its own is refused too.
+
+  The dashboard's "Acknowledge and retry" button performs the same
+  acknowledgement.
+
+Examples:
+  story verifier ack 2:28821
+"#,
+        );
+
+        m.insert(
             "web",
             r#"story web start [--port <PORT>]
 story web stop
@@ -2923,7 +2954,10 @@ Related:
 
 Update the story binary in place to the latest GitHub release. Downloads the
 release asset for your platform, verifies it runs, and atomically replaces the
-running executable.
+running executable — then reinstalls the plugin for every provider (Claude
+Code, Codex) that has the storyhook marketplace registered, from the binary
+just installed, so the plugins never need a separate update. A provider that
+was never installed is left alone.
 
 When to use:
   Periodically, to pick up new releases. Run 'story update --check' first to
@@ -2942,10 +2976,18 @@ Notes:
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
     the installer at https://github.com/mikeydotio/storyhook.
-  - Set STORYHOOK_GITHUB_TOKEN to raise the GitHub API rate limit (optional).
+  - If the binary was replaced but a plugin could not be reinstalled, the
+    update reports both and exits non-zero; 'story plugin reinstall' retries
+    the plugins alone. Start a new agent session afterwards so the host loads
+    the reinstalled plugin.
+  - The reinstall talks to the daemon, and a daemon of the old build stands
+    down for the new one, so a successful update leaves the daemon running
+    the new binary.
 
 Related:
-  story doctor  — Check project integrity
+  story plugin reinstall  — Reinstall the registered provider plugins by hand
+  story doctor install    — Report which release each provider's plugin is at
+  story doctor            — Check project integrity
 "#,
         );
 
@@ -3146,6 +3188,40 @@ Related:
         // `priority` became an alias for `prioritize` and stopped being
         // available.
         m.insert(
+            "lane-budget",
+            r#"story lane-budget [--json]
+
+The machine lane budget, and the live agent sessions counted against it.
+
+A live agent session is a tmux window that a dispatch opened -- its
+@storyhook-agent option is set -- and whose pane is not dead. Every
+dispatch counts, whether the Full Auto engine filled the lane or a person
+ran /story do; a finished session's window stays around (remain-on-exit)
+and no longer counts. The budget is the engine's own machine-wide lane
+budget, so the two doors measure one number.
+
+When to use:
+  Before dispatching by hand on a busy machine, and by /story do itself,
+  which refuses a new session past the budget unless --over-budget says
+  you meant it. The census is taken from the tmux server your own shell
+  is attached to; a daemon on another socket cannot answer for it, which
+  is why this command never starts one.
+
+  If tmux cannot be asked, the answer is "unanswered", not zero: --json
+  then carries "probe": "unanswered" with the probe's own words, and no
+  "live" or "available" field at all. A caller must not read silence as
+  room.
+
+Examples:
+  story lane-budget          # 6 of 4 lanes in use on this machine -- at the budget
+  story lane-budget --json   # {"budget": 4, "probe": "counted", "live": 6, ...}
+
+Related:
+  story engine status  -- The engine's own lanes and runs
+"#,
+        );
+
+        m.insert(
             "test-environment",
             crate::env::test_environment::HELP_TOPIC.as_str(),
         );
@@ -3199,6 +3275,7 @@ BULK & INTEGRATION
 PROJECT MANAGEMENT
   story phase list|show|add|remove  Manage story phases
   story doctor [--fix]            Integrity checks and repair
+  story lane-budget               Live agent sessions against the machine lane budget
   story report [--html]           Generate project report
   story scaffold <variant>        Generate agent instruction files
   story hooks install|uninstall   Manage git hooks

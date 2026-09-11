@@ -262,6 +262,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             | EngineAction::Stop { .. }
             | EngineAction::Ack { .. } => Vec::new(),
         },
+        Invocation::Verifier { .. } => Vec::new(),
 
         Invocation::Help
         | Invocation::Project { .. }
@@ -278,6 +279,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorInstall
+        | Invocation::LaneBudget
         | Invocation::DoctorAbandoned { .. }
         | Invocation::DoctorCrashes { .. }
         | Invocation::Import { .. }

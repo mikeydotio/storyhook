@@ -295,6 +295,7 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             },
         ),
         ("version", Invocation::Version),
+        ("lane-budget", Invocation::LaneBudget),
         (
             "hooks list",
             Invocation::Hooks {

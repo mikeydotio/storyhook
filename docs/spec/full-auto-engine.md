@@ -69,6 +69,18 @@ keyed by name alone today, and SH-648 keys them by project, so two projects'
 suites may overlap on one machine — a trade-off that spec states rather than
 this table.
 
+**Amended by SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
+enforced over `engine_lanes` rows alone, so a session `/story do` opened by
+hand — the same `cmd_dispatch`, worktree, window and cold workspace build —
+counted for nothing, and the dashboard's own in-memory cap (`MAX_RUNNING`, a
+bound on dispatches *in flight*, never on sessions) was a third counter over
+one machine. Three producers, three counters. The budget is now measured by
+every door against one census: the live agent windows on the tmux server —
+`@storyhook-agent` set, pane not dead — which `story lane-budget` reports,
+`cmd_dispatch` refuses past ahead of any claim (`--over-budget` says you meant
+it), and the engine's fill counts alongside its own lanes. See the SH-655
+As-built entry below.
+
 ## Assumptions recorded rather than asked
 
 | # | Assumption |
@@ -1443,13 +1455,15 @@ process exits, `story move <n> verifying` included, which is exactly why
 `Verifying` needs its own precedence ahead of `WindowGone` rather than the
 window probe alone being sufficient. This also explains why centralized
 verification's own `notify()` (`plugins/story/bin/story.sh cmd_notify`)
-refuses with `pane-changed` whenever the pane it targets no longer runs the
-dispatched process — the common case, once the pane is already dead — and
-`return_for_repair` (`src/daemon/verification.rs`) falls back to
-`set_awaiting` on that refusal. No special-case code was needed for the
-return-for-repair path on this side: it reduces to the already-existing
-`AgentBlocked` classification once `awaiting` is set, which is what makes the
-next fix below load-bearing for it.
+refuses whenever the pane it targets no longer holds the dispatched process —
+the common case, once the pane is already dead. Until SH-650 that refusal
+parked the story (`set_awaiting`) and this side needed no special case: it
+reduced to `AgentBlocked` once `awaiting` was set. **SH-650 changed both
+halves** — the refusal is `pane-dead`, not `pane-changed` (tmux freezes the
+frozen pane's command, so only `#{pane_dead}` tells), and the verifier now
+re-dispatches the story into the same window with the resume clause instead
+of parking it; the reconciler's own part of that change is under "As built —
+SH-650" below.
 
 **Two conformance repairs, found while re-verifying the branch's own
 committed work against the approved plan rather than newly discovered by the
@@ -2145,7 +2159,8 @@ run's notice; it is not coupled to the timed notice stack.
 blocked story. An engine lane remains occupied while the daemon-owned,
 machine-wide verifier orders submitted work, predicts the exact merge tree,
 runs the release gate, validates its content-addressed receipt, and lands the
-PR. Success moves the story to the configured completion state and reaps its
+PR. Success moves the story to the completion state — the required `done`
+(`domain::completion_state`, SH-652) — and reaps its
 submitted workspace; the engine then observes that completion and frees the
 lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and
@@ -2506,6 +2521,40 @@ lane writes move `data_version`, the change poller publishes `Change::Resync`,
 and `poll_engine` wakes on any non-`Ping` change — the tick (72 s then, 300 s
 since SH-657) is an idle floor, never a rate limit.
 
+### SH-650 — a dead window on a story the verifier just returned is deferred
+
+`return_for_repair` used to park a story with `awaiting` when `story.sh
+notify` could not reach its pane, and this reconciler read that as
+`AgentBlocked` → quarantine → a breaker strike for what is ordinary
+remediation (decision D-E, `verification-workflow.md`). The verifier now
+re-dispatches the story into its own window with `dispatch --resume --auto`
+(as the lane it is, when a live lane holds it: the run's provider options and
+`--full-auto`) and pastes the diagnosis afterwards. That exposed a race this
+side owns: the return transition (`verifying` → `in-progress`, no `awaiting`)
+wakes the reconciler, the pane is normally already dead, and the respawned
+pane comes alive only after a readiness wait bounded by `DISPATCH_TIMEOUT` —
+so a steady pass in that window read `WindowGone` and struck the breaker
+anyway. The same gap existed for about a second before SH-650 and was closed
+by `set_awaiting`, a classification this side tolerates.
+
+`LaneObservation.returned_for_repair` is the store-derived fact that closes
+it, read from the story's own state history (`service::verification::
+returned_for_repair`: the latest `StoryStateChanged` is `RETURNED_STATE`, the
+one before it `VERIFYING_STATE`, nothing since) rather than from a lane mark
+the verifier would have to write. On a **steady** pass a `Gone` probe on such
+a story contributes no evidence — SH-626's rule for an unanswered probe, one
+cause over — and the lane is judged by the stall clock, with
+`DISPATCH_TIMEOUT` pinned inside `STALL_CEILING_SECS` so a re-dispatch has
+either shown a live pane or parked the story with `awaiting` (which still
+outranks the deferral) before the clock can fire. A **restart** pass never
+defers: a daemon that died mid-re-dispatch has nobody left to finish it. The
+fact is read lazily, only when the probe says `Gone` on an open,
+non-verifying, non-awaiting story, and the deferral is visible three ways:
+`ReconcileReport.deferred`, `probe_detail` on the lane, and an INFO journal
+line on the deferral's opening and closing edges (never per pass). Stated
+limit: a re-dispatched agent that dies again before its next state change is
+caught by the stall clock, not immediately.
+
 ### SH-646 — the verification workflow has its own design of record
 
 **Everything from submission to reap now lives in
@@ -2584,3 +2633,74 @@ separately, gated on that measurement. Codex CLI's render cadence during tool
 execution is unmeasured; its arm relies on the pty channel on Claude's terms
 until it is.
 
+### SH-655 — one census for every door the lane budget guards
+
+**A lane is a live window, and every door counts the same windows.** D14
+promised a machine-wide budget and enforced it over `engine_lanes` rows; a
+manual dispatch was in no table, so seven of them were measured at load 33 on
+ten cores while the engine would have opened four more. `src/lane_budget.rs`
+is the census both doors now read: `tmux list-windows -a -F` for every window
+whose `@storyhook-agent` option is set (every `cmd_dispatch` sets it, engine
+or manual) and whose pane tmux does not report dead — `remain-on-exit on`
+keeps a finished session's window around, which is why `pane_dead` is
+load-bearing. Ask what a process is, never what it is spelled (SH-226/239); a
+store-side lease was rejected because a manual session has no reconciler to
+close it, while a window census is self-correcting. The budget number stays
+`ENGINE_LANE_BUDGET` (= `api::dispatch::MAX_RUNNING`), one number in one
+place, reached from shell through a new store-free, daemon-free verb rather
+than copied.
+
+**The manual door.** `story lane-budget [--json]` is answered client-side on
+the `needs_no_store` path, because the census must come from the server the
+caller's own `$TMUX` names — the daemon may be attached elsewhere — and must
+never start a daemon to ask. `cmd_dispatch` calls it ahead of BOTH modes'
+claim writes, exactly where the ready gate stands, so a refusal (`reason:
+lane-budget`, the census carried as data) leaves no claim, no worktree and no
+window. It applies only when the dispatch would *add* a session: a new window
+is about to open (a `--resume` that found its pane reuses one) and the caller
+is not the engine (`--full-auto` lanes are counted inside the engine's own
+transaction; a second refusal here would read to it as a dispatch failure).
+`--over-budget` dispatches past it and says so on stderr; the installed
+plugin's hook admits the flag by name, the dashboard route types the reason,
+and the router skill routes it without ever retrying on its own.
+
+**The engine door.** `Dispatcher::census()` takes the same census through the
+dispatcher's own tmux program on the server its lanes live on — once per
+fill pass, outside the claim transaction (a subprocess inside a write
+transaction would hold the store for as long as tmux takes to answer) — and
+`fill_idle_lanes` requires `census_live + dispatched_this_pass <
+ENGINE_LANE_BUDGET` beside the store's own count, the second term standing in
+for the windows this pass has opened that the census cannot yet see. The fake
+dispatcher answers it from a configurable field, never a scripted step,
+because the census runs every pass.
+
+**No evidence is not zero.** The census is three-valued (SH-626): counted, or
+unanswered with the probe's own words. `story lane-budget --json` then carries
+neither `live` nor `available`; `cmd_dispatch` proceeds and says so on stderr
+— the same reading for an older binary that lacks the verb, so plugin/binary
+skew turns the gate off loudly rather than into a refusal; the engine fills on
+the store's count alone and the daemon journals the outage on its EDGE (ERROR
+on entry and on a change of reason, INFO on recovery, never per pass) through
+a process-wide marker rather than a store column — the census is a fact about
+the machine, not a lane, and `EngineService` is rebuilt every sweep, so a
+daemon restart journals it once more, the price of needing no migration.
+
+**Limits, stated.** A window on another tmux socket is invisible to whichever
+door is not attached there — the client verb sees `$TMUX`'s server, the daemon
+sees the default socket — and they agree only when the operator's session is
+on the default socket. An agent started outside `cmd_dispatch`, and a
+worktree with no window, are outside the census. The dashboard's
+`MAX_RUNNING` registry still bounds dispatches in flight, deliberately: that
+is what it was for.
+
+**Found on the way, fixed in the same commit.** Fourteen files in the plugin
+shell suite dispatched — mostly dry-run — against the developer's *real* tmux
+server, and every one turned load-dependent the day the gate landed: green on
+a quiet machine, refused at the budget on this one — the very verdict SH-655
+removes from the merge gate, manufactured inside the suite that tests it.
+`plugins/story/tests/lib.sh` now puts the fake tmux on `PATH` for every test,
+the way it already mints `FAKE_TMUX_STATE` for every test (SH-263), because a
+fixture you can forget is one that will be forgotten again; those files had
+already been leaking resume inventory's `list-panes -a` to the real server.
+The compile bound that shipped alongside is in `docs/spec/test-tiers.md`,
+"The compile bound". Council verdict, plan and decisions: `story show SH-655`.
