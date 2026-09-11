@@ -503,6 +503,12 @@ fn export_import_export_is_byte_identical() {
         .args(["relate", "API-1", "parent-of", "API-2"])
         .assert()
         .success();
+    // Keep a completed story with a later dependency in the round-trip corpus.
+    // Completion cannot advance past an already open blocker (SH-656).
+    story(source.path())
+        .args(["move", "API-3", "done"])
+        .assert()
+        .success();
     story(source.path())
         .args(["relate", "API-1", "blocks", "API-3"])
         .assert()
@@ -517,11 +523,6 @@ fn export_import_export_is_byte_identical() {
         .success();
     story(source.path())
         .args(["move", "API-2", "review"])
-        .assert()
-        .success();
-    // Archived: moves out of the JSONL directory and into the archive database.
-    story(source.path())
-        .args(["move", "API-3", "done"])
         .assert()
         .success();
     story(source.path())
