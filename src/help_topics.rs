@@ -2955,7 +2955,6 @@ Notes:
   - The reinstall talks to the daemon, and a daemon of the old build stands
     down for the new one, so a successful update leaves the daemon running
     the new binary.
-  - Set STORYHOOK_GITHUB_TOKEN to raise the GitHub API rate limit (optional).
 
 Related:
   story plugin reinstall  — Reinstall the registered provider plugins by hand
