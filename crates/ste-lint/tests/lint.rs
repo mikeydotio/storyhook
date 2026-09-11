@@ -41,9 +41,9 @@ fn formatting_and_soft_breaks_cannot_reset_a_sentence() {
     for separator in [" ", "\n", "  \n"] {
         let text = format!(
             "{}{}{}",
-            vec!["word"; 10].join(" "),
+            ["word"; 10].join(" "),
             separator,
-            vec!["**word**"; 11].join(" ")
+            ["**word**"; 11].join(" ")
         );
         assert_eq!(errors(&text)[0].rule, Rule::SentenceLength);
     }
