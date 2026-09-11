@@ -451,3 +451,33 @@ fn existing_session_banner_and_tail_respawns_use_the_stable_home_cwd() {
 
 #[path = "support/verify_window_live.rs"]
 mod live;
+
+#[test]
+fn standalone_calls_do_not_inherit_a_dispatch_socket() {
+    let fixture = Fixture::new(true);
+    let tmux_dir = fixture.tmux_dir();
+    std::fs::write(
+        tmux_dir.join("tmux"),
+        "#!/bin/sh\n[ -z \"${TMUX:-}\" ] && [ -z \"${TMUX_PANE:-}\" ] || exit 23\nexit 0\n",
+    )
+    .unwrap();
+    let mut path = tmux_dir.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(checkout().join("scripts/verify-window.sh"))
+        .args(["banner", "default server only"])
+        .current_dir(fixture.root.path())
+        .env("PATH", path)
+        .env("HOME", fixture.home())
+        .env("TMUX", "/dispatch/socket,123,0")
+        .env("TMUX_PANE", "%99")
+        .env("STORYHOOK_VERIFIER_MIRROR", "1")
+        .env_remove("STORYHOOK_ACTIVITY_LOG_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mirror must use the default server: {output:?}"
+    );
+}
