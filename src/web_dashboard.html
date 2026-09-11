@@ -5171,7 +5171,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
       ]),
       el("div", { class: "engine-banner-meta" }, [
-        el("span", {}, ["Story ", el("code", {}, [incident.story_id])]),
+        el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
         el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
         el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
       ]),
@@ -5327,7 +5327,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       queued.push("position " + verification.position);
       if (verification.blocked_by) {
         queued.push("verifier " + (verification.blocked_by.halted ? "halted" : "retrying") +
-          " at " + verification.blocked_by.story_id);
+          " (infrastructure; first hit on " + verification.blocked_by.story_id + ", not its fault)");
       }
       return queued.join(" · ");
     }

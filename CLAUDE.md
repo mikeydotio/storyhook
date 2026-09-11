@@ -25,11 +25,6 @@ When you notice the user has completed a logical unit of work, suggest running `
 Versioning settings are in `.semver/config.yaml`. Do not modify this file unless the user explicitly asks to change semver settings.
 <!-- semver:end -->
 
-## Scope: adopt or file
-
-**The rubric ships in the binary: run `story help scope-rubric`.** It is not
-restated here, and `tests/scope_rubric.rs` fails if it starts being.
-
 ## Story priority rubric
 
 **The rubric ships in the binary: run `story help priority-rubric`.** That is the
@@ -81,3 +76,12 @@ that made it.
   except the defect it is blocking, so the queue hands it out next by itself.
   Raising it would buy no scheduling and would erase the ordering the carve-out
   exists to state.
+
+## Scope: adopt or file
+
+**The rubric ships in the binary: run `story help scope-rubric`.** That is the
+source — the default of adopting a mid-work discovery rather than filing it, the
+test for whether it belongs to the story in progress, and what still gets filed.
+It is not restated here, and `tests/scope_rubric.rs` fails if it starts being.
+This project's own calibration: autonomous sessions run a 1M-token window, so
+"at least half unused" is roughly 500k tokens used or fewer (SH-402).

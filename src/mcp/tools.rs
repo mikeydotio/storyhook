@@ -1007,6 +1007,7 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Publish { .. }
         | Invocation::MemberAdd { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::State { .. }
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

@@ -78,7 +78,11 @@ pub enum VerificationStatus {
 /// Infrastructure evidence inherited by candidates waiting behind the head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VerificationBlocker {
-    /// Display id of the candidate that encountered the failure.
+    /// The incident's own id — what `story verifier ack` takes (SH-666).
+    pub incident_id: String,
+    /// Display id of the candidate the failure was first hit on. It is the
+    /// story the verifier happened to be serving, never the cause: every
+    /// infrastructure incident is the verifier's own (SH-666).
     pub story_id: String,
     /// RFC3339 time of the first failed attempt.
     pub first_failed_at: String,
@@ -240,6 +244,7 @@ pub fn status_snapshot_with_incident(
                                 && candidate.verifying_generation == Some(incident.generation)
                         })?;
                         Some(VerificationBlocker {
+                            incident_id: incident.incident_id.clone(),
                             story_id: head.story_id.clone(),
                             first_failed_at: incident.first_failed_at.clone(),
                             last_failed_at: incident.last_failed_at.clone(),
@@ -436,13 +441,7 @@ pub fn publish_once(
                 evidence_at,
             );
             if let Some(blocker) = blocked_by {
-                rendered.push_str(&format!(
-                    "\nVerifier {} since {}; blocked by {}: {}\n",
-                    if blocker.halted { "HALTED" } else { "RETRYING" },
-                    blocker.first_failed_at,
-                    blocker.story_id,
-                    blocker.detail
-                ));
+                rendered.push_str(&render_blocker(&blocker));
             }
             rendered
         };
@@ -453,6 +452,33 @@ pub fn publish_once(
         }
     }
     Ok(moved)
+}
+
+/// The line every waiting candidate carries while the head is stalled.
+///
+/// It names the incident as the **verifier's** and the head story as where it
+/// was first hit, never as a blocker: "blocked by SH-648" was read as a story
+/// dependency by the operator who filed SH-666, on a halt whose cause was the
+/// verifier's own script contract. The halted form also says how the queue
+/// resumes, because the reader is in a terminal.
+fn render_blocker(blocker: &VerificationBlocker) -> String {
+    let VerificationBlocker {
+        incident_id,
+        story_id,
+        first_failed_at,
+        detail,
+        halted,
+        ..
+    } = blocker;
+    if *halted {
+        format!(
+            "\nVerifier HALTED since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\nThe queue resumes once the cause is fixed and the incident is acknowledged: story verifier ack {incident_id}\n"
+        )
+    } else {
+        format!(
+            "\nVerifier RETRYING since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\n"
+        )
+    }
 }
 
 /// Runs the publisher until daemon shutdown, sleeping in short increments so
