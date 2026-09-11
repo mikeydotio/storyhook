@@ -96,6 +96,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/daemon/cleanup.rs",
         "scheduled cleanup chooses a working directory only after enumerating the store project by id",
     ),
+    (
+        "src/daemon/engine/wait_tests.rs",
+        "a wait fixture writes the column to give its temporary project a directory; it never reads it to resolve one",
+    ),
 ];
 
 /// Walks `src/`, skipping the store layer, and returns every `.rs` file whose
