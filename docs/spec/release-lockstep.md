@@ -381,3 +381,26 @@ pointed at never went away; and the plugin helper makes no marketplace call.
 That is a Claude Code marketplace refresh pruning the entry — a fact about the
 host, which makes the detector the whole of the fix. The no-rollback shape
 remains a real gap and is filed separately.
+
+## As built: the verifier scripts were the sixth component (SH-654, SH-666)
+
+The table at the top of this document lists five components. There was a
+sixth, with the plugin's original failure mode: the centralized verifier
+spawned `scripts/verify-pr.sh` from the registered checkout's **working tree**,
+so a `git pull` there changed the daemon's own wire contract while the daemon
+stood still. Measured on 2026-09-10 (`docs/rca/verifier-halt-read-as-a-story-block.md`):
+the daemon was `build 89f604316fa5`, the tree of the SH-646 merge; SH-649 merged
+five hours later and made the script require `<pr-url> -- <gate…>`; the main
+checkout was pulled past it that afternoon; the next verification was refused by
+name and the queue halted for the night. The refusal was the correct detection
+of a skew that should not have been representable.
+
+SH-654 makes it unrepresentable the way the plugin's projection did: the script
+family is embedded in the binary and materialized under the daemon's own state
+directory, keyed by content digest, and the checkout contributes only the
+`[verify] gate` argv and the receipt store. SH-666 owns the incident's other
+half — a halt that reported itself as a story block — in
+`docs/spec/verification-workflow.md`'s SH-666 entry. The rule the row adds to
+"Rules this establishes": **a script the daemon invokes is part of the daemon's
+release**, never read live from a checkout, however trusted that checkout is
+for everything else.
