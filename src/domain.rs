@@ -4455,15 +4455,19 @@ mod tests {
                 "closed"
             ]
         );
-        // Order is load-bearing, not cosmetic: `closed` comes AFTER `done` so
-        // that `service::project::closed_state` and `service::pr_check`, which
-        // both take the first CLOSED state they find, keep answering `done`
-        // (SH-505).
-        let first_closed = REQUIRED_STATES
-            .iter()
-            .find(|r| r.super_state == SuperState::Closed)
-            .expect("the floor has a CLOSED state");
-        assert_eq!(first_closed.slug, "done");
+        // `closed` comes AFTER `done`: `default_states` mirrors this order
+        // into every new catalog's board, and completion should be the first
+        // CLOSED column a reader sees. Nothing resolves by this position any
+        // more — both CLOSED states are named (SH-505, SH-652) — so this is a
+        // layout fact, asserted by slug rather than by searching for "the
+        // first CLOSED state", which is the search SH-652 fences.
+        let position = |slug: &str| {
+            REQUIRED_STATES
+                .iter()
+                .position(|r| r.slug == slug)
+                .unwrap_or_else(|| panic!("the floor names `{slug}`"))
+        };
+        assert!(position(COMPLETION_STATE_SLUG) < position(CLOSED_STATE_SLUG));
         // Every one of them is a slug the CLI and the web router can address.
         for required in &REQUIRED_STATES {
             validate_state_slug(required.slug).expect("a required slug must be addressable");
