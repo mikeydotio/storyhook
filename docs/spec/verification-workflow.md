@@ -865,3 +865,28 @@ REST: `POST /api/repos/{project}/verification/control` accepts `action` of
 derived `state`. `/verification/ack` accepts optional `action`: `retry` or
 `leave-stopped`; omission retains the legacy acknowledgement contract. Mutations
 return confirmed state; the UI refreshes after failures or ambiguous transport.
+
+## Withdrawing active verification — SH-686
+
+An operator may move a story out of `verifying` while its gate runs. That
+withdraws the exact generation's authority: the verifier cancels its subprocess,
+finishes owned cleanup, discards its outcome and proceeds to current queued work.
+A rapid departure and resubmission also invalidates the old generation. Ordinary
+comments, priority changes and another project's changes do not withdraw it.
+
+Monitoring belongs only around the blocking verification attempt. Subscribe
+before checking authority; recheck on project/catalog/resync notifications and
+an absolute recovery deadline that unrelated events cannot postpone. Stop and
+join the monitor before verifier-owned repair or completion transitions. An
+observation error cancels the attempt and reports context after cleanup.
+
+Each attempt has a fresh cancellation signal, separate from manual stop, which
+remains irreversible across reconciliation generations. State withdrawal does
+not disable project admission. Existing generation-guarded writes still fence
+completion races. Preserve the operator's state and any uncertain cleanup
+evidence; never classify withdrawal as failed tests or successful verification.
+
+The Python lifecycle owner must install signal handling before releasing its
+child handshake, settle its recorded lifecycle and gate sessions before the
+outer termination deadline, and retain ownership until cleanup is established.
+The design council's complete decision is recorded on SH-686.
