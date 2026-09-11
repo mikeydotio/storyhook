@@ -1,10 +1,10 @@
 # Daemon activity journal (SH-590)
 
-The `storyhook-verifier:verification` pane becomes a continuous activity view.
-Today each phase replaces the pane, daemon diagnostics live elsewhere, and
-successful subprocess output disappears. The operator needs one chronology
-covering daemon startup, requests, committed story events, engine and verifier
-work, and script stdout/stderr.
+Each store has a continuous activity window in the `storyhook-verifier`
+session. Its chronology covers daemon startup, requests, committed story
+events, engine and verifier work, and script stdout/stderr. SH-662 separates
+store journals from project verification windows; see
+[Concurrent verifier views](verifier-windows.md).
 
 ## Contract
 
@@ -20,9 +20,10 @@ work, and script stdout/stderr.
   `story daemon logs [--follow] [--json]` reads the same files without starting
   or contacting a daemon. Redirected output has no color; JSON is one record
   per line. Missing tmux never blocks daemon startup or verification.
-- One fixed pane on the default tmux server remains the attach point. As with
-  SH-545, the latest store to start owns that machine-wide view; file storage
-  and manual log readers remain store-specific.
+- One fixed session on the default tmux server remains the attach point.
+  Each canonical store has its own activity window. Project tails and banners
+  use separate verification windows, so neither projects nor stores replace
+  another store's continuous reader.
 - Subprocess output is observed from regular files, using independent offsets.
   A descendant holding a descriptor cannot hold a reader at EOF. Observation
   ends with the owned command, including failure and timeout, flushing a final

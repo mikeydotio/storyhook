@@ -207,7 +207,11 @@ for probe in "AskUserQuestion:$(claude_payload AskUserQuestion '{"questions":[{"
   # reads it and has to be able to act on it without a person. Each span is a
   # separate obligation, so each is named separately.
   for needle in "unattended" "council-vote" "do not stall" "$LANE_STORY" \
-                "before you resume the work"; do
+                "before you resume the work" \
+                "Context: the relevant facts and constraints" \
+                "Question: the question being answered" \
+                "Decision: the chosen answer" "Rationale: why it was chosen" \
+                "alternatives and trade-offs" "without this session or local files"; do
     assert_contains "$reason" "$needle" "$matcher: the denial feedback carries '$needle'"
   done
 done
