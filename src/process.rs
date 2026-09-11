@@ -148,13 +148,26 @@ fn run_captured_until<G>(
         &stdout_file,
         &stderr_file,
     );
+    // Registration owns the child's process group for the daemon's shutdown
+    // and identity checks, and it reads that group from the kernel AFTER the
+    // spawn. A child that has already exited by then is a zombie, and macOS
+    // answers `getpgid` on a zombie with ESRCH (measured, SH-650) — so a
+    // helper that refused within a few milliseconds used to be reported as
+    // "could not run" and its answer thrown away. A leader that is gone
+    // before it could be owned has nothing long-lived to register: the
+    // failure is explained by the exit, and the capture proceeds exactly as
+    // it would had the registration guard dropped one instant after the
+    // child's own exit. Any other registration failure is still fatal.
     let _registration = match register(pid) {
-        Ok(registration) => registration,
-        Err(error) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Track(error));
-        }
+        Ok(registration) => Some(registration),
+        Err(error) => match child.try_wait() {
+            Ok(Some(_)) => None,
+            _ => {
+                kill_process_group(pid);
+                let _ = child.wait();
+                return Err(CaptureError::Track(error));
+            }
+        },
     };
     let status = loop {
         let budget = match remaining() {
@@ -290,6 +303,65 @@ pub(crate) fn read_capture(mut file: File) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SH-650: a child that exits before its process group can be read is
+    /// captured, not reported as untrackable. The race is CONSTRUCTED (SH-420's
+    /// posture): the registration closure waits until the kernel no longer
+    /// answers for the leader, then asks the real registry, which must fail
+    /// exactly the way it failed in the wild; the capture must still carry
+    /// the child's answer.
+    #[test]
+    fn a_child_that_exits_before_registration_is_still_captured() {
+        let root = storyhook_test_support::scratch_dir();
+        let env = crate::env::Environment::at(root.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let owned = crate::daemon::lifecycle::OwnedProcesses::new(env);
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '{\"ok\":false,\"reason\":\"pane-dead\"}'");
+        let registration_error = std::sync::Mutex::new(None);
+
+        let captured = run_captured_with_registration(
+            command,
+            Duration::from_secs(10),
+            TerminationPolicy::Kill,
+            |pid| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                // A zombie no longer answers `getpgid`; that is the condition
+                // the real registration trips over.
+                while unsafe { libc::getpgid(libc::pid_t::try_from(pid).unwrap()) } != -1 {
+                    assert!(Instant::now() < deadline, "the child never exited");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                let result = owned
+                    .register("verifier-notify", pid, Some("verify:fixture:SH-1:1"))
+                    .map_err(|error| error.to_string());
+                *registration_error.lock().unwrap() = result.as_ref().err().cloned();
+                result
+            },
+        );
+        let captured = match captured {
+            Ok(captured) => captured,
+            Err(error) => panic!(
+                "an exited child is captured, never reported as untrackable: {}",
+                error.detail()
+            ),
+        };
+
+        assert!(captured.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&captured.stdout),
+            "{\"ok\":false,\"reason\":\"pane-dead\"}"
+        );
+        let error = registration_error.lock().unwrap().clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|error| error.contains("could not read process group")),
+            "positive control: the registry must have refused the zombie the way it did in the wild, got {error:?}"
+        );
+    }
 
     #[test]
     fn graceful_timeout_allows_the_process_group_to_exit_on_term() {
