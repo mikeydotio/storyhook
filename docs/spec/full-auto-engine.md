@@ -1737,6 +1737,13 @@ acceptance example required it.
 
 ### SH-545 — verifier observability (a tmux mirror, not a second execution path)
 
+**Current window ownership (SH-662):** the fixed session now contains one
+verification window per canonical Git common directory and one continuous
+activity window per store. Project phases do not replace journal readers.
+See [Concurrent verifier views](verifier-windows.md) for names, concurrency,
+and migration behavior. The original SH-545 decision below records the serial
+verifier design that SH-590, SH-648, SH-654, and SH-662 subsequently extended.
+
 SH-524's checklist answers "how far along is this candidate," but not "what
 is `make test` printing right now" — the one artifact that already grows
 incrementally (`verify-pr.sh`'s own `>"$log" 2>&1` redirect around the gate
@@ -1855,14 +1862,13 @@ fetch connectivity check walks those shared entries, so it can install every
 requested remote object and still exit with `fatal: bad object`.
 
 `verify-pr.sh` now establishes the verifier worktree before its first fetch.
-A format marker distinguishes worktrees created under SH-552's private-Git-dir
-contract. A markerless, mismatched, or unresolvable verifier is disposable:
-the script removes it through `git worktree remove --force` and recreates it
-detached at a known local commit, replacing its HEAD, reflog and index as one
-Git-owned lifecycle operation. A healthy marked verifier is reused so its
-build caches survive. The private `--ensure-verifier-worktree` seam lets a
-real-Git regression reproduce the missing-object fetch failure and prove both
-recovery and healthy reuse without imitating GitHub.
+SH-683 replaces the earlier force-remove/recreate recovery with a shared,
+owned lifecycle. Healthy checkouts are reused regardless of an old format
+marker. Invalid owned state is retained with its checkout, index, administration
+and private objects before replacement; ambiguous ownership is refused. Both
+creator and speculative borrower hold ownership before inspecting or mutating
+the worktree. See [Shared verifier lifecycle](verifier-worktree-lifecycle.md)
+for restart recovery, process supervision and operator limits.
 
 ### SH-466 — restart reconciliation
 

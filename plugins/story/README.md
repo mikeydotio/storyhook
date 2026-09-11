@@ -301,6 +301,12 @@ Worth knowing before changing anything here:
   charter tells the child that an *easy* decision (one clear best answer)
   gets researched and decided on its own, full stop — `--auto` was never
   meant to route every open question through a mechanism at all.
+  Every decision comment includes **Context**, **Question**, **Decision**, and
+  **Rationale**, with relevant alternatives and trade-offs. This applies to
+  researched decisions, council outcomes, and fallback decisions. Record it
+  immediately, before resuming work, with enough detail to understand it after
+  the session and local deliberation files are gone. `story help comment`
+  provides the format and an example.
 
 ## Environment
 

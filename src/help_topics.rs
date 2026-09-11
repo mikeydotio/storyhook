@@ -45,9 +45,10 @@ per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store.
 
-The daemon opens storyhook-verifier:verification on the default tmux server
-as a continuous log view. STORYHOOK_VERIFIER_MIRROR=0 disables that view,
-without disabling the journal. A missing tmux is non-fatal.
+The daemon opens a store-specific activity window in storyhook-verifier on
+the default tmux server. Each project's verification uses a separate window.
+STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
+A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
 They are private, append across restarts, and are not automatically deleted.
@@ -2015,9 +2016,21 @@ When to use:
   To record progress notes, decisions, blockers, or context that
   should be preserved in the story's event log.
 
+When recording a decision, include:
+  Context: the relevant facts and constraints.
+  Question: the question being answered.
+  Decision: the chosen answer.
+  Rationale: why it was chosen, including alternatives and trade-offs
+    where relevant.
+
+Make each decision comment understandable without this session or local files.
+Record it immediately, before resuming work. This applies to researched
+decisions, council outcomes, and fallback decisions. These are ordinary
+comment fields, not CLI flags or a required format for progress notes.
+
 Examples:
   story comment SH-1 "Started implementing the auth middleware"
-  story comment SH-3 "Decided to use JWT instead of sessions"
+  story comment SH-3 "Context: A script reads this output. Question: Which output format should the script use? Decision: Use JSON. Rationale: Named fields remain clear when display text changes."
 
 Related:
   story show <id>  — View a story including its comments
@@ -3386,6 +3399,37 @@ pub fn all_topics_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::get_help_topic;
+
+    #[test]
+    fn comment_help_requires_self_contained_decisions() {
+        let help = super::get_help_topic("comment").expect("comment help exists");
+        for requirement in [
+            "Context: the relevant facts and constraints",
+            "Question: the question being answered",
+            "Decision: the chosen answer",
+            "Rationale: why it was chosen",
+            "alternatives and trade-offs",
+            "without this session or local files",
+        ] {
+            assert!(
+                help.contains(requirement),
+                "missing decision guidance: {requirement}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_help_decision_example_includes_the_question_and_context() {
+        let help = super::get_help_topic("comment").expect("comment help exists");
+        let examples = help.split("Examples:").nth(1).expect("comment examples");
+        let decision = examples
+            .lines()
+            .find(|line| line.contains("story comment") && line.contains("Decision:"))
+            .expect("a complete decision-comment example");
+        for field in ["Context:", "Question:", "Decision:", "Rationale:"] {
+            assert!(decision.contains(field), "example omits {field}");
+        }
+    }
 
     #[test]
     fn the_new_topic_names_the_service_defaults() {
