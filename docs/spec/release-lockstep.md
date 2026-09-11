@@ -382,25 +382,38 @@ That is a Claude Code marketplace refresh pruning the entry — a fact about the
 host, which makes the detector the whole of the fix. The no-rollback shape
 remains a real gap and is filed separately.
 
-## As built: the verifier scripts were the sixth component (SH-654, SH-666)
+## As built: the verifier scripts travel inside the binary (SH-654)
 
-The table at the top of this document lists five components. There was a
-sixth, with the plugin's original failure mode: the centralized verifier
-spawned `scripts/verify-pr.sh` from the registered checkout's **working tree**,
-so a `git pull` there changed the daemon's own wire contract while the daemon
-stood still. Measured on 2026-09-10 (`docs/rca/verifier-halt-read-as-a-story-block.md`):
-the daemon was `build 89f604316fa5`, the tree of the SH-646 merge; SH-649 merged
-five hours later and made the script require `<pr-url> -- <gate…>`; the main
-checkout was pulled past it that afternoon; the next verification was refused by
-name and the queue halted for the night. The refusal was the correct detection
-of a skew that should not have been representable.
+The table above listed five components with their own paths to a machine.
+There was a sixth nobody had listed: the verifier script family
+(`scripts/verify-pr.sh` and the nine scripts it reaches through its own
+directory), which the daemon ran **from the registered project's checkout**
+— so it tracked whatever tree that checkout had, and existed at all only when
+the project was storyhook. SH-654 gives it the same arrival as the plugin:
+`build.rs` embeds it (`EMBEDDED_VERIFIER`, beside `EMBEDDED_MARKETPLACE`),
+and `src/daemon/verifier_bundle.rs` projects it through the same
+materializer — now `src/embedded.rs`, extracted so both payloads share one
+comparison, one staged write and one rename-with-rollback — under the
+daemon's own state directory, in a leaf named by the payload's digest.
+Lockstep with the daemon is therefore by construction: the bytes a
+verification runs are the bytes of the binary running it, and a different
+build writes a different leaf rather than rewriting one in use. The rule
+this adds to the list: **a script a shipped process invokes is part of the
+release, not of whichever checkout the process happens to be pointed at.**
+Design of record for the verifier side: `docs/spec/verification-workflow.md`'s
+SH-654 entry.
 
-SH-654 makes it unrepresentable the way the plugin's projection did: the script
-family is embedded in the binary and materialized under the daemon's own state
-directory, keyed by content digest, and the checkout contributes only the
-`[verify] gate` argv and the receipt store. SH-666 owns the incident's other
-half — a halt that reported itself as a story block — in
-`docs/spec/verification-workflow.md`'s SH-666 entry. The rule the row adds to
-"Rules this establishes": **a script the daemon invokes is part of the daemon's
-release**, never read live from a checkout, however trusted that checkout is
-for everything else.
+## As built: the incident that found the sixth component (SH-666)
+
+The section above records the mechanism; this one records the measurement that
+made it urgent (`docs/rca/verifier-halt-read-as-a-story-block.md`). On
+2026-09-10 the installed daemon was `build 89f604316fa5`, the tree of the
+SH-646 merge; SH-649 merged five hours later and made `verify-pr.sh` require
+`<pr-url> -- <gate…>`; the main checkout was pulled past it that afternoon;
+the next verification was refused by name and the queue halted for the night,
+reporting itself on every waiting story as "blocked by" the story it was first
+hit on. The refusal was the correct detection of a skew that should never have
+been representable — exactly the plugin's original failure mode, one component
+over, and the reason the table at the top of this document now has six rows in
+spirit. SH-654 closed the origin; SH-666 owns the report, in
+`docs/spec/verification-workflow.md`'s SH-666 entry.
