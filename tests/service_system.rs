@@ -76,12 +76,14 @@ fn the_agents_template_is_rendered_for_this_project() {
 }
 
 #[test]
-fn the_agents_template_follows_the_projects_own_closed_state() {
-    // The template names the project's *first* CLOSED state, not the literal
-    // `done`. This used to be proven by deleting `done`, which the required
-    // floor now refuses (SH-125) — so the same property is proven by putting
-    // another CLOSED state ahead of it, which is the other way a project
-    // decides what "closed" means to it.
+fn the_agents_template_names_the_completion_state_not_the_first_closed_state() {
+    // The template names the completion state — the required `done` — and
+    // not whichever CLOSED state the project happens to list first (SH-652).
+    // Until SH-652 it followed the first CLOSED state, which disagreed with
+    // the verifier (the required `done`, SH-521) the moment a project put
+    // another CLOSED state ahead of it, and so told every agent a state the
+    // verifier would never write. Proven by putting `shipped` ahead of `done`:
+    // the template must still name `done`.
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     ConfigService::new(&ctx)
@@ -95,13 +97,6 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
             "blocked".to_string(),
             "shipped".to_string(),
             "done".to_string(),
-            // The abandoned state stays last. A reorder must name every state,
-            // and putting `closed` ahead of `done` here would prove a different
-            // thing: the template must follow the project's own FIRST closed
-            // state, and `closed` is the one the floor deliberately keeps
-            // behind `done` so that nothing reading "the closed state" starts
-            // telling agents to abandon their work instead of finishing it
-            // (SH-505).
             "closed".to_string(),
         ])
         .expect("putting `shipped` ahead of `done`");
@@ -110,11 +105,14 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
         .scaffold("agents-md")
         .expect("scaffolding");
     assert!(
-        rendered.contains("moves the story to `shipped`"),
+        rendered.contains(&format!(
+            "moves the story to `{}`",
+            storyhook::domain::COMPLETION_STATE_SLUG
+        )),
         "{rendered}"
     );
     assert!(
-        !rendered.contains("moves the story to `done`"),
+        !rendered.contains("moves the story to `shipped`"),
         "{rendered}"
     );
 }

@@ -28,7 +28,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::provenance::Provenance;
-use crate::domain::{StateDef, StoryEvent, SuperState, TypeDef};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, StateDef, StoryEvent, SuperState, TypeDef, completion_state,
+};
 use crate::env::git_env::output as git_output;
 use crate::error::AppError;
 use crate::output::{DeletePlan, SetPrefixPlan};
@@ -1812,17 +1814,18 @@ pub fn default_types() -> Vec<TypeDef> {
     .collect()
 }
 
-/// The project's first CLOSED state, for the templates that name "done".
+/// The project's completion state, for the templates that name it — the
+/// same answer the verifier writes (`domain::completion_state`, SH-652).
 ///
-/// Falls back to the literal `done` for a project that has none — a template
-/// is documentation, and documentation that fails to render is worse than
-/// documentation naming a state the reader can correct.
+/// Renders the constant for a project below the floor rather than refusing:
+/// a template is documentation, and documentation that fails to render is
+/// worse than documentation naming a state the reader can add with
+/// `story doctor --fix`. Until SH-652 this answered the project's *first*
+/// CLOSED state, which is a layout fact, and disagreed with the verifier the
+/// moment a project ordered another CLOSED state ahead of `done`.
 pub fn closed_state(tx: &impl ReadOps, project: ProjectId) -> Result<String, AppError> {
-    Ok(tx
-        .states(project)?
-        .into_iter()
-        .find(|state| state.super_state == SuperState::Closed)
-        .map_or_else(|| "done".to_string(), |state| state.slug))
+    Ok(completion_state(&tx.states(project)?)
+        .map_or_else(|| COMPLETION_STATE_SLUG.to_string(), |state| state.slug))
 }
 
 /// A checkout's canonical path, falling back to the path as given.
