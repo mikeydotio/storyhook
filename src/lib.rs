@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod daemon;
 pub mod decompose;
 pub mod domain;
+mod embedded;
 pub mod env;
 pub mod error;
 pub mod event_hooks;

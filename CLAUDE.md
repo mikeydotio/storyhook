@@ -1836,6 +1836,24 @@ Standing rules for every wave:
   budget; `plugins/story/tests/lib.sh` now puts the fake on `PATH` for every test, the
   SH-263 rule for its state. Design of record: `docs/spec/test-tiers.md` "The compile bound";
   `docs/spec/full-auto-engine.md`'s SH-655 As-built.
+- **A script a shipped process invokes ships with the process, never with whichever
+  checkout it is pointed at** (SH-654). The daemon spawned `scripts/verify-pr.sh` relative to
+  the registered project's checkout, so the only project it could verify was storyhook — any
+  other halted the queue with "returned invalid JSON". The family now travels inside the
+  binary (`build.rs`'s `VERIFIER_SCRIPTS` → `EMBEDDED_VERIFIER`) and
+  `src/daemon/verifier_bundle.rs` projects it under the store-keyed daemon state dir at
+  `verifier/<payload digest>/` through `src/embedded.rs`, the SH-538 materializer extracted
+  from the plugin installer so both payloads share one definition of "matches this binary".
+  Content-addressed on purpose: a dev build of the same crate version must never rewrite a
+  leaf a running `verify-pr.sh` resolves its siblings from. Embedding won over the plugin
+  payload because the plugin is provider-scoped and can skew from the daemon — which is why
+  `REQUIRED_DISPATCH_PROTOCOL` exists — and a payload the daemon carries cannot.
+  `tests/verifier_bundle.rs` derives three fences from the table the build wrote (bytes equal
+  the tracked scripts; every referenced sibling is bundled; no bundled script reaches a
+  sibling through the checkout), and `tests/verifier_foreign_checkout.rs` drives the
+  production actuator against a checkout with no `scripts/` tree. **Verified is not landed**:
+  the receipt writer `gate-receipt.sh` is still storyhook-only, so a foreign project passes
+  its gate and is refused at the certifies-nothing check — SH-665.
 - **A verifier halt is the verifier's own, never the story it was first hit on** (SH-666).
   On 2026-09-10 the installed daemon (built from the SH-646 tree) invoked a
   `scripts/verify-pr.sh` the registered checkout had been pulled past SH-649 — the
