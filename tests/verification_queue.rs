@@ -5,16 +5,16 @@ use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, TickResult, VerificationActivity, VerificationActuator,
-    VerificationGuard, VerificationOutcome, journal_path, tick_with, tick_with_activity,
-    tick_with_reconciliation,
+    NotifyDelivery, ResumePlan, ShellVerificationActuator, TickResult, VerificationActivity,
+    VerificationActuator, VerificationGuard, VerificationOutcome, journal_path, resume_plan,
+    tick_with, tick_with_activity, tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, StoryEvent, SuperState, TmuxCleanupTarget,
-    fold_story,
+    CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, Priority, StoryCleanupLease, StoryEvent,
+    SuperState, TmuxCleanupTarget, fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -482,9 +482,21 @@ impl VerificationActuator for ActivityObservingActuator {
             .unwrap_or_else(|| panic!("simulated verifier panic"))
     }
 
-    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+    fn notify(
+        &self,
+        candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
         self.assert_owned(candidate);
-        Ok(())
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a delivered notification never re-dispatches")
     }
 
     fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -740,16 +752,11 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         Err(VerificationProblem::MissingCheckout)
     );
 
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
-            detail: "must-not-run".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "must-not-run".into(),
+        detail: "must-not-run".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
         TickResult::Returned
@@ -883,11 +890,45 @@ fn recording_the_verified_merge_closes_the_story_and_the_pr_projection() {
     assert_eq!(links[0].1.status, "merged");
 }
 
+/// One scripted answer to `notify`, consumed in order; an exhausted script
+/// delivers.
+enum NotifyScript {
+    Absent(&'static str),
+    Fail(&'static str),
+}
+
 struct FakeActuator {
     outcome: VerificationOutcome,
-    notification_error: Option<String>,
+    /// Answers for successive `notify` calls; empty means every call delivers.
+    notify_script: Mutex<VecDeque<NotifyScript>>,
+    /// `Some(refusal)` makes `redispatch` refuse with that text.
+    redispatch_refusal: Option<String>,
     notified: Mutex<Vec<String>>,
+    redispatched: Mutex<Vec<(String, ResumePlan)>>,
     reaped: Mutex<Vec<String>>,
+}
+
+impl FakeActuator {
+    fn new(outcome: VerificationOutcome) -> Self {
+        Self {
+            outcome,
+            notify_script: Mutex::new(VecDeque::new()),
+            redispatch_refusal: None,
+            notified: Mutex::new(Vec::new()),
+            redispatched: Mutex::new(Vec::new()),
+            reaped: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_notify_script(self, script: impl IntoIterator<Item = NotifyScript>) -> Self {
+        *self.notify_script.lock().unwrap() = script.into_iter().collect();
+        self
+    }
+
+    fn refusing_redispatch(mut self, refusal: &str) -> Self {
+        self.redispatch_refusal = Some(refusal.to_string());
+        self
+    }
 }
 
 impl VerificationActuator for FakeActuator {
@@ -899,15 +940,41 @@ impl VerificationActuator for FakeActuator {
         self.outcome.clone()
     }
 
-    fn notify(&self, candidate: &VerificationCandidate, message: &str) -> Result<(), AppError> {
-        if let Some(error) = &self.notification_error {
-            return Err(AppError::Storage(error.clone()));
+    fn notify(
+        &self,
+        candidate: &VerificationCandidate,
+        message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        match self.notify_script.lock().unwrap().pop_front() {
+            Some(NotifyScript::Fail(error)) => return Err(AppError::Storage(error.to_string())),
+            Some(NotifyScript::Absent(reason)) => {
+                return Ok(NotifyDelivery::AgentAbsent {
+                    reason: reason.to_string(),
+                    detail: format!("no live agent ({reason})"),
+                });
+            }
+            None => {}
         }
         self.notified
             .lock()
             .unwrap()
             .push(format!("{}:{message}", candidate.story_id));
-        Ok(())
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        candidate: &VerificationCandidate,
+        plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        self.redispatched
+            .lock()
+            .unwrap()
+            .push((candidate.story_id.clone(), plan.clone()));
+        match &self.redispatch_refusal {
+            Some(refusal) => Err(AppError::Storage(refusal.clone())),
+            None => Ok(()),
+        }
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -946,17 +1013,12 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
         .unwrap()
         .unwrap();
     assert_eq!(candidate.verifying_generation, None);
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::TestsFailed {
-            tree: "legacy-tree".into(),
-            log: "/tmp/legacy.log".into(),
-            detail: "legacy generation failed".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::TestsFailed {
+        tree: "legacy-tree".into(),
+        log: "/tmp/legacy.log".into(),
+        detail: "legacy generation failed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -1016,12 +1078,24 @@ impl VerificationActuator for ResubmittingActuator<'_> {
             .expect("every attempted generation has a fixture outcome")
     }
 
-    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+    fn notify(
+        &self,
+        candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
         self.notified
             .lock()
             .unwrap()
             .push(candidate.verifying_generation.unwrap());
-        Ok(())
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a delivered notification never re-dispatches")
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -1185,8 +1259,20 @@ impl VerificationActuator for WebMutationActuator<'_> {
         self.outcome.clone()
     }
 
-    fn notify(&self, _candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
         panic!("a stale UI-raced outcome must not notify")
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a stale UI-raced outcome must not re-dispatch")
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -1284,14 +1370,9 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     let id = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Conflict {
-            detail: "both modified src/lib.rs".into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
@@ -1336,12 +1417,24 @@ impl VerificationActuator for SequencedActuator {
             .expect("every verification attempt must have a fixture outcome")
     }
 
-    fn notify(&self, candidate: &VerificationCandidate, _message: &str) -> Result<(), AppError> {
+    fn notify(
+        &self,
+        candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
         self.notified
             .lock()
             .unwrap()
             .push(candidate.story_id.clone());
-        Ok(())
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a delivered notification never re-dispatches")
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -1447,8 +1540,105 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
+fn story_row(fixture: &ServiceFixture, id: &str) -> storyhook::store::StoryRow {
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", id).unwrap()))
+        .unwrap()
+        .unwrap()
+}
+
+/// SH-650 (D-E): the conflict hold survives a dead pane. An absent agent is
+/// re-dispatched into its own window with the resume clause, the diagnosis is
+/// pasted afterwards, and the verifier keeps its reservation for the
+/// resubmission exactly as it does when the first paste lands.
 #[test]
-fn a_failed_conflict_notification_releases_the_reservation() {
+fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "dead pane reconciliation", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    })
+    .with_notify_script([NotifyScript::Absent("pane-dead")]);
+    let waited = Mutex::new(Vec::new());
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            |reserved| {
+                assert_eq!(reserved.story_id, id);
+                assert_eq!(
+                    activity.active().map(|active| active.story_id),
+                    Some(id.clone()),
+                    "the reservation must survive the re-dispatch"
+                );
+                let row = story_row(&fixture, &id);
+                assert_eq!(row.state, "in-progress");
+                assert_eq!(row.awaiting, None, "a re-dispatched story is never parked");
+                waited.lock().unwrap().push(reserved.story_id.clone());
+                Ok(None)
+            },
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    assert_eq!(waited.lock().unwrap().as_slice(), std::slice::from_ref(&id));
+    let redispatched = actuator.redispatched.lock().unwrap();
+    assert_eq!(redispatched.len(), 1, "exactly one resume re-dispatch");
+    assert_eq!(redispatched[0].0, id);
+    assert_eq!(
+        redispatched[0].1,
+        ResumePlan::default(),
+        "no engine lane holds the story, so the helper reads the provider itself"
+    );
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(
+        notified.len(),
+        1,
+        "the diagnosis is pasted once the agent is back"
+    );
+    assert!(notified[0].contains("CENTRAL VERIFICATION CONFLICT"));
+    let comments: Vec<String> = story_row(&fixture, &id)
+        .snapshot
+        .comments
+        .iter()
+        .map(|comment| comment.text.clone())
+        .collect();
+    assert!(
+        comments
+            .iter()
+            .any(|text| text.starts_with("CENTRAL VERIFICATION RESUME —")
+                && text.contains("pane-dead")
+                && text.contains("resume clause")),
+        "the re-dispatch leaves a trail naming why: {comments:?}"
+    );
+    let resume_index = comments
+        .iter()
+        .position(|text| text.starts_with("CENTRAL VERIFICATION RESUME —"))
+        .unwrap();
+    let diagnosis_index = comments
+        .iter()
+        .position(|text| text.starts_with("CENTRAL VERIFICATION CONFLICT"))
+        .unwrap();
+    assert!(
+        diagnosis_index < resume_index,
+        "the diagnosis is on the story before the agent is re-dispatched to read it"
+    );
+}
+
+/// SH-650: a refused re-dispatch is the ONE case that still parks the story,
+/// naming the refusal, and the conflict reservation is released because no
+/// resubmission will come.
+#[test]
+fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(
@@ -1460,14 +1650,56 @@ fn a_failed_conflict_notification_releases_the_reservation() {
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
     let inflight = InFlight::new(fixture.env().clone());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Conflict {
-            detail: "both modified src/lib.rs".into(),
-        },
-        notification_error: Some("pane unavailable".into()),
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    })
+    .with_notify_script([NotifyScript::Absent("pane-unavailable")])
+    .refusing_redispatch("resume-unsafe: the worktree is registered on another branch");
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            |_| panic!("a refused re-dispatch must not enter the reservation wait"),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    let awaiting = row.awaiting.unwrap();
+    assert!(
+        awaiting.contains("could not re-dispatch its agent"),
+        "{awaiting}"
+    );
+    assert!(awaiting.contains("resume-unsafe"), "{awaiting}");
+    assert!(awaiting.contains("pane-unavailable"), "{awaiting}");
+    assert_eq!(actuator.redispatched.lock().unwrap().len(), 1);
+    assert!(actuator.notified.lock().unwrap().is_empty());
+    assert_eq!(activity.active(), None);
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+/// SH-650: a refusal that is not evidence of absence — tmux could not be
+/// asked, or a live pane refused the paste — never triggers a respawn, which
+/// would kill a live agent. The story is parked exactly as before.
+#[test]
+fn a_notify_failure_that_is_not_absence_parks_without_redispatching() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "paste refused", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    })
+    .with_notify_script([NotifyScript::Fail(
+        "could not paste the verification remediation into pane `%3`",
+    )]);
 
     assert_eq!(
         tick_with_reconciliation(
@@ -1481,15 +1713,74 @@ fn a_failed_conflict_notification_releases_the_reservation() {
         .unwrap(),
         TickResult::Returned
     );
-    let row = fixture
-        .store()
-        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
-        .unwrap()
-        .unwrap();
+    let row = story_row(&fixture, &id);
     assert_eq!(row.state, "in-progress");
-    assert!(row.awaiting.unwrap().contains("pane unavailable"));
+    assert!(
+        row.awaiting
+            .unwrap()
+            .contains("could not paste the verification remediation")
+    );
+    assert!(
+        actuator.redispatched.lock().unwrap().is_empty(),
+        "a live pane is never respawned over"
+    );
     assert_eq!(activity.active(), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+/// SH-650 (D-E): once the re-dispatch succeeded the agent is live under the
+/// resume charter, which reads the story's comments first — so a paste that
+/// fails afterwards is recorded on the story and remediation still counts as
+/// started; `awaiting` is set only when the re-dispatch itself is refused.
+#[test]
+fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "late paste", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    })
+    .with_notify_script([
+        NotifyScript::Absent("pane-changed"),
+        NotifyScript::Fail("tmux refused the submit key"),
+    ]);
+    let entered = Mutex::new(false);
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            |_| {
+                *entered.lock().unwrap() = true;
+                Ok(None)
+            },
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    assert!(*entered.lock().unwrap(), "remediation counts as started");
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.awaiting, None);
+    let comments: Vec<String> = row
+        .snapshot
+        .comments
+        .iter()
+        .map(|comment| comment.text.clone())
+        .collect();
+    assert!(
+        comments
+            .iter()
+            .any(|text| text.contains("could not be pasted afterwards")
+                && text.contains("tmux refused the submit key")),
+        "{comments:?}"
+    );
+    assert_eq!(actuator.redispatched.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1498,14 +1789,9 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "wrong checkout", Priority::High, PR_ONE);
     let root = scratch_dir();
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::InvalidSubmission {
-            detail: "checkout origin is acme/replacement".into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::InvalidSubmission {
+        detail: "checkout origin is acme/replacement".into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
@@ -2025,6 +2311,161 @@ fn shell_notification_rejects_success_json_from_a_failed_process() {
     assert!(error.contains("31"), "{error}");
 }
 
+/// SH-650: the shell actuator classifies the helper's refusal SLUG, never its
+/// prose. Every slug `cmd_notify` can emit is in `NOTIFY_REFUSALS`
+/// (`tests/notify_reasons.rs` derives that); here the wire shape is driven
+/// through a stub helper so the classification is proven at the boundary.
+#[test]
+fn shell_notification_classifies_absence_by_the_helpers_reason_slug() {
+    use storyhook::daemon::verification::{AgentPresence, NOTIFY_REFUSALS, agent_presence};
+
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("notify-helper.sh");
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper.clone(),
+        PathBuf::from("/usr/bin/true"),
+    );
+    let refuse = |reason: &str| {
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/bash\nprintf '%s\\n' '{{\"ok\":false,\"reason\":\"{reason}\",\"display\":\"the helper said no ({reason})\"}}'\nexit 1\n"
+            ),
+        )
+        .unwrap();
+    };
+
+    for (reason, presence) in NOTIFY_REFUSALS {
+        refuse(reason);
+        let answer = actuator.notify(&candidate, "diagnosis");
+        match presence {
+            AgentPresence::Absent => assert_eq!(
+                answer.unwrap(),
+                NotifyDelivery::AgentAbsent {
+                    reason: reason.to_string(),
+                    detail: format!("the helper said no ({reason})"),
+                },
+                "{reason} means the agent is absent"
+            ),
+            AgentPresence::NotAbsent => {
+                let error = answer.unwrap_err().to_string();
+                assert!(error.contains(reason), "{reason}: {error}");
+            }
+        }
+    }
+
+    // A slug the table does not know, and a refusal with no slug at all, are
+    // never a licence to respawn (fail closed).
+    refuse("pane-vaporised");
+    assert!(actuator.notify(&candidate, "diagnosis").is_err());
+    std::fs::write(
+        &helper,
+        "#!/bin/bash\nprintf '%s\\n' '{\"ok\":false,\"display\":\"no slug\"}'\nexit 1\n",
+    )
+    .unwrap();
+    assert!(actuator.notify(&candidate, "diagnosis").is_err());
+    assert_eq!(agent_presence(None), AgentPresence::NotAbsent);
+    assert_eq!(
+        agent_presence(Some("pane-vaporised")),
+        AgentPresence::NotAbsent
+    );
+
+    std::fs::write(
+        &helper,
+        "#!/bin/bash\nprintf '%s\\n' '{\"ok\":true,\"display\":\"notified\"}'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        actuator.notify(&candidate, "diagnosis").unwrap(),
+        NotifyDelivery::Delivered
+    );
+}
+
+/// SH-650: the re-dispatch is the helper's own `dispatch <id> --resume --auto`,
+/// composed by the one argv composer the dashboard and the engine use, with
+/// the target session a daemon must name — proven at the boundary by a stub
+/// helper that records what it was asked.
+#[test]
+fn shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("dispatch-helper.sh");
+    let record = root.path().join("dispatch-record");
+    std::fs::write(
+        &helper,
+        format!(
+            "#!/bin/bash\nprintf '%s\\n' \"$*\" > {record}\nprintf 'STORY_TARGET_SESSION=%s STORY_CREATE_SESSION=%s\\n' \"${{STORY_TARGET_SESSION-unset}}\" \"${{STORY_CREATE_SESSION-unset}}\" >> {record}\nprintf '%s\\n' '{{\"ok\":true,\"display\":\"resumed\"}}'\n",
+            record = record.display()
+        ),
+    )
+    .unwrap();
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper.clone(),
+        PathBuf::from("/usr/bin/true"),
+    );
+
+    actuator
+        .redispatch(&candidate, &ResumePlan::default())
+        .unwrap();
+    let recorded = std::fs::read_to_string(&record).unwrap();
+    let argv = recorded.lines().next().unwrap();
+    assert_eq!(
+        argv,
+        format!(
+            "--project {} dispatch {} --resume --auto",
+            candidate.project_slug, candidate.story_id
+        ),
+        "an attended story names no provider: the helper reads the dispatch's own record"
+    );
+    assert_eq!(
+        recorded.lines().nth(1).unwrap(),
+        format!(
+            "STORY_TARGET_SESSION={} STORY_CREATE_SESSION=1",
+            candidate.project_slug
+        ),
+        "a daemon has no $TMUX; the helper refuses without a target session"
+    );
+
+    actuator
+        .redispatch(
+            &candidate,
+            &ResumePlan {
+                agent: Some(storyhook::store::EngineAgent::Codex),
+                model: Some("gpt-5-codex".into()),
+                effort: Some("high".into()),
+                fast: true,
+                full_auto: true,
+            },
+        )
+        .unwrap();
+    let argv = std::fs::read_to_string(&record).unwrap();
+    let argv = argv.lines().next().unwrap().to_string();
+    assert_eq!(
+        argv,
+        format!(
+            "--project {} dispatch {} --agent=codex --resume --auto --full-auto --model=gpt-5-codex --effort=high --speed=fast",
+            candidate.project_slug, candidate.story_id
+        ),
+        "a Full Auto lane's story is re-dispatched as that lane, and never with --force beside --resume"
+    );
+
+    std::fs::write(
+        &helper,
+        "#!/bin/bash\nprintf '%s\\n' '{\"ok\":false,\"reason\":\"resume-unsafe\",\"display\":\"the worktree is registered on another branch\"}'\nexit 1\n",
+    )
+    .unwrap();
+    let error = actuator
+        .redispatch(&candidate, &ResumePlan::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("registered on another branch"), "{error}");
+}
+
 fn write_hanging_helper(root: &std::path::Path) -> PathBuf {
     let helper = root.join("hanging-helper.sh");
     std::fs::write(
@@ -2248,32 +2689,170 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
     assert!(replacement.path().join(".git").exists());
 }
 
+/// SH-650: the resume plan for a story a live Full Auto lane holds carries the
+/// run's own provider identity, so the lane is re-dispatched as the lane it
+/// is; a story no live lane holds (an attended dispatch, or a lane the engine
+/// has quarantined) is an ordinary autonomous resume whose provider the
+/// helper reads from the dispatch's own record.
 #[test]
-fn an_unreachable_agent_is_marked_awaiting_instead_of_silently_retried() {
+fn the_resume_plan_carries_a_live_engine_lanes_identity_and_nothing_elses() {
+    use storyhook::service::engine::{EngineService, StartRequest};
+    use storyhook::store::{EngineLaneState, EngineScope, EngineSpeed};
+    use storyhook_test_support::FakeDispatcher;
+
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let held = submitted(&fixture, "held by a lane", Priority::High, PR_ONE);
+    let attended = submitted(&fixture, "attended", Priority::Medium, PR_TWO);
+    let ctx = fixture.ctx();
+    let fake = FakeDispatcher::default();
+    let run = EngineService::new(&ctx, &fake)
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: storyhook::store::EngineAgent::Codex,
+            model: Some("gpt-5-codex".into()),
+            effort: Some("high".into()),
+            speed: Some(EngineSpeed::Fast),
+        })
+        .unwrap()
+        .id;
+    let occupy = |state: EngineLaneState| {
+        let mut lane = fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run))
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        lane.state = state;
+        lane.story_id = Some(held.clone());
+        lane.window_name = Some(held.clone());
+        lane.dispatched_at = Some(FIXTURE_NOW.to_string());
+        fixture
+            .store()
+            .write(|tx| tx.put_engine_lane(&lane))
+            .unwrap();
+    };
+    let candidate = |id: &str| {
+        VerificationQueue::new(fixture.store())
+            .ordered()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.story_id == id)
+            .unwrap()
+    };
+
+    occupy(EngineLaneState::Working);
+    assert_eq!(
+        resume_plan(fixture.store(), &candidate(&held)).unwrap(),
+        ResumePlan {
+            agent: Some(storyhook::store::EngineAgent::Codex),
+            model: Some("gpt-5-codex".into()),
+            effort: Some("high".into()),
+            fast: true,
+            full_auto: true,
+        },
+        "a working lane's story is re-dispatched as that lane"
+    );
+    assert_eq!(
+        resume_plan(fixture.store(), &candidate(&attended)).unwrap(),
+        ResumePlan::default(),
+        "a story no lane holds is an ordinary autonomous resume"
+    );
+    occupy(EngineLaneState::Dispatching);
+    assert!(
+        resume_plan(fixture.store(), &candidate(&held))
+            .unwrap()
+            .full_auto,
+        "a lane still dispatching holds its story too"
+    );
+    occupy(EngineLaneState::Quarantined);
+    assert_eq!(
+        resume_plan(fixture.store(), &candidate(&held)).unwrap(),
+        ResumePlan::default(),
+        "a quarantined lane is one the engine has given up on; its identity would be a lie"
+    );
+}
+
+/// SH-650 (D-E, step 4a): a RED story whose agent is gone is re-dispatched in
+/// place and never parked; its resubmission then re-enters the queue and is
+/// verified again like any other.
+#[test]
+fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "no pane", Priority::High, PR_ONE);
     let root = scratch_dir();
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::TestsFailed {
-            tree: "deadbeef".into(),
-            log: "/tmp/red.log".into(),
-            detail: "one regression".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: Some("pane unavailable".into()),
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator::new(VerificationOutcome::TestsFailed {
+        tree: "deadbeef".into(),
+        log: "/tmp/red.log".into(),
+        detail: "one regression".into(),
+        gate: GateCommand::DEFAULT.into(),
+    })
+    .with_notify_script([NotifyScript::Absent("pane-dead")]);
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Returned
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.awaiting, None, "re-dispatched, not parked");
+    assert_eq!(actuator.redispatched.lock().unwrap().len(), 1);
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("CENTRAL VERIFICATION RED"));
+    drop(notified);
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Idle,
+        "a returned story is out of the queue until resubmitted"
+    );
+
+    // The (re-dispatched) agent resubmits; the story is verified again.
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .expect("resubmitting after remediation");
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "cafef00d".into(),
+        detail: "merged".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(story_row(&fixture, &id).state, "done");
+}
+
+/// SH-650: a RED story whose notify failed for a reason that is not absence
+/// is parked exactly as before, without a respawn.
+#[test]
+fn an_unreachable_agent_is_marked_awaiting_when_the_refusal_is_not_absence() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "no pane", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    let actuator = FakeActuator::new(VerificationOutcome::TestsFailed {
+        tree: "deadbeef".into(),
+        log: "/tmp/red.log".into(),
+        detail: "one regression".into(),
+        gate: GateCommand::DEFAULT.into(),
+    })
+    .with_notify_script([NotifyScript::Fail("could not query tmux window")]);
 
     tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap();
-    let row = fixture
-        .store()
-        .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
-        .unwrap()
-        .unwrap();
+    let row = story_row(&fixture, &id);
     assert_eq!(row.state, "in-progress");
-    assert!(row.awaiting.unwrap().contains("pane unavailable"));
+    assert!(
+        row.awaiting
+            .unwrap()
+            .contains("could not query tmux window")
+    );
+    assert!(actuator.redispatched.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -2282,15 +2861,10 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "temporary outage", Priority::High, PR_ONE);
     let root = scratch_dir();
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::InfrastructureFailure {
-            detail: "GitHub unavailable".into(),
-            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "GitHub unavailable".into(),
+        disposition: storyhook::store::VerificationFailureDisposition::Retryable,
+    });
     let env = Environment::at(root.path());
 
     assert_eq!(
@@ -2332,15 +2906,10 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::InfrastructureFailure {
-            detail: "not inside a git worktree".into(),
-            disposition: storyhook::store::VerificationFailureDisposition::Permanent,
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "not inside a git worktree".into(),
+        disposition: storyhook::store::VerificationFailureDisposition::Permanent,
+    });
 
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -2551,15 +3120,10 @@ fn a_halt_fires_one_post_commit_verification_hook() {
         "on_verification_halted = { command = \"cat >> hooks.log; echo >> hooks.log\" }\n",
     );
     submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::InfrastructureFailure {
-            detail: "jq is required".into(),
-            disposition: VerificationFailureDisposition::Permanent,
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "jq is required".into(),
+        disposition: VerificationFailureDisposition::Permanent,
+    });
 
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -2606,14 +3170,9 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
             })
         })
         .unwrap();
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Conflict {
-            detail: "base changed after infrastructure recovered".into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "base changed after infrastructure recovered".into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -2655,14 +3214,9 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
             })
         })
         .unwrap();
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Conflict {
-            detail: "current generation reached the actuator".into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "current generation reached the actuator".into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
@@ -2682,6 +3236,67 @@ fn a_green_attempt_closes_then_reaps_the_story() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "abc123".into(),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        TickResult::Completed
+    );
+    let story_no = StoryNo::parse_id("SH", &id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "done");
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+    assert!(row.snapshot.comments.iter().any(|comment| {
+        comment
+            .text
+            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
+    }));
+}
+
+/// The SH-652 straddle: `shipped` is the positionally first CLOSED state and
+/// `abandoned` the alphabetically first, so either wrong search answers
+/// wrong. Green must land in the required `done`, reap must be asked, and the
+/// cleanup pass must find a green-but-unreaped story under this catalog —
+/// the three reads that have to agree for the actuator's `reap-leased`
+/// (which accepts only `done`) to succeed.
+#[test]
+fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
+    let fixture = ServiceFixture::new();
+    let config_ctx = fixture.ctx();
+    let config = ConfigService::new(&config_ctx);
+    config
+        .add_state("shipped", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .add_state("abandoned", SuperState::Closed, None, None)
+        .unwrap();
+    config
+        .reorder_states(
+            &[
+                "todo",
+                "in-progress",
+                "verifying",
+                "blocked",
+                "shipped",
+                "abandoned",
+                "done",
+                "closed",
+            ]
+            .map(str::to_string),
+        )
+        .unwrap();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
     let actuator = FakeActuator {
@@ -2705,13 +3320,31 @@ fn a_green_attempt_closes_then_reaps_the_story() {
         .read(|tx| tx.story(fixture.project(), story_no))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "done");
+    assert_eq!(row.state, COMPLETION_STATE_SLUG);
+    assert!(row.archived);
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
-    assert!(row.snapshot.comments.iter().any(|comment| {
-        comment
-            .text
-            .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-    }));
+
+    // The cleanup pass reads the same answer: strip the completion marker the
+    // reap wrote and the story is a cleanup candidate again, found by the
+    // constant and not by whichever CLOSED state sorts first.
+    let ctx = fixture.ctx();
+    let unreaped = submitted(&fixture, "green, reap still owed", Priority::High, PR_TWO);
+    StoryService::new(&ctx)
+        .comment(
+            &unreaped,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `def456` passed `make test` and pull request {PR_TWO} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &unreaped, PR_TWO)
+        .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next_cleanup()
+        .unwrap()
+        .expect("a done story with GREEN and no CLEANUP COMPLETE is owed a reap");
+    assert_eq!(candidate.story_id, unreaped);
 }
 
 #[test]
@@ -2733,15 +3366,10 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         .unwrap();
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::InfrastructureFailure {
-            detail: "verification must not run for cleanup".into(),
-            disposition: storyhook::store::VerificationFailureDisposition::Retryable,
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "verification must not run for cleanup".into(),
+        disposition: storyhook::store::VerificationFailureDisposition::Retryable,
+    });
 
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
@@ -3079,16 +3707,11 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
 
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Merged {
-            tree: "abc123".into(),
-            detail: "landed".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "abc123".into(),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
         TickResult::Completed
@@ -3328,12 +3951,7 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
         let id = submitted(&fixture, "named gate", Priority::High, PR_ONE);
         let root = scratch_dir();
         let env = Environment::at(root.path());
-        let actuator = FakeActuator {
-            outcome,
-            notification_error: None,
-            notified: Mutex::new(Vec::new()),
-            reaped: Mutex::new(Vec::new()),
-        };
+        let actuator = FakeActuator::new(outcome);
         tick_with(fixture.store(), &env, &actuator).unwrap();
         let story_no = StoryNo::parse_id("SH", &id).unwrap();
         let row = fixture

@@ -39,7 +39,12 @@ use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story}
 /// This is the dashboard dispatch bound moved to the shared seam: the script's
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
-pub(crate) const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+///
+/// Public because it is the deadline the reconciler's deferral of a dead
+/// window on a returned story disproves (SH-650): `tests/engine_reconcile.rs`
+/// pins it inside [`STALL_CEILING_SECS`], so a resume re-dispatch has either
+/// shown a live pane or parked the story before the stall clock can fire.
+pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// How often stop-now re-reads a lane whose dispatch helper still owns the
 /// exact cleanup lease it is about to publish.
@@ -313,6 +318,12 @@ pub struct LaneObservation {
     /// relay verbatim if this lane is quarantined, rather than overwriting it
     /// with a message composed here (SH-120).
     pub awaiting_reason: Option<String>,
+    /// Whether the story's state history ends with the verifier's return
+    /// (`verifying` → `in-progress`, nothing since): the verifier is, or is
+    /// about to be, re-dispatching into this lane's window (SH-650). Read only
+    /// when the probe says the window is gone, which is the one case it
+    /// changes.
+    pub returned_for_repair: bool,
 }
 
 /// What one reconcile pass did, as data rather than rendered text.
@@ -326,6 +337,11 @@ pub struct ReconcileReport {
     /// Lanes whose liveness probe could not be answered this pass, with the
     /// probe's own reason (SH-626). Not a hard stop — see [`WindowProbe`].
     pub unanswered: Vec<(u32, String)>,
+    /// Lanes whose window is gone but whose story the verifier has just
+    /// returned for repair (SH-650), with the probe's own reason. Not a hard
+    /// stop this pass: the verifier's resume re-dispatch is what fills that
+    /// window, and the stall clock bounds the wait.
+    pub deferred: Vec<(u32, String)>,
     /// Lane indices freed because their story completed.
     pub completed: Vec<u32>,
     /// Lane indices held this pass because their story reached `verifying`.
@@ -358,9 +374,9 @@ pub struct ReconcileReport {
 ///
 /// `AgentBlocked` is tested next, ahead of `Verifying`: a story can sit in
 /// `verifying` with `awaiting` also set (centralized verification's own
-/// `return_for_repair` falls back to `set_awaiting` when it cannot reach the
-/// dispatched pane, SH-521), and that diagnosis must surface rather than be
-/// masked by the handoff.
+/// `return_for_repair` parks a story with `awaiting` when its resume
+/// re-dispatch is refused, SH-521/SH-650), and that diagnosis must surface
+/// rather than be masked by the handoff.
 ///
 /// `Verifying` is tested ahead of `WindowGone` and `Stalled`. The agent's
 /// last action for a successful story is `story move <n> verifying`, and the
@@ -403,6 +419,18 @@ pub fn classify(
         // the window, so the lane is judged by the store fact D3 already makes
         // primary — the stall clock below, which a dead agent cannot advance.
         WindowProbe::Alive { .. } | WindowProbe::Unanswered { .. } => {}
+        // A window gone on a story the verifier has just returned is the
+        // verifier's own re-dispatch in flight (SH-650): the pane is normally
+        // already dead at the handoff, and `dispatch --resume` respawns it
+        // in place after a readiness wait this pass would otherwise read as
+        // a hard stop. No evidence, same as an unanswered probe — the stall
+        // clock below still bounds it, and `DISPATCH_TIMEOUT` is inside that
+        // ceiling, so a re-dispatch either shows a live pane or has parked
+        // the story with `awaiting` (classified above) before the clock can
+        // fire. Only on a steady pass: a daemon that died mid-re-dispatch
+        // has nobody left to finish it, so a restart still reports it.
+        WindowProbe::Gone { .. }
+            if observation.returned_for_repair && pass == ReconcilePass::Steady => {}
         WindowProbe::Gone { .. } => {
             return LaneClassification::HardStop(match pass {
                 ReconcilePass::Steady => HardStopKind::WindowGone,
@@ -631,7 +659,7 @@ impl Dispatcher for ShellDispatcher {
             &self.story_sh_path,
             &request.project,
             &request.story,
-            request.agent,
+            Some(request.agent),
             true,
             true,
             &options,
@@ -1111,6 +1139,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         let mut report = ReconcileReport {
             run_id: run_id.clone(),
             unanswered: Vec::new(),
+            deferred: Vec::new(),
             census: None,
             completed: Vec::new(),
             verifying: Vec::new(),
@@ -1135,6 +1164,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         for (lane, classification, observation) in observed {
             if let WindowProbe::Unanswered { detail } = &observation.window {
                 report.unanswered.push((lane.lane_index, detail.clone()));
+            }
+            if let (WindowProbe::Gone { detail }, LaneClassification::Progressing) =
+                (&observation.window, classification)
+            {
+                report.deferred.push((lane.lane_index, detail.clone()));
             }
             match classification {
                 LaneClassification::Progressing => {
@@ -1296,6 +1330,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     |target| self.dispatcher.probe_window(&target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
+            // Read only when it can change the verdict: a Gone window on an
+            // open, non-verifying, non-awaiting story (SH-650). Every other
+            // combination is decided without it, and a live run reconciles
+            // about once a second.
+            let returned_for_repair = match (&window, row.as_ref()) {
+                (WindowProbe::Gone { .. }, Some(row))
+                    if row.superstate != SuperState::Closed
+                        && row.state != VERIFYING_STATE_SLUG
+                        && row.awaiting.is_none() =>
+                {
+                    self.ctx.store().read(|tx| {
+                        super::verification::returned_for_repair(tx, project, row.story_no)
+                    })?
+                }
+                _ => false,
+            };
             let seconds_since_output = match &window {
                 WindowProbe::Alive {
                     last_output_at: Some(at),
@@ -1321,6 +1371,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .and_then(|at| elapsed_secs(at, &now)),
                 seconds_since_output,
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
+                returned_for_repair,
             };
             let classification = if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)
@@ -1434,7 +1485,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// at observation time — for [`HardStopKind::AgentBlocked`], the agent's
     /// own diagnosis (its charter tells it to `story block <n> the-reason`
     /// before stopping), or centralized verification's own message when
-    /// `return_for_repair` could not reach a dead pane (SH-521). SH-120's
+    /// `return_for_repair` could not re-dispatch into a dead pane (SH-521,
+    /// SH-650). SH-120's
     /// relay rule applies here exactly as it does to a dispatch refusal: the
     /// existing text is appended to, never replaced by, a message composed
     /// here. Every other kind observes `existing_reason` as `None` by
@@ -2517,15 +2569,19 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
-/// engine lane so that only the engine receives that identity and isolation
-/// boundary. Full Auto lanes copy their run's immutable provider options into
-/// `options`; attended dispatch supplies its request-scoped selections.
+/// engine lane so that only the engine — and, since SH-650, the verifier
+/// re-dispatching a story that engine lane holds — receives that identity and
+/// isolation boundary. Full Auto lanes copy their run's immutable provider
+/// options into `options`; attended dispatch supplies its request-scoped
+/// selections; `agent: None` names no provider and leaves the helper to read
+/// the one the dispatch being resumed recorded (`surviving_dispatch_provider`
+/// in `story.sh`), which only a resume has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
     story: &str,
-    agent: EngineAgent,
+    agent: Option<EngineAgent>,
     auto: bool,
     full_auto: bool,
     options: &DispatchOptions,
@@ -2565,8 +2621,10 @@ pub(crate) fn run_shell_dispatch(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story)
-        .arg(format!("--agent={}", agent.as_str()));
+        .arg(story);
+    if let Some(agent) = agent {
+        command.arg(format!("--agent={}", agent.as_str()));
+    }
     if options.resume {
         command.arg("--resume");
     }
@@ -2575,13 +2633,16 @@ pub(crate) fn run_shell_dispatch(
     }
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
-        debug_assert!(
-            !options.resume,
-            "Full Auto reuses its fresh engine-owned claim and never resumes artifacts"
-        );
-        // Full Auto dispatch follows the engine's atomic claim immediately. `--force`
-        // reuses that sole claim while the helper still rejects worktree, branch, or pane artifacts.
-        command.arg("--full-auto").arg("--force");
+        command.arg("--full-auto");
+        // The engine's own Full Auto dispatch follows its atomic claim
+        // immediately: `--force` reuses that sole claim while the helper still
+        // rejects worktree, branch, or pane artifacts. A RESUME of a lane's
+        // story (the verifier's re-dispatch, SH-650) reconstructs exactly those
+        // artifacts instead, and the helper refuses `--resume --force` as a
+        // contradiction, so the two flags never travel together.
+        if !options.resume {
+            command.arg("--force");
+        }
     }
     if let Some(model) = &options.model {
         command.arg(format!("--model={model}"));
@@ -2881,6 +2942,17 @@ fn probe_journal_edge(
                 "window liveness unanswered; the lane is judged by its stall clock until tmux answers: {detail}"
             ),
         )),
+        // A Gone probe reaches `record_progress` only when it was deferred
+        // (SH-650: the story was just returned for repair); a Gone that is a
+        // hard stop is written on the story and the quarantine record and
+        // never comes here. So this IS the deferral's own edge, and a
+        // deferral nobody can see is the SH-306 shape.
+        WindowProbe::Gone { detail } if previous != Some(detail.as_str()) => Some((
+            "INFO",
+            format!(
+                "window gone on a story the verifier just returned; awaiting its resume re-dispatch, judged by the stall clock meanwhile: {detail}"
+            ),
+        )),
         WindowProbe::Alive { .. } if previous.is_some() => {
             Some(("INFO", "window liveness probe answers again".to_string()))
         }
@@ -3144,15 +3216,28 @@ mod tests {
             ),
             None
         );
+        // A Gone probe reaches the journal only when the reconciler deferred
+        // it (SH-650): a dead window that is a hard stop is written on the
+        // story instead and never comes here. The deferral is an INFO on its
+        // edge, and silent on repetition.
+        let gone = WindowProbe::Gone {
+            detail: "pane_dead=1".to_string(),
+        };
+        let entry = probe_journal_edge(None, &gone).expect("a deferral is an edge");
+        assert_eq!(entry.0, "INFO");
+        assert!(entry.1.contains("verifier just returned"), "{}", entry.1);
+        assert!(entry.1.contains("pane_dead=1"), "{}", entry.1);
+        assert_eq!(probe_journal_edge(Some("pane_dead=1"), &gone), None);
         assert_eq!(
             probe_journal_edge(
-                None,
-                &WindowProbe::Gone {
-                    detail: "pane_dead=1".to_string()
+                Some("pane_dead=1"),
+                &WindowProbe::Alive {
+                    last_output_at: None
                 }
-            ),
-            None,
-            "a dead window is a hard stop, written on the story rather than journaled here"
+            )
+            .map(|line| line.0),
+            Some("INFO"),
+            "the respawned pane answering again is the deferral's closing edge"
         );
     }
 
