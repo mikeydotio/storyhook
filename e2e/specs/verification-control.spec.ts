@@ -6,6 +6,35 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
+test("verifier menu hosts non-editable commands and supports keyboard navigation", async ({ page }) => {
+  const stop = page.locator('.column[data-state="verifying"]')
+    .getByRole("button", { name: "Stop verifier", exact: true });
+  await stop.focus();
+  await stop.press("Enter");
+  const menu = page.getByRole("menu", { name: "Stop verifier" });
+  const items = menu.getByRole("menuitem");
+  await expect(items).toHaveCount(2);
+  // This is the no-typing invariant behind the direct keydown receiver entry.
+  await expect(menu.locator('input, textarea, select, [contenteditable]:not([contenteditable="false"])')).toHaveCount(0);
+  for (const item of await items.all()) {
+    await expect(item).toHaveJSProperty("isContentEditable", false);
+  }
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(stop).toBeFocused();
+});
+
 test("verifier stop menu drains, persists after reload, and starts again", async ({ page }) => {
   const column = page.locator('.column[data-state="verifying"]');
   const stop = column.getByRole("button", { name: "Stop verifier", exact: true });
