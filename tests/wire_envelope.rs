@@ -1436,6 +1436,9 @@ fn invocation_corpus() -> Vec<Invocation> {
             file: "export.json".to_string(),
             legacy_links: true,
         },
+        Invocation::SessionEligibility {
+            id: "SH-1".to_string(),
+        },
         Invocation::Context {
             format: Some("json".to_string()),
             story: Some("SH-1".to_string()),
@@ -1889,6 +1892,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Decompose { .. } => "Decompose",
         Invocation::Export => "Export",
         Invocation::ImportProject { .. } => "ImportProject",
+        Invocation::SessionEligibility { .. } => "SessionEligibility",
         Invocation::Context { .. } => "Context",
         Invocation::Handoff { .. } => "Handoff",
         Invocation::Phase { .. } => "Phase",
@@ -1933,7 +1937,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        70,
+        71,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
