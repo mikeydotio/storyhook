@@ -1055,10 +1055,6 @@ fn error_corpus() -> Vec<AppError> {
     ]
 }
 
-/// An exhaustive `match`, so a further `AppError` variant stops this file
-/// compiling until it has a wire form and a corpus row. The same guard
-/// `tests/error_contract.rs` uses for the exit-code table.
-
 fn text_lint_error() -> AppError {
     let fixture = storyhook_test_support::ServiceFixture::new();
     let ctx = fixture.ctx();
@@ -1074,6 +1070,9 @@ fn text_lint_error() -> AppError {
         .unwrap_err()
 }
 
+/// An exhaustive `match`, so a further `AppError` variant stops this file
+/// compiling until it has a wire form and a corpus row. The same guard
+/// `tests/error_contract.rs` uses for the exit-code table.
 fn variant_name(error: &AppError) -> &'static str {
     match error {
         AppError::Usage(_) => "Usage",
