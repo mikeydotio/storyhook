@@ -4,7 +4,8 @@
 # two names that protect a project -- by project (SH-456, SH-648).
 #
 #   machine-lock.sh [--plan] [--max-wait <seconds>]
-#                   [--max-idle <seconds>] <name> -- <command...>
+#                   [--max-idle <seconds>] [--termination-grace <seconds>]
+#                   <name> -- <command...>
 #   machine-lock.sh --held <name>
 #
 # Runs <command...> with <name> held, and exits with the command's own status.
@@ -117,7 +118,7 @@ else
     gate_progress_emit_activity() { :; }
 fi
 
-readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>
+readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] [--termination-grace <seconds>] <name> -- <command...>
        machine-lock.sh --held <name>"
 
 die() {
@@ -184,6 +185,7 @@ plan=0
 held_query=0
 max_wait=""
 max_idle=""
+termination_grace=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     (--plan)
@@ -216,6 +218,17 @@ while [ "$#" -gt 0 ]; do
         max_idle="$1"
         shift
         ;;
+    (--termination-grace)
+        shift
+        [ "$#" -gt 0 ] || die "--termination-grace needs a positive whole number of seconds -- $USAGE"
+        case "$1" in
+        (*[!0-9]* | '' | 0) die "--termination-grace takes a positive whole number of seconds -- $USAGE" ;;
+        esac
+        [ "${#1}" -le 8 ] && [ "$1" -gt 0 ] \
+            || die "--termination-grace must be 1..99999999 seconds -- $USAGE"
+        termination_grace="$((10#$1))"
+        shift
+        ;;
     (--)
         die "no lock name before '--' -- $USAGE"
         ;;
@@ -243,8 +256,8 @@ if [ "$held_query" = 1 ]; then
     # SH-357: a query takes exactly one word. Anything after the name would
     # land nowhere.
     [ "$#" -eq 0 ] || die "--held takes a lock name and nothing else, not '$1' -- $USAGE"
-    [ "$plan" = 0 ] && [ -z "$max_wait" ] && [ -z "$max_idle" ] \
-        || die "--held cannot be combined with --plan, --max-wait or --max-idle -- $USAGE"
+    [ "$plan" = 0 ] && [ -z "$max_wait" ] && [ -z "$max_idle" ] && [ -z "$termination_grace" ] \
+        || die "--held cannot be combined with --plan, --max-wait, --max-idle or --termination-grace -- $USAGE"
 else
     # SH-357: an argument that lands nowhere is refused, not dropped. The `--` is
     # required even though the name is a single token, so that a command whose
@@ -475,7 +488,7 @@ terminate_group() {
     group_alive || return 0
     note "$reason: sending SIGTERM to process group $child"
     kill -TERM -- "-$child" 2>/dev/null || true
-    remaining="$TERMINATION_GRACE_SECS"
+    remaining="${termination_grace:-$TERMINATION_GRACE_SECS}"
     while [ "$remaining" -gt 0 ] && group_alive; do
         sleep "$LOCK_POLL_SECS"
         remaining=$((remaining - LOCK_POLL_SECS))
