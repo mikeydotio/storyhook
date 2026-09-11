@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SH-62: `dispatch <id> --auto` swaps in the autonomous charter (plan
-# approval stays the ONE human interaction; the child resolves the rest
+# approval is automatic; the child resolves later decisions
 # itself) while leaving the attended path byte-identical. Mostly dry-run
 # (no tmux needed — every case here either refuses before the DRY_RUN branch
 # point or IS the dry-run branch), plus one real fake-tmux dispatch mirroring
@@ -60,6 +60,10 @@ esac
 out=$(STORY_COUNCIL=on dry --auto)
 assert_eq "$(jqf "$out" .ok)" "true" "auto: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto: auto:true"
+assert_contains "$(jqf "$out" .prompt)" "StoryHook approves it automatically" "auto: plan approval needs no human reply"
+case "$(jqf "$out" .prompt)" in
+  *"the user approves"*) fail_test "auto: charter still assigns approval to a human" ;;
+esac
 assert_eq "$(jqf "$out" .council)" "true" "auto+council-on: council:true"
 assert_eq "$(jqf "$out" .launch_source)" "builtin" "auto: builtin launch source"
 assert_eq "$(jqf "$out" .launch_overridden)" "false" "auto: builtin launch is not overridden"

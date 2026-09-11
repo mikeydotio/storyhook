@@ -31,6 +31,9 @@ for agent in claude codex; do
     assert_contains "$prompt" "story load-context --story $id" "$agent $mode names target"
     assert_contains "$prompt" "story help obviation-review" "$agent $mode names procedure"
     assert_contains "$prompt" "Before implementation" "$agent $mode orders review"
+    if [ "$mode" != attended ]; then
+      assert_contains "$prompt" "StoryHook approves it automatically" "$agent $mode keeps automatic approval alongside review"
+    fi
   done
 done
 
