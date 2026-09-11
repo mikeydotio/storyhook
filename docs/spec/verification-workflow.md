@@ -319,6 +319,12 @@ its existing hook enrollment before delegating to the same portable core.
 Receipt format, shared project storage, private preflight state and objects,
 tree-drift refusal, tier ordering, and atomic publication are unchanged.
 
+SH-683 adds shared lifecycle ownership before verifier preflight and speculative
+execution. Interrupted recovery preserves the checkout, private index and
+objects together; ambiguous writers prevent repair and remain infrastructure
+failures. See [Shared verifier lifecycle](verifier-worktree-lifecycle.md) for
+the durable journal, canonical registration rules and operator limits.
+
 ### Red
 
 `VerificationOutcome::TestsFailed` carries the tree, the per-attempt log path
