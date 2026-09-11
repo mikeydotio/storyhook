@@ -166,6 +166,17 @@ pub enum EngineAction {
     },
 }
 
+/// The controls under `story verifier` (SH-666).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerifierAction {
+    /// Acknowledge one exact halted infrastructure incident so the verifier
+    /// queue may run again. The id is the one the halt comment prints.
+    Ack {
+        /// The incident to acknowledge, verbatim.
+        incident_id: String,
+    },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
@@ -225,6 +236,7 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
+  story verifier ack <incident-id>                  (release a halted verifier queue)
   story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
@@ -556,6 +568,10 @@ pub enum Invocation {
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
         action: EngineAction,
+    },
+    /// `story verifier ack <incident-id>` (SH-666).
+    Verifier {
+        action: VerifierAction,
     },
     /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
     Cleanup {
@@ -930,6 +946,7 @@ impl Invocation {
             | Self::Claim { .. }
             | Self::Unclaim { .. }
             | Self::Engine { .. }
+            | Self::Verifier { .. }
             | Self::Cleanup { .. }
             | Self::Summary
             | Self::Report { .. }
@@ -1848,6 +1865,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("run")],
     },
     VerbFlags {
+        verb: "verifier",
+        subcommand: Some("ack"),
+        flags: &[],
+    },
+    VerbFlags {
         verb: "cleanup",
         subcommand: None,
         flags: &[bare("dry-run")],
@@ -2329,6 +2351,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
         "engine" => parse_engine(args),
+        "verifier" => parse_verifier(args),
         "cleanup" => parse_cleanup(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
@@ -3592,6 +3615,38 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     }
     expect_no_more(&args[index..], usage)?;
     Ok(run)
+}
+
+const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
+
+/// `story verifier ack <incident-id>` (SH-666).
+///
+/// The incident id is positional and required on purpose: the halt comment and
+/// the dashboard banner both print it, and an acknowledgement that named no
+/// incident would clear whichever one is current — the stale-page hazard the
+/// REST door already refuses. Same SH-357 contract as `parse_engine`: every
+/// complete arm ends in [`expect_no_more`] with its own usage string.
+fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
+    let Some(action) = args.get(1).map(String::as_str) else {
+        return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+    };
+    let action = match action {
+        "ack" => {
+            let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
+                return Err(AppError::Usage(format!(
+                    "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
+                )));
+            };
+            expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
+            VerifierAction::Ack {
+                incident_id: incident_id.clone(),
+            }
+        }
+        _ => {
+            return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+        }
+    };
+    Ok(Invocation::Verifier { action })
 }
 
 fn parse_engine_stop(args: &[String]) -> Result<EngineAction, AppError> {

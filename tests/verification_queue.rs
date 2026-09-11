@@ -23,7 +23,7 @@ use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
-    VerificationProblem, VerificationQueue,
+    VerificationProblem, VerificationQueue, acknowledge_verification_incident,
 };
 use storyhook::store::{
     ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
@@ -2922,6 +2922,20 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         .unwrap();
     assert_eq!(incident.attempts, 1);
     assert_eq!(incident.story.to_id("SH"), id);
+    // SH-666: the halt says what it is (the verifier's), what it stops (the
+    // whole queue), who is at fault (nobody), and how it is released.
+    let halt = last_comment(&fixture, &id);
+    assert!(
+        halt.contains("Verification — HALTED") || halt.contains("INFRASTRUCTURE — HALTED"),
+        "{halt}"
+    );
+    assert!(halt.contains("stops the verifier's whole queue"), "{halt}");
+    assert!(halt.contains("No story is at fault"), "{halt}");
+    assert!(
+        halt.contains(&format!("story verifier ack {}", incident.incident_id)),
+        "{halt}"
+    );
+    assert!(!halt.contains("blocked by"), "{halt}");
     let reopened = SqliteStore::open(fixture.store().path()).unwrap();
     assert_eq!(
         reopened
@@ -3012,6 +3026,85 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
         tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
         TickResult::Halted,
         "acknowledgement must make the still-current candidate eligible again"
+    );
+}
+
+/// The CLI's `story verifier ack` and the dashboard's `POST .../verification/ack`
+/// are one function (SH-666, SH-136): it refuses when nothing is halted, when
+/// the incident is still retrying on its own, and when the id names an older
+/// incident than the current one — and clears exactly the one it was given.
+#[test]
+fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let head = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let ctx = fixture.ctx();
+
+    let none = acknowledge_verification_incident(&ctx, "2:1").unwrap_err();
+    assert!(
+        none.to_string()
+            .contains("no verification incident is active"),
+        "{none}"
+    );
+
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    let incident_id = format!(
+        "{}:{}",
+        candidate.project.get(),
+        candidate.verifying_generation.unwrap().get()
+    );
+    let mut incident = VerificationIncident {
+        incident_id: incident_id.clone(),
+        project: candidate.project,
+        story: StoryNo::parse_id("SH", &head).unwrap(),
+        generation: candidate.verifying_generation.unwrap(),
+        disposition: VerificationFailureDisposition::Retryable,
+        halted: false,
+        attempts: 1,
+        detail: "could not read submitted pull request".into(),
+        first_failed_at: "2026-01-01T00:01:00Z".into(),
+        last_failed_at: "2026-01-01T00:01:00Z".into(),
+    };
+    fixture
+        .store()
+        .write(|tx| tx.put_verification_incident(&incident))
+        .unwrap();
+    let retrying = acknowledge_verification_incident(&ctx, &incident_id).unwrap_err();
+    assert!(
+        retrying.to_string().contains("still retrying"),
+        "{retrying}"
+    );
+
+    incident.halted = true;
+    incident.disposition = VerificationFailureDisposition::Permanent;
+    fixture
+        .store()
+        .write(|tx| tx.put_verification_incident(&incident))
+        .unwrap();
+    let stale = acknowledge_verification_incident(&ctx, "an-older-incident").unwrap_err();
+    assert!(stale.to_string().contains("is stale"), "{stale}");
+    assert!(stale.to_string().contains(&incident_id), "{stale}");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_some(),
+        "a stale acknowledgement must clear nothing"
+    );
+
+    let cleared = acknowledge_verification_incident(&ctx, &incident_id).unwrap();
+    assert_eq!(cleared.incident_id, incident_id);
+    assert_eq!(cleared.story.to_id("SH"), head);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident())
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -3206,16 +3299,11 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
     let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator {
-        outcome: VerificationOutcome::Merged {
-            tree: "abc123".into(),
-            detail: "landed".into(),
-            gate: GateCommand::DEFAULT.into(),
-        },
-        notification_error: None,
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
+    let actuator = FakeActuator::new(VerificationOutcome::Merged {
+        tree: "abc123".into(),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
 
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
@@ -3462,7 +3550,21 @@ fn a_durable_incident_marks_the_head_and_keeps_every_stalled_timestamp_fixed() {
     let head_first = last_comment(&fixture, &head);
     let tail_first = last_comment(&fixture, &tail);
     assert!(head_first.contains("Verification — HALTED"), "{head_first}");
-    assert!(tail_first.contains("blocked by SH-1"), "{tail_first}");
+    // SH-666: the tail names the incident as the verifier's own and the head
+    // as where it was first hit — never as a blocker — and how to release it.
+    assert!(
+        tail_first.contains("Verifier HALTED since 2026-01-01T00:01:00Z on an infrastructure failure of the verifier itself"),
+        "{tail_first}"
+    );
+    assert!(
+        tail_first.contains("first hit while verifying SH-1 (SH-1 is not at fault)"),
+        "{tail_first}"
+    );
+    assert!(
+        tail_first.contains(&format!("story verifier ack {}", incident.incident_id)),
+        "{tail_first}"
+    );
+    assert!(!tail_first.contains("blocked by"), "{tail_first}");
     assert!(head_first.contains("last evidence 2026-01-01T00:01:00Z"));
 
     assert!(

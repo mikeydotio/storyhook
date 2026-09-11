@@ -30,7 +30,7 @@ use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
+    StoreAction, TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -671,6 +671,7 @@ pub fn dispatch<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
+        Invocation::Verifier { action } => dispatch_verifier(ctx, action),
         Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
             .run(dry_run)
             .map(|report| Response::Cleanup(Box::new(report))),
@@ -941,6 +942,27 @@ pub fn dispatch<S: Store>(
             invocation,
             ctx.stdin(),
         ),
+    }
+}
+
+/// `story verifier ack <incident-id>`: the CLI door onto the same
+/// acknowledgement `POST .../verification/ack` performs (SH-666).
+fn dispatch_verifier<S: Store>(
+    ctx: &Ctx<'_, S>,
+    action: VerifierAction,
+) -> Result<Response, AppError> {
+    match action {
+        VerifierAction::Ack { incident_id } => {
+            let incident = crate::service::acknowledge_verification_incident(ctx, &incident_id)?;
+            let prefix = ctx
+                .store()
+                .read(|tx| crate::service::project_prefix(tx, ctx.project()))?;
+            Ok(Response::Message(format!(
+                "acknowledged verification incident {} (first hit while verifying {}); the verifier retries on its next tick",
+                incident.incident_id,
+                incident.story.to_id(&prefix)
+            )))
+        }
     }
 }
 
@@ -2708,6 +2730,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
@@ -2916,6 +2939,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Engine { .. } => "engine",
+        Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
@@ -4041,6 +4065,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
         | Invocation::Summary
         | Invocation::Report { .. }

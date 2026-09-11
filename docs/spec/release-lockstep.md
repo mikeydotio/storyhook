@@ -402,3 +402,18 @@ this adds to the list: **a script a shipped process invokes is part of the
 release, not of whichever checkout the process happens to be pointed at.**
 Design of record for the verifier side: `docs/spec/verification-workflow.md`'s
 SH-654 entry.
+
+## As built: the incident that found the sixth component (SH-666)
+
+The section above records the mechanism; this one records the measurement that
+made it urgent (`docs/rca/verifier-halt-read-as-a-story-block.md`). On
+2026-09-10 the installed daemon was `build 89f604316fa5`, the tree of the
+SH-646 merge; SH-649 merged five hours later and made `verify-pr.sh` require
+`<pr-url> -- <gate…>`; the main checkout was pulled past it that afternoon;
+the next verification was refused by name and the queue halted for the night,
+reporting itself on every waiting story as "blocked by" the story it was first
+hit on. The refusal was the correct detection of a skew that should never have
+been representable — exactly the plugin's original failure mode, one component
+over, and the reason the table at the top of this document now has six rows in
+spirit. SH-654 closed the origin; SH-666 owns the report, in
+`docs/spec/verification-workflow.md`'s SH-666 entry.
