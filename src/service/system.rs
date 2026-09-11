@@ -114,6 +114,11 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
     pub fn uninstall_plugin(&self, target: &str) -> Result<String, AppError> {
         uninstall_plugin(target, self.ctx.cwd())
     }
+
+    /// Reinstalls the plugin for every provider that has it registered.
+    pub fn reinstall_plugins(&self) -> Result<plugin::reinstall::Report, AppError> {
+        reinstall_plugins(self.ctx.cwd())
+    }
 }
 
 // --- the project-less half --------------------------------------------------
@@ -151,4 +156,10 @@ pub fn install_plugin(target: &str, cwd: &std::path::Path) -> Result<String, App
 /// Removes the plugin named by `target` from the checkout at `cwd`.
 pub fn uninstall_plugin(target: &str, cwd: &std::path::Path) -> Result<String, AppError> {
     plugin::uninstall(target, cwd)
+}
+
+/// Reinstalls the plugin for every provider whose configuration registers the
+/// storyhook marketplace, from this binary's embedded release (SH-667).
+pub fn reinstall_plugins(cwd: &std::path::Path) -> Result<plugin::reinstall::Report, AppError> {
+    plugin::reinstall::run(cwd)
 }
