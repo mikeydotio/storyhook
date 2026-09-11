@@ -279,6 +279,35 @@ _submit_box() {
   n="$(cat "$STATE/prompt_submits" 2>/dev/null || printf '0')"
   printf '%s' "$((n + 1))" > "$STATE/prompt_submits" 2>/dev/null || true
   : > "$STATE/input" 2>/dev/null || true            # prompt submitted
+  # Codex runs SessionStart on the first submitted turn, never at launch.
+  if [ "$n" = 0 ] && [ -f "$STATE/pending_sentinel" ]; then
+    local pending_path
+    pending_path=$(cat "$STATE/pending_sentinel_path")
+    mkdir -p "${pending_path%/*}"
+    cp "$STATE/pending_sentinel" "$pending_path"
+    # Model provider data and scheduling; execute the production Storyhook hook.
+    if [ "${FAKE_TMUX_CODEX_SENTINEL_MODE:-}" = identity ] \
+       && [ -f "${FAKE_TMUX_CODEX_PLUGIN_ROOT:-}/hooks/session-start.sh" ] \
+       && [ -s "$STATE/bootstrap_file" ]; then
+      local transcript payload hook_output bootstrap_file
+      transcript="$STATE/bootstrap-transcript.jsonl"
+      bootstrap_file=$(cat "$STATE/bootstrap_file")
+      printf '%s\n' \
+        '{"type":"session_meta","payload":{"id":"fake-codex-session"}}' \
+        '{"type":"event_msg","payload":{"type":"task_started","turn_id":"bootstrap-turn","collaboration_mode_kind":"plan"}}' > "$transcript"
+      payload=$(jq -cn --arg cwd "${pending_path%/.claude/*}" --arg transcript "$transcript" \
+        '{hook_event_name:"SessionStart",source:"startup",session_id:"fake-codex-session",cwd:$cwd,transcript_path:$transcript}')
+      hook_output=$(printf '%s' "$payload" | STORYHOOK_DISPATCH=1 \
+        STORYHOOK_CODEX_BOOTSTRAP="$bootstrap_file" \
+        bash "$FAKE_TMUX_CODEX_PLUGIN_ROOT/hooks/session-start.sh")
+      printf '%s' "$hook_output" > "$STATE/bootstrap-hook-output.json"
+      if printf '%s' "$hook_output" | jq -e '.continue == false' >/dev/null; then
+        if [ "${FAKE_TMUX_BOOTSTRAP_INCOMPLETE:-}" != 1 ]; then
+          printf '%s\n' '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"bootstrap-turn","last_agent_message":null}}' >> "$transcript"
+        fi
+      fi
+    fi
+  fi
 }
 
 # _paste_keys <text> — model `send-keys -l <text>` (and a NON-bracketed paste) as
@@ -363,6 +392,7 @@ case "${1:-}" in
     nw_name="${FAKE_TMUX_WINDOW_NAME:-story-window}"
     nw_session="${FAKE_TMUX_SESSION_NAME:-story-session}"
     nw_codex_autonomous=false
+    nw_bootstrap=""
     _i=0
     for _a in "${nw_args[@]}"; do
       case "$_a" in
@@ -370,6 +400,7 @@ case "${1:-}" in
         -n) nw_name="${nw_args[$((_i + 1))]:-}" ;;
         -t) nw_session="${nw_args[$((_i + 1))]:-}"; nw_session="${nw_session%:}" ;;
         STORYHOOK_AUTO=?*|STORYHOOK_FULL_AUTO=?*) nw_codex_autonomous=true ;;
+        STORYHOOK_CODEX_BOOTSTRAP=*) nw_bootstrap="${_a#*=}" ;;
       esac
       _i=$((_i + 1))
     done
@@ -393,12 +424,13 @@ case "${1:-}" in
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
-          "$STATE/storyhook_agent" \
+          "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
+    printf '%s' "$nw_bootstrap" > "$STATE/bootstrap_file"
     printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
     if [ -n "$launch_line" ]; then
       # EXEC form: derive the occupant from the launch line NOW, the way a
@@ -483,7 +515,10 @@ case "${1:-}" in
          && [ "${FAKE_TMUX_SUPPRESS_SENTINEL:-}" != 1 ] \
          && [ "$publish_sentinel" = true ] \
          && [ -n "$nw_cwd" ]; then
-        if [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
+        if [ "$launch_bin" = codex ]; then
+          printf '%s' "$sentinel_json" > "$STATE/pending_sentinel"
+          printf '%s' "$nw_cwd/.claude/dispatch-sentinel.json" > "$STATE/pending_sentinel_path"
+        elif [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
           ( sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"
             mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
               "$sentinel_json" \
@@ -524,11 +559,12 @@ case "${1:-}" in
     rp_cwd=""
     rp_pane=""
     rp_launch=""
+    rp_env=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -k) ;;
         -c) shift || true; rp_cwd="${1-}" ;;
-        -e) shift || true ;; # environment is observable in the argv log
+        -e) shift || true; rp_env+=(-e "${1-}") ;;
         -t) shift || true; rp_pane="${1-}" ;;
         *) rp_launch="$1" ;;
       esac
@@ -537,7 +573,7 @@ case "${1:-}" in
     [ -n "$rp_pane" ] || exit 1
     [ -n "$rp_launch" ] || exit 1
     FAKE_TMUX_INTERNAL_RESPAWN=1 "$0" new-window \
-      -c "$rp_cwd" -n __respawn__ -P -F '#{pane_id}' "$rp_launch" \; \
+      "${rp_env[@]}" -c "$rp_cwd" -n __respawn__ -P -F '#{pane_id}' "$rp_launch" \; \
       set-window-option -t "$rp_pane" remain-on-exit on \
       >/dev/null
     ;;
