@@ -297,4 +297,90 @@ mod tests {
             });
         }
     }
+
+    #[test]
+    fn landing_attempt_and_recovery_inherit_workspace_ownership() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let mut candidate = candidate(&store, &env, project);
+        candidate.checkout = fixture.cwd().to_path_buf();
+        for args in [
+            &["init", "-q"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widgets.git",
+            ][..],
+        ] {
+            crate::service::workspace_lock::git(&candidate.checkout, args, None).unwrap();
+        }
+        candidate.pull_request = Ok(PrLink {
+            owner: "acme".into(),
+            repo: "widgets".into(),
+            number: 1,
+            url: "https://github.com/acme/widgets/pull/1".into(),
+            close_on_merge: true,
+            status: "open".into(),
+            linked_at: env.now(),
+            last_checked_at: None,
+        });
+        let script = fixture.cwd().join("landing.sh");
+        std::fs::write(
+            &script,
+            r#"python3 - <<'PY'
+import os
+target = os.stat('.git/storyhook/workspace-locks/SH-1.lock')
+inherited = False
+for name in os.listdir('/dev/fd'):
+    try:
+        info = os.fstat(int(name))
+    except OSError:
+        continue
+    if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+        inherited = True
+assert inherited, 'landing child lost workspace ownership'
+print('{"result":"merged","detail":"ownership retained"}')
+PY
+"#,
+        )
+        .unwrap();
+        let activity = VerificationActivity::new();
+        let _guard = activity
+            .try_acquire(&store, &candidate, env.now())
+            .unwrap()
+            .unwrap();
+        let intent = crate::store::LandingIntent {
+            id: "reset-exclusion".into(),
+            project,
+            story: crate::store::StoryNo::new(1),
+            story_id: candidate.story_id.clone(),
+            project_slug: candidate.project_slug.clone(),
+            generation: candidate.verifying_generation.unwrap(),
+            pull_request: candidate.pull_request.as_ref().unwrap().url.clone(),
+            checkout: candidate.checkout.clone(),
+            certification: crate::domain::landing::VerifiedSubmission {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
+                gate: "true".into(),
+            },
+            created_at: env.now(),
+        };
+        let journal = journal_path(&env, &candidate);
+        std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        std::fs::write(journal, "").unwrap();
+        let actuator = ShellVerificationActuator::new(env)
+            .with_activity(activity)
+            .with_verifier_script(script);
+        for recover in [false, true] {
+            assert_eq!(
+                actuator.run_landing(&candidate, &intent, recover),
+                LandingOutcome::Merged {
+                    detail: "ownership retained".into(),
+                }
+            );
+        }
+    }
 }

@@ -112,7 +112,7 @@ impl VerificationProblem {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::MissingCheckout => "verification cannot run because this project has no registered checkout; run `story project link checkout <path>` from an operator session".to_string(),
+            Self::MissingCheckout => "Verification cannot run because this project has no registered checkout. Run `story project link checkout <path>` from an operator session.".to_string(),
             Self::MissingPullRequest => "verification needs exactly one open close-on-merge pull request linked with `story link-pr`; none is linked".to_string(),
             Self::MultiplePullRequests(urls) => format!(
                 "verification needs exactly one open close-on-merge pull request; found {}: {}",
@@ -134,6 +134,10 @@ impl VerificationProblem {
 /// One story selected for centralized verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerificationCandidate {
+    /// Resolved open dependencies holding a visible submission out of execution.
+    pub blocked_by: Vec<String>,
+    /// A durable landing attempt is awaiting a conclusive external outcome.
+    pub landing_pending: bool,
     /// Store identity of the owning project.
     pub project: ProjectId,
     /// Stable project slug used by helper subprocesses.
@@ -172,7 +176,7 @@ pub struct VerificationCandidate {
 
 /// Store-backed verification queue and completion writer.
 pub struct VerificationQueue<'a, S: Store> {
-    store: &'a S,
+    pub(super) store: &'a S,
 }
 
 /// Acknowledges exactly the halted verification incident `incident_id` for the
@@ -201,19 +205,24 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         Self { store }
     }
 
-    /// Returns the highest-priority submitted story across every project.
-    ///
-    /// Its first element is what [`Self::ordered`] would also return first;
-    /// kept as its own call so a caller that only needs the head does not pay
-    /// for building the queued rest of the list under a busy daemon.
+    /// Returns the highest-priority runnable submission, skipping held dependencies
+    /// and unresolved landing intents without hiding them from `ordered`.
     pub fn next(&self) -> Result<Option<VerificationCandidate>, AppError> {
-        Ok(self.ordered()?.into_iter().next())
+        Ok(self.runnable()?.into_iter().next())
     }
 
-    /// Returns every submitted story across every project, in one global
-    /// order (SH-524): priority, then creation time, then project/story
-    /// identity. Each project's worker drains [`Self::ordered_for`]; this is
-    /// the cross-project view.
+    /// Submitted candidates whose dependencies and unresolved merge attempts permit execution.
+    pub fn runnable(&self) -> Result<Vec<VerificationCandidate>, AppError> {
+        Ok(self
+            .ordered()?
+            .into_iter()
+            .filter(|c| c.blocked_by.is_empty() && !c.landing_pending)
+            .collect())
+    }
+
+    /// Returns all visible submissions, including holds and pending landings,
+    /// sorted by priority, creation time, then project/story identity.
+    /// Queue positions count only runnable candidates from this snapshot.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
     }
@@ -235,61 +244,6 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             Ok(ordered_candidates_for(tx, candidate.project)?
                 .into_iter()
                 .find(|current| current.story_id == candidate.story_id))
-        })?)
-    }
-
-    /// Atomically records a green result only while `candidate` is current.
-    pub(crate) fn record_generation_merged(
-        &self,
-        ctx: &Ctx<'_, S>,
-        candidate: &VerificationCandidate,
-        pull_request_url: &str,
-        green_comment: &str,
-    ) -> Result<GenerationWrite<()>, AppError> {
-        let project = candidate.project;
-        let now = ctx.now();
-        Ok(self.store.write(|tx| {
-            let prefix = project_prefix(&*tx, project)?;
-            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
-            if !candidate_is_current(&*tx, &row, candidate)? {
-                return Ok(GenerationWrite::Superseded);
-            }
-            let linked = tx
-                .open_pr_links_for_story(project, story_no)?
-                .into_iter()
-                .any(|link| link.close_on_merge && link.url == pull_request_url);
-            if !linked {
-                return Err(AppError::Validation(format!(
-                    "story `{}` no longer links submitted pull request `{pull_request_url}`",
-                    candidate.story_id
-                ))
-                .into());
-            }
-            let done = completion_state_or_refuse(&tx.states(project)?)?;
-            let states = tx.state_map(project)?;
-            clear_candidate_incident(tx, candidate)?;
-            append_state_transition(
-                tx,
-                project,
-                story_no,
-                &row,
-                &prefix,
-                &states,
-                &done,
-                &now,
-                vec![
-                    StoryEvent::StoryCommentAdded {
-                        at: now.clone(),
-                        text: green_comment.to_string(),
-                    },
-                    StoryEvent::StoryPrMerged {
-                        at: now.clone(),
-                        url: pull_request_url.to_string(),
-                    },
-                ],
-                ctx.provenance(),
-            )?;
-            Ok(GenerationWrite::Applied(()))
         })?)
     }
 
@@ -537,7 +491,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             // form names the exact command that releases it (SH-666).
             let consequence = if incident.halted {
                 format!(
-                    "This halt stops the verifier's whole queue. No story is at fault: the verifier itself could not run, and {} is only where the failure was first hit. Fix the cause below, then release the queue with: story verifier ack {}",
+                    "This halt stops the verifier's whole queue. No story is at fault. The verifier could not run. The failure first occurred at {}. Fix the cause below. Release the queue with: `story verifier ack {}`.",
                     candidate.story_id, incident.incident_id
                 )
             } else {
@@ -548,7 +502,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 incident.attempts,
                 incident.first_failed_at,
                 incident.last_failed_at,
-                incident.detail
+                crate::text_lint::quote_evidence(&incident.detail)
             );
             let events = marked_comment_events(
                 &row,
@@ -674,6 +628,8 @@ fn cleanup_candidates_for(
                 .map(|(_, link)| link.clone())
                 .ok_or(VerificationProblem::MissingPullRequest);
             candidates.push(VerificationCandidate {
+                blocked_by: Vec::new(),
+                landing_pending: false,
                 project: project.id,
                 project_slug: project.slug.clone(),
                 story_id: row.story_no.to_id(&project.prefix),
@@ -889,6 +845,8 @@ pub(crate) fn ordered_candidates_for(
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     let mut candidates = Vec::new();
     if let Some(project) = tx.project(project)? {
+        let intents = tx.landing_intents()?;
+        let index = super::query::story_map(tx, project.id)?;
         let checkout = tx.checkout_path(project.id)?;
         let registered =
             super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
@@ -933,6 +891,10 @@ pub(crate) fn ordered_candidates_for(
                 .map(|(at, generation)| (Some(at), Some(generation)))
                 .unwrap_or((None, None));
             candidates.push(VerificationCandidate {
+                blocked_by: crate::domain::transition::open_blockers(&row.snapshot, &index),
+                landing_pending: intents
+                    .iter()
+                    .any(|i| i.project == project.id && i.story == row.story_no),
                 project: project.id,
                 project_slug: project.slug.clone(),
                 story_id: row.story_no.to_id(&project.prefix),

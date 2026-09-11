@@ -22,6 +22,11 @@ One live executor owns cleanup. Existing dispatch preparation or verification pr
 reset admission. Cleanup must not run while an earlier cleanup subprocess survives.
 An explicit retry revalidates resources; it does not infer Force from an earlier failure.
 
+An unresolved landing intent also prevents reset admission after a daemon restart.
+The store rejects transactions that hold both reservations for the same story.
+Landing attempts and recovery children inherit workspace ownership until they exit.
+Schema migration 39 adds Reset after the published landing-intent migration 38.
+
 The final transaction moves the story to Todo and clears its reservation. It occurs
 only after Git registration, worktree path and owned tmux windows are absent.
 Failures retain identity and diagnostics so retries cannot guess at deleted markers.
@@ -44,3 +49,7 @@ comments. These were deferred under the user’s context rule:
 
 Each repair belongs in its own commit with its regression. Neither is hidden by
 changing or disabling its existing failing check.
+
+SH-660 has published both repairs in PR #779, in separate commits. They await
+central verification. Reconcile those changes when they reach the default branch;
+the findings remain open here until that integration is verified.

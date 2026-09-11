@@ -1427,9 +1427,9 @@ pub(super) fn story_resets(
     project: ProjectId,
 ) -> Result<BTreeMap<StoryNo, String>, StoreError> {
     // Earlier migrations append real repair events through this same store.
-    // They cannot hold reservations before migration 38 creates the table.
+    // They cannot hold reservations before migration 39 creates the table.
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version < 38 {
+    if version < 39 {
         return Ok(BTreeMap::new());
     }
     let mut statement = sql(

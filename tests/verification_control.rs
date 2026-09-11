@@ -321,16 +321,42 @@ struct Gate {
     entered: mpsc::Sender<()>,
     release: Mutex<mpsc::Receiver<()>>,
     outcome: VerificationOutcome,
+    wait_at_landing: bool,
 }
 
 impl VerificationActuator for Gate {
-    fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
         self.entered.send(()).unwrap();
         self.release
             .lock()
             .unwrap()
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "remote merge completed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a confirmed merge must not require recovery")
+    }
+
+    fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+        if !self.wait_at_landing {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+        }
         self.outcome.clone()
     }
     fn submit(
@@ -377,6 +403,7 @@ fn stop_prevents_admission_and_does_not_turn_cancellation_into_an_incident() {
     let gate = Gate {
         entered,
         release: Mutex::new(released),
+        wait_at_landing: false,
         outcome: VerificationOutcome::InfrastructureFailure {
             detail: "child interrupted".into(),
             disposition: VerificationFailureDisposition::Permanent,
@@ -456,8 +483,10 @@ fn completed_merge_wins_a_concurrent_stop_and_drain_allows_completion() {
         let gate = Gate {
             entered,
             release: Mutex::new(released),
-            outcome: VerificationOutcome::Merged {
-                tree: "certified-tree".into(),
+            wait_at_landing: true,
+            outcome: VerificationOutcome::Certified {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
                 detail: "remote merge completed".into(),
                 gate: "fixture-gate".into(),
             },
@@ -493,6 +522,60 @@ fn completed_merge_wins_a_concurrent_stop_and_drain_allows_completion() {
                 .unwrap()
         );
     }
+}
+
+#[test]
+fn stop_after_certification_does_not_admit_a_merge() {
+    let fixture = ServiceFixture::new();
+    let candidate = linked_candidate(&fixture);
+    let activity = VerificationActivity::new();
+    let inflight = InFlight::new(fixture.env().clone());
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = Gate {
+        entered,
+        release: Mutex::new(released),
+        wait_at_landing: false,
+        outcome: VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "tests passed".into(),
+            gate: "fixture-gate".into(),
+        },
+    };
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &gate,
+                &activity,
+                &inflight,
+                fixture.project(),
+            )
+        });
+        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        activity
+            .control(fixture.store(), fixture.project(), VerificationAction::Stop)
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), TickResult::Stopped);
+    });
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()
+            .verifying_generation,
+        candidate.verifying_generation
+    );
 }
 
 #[test]

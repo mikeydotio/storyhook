@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+/// Live state admission, separate from historical event reconstruction.
+pub mod transition;
+
+/// Exact verification evidence preceding durable landing admission.
+pub mod landing;
+
 /// Validates one provider-defined model or effort token before it crosses a
 /// persistence or process boundary.
 ///
@@ -2980,20 +2986,7 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
     {
         return false;
     }
-    // A blocker the index cannot answer for does not block. In a service's
-    // whole-project map that case is a dangling edge; in a client's partial
-    // one it is the ordinary case of a blocker that has been closed, deleted
-    // or archived out of the snapshot — none of which block. Reading absence
-    // as "blocked" instead would strand every story whose dependency landed.
-    for relation in &story.relationships {
-        if relation.relation == "blocked-by"
-            && let Some(other) = all_stories.story(&relation.other_id)
-            && other.superstate == SuperState::Open
-        {
-            return false;
-        }
-    }
-    true
+    transition::open_blockers(story, all_stories).is_empty()
 }
 
 /// The reserved label naming work the Full Auto engine must never dispatch

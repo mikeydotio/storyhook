@@ -77,6 +77,51 @@ fn a_fresh_database_migrates_to_the_current_version() {
 }
 
 #[test]
+fn reset_migration_preserves_the_landed_version_38_schema() {
+    use storyhook::store::{NewProject, WriteOps};
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..38]).unwrap();
+    let project = store
+        .write(|tx| {
+            tx.create_project(&NewProject {
+                uuid: "reset-upgrade".into(),
+                slug: "reset-upgrade".into(),
+                name: "Reset upgrade".into(),
+                prefix: "RU".into(),
+                created_at: "2026-09-11T00:00:00Z".into(),
+            })
+        })
+        .unwrap();
+    assert!(
+        store
+            .read(|tx| tx.story_resets(project))
+            .unwrap()
+            .is_empty()
+    );
+    let report = store.migrate_with(&migrate::MIGRATIONS[..39]).unwrap();
+    assert_eq!(report.from_version, 38);
+    assert_eq!(report.to_version, 39);
+    assert_eq!(report.applied, ["story_reset"]);
+    assert!(
+        store
+            .read(|tx| tx.story_resets(project))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.read(|tx| tx.landing_intents()).unwrap().is_empty());
+    let conn = Connection::open(store.path()).unwrap();
+    let name: String = conn
+        .query_row(
+            "SELECT name FROM schema_migrations WHERE version = 38",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(name, "landing_intents");
+}
+
+#[test]
 fn an_empty_database_is_not_backed_up_because_it_has_nothing_to_lose() {
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
