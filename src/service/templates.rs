@@ -36,6 +36,9 @@ follow the workflow below.
 - Use the assigned story, or select one with `story next`.
 - Use a feature branch in the assigned checkout.
 - Move the story to In Progress: `story move {prefix}-<n> in-progress`.
+- Before beginning or resuming implementation, run `story help obviation-review`
+  and `story load-context --story {prefix}-<n>`. Follow the review procedure for
+  every candidate; likely-obviated work stays open and blocked for human review.
 - Make the change. Add tests for new behavior and defects.
 - If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
 - Leave the full suite and its lock to the central verifier.
@@ -221,6 +224,8 @@ pub fn claude_md() -> String {
 This project uses **storyhook** for task tracking. Full usage instructions are in `AGENTS.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
+Before beginning or resuming implementation, run `story help obviation-review`
+and `story load-context --story <id>` for the assigned story and follow the review procedure.
 
 Run `story help <command>` for detailed usage on any command, or `story help --compact` for the full reference.
 "#
@@ -239,6 +244,9 @@ to manage tasks.
 
 - Run `story load-context` at the start of each session to understand project state.
 - Run `story next` to find the highest-priority ready task.
+- Before beginning or resuming implementation, run `story help obviation-review`
+  and `story load-context --story <id>`. Follow the review procedure for every
+  candidate; likely-obviated work stays open and blocked for human review.
 - After targeted tests, commit, then make `story move <id> verifying` your last
   action, from inside the story's worktree. The verifier pushes your branch,
   opens the PR, and owns the full suite, merge, completion, and cleanup.

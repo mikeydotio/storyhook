@@ -26,7 +26,9 @@ Load `<plugin-root>/references/ensure-cli.md` and follow it. Do not continue unt
 ### 1. Gather context
 
 Run `bash "<story-helper>" context`, adding ` --full` if the user invoked
-this skill with `--full` or asked for detailed context. `ok:false` → show `display`, stop.
+this skill with `--full` or asked for detailed context. If a story is assigned, also pass
+`--story <id>` to include its complete obviation-review evidence. `ok:false` → show
+`display`, stop; an error is not an empty successful review.
 
 `display` is the CLI's own comprehensive project-state document (`story load-context`) —
 open stories, states, priorities, relationships, ready work, and (with `--full`) the
@@ -44,3 +46,9 @@ Show `display`. Then synthesize a brief summary highlighting what matters most:
 
 This synthesis is yours to write — the facts it is drawn from all came from step 1, not
 from any command you run yourself.
+
+Before beginning or resuming implementation of an assigned story, run
+`story help obviation-review` and follow its procedure against every candidate in
+`display`. Repeat for each assignment. The CLI supplies facts; the agent assesses
+the requirements and implementation evidence. Likely obviation leaves the story
+open and blocked pending human review, without waiting for an interactive answer.

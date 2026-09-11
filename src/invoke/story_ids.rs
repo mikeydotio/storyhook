@@ -231,6 +231,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Unclaim { id, .. } => vec![id],
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
         Invocation::PrCheck { id } => id.iter_mut().collect(),
+        Invocation::Context { story, .. } => story.iter_mut().collect(),
 
         Invocation::Phase { action } => match action {
             PhaseAction::Add { id, .. } | PhaseAction::Remove { id } => vec![id],
@@ -287,7 +288,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
-        | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Type { .. }
         | Invocation::Hooks { .. }

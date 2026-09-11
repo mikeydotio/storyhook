@@ -12,6 +12,9 @@ follow the workflow below.
 - Use the assigned story, or select one with `story next`.
 - Use a feature branch in the assigned checkout.
 - Move the story to In Progress: `story move SH-<n> in-progress`.
+- Before beginning or resuming implementation, run `story help obviation-review`
+  and `story load-context --story SH-<n>`. Follow the review procedure for
+  every candidate; likely-obviated work stays open and blocked for human review.
 - Make the change. Add tests for new behavior and defects.
 - If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
 - Leave the full suite and its lock to the central verifier.
