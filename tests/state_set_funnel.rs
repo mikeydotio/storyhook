@@ -107,3 +107,44 @@ fn the_funnel_still_applies_the_floor() {
         "`write_states_repairing` must repair a set below the floor"
     );
 }
+
+/// SH-656: historical storage is raw, so live producers must use admission.
+#[test]
+fn live_event_writers_cannot_bypass_domain_admission() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    let mut breaches = Vec::new();
+    for (path, text) in files {
+        let path = relative(&path);
+        if path.starts_with("src/store/") || path == "src/service/mod.rs" {
+            continue;
+        }
+        // Unit-test fixtures may deliberately append raw historical events.
+        let production = text.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+        for (line, code) in production.lines().enumerate() {
+            let code = code.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let raw_append =
+                code.contains(".append_events(") || code.contains(".append_raw_events(");
+            let maintenance = code.contains("append_and_fold_maintenance");
+            let replay = matches!(
+                path.as_str(),
+                "src/service/migrate.rs" | "src/service/transfer.rs"
+            );
+            let repair = matches!(
+                path.as_str(),
+                "src/service/config.rs" | "src/service/integrity.rs"
+            );
+            if (raw_append && !replay) || (maintenance && !repair) {
+                breaches.push(format!("{path}:{} {code}", line + 1));
+            }
+        }
+    }
+    assert!(
+        breaches.is_empty(),
+        "live writes bypass admission: {breaches:?}"
+    );
+}

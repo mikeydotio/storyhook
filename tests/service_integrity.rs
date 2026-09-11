@@ -1059,9 +1059,17 @@ fn a_fix_does_not_retract_an_edge_to_a_story_whose_events_will_not_fold() {
     RelationService::new(&ctx)
         .relate(&a, "blocks", &b, false)
         .expect("relating");
-    StoryService::new(&ctx)
-        .set_state(&b, "shelved", None, None, None)
-        .expect("shelving B");
+    // Historical input: live admission now refuses completing blocked work.
+    storyhook::store::test_support::inject_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::parse_id("SH", &b).unwrap(),
+        &[StoryEvent::StoryClosedAndArchived {
+            at: FIXTURE_NOW.into(),
+            state: "shelved".into(),
+        }],
+    )
+    .expect("replaying historically shelved B");
     drop(ctx);
 
     storyhook::store::test_support::forget_state(fixture.store(), fixture.project(), "shelved")
