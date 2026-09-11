@@ -131,6 +131,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
                 &actuator,
                 &activity,
                 &daemon_in_flight,
+                fixture.project(),
             )
         });
 
@@ -142,7 +143,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         );
         assert_eq!(
             activity
-                .active()
+                .active_for(fixture.project())
                 .expect("process-local ownership must be active")
                 .story_id,
             low
@@ -175,7 +176,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
 
     assert_eq!(result, TickResult::RetryLater);
     assert_eq!(
-        activity.active(),
+        activity.active_for(fixture.project()),
         None,
         "the low-priority story must leave active execution after its outcome is recorded"
     );
@@ -237,6 +238,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
                 &actuator,
                 &activity,
                 &daemon_in_flight,
+                fixture.project(),
             )
         });
         assert_eq!(
@@ -258,7 +260,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
             original.verifying_generation
         );
         assert_eq!(
-            activity.active().unwrap().generation,
+            activity.active_for(fixture.project()).unwrap().generation,
             original.verifying_generation
         );
         assert_eq!(daemon_in_flight.len(), 1);
@@ -271,7 +273,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
             story_id
         );
         assert_eq!(
-            activity.active().unwrap().generation,
+            activity.active_for(fixture.project()).unwrap().generation,
             replacement.verifying_generation
         );
         let published = lifecycle::read_inflight(fixture.env());
@@ -288,7 +290,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
         assert_eq!(worker.join().unwrap().unwrap(), TickResult::RetryLater);
     });
 
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert_eq!(daemon_in_flight.len(), 0);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }

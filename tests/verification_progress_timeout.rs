@@ -148,9 +148,10 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
     let idle = IDLE * 3;
     let script = format!(
         "set -eu\nexport STORYHOOK_LOCK_DIR=\"$PWD/locks\"\nunset STORYHOOK_MACHINE_LOCKS\n\
+         lock=\"$(bash {SIBLING}/machine-lock.sh --plan gate -- true | sed -n 's/^lock=//p')\"\n\
          bash {SIBLING}/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
-         for i in {{1..100}}; do [ ! -f locks/gate.lock/pid ] || break; sleep 0.01; done\n\
-         test -f locks/gate.lock/pid\n\
+         for i in {{1..100}}; do [ ! -f \"$lock/pid\" ] || break; sleep 0.01; done\n\
+         test -f \"$lock/pid\"\n\
          bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{MERGED}\n",
         (idle * 2).as_secs()
     );

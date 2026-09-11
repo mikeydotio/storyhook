@@ -880,10 +880,10 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let active = verification_activity.active();
-            let incident = tx.verification_incident()?;
+            let active = verification_activity.active_for(project);
+            let incident = tx.verification_incident(project)?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates(tx)?,
+                &crate::service::verification::ordered_candidates_for(tx, project)?,
                 active.as_ref(),
                 incident.as_ref(),
                 ctx.env(),
