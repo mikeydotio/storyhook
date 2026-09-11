@@ -1566,3 +1566,239 @@ fn codex_uninstall_sweeps_the_plugin_cache_the_doctor_reads_as_residue() {
         combined(&after)
     );
 }
+
+// --- `story plugin reinstall` (SH-667) ---------------------------------------
+//
+// The verb every binary-replacement path runs: reinstall the plugin for every
+// provider whose own configuration registers the storyhook marketplace, from
+// the binary that is now installed, and touch nothing that is not registered.
+
+impl Harness {
+    /// Both fake providers on PATH, ready to install, from a packaged copy of
+    /// the binary (the Codex fixtures' shape).
+    fn for_both_providers() -> Self {
+        let harness = Harness::new(true);
+        harness.install_fake("claude", FAKE_CLAUDE);
+        harness.install_fake("codex", FAKE_CODEX);
+        fs::create_dir_all(harness.home.join(".claude")).unwrap();
+        harness
+    }
+
+    /// A Codex registration at an OLDER release projection under this
+    /// fixture's own data directory — the exact state `story doctor install`
+    /// reads as `STALE RELEASE`, and the state every `make install` used to
+    /// leave behind. A real directory carrying the payload, because the fake
+    /// `codex plugin add` copies out of whatever source it was handed.
+    fn seed_stale_release_registration(&self) -> PathBuf {
+        let stale = self.home.join("data/storyhook/plugins/0.0.1");
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for relative in [
+            ".agents/plugins/marketplace.json",
+            ".claude-plugin/marketplace.json",
+        ] {
+            let target = stale.join(relative);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(repository.join(relative), target).unwrap();
+        }
+        copy_tree(
+            &repository.join("plugins/story"),
+            &stale.join("plugins/story"),
+        );
+        let source = stale.display().to_string();
+        self.seed_codex_install("0.0.1", &source);
+        fs::create_dir_all(self.home.join(".codex")).unwrap();
+        fs::write(
+            self.home.join(".codex/config.toml"),
+            format!("[marketplaces.storyhook]\nsource_type = \"local\"\nsource = \"{source}\"\n"),
+        )
+        .unwrap();
+        stale
+    }
+
+    /// The `codex plugin` row of `story doctor install`, as one line.
+    fn doctor_codex_row(&self) -> String {
+        let output = self.run(&["doctor", "install"]);
+        let text = combined(&output);
+        text.lines()
+            .find(|line| line.starts_with("codex plugin"))
+            .unwrap_or_else(|| panic!("no `codex plugin` row in:\n{text}"))
+            .to_string()
+    }
+}
+
+#[test]
+fn reinstall_refreshes_every_registered_provider_from_this_binary() {
+    let harness = Harness::for_both_providers();
+    for provider in ["claude", "codex"] {
+        harness.seed_previous_registration(provider);
+        assert_ne!(
+            harness.registered_source(provider).as_deref(),
+            Some(harness.release_marketplace().display().to_string().as_str()),
+            "{provider}: the seed must register something other than this release"
+        );
+    }
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("reinstalled the Claude Code plugin"),
+        "{text}"
+    );
+    assert!(text.contains("reinstalled the Codex plugin"), "{text}");
+    assert!(!text.contains("warning:"), "{text}");
+
+    let release = harness.release_marketplace();
+    for provider in ["claude", "codex"] {
+        assert_eq!(
+            harness.registered_source(provider).as_deref(),
+            Some(release.display().to_string().as_str()),
+            "{provider}: must now be registered at this binary's release"
+        );
+        let log = harness.provider_log(provider);
+        for step in [
+            "remove-plugin",
+            "remove-marketplace",
+            "add-marketplace",
+            "add-plugin",
+        ] {
+            let line = verb(provider, step, &release);
+            assert_eq!(
+                log.lines().filter(|l| *l == line).count(),
+                1,
+                "{provider}: `{line}` must run exactly once:\n{log}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reinstall_with_nothing_registered_succeeds_and_invokes_no_provider() {
+    let harness = Harness::for_both_providers();
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("nothing to reinstall"), "{text}");
+    assert!(!text.contains("warning:"), "{text}");
+    assert_eq!(harness.claude_log(), "", "Claude must not be invoked");
+    assert_eq!(harness.codex_log(), "", "Codex must not be invoked");
+}
+
+#[test]
+fn reinstall_leaves_an_unregistered_provider_alone_even_when_its_cli_is_present() {
+    let harness = Harness::for_both_providers();
+    harness.seed_previous_registration("codex");
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("reinstalled the Codex plugin"), "{text}");
+    assert!(!text.contains("Claude Code"), "{text}");
+    assert_eq!(
+        harness.claude_log(),
+        "",
+        "a provider with no registration must not be touched"
+    );
+    assert_eq!(
+        harness.registered_source("codex").as_deref(),
+        Some(harness.release_marketplace().display().to_string().as_str())
+    );
+}
+
+/// The DEREGISTERED state (SH-640): installed copies remain but the provider
+/// no longer lists the marketplace. Not intent, so not reinstalled — but never
+/// silent, and the remedy is the one `story doctor install` names.
+#[test]
+fn reinstall_warns_about_residue_without_a_registration_and_does_not_install_it() {
+    let harness = Harness::for_both_providers();
+    let residue = harness.home.join(".claude/plugins/cache/storyhook");
+    fs::create_dir_all(&residue).unwrap();
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("nothing to reinstall"), "{text}");
+    assert!(text.contains("warning: Claude Code:"), "{text}");
+    assert!(text.contains(&residue.display().to_string()), "{text}");
+    assert!(text.contains("`story plugin install claude`"), "{text}");
+    assert_eq!(harness.claude_log(), "", "residue must not be reinstalled");
+    assert!(
+        residue.is_dir(),
+        "residue is reported, never swept, by a reinstall"
+    );
+}
+
+/// One provider's failure never costs the other its refresh, and the exit
+/// status says the reinstall as a whole did not finish.
+#[test]
+fn reinstall_finishes_the_other_provider_when_one_fails_and_exits_non_zero() {
+    let harness = Harness::for_both_providers();
+    harness.seed_previous_registration("claude");
+    harness.seed_previous_registration("codex");
+    harness.set_codex_mode("plugin-fail");
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("reinstalled the Claude Code plugin"),
+        "{text}"
+    );
+    assert!(
+        text.contains("failed to reinstall the Codex plugin"),
+        "{text}"
+    );
+    assert!(text.contains("plugin exploded"), "{text}");
+    assert!(
+        text.contains("1 of 2 provider plugin(s) could not be reinstalled"),
+        "{text}"
+    );
+    assert!(
+        text.contains("run `story plugin reinstall` to retry"),
+        "{text}"
+    );
+    assert_eq!(
+        harness.registered_source("claude").as_deref(),
+        Some(harness.release_marketplace().display().to_string().as_str()),
+        "Claude must be refreshed even though Codex failed"
+    );
+    let codex = harness.codex_log();
+    assert!(
+        codex.contains("plugin add story@storyhook --json"),
+        "Codex must have been attempted:\n{codex}"
+    );
+}
+
+/// End to end against the detector: the state `make install` used to leave is
+/// what `story doctor install` calls STALE RELEASE, and one reinstall clears it.
+#[test]
+fn reinstall_clears_the_stale_release_the_doctor_reports() {
+    let harness = Harness::for_both_providers();
+    let stale = harness.seed_stale_release_registration();
+
+    let before = harness.doctor_codex_row();
+    assert!(before.contains(&stale.display().to_string()), "{before}");
+    let output = harness.run(&["doctor", "install"]);
+    assert!(
+        combined(&output).contains("STALE RELEASE"),
+        "{}",
+        combined(&output)
+    );
+
+    let output = harness.run(&["plugin", "reinstall"]);
+    let text = combined(&output);
+    assert!(output.status.success(), "{text}");
+
+    let after = harness.doctor_codex_row();
+    assert!(
+        after.contains(&format!("release {}", env!("CARGO_PKG_VERSION"))),
+        "{after}"
+    );
+    let output = harness.run(&["doctor", "install"]);
+    assert!(
+        !combined(&output).contains("STALE RELEASE"),
+        "{}",
+        combined(&output)
+    );
+}
