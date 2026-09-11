@@ -1453,13 +1453,15 @@ process exits, `story move <n> verifying` included, which is exactly why
 `Verifying` needs its own precedence ahead of `WindowGone` rather than the
 window probe alone being sufficient. This also explains why centralized
 verification's own `notify()` (`plugins/story/bin/story.sh cmd_notify`)
-refuses with `pane-changed` whenever the pane it targets no longer runs the
-dispatched process — the common case, once the pane is already dead — and
-`return_for_repair` (`src/daemon/verification.rs`) falls back to
-`set_awaiting` on that refusal. No special-case code was needed for the
-return-for-repair path on this side: it reduces to the already-existing
-`AgentBlocked` classification once `awaiting` is set, which is what makes the
-next fix below load-bearing for it.
+refuses whenever the pane it targets no longer holds the dispatched process —
+the common case, once the pane is already dead. Until SH-650 that refusal
+parked the story (`set_awaiting`) and this side needed no special case: it
+reduced to `AgentBlocked` once `awaiting` was set. **SH-650 changed both
+halves** — the refusal is `pane-dead`, not `pane-changed` (tmux freezes the
+frozen pane's command, so only `#{pane_dead}` tells), and the verifier now
+re-dispatches the story into the same window with the resume clause instead
+of parking it; the reconciler's own part of that change is under "As built —
+SH-650" below.
 
 **Two conformance repairs, found while re-verifying the branch's own
 committed work against the approved plan rather than newly discovered by the
@@ -2155,7 +2157,8 @@ run's notice; it is not coupled to the timed notice stack.
 blocked story. An engine lane remains occupied while the daemon-owned,
 machine-wide verifier orders submitted work, predicts the exact merge tree,
 runs the release gate, validates its content-addressed receipt, and lands the
-PR. Success moves the story to the configured completion state and reaps its
+PR. Success moves the story to the completion state — the required `done`
+(`domain::completion_state`, SH-652) — and reaps its
 submitted workspace; the engine then observes that completion and frees the
 lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and
@@ -2515,6 +2518,40 @@ live run reconciles itself at roughly 1 Hz for its whole life, because its own
 lane writes move `data_version`, the change poller publishes `Change::Resync`,
 and `poll_engine` wakes on any non-`Ping` change — the tick (72 s then, 300 s
 since SH-657) is an idle floor, never a rate limit.
+
+### SH-650 — a dead window on a story the verifier just returned is deferred
+
+`return_for_repair` used to park a story with `awaiting` when `story.sh
+notify` could not reach its pane, and this reconciler read that as
+`AgentBlocked` → quarantine → a breaker strike for what is ordinary
+remediation (decision D-E, `verification-workflow.md`). The verifier now
+re-dispatches the story into its own window with `dispatch --resume --auto`
+(as the lane it is, when a live lane holds it: the run's provider options and
+`--full-auto`) and pastes the diagnosis afterwards. That exposed a race this
+side owns: the return transition (`verifying` → `in-progress`, no `awaiting`)
+wakes the reconciler, the pane is normally already dead, and the respawned
+pane comes alive only after a readiness wait bounded by `DISPATCH_TIMEOUT` —
+so a steady pass in that window read `WindowGone` and struck the breaker
+anyway. The same gap existed for about a second before SH-650 and was closed
+by `set_awaiting`, a classification this side tolerates.
+
+`LaneObservation.returned_for_repair` is the store-derived fact that closes
+it, read from the story's own state history (`service::verification::
+returned_for_repair`: the latest `StoryStateChanged` is `RETURNED_STATE`, the
+one before it `VERIFYING_STATE`, nothing since) rather than from a lane mark
+the verifier would have to write. On a **steady** pass a `Gone` probe on such
+a story contributes no evidence — SH-626's rule for an unanswered probe, one
+cause over — and the lane is judged by the stall clock, with
+`DISPATCH_TIMEOUT` pinned inside `STALL_CEILING_SECS` so a re-dispatch has
+either shown a live pane or parked the story with `awaiting` (which still
+outranks the deferral) before the clock can fire. A **restart** pass never
+defers: a daemon that died mid-re-dispatch has nobody left to finish it. The
+fact is read lazily, only when the probe says `Gone` on an open,
+non-verifying, non-awaiting story, and the deferral is visible three ways:
+`ReconcileReport.deferred`, `probe_detail` on the lane, and an INFO journal
+line on the deferral's opening and closing edges (never per pass). Stated
+limit: a re-dispatched agent that dies again before its next state change is
+caught by the stall clock, not immediately.
 
 ### SH-646 — the verification workflow has its own design of record
 

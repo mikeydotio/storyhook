@@ -587,10 +587,16 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Working|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
-# State `complete` closes a story into. Empty means "ask the CLI for the
-# project's state catalog and take the first CLOSED-superstate entry" — see
-# story_closed_state.
-DONE_STATE="${STORY_DONE_STATE:-}"
+# The completion state: what `complete` closes a story into, what `reap`
+# accepts as finished work, and what `<done-state>` renders as. Deliberately
+# NOT env-overridable and not read from the catalog (SH-652): it is the
+# REQUIRED `done` state the verifier writes after a green merge
+# (`domain::COMPLETION_STATE_SLUG`, pinned equal by tests/plugin_contract.rs),
+# spelled here the way `verifying` is spelled in the charters — a protocol
+# constant, not a preference. The old `STORY_DONE_STATE` override is refused
+# by name below the router, because a knob the daemon cannot see is a knob
+# that makes this helper disagree with the verifier about one store fact.
+COMPLETION_STATE="done"
 # `doctor`'s throwaway readiness probe: what it launches, and the scratch
 # window it launches into. Kept separate from LAUNCH_TPL so probing a build
 # never depends on a dispatch-time override.
@@ -1426,6 +1432,108 @@ cmd_capabilities() {
     '{ok:true, agent:$agent} + $caps'
 }
 
+# configure_dispatch_provider <agent> — resolve the provider and the
+# model/effort/speed selectors for ONE dispatch, and compose the launch
+# templates from them. Assigns cmd_dispatch's own locals (bash scopes a
+# caller's `local`s dynamically over the functions it calls): resolved_model,
+# resolved_effort, resolved_speed, effective_model, launch_source,
+# launch_overridden, ignored_general_override, plus configure_agent's globals
+# and LAUNCH_TPL/READY_LAUNCH_BIN. Reads cmd_dispatch's requested_* flags,
+# auto and full_auto.
+#
+# Called once per dispatch, AFTER the story is identified and BEFORE the
+# tmux/worktree gates and the claim, so an invalid provider or selector can
+# never claim a story or create a worktree. It used to run before the story
+# was even looked up; SH-650 moved it, because which provider a RESUME should
+# relaunch is a fact recorded on the surviving window (surviving_window_
+# provider), and that window is named by the canonical story id.
+configure_dispatch_provider() {
+  # The caller has already applied the precedence (explicit flag, then a
+  # resumed window's record, then STORY_AGENT); this only configures it.
+  configure_agent "$1"
+
+  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
+  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
+  # --agent already has beneath STORY_AGENT, above. Resolved and validated
+  # here, before any claim/worktree side effect, same as --agent.
+  resolved_model="${requested_model:-${STORY_MODEL:-}}"
+  resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
+  resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
+  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
+    validate_agent_model "$resolved_model"
+    validate_agent_effort "$resolved_effort"
+    validate_agent_speed "$resolved_speed"
+    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
+    # overrides (configure_agent, above) with no seam to splice a selector
+    # into without guessing at their shape. Refuse by name rather than
+    # silently ignore the selector or mangle the operator's own command
+    # line -- the same posture SH-511's header comment already commits to
+    # for a launch override that weakens unattendedness.
+    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
+    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
+    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
+    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
+    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+  fi
+  # Reported in the result JSON below. Claude always launches SOME model
+  # (opusplan is baked into its templates even unselected); Codex has no
+  # such default -- an unselected Codex model stays "" and is omitted from
+  # the JSON entirely, the same presence-signals-selection contract effort
+  # already has.
+  effective_model="$resolved_model"
+  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
+
+  launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
+  ignored_general_override=""
+  if [ -n "$full_auto" ]; then
+    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
+    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
+    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
+    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  elif [ -n "$auto" ]; then
+    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  fi
+}
+
+# surviving_dispatch_provider <canonical-id> — echo the provider a RESUME
+# should relaunch, read from what the abandoned dispatch left behind, or
+# nothing when no surviving resource records one.
+#
+# Two facts, in order. The window's `@storyhook-agent` option (the record
+# cmd_notify already trusts) survives a dead pane under remain-on-exit. When
+# the window is gone entirely, the worktree the story's branch is checked out
+# in still names its CONTAINER, and the container is provider-derived
+# (DEFAULT_WORKTREE_IGNORE_PATH, configure_agent): a resume under the wrong
+# provider does not merely relaunch the wrong binary, it looks for the
+# worktree in the other provider's container, finds only the branch, and
+# fails to reattach it ("already used by worktree"). An operator container
+# override (STORY_WORKTREE_IGNORE_PATH) matches neither spelling and says
+# nothing, so the caller falls through to its own precedence.
+#
+# READ-ONLY and tolerant on purpose: runs before the tmux precondition and
+# from the checkout (branch_worktree_path needs the repository), and a dry run
+# outside tmux must still render.
+surviving_dispatch_provider() {
+  local wname pane provider path
+  wname=$(resolve_wname "$1")
+  pane=$(pane_for_window "$wname" 2>/dev/null) || pane=""
+  if [ -n "$pane" ]; then
+    provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null) || provider=""
+    case "$provider" in
+      claude | codex) printf '%s' "$provider"; return 0 ;;
+    esac
+  fi
+  path=$(branch_worktree_path "worktree-$wname") || return 0
+  case "$path" in
+    */.claude/worktrees/"$wname") printf 'claude' ;;
+    */.codex/worktrees/"$wname") printf 'codex' ;;
+  esac
+}
+
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
@@ -1506,60 +1614,12 @@ cmd_dispatch() {
     || fail "--full-auto requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  # The explicit dispatch option outranks STORY_AGENT. Both are resolved
-  # before the tmux/story/checkout gates, so an invalid provider can never
-  # claim a story or create a worktree.
-  if [ -n "$requested_agent" ]; then
-    configure_agent "$requested_agent"
-  else
-    configure_agent "${STORY_AGENT:-claude}"
-  fi
-
-  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
-  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
-  # --agent already has beneath STORY_AGENT, above. Resolved and validated
-  # here, before any claim/worktree side effect, same as --agent.
-  local resolved_model="${requested_model:-${STORY_MODEL:-}}"
-  local resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
-  local resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
-  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
-    validate_agent_model "$resolved_model"
-    validate_agent_effort "$resolved_effort"
-    validate_agent_speed "$resolved_speed"
-    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
-    # overrides (configure_agent, above) with no seam to splice a selector
-    # into without guessing at their shape. Refuse by name rather than
-    # silently ignore the selector or mangle the operator's own command
-    # line -- the same posture SH-511's header comment already commits to
-    # for a launch override that weakens unattendedness.
-    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
-    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
-    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
-    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
-    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-  fi
-  # Reported in the result JSON below. Claude always launches SOME model
-  # (opusplan is baked into its templates even unselected); Codex has no
-  # such default -- an unselected Codex model stays "" and is omitted from
-  # the JSON entirely, the same presence-signals-selection contract effort
-  # already has.
-  local effective_model="$resolved_model"
-  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
-
-  local launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
-  local ignored_general_override=""
-  if [ -n "$full_auto" ]; then
-    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
-    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
-    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
-    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  elif [ -n "$auto" ]; then
-    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  fi
+  # Provider and selectors are resolved by configure_dispatch_provider once the
+  # story is identified (below); declared here so its assignments land in this
+  # scope.
+  local resolved_model="" resolved_effort="" resolved_speed="" effective_model=""
+  local launch_source="" launch_overridden="" ignored_general_override=""
+  local window_provider=""
 
   # A named target is identified before the tmux/worktree gates because an
   # epic never crosses either boundary: it is an engine scope, not a story to
@@ -1579,9 +1639,12 @@ cmd_dispatch() {
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
+
     # SH-499: epic identity is the explicit type, never the mere presence of
     # a parent-of edge. Ordinary stories with subtasks still reach ID MODE.
     if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      # An epic has no dispatch resources to read a provider from.
+      configure_dispatch_provider "${requested_agent:-${STORY_AGENT:-claude}}"
       [ -z "$resume" ] \
         || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
       [ -z "$over_budget" ] \
@@ -1620,6 +1683,21 @@ cmd_dispatch() {
   fi
   enter_checkout
   local dir="$PROJECT_ROOT"
+
+  # The provider, and everything composed from it. SH-650: a resume relaunches
+  # the provider the abandoned dispatch recorded, unless the caller named one
+  # explicitly. Precedence is the explicit flag, then the surviving record
+  # (surviving_dispatch_provider), then STORY_AGENT, then claude: the record is
+  # a fact about the thing being resumed, the environment variable is the
+  # caller's claim about itself (SH-630), and a resume that silently switched
+  # provider on that claim would rewrite the window option with a lie and look
+  # for the worktree in the wrong container. NEXT MODE has no story yet and
+  # cannot resume, so it reads no record. Resolved here, from the checkout,
+  # because the worktree half of the record needs the repository.
+  if [ -n "$id" ] && [ -n "$resume" ] && [ -z "$requested_agent" ]; then
+    window_provider=$(surviving_dispatch_provider "$id")
+  fi
+  configure_dispatch_provider "${requested_agent:-${window_provider:-${STORY_AGENT:-claude}}}"
 
   # The target SESSION is knowable before either claim mode runs even though
   # NEXT MODE's window name is not. ID MODE needs it now for its transactional
@@ -1991,7 +2069,7 @@ cmd_dispatch() {
   local auto_marker="" full_auto_marker="" marker_tmux_args=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   if [ -n "$auto" ]; then
-    completion_state=$(story_closed_state)
+    completion_state=$(story_completion_state)
   fi
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
   if [ -n "$full_auto" ]; then
@@ -3247,6 +3325,14 @@ cmd_capture() {
 
 # cmd_notify <story-id> <message> — resume the exact dispatched agent after
 # centralized verification returns its PR for repair (SH-521).
+#
+# Every refusal slug this verb can emit is classified BY NAME on the daemon
+# side (`NOTIFY_REFUSALS`, src/daemon/verification.rs) as either "no live
+# agent in that window" -- the verifier re-dispatches in place (SH-650) -- or
+# "something else", which parks the story. tests/notify_reasons.rs derives the
+# slugs from this function's own `refuse "..."` literals, so adding one here
+# without classifying it there fails the build rather than falling through to
+# whichever default happens to be safe.
 cmd_notify() {
   local id="${1:-}" message="${2:-}"
   [ -n "$id" ] && [ -n "$message" ] && [ "$#" -eq 2 ] \
@@ -3269,6 +3355,14 @@ cmd_notify() {
   claude | codex) configure_agent "$provider" ;;
   *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
   esac
+  # A pane whose process has exited under remain-on-exit still answers the
+  # provider option and a FROZEN #{pane_current_command} (pane_is_dead's doc),
+  # so it passes both gates above and pane_runs below. Ask tmux the one
+  # question that distinguishes it, first: the verifier re-dispatches on this
+  # refusal (SH-650), and must never read a corpse as `delivery-failed`, the
+  # refusal that means the agent IS live and a respawn would kill it.
+  ! pane_is_dead "$pane" \
+    || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
   pane_runs "$pane" \
     || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
 
@@ -3492,17 +3586,15 @@ cmd_doctor() {
 # branch of every merged PR that closed the issue, and storyhook has no such
 # linkage — the worktree directory name is the sole story<->branch tie.
 
-# story_closed_state — the slug `complete` moves a story into: the first
-# CLOSED-superstate state the project defines, or $STORY_DONE_STATE.
+# story_completion_state — the slug `complete` moves a story into and `reap`
+# accepts: the required `done` (SH-652). One function rather than a bare
+# `$COMPLETION_STATE` at each site so every reader of the fact has one door.
 #
-# Not hard-coded to "done": the state set is user-editable (this very repo
-# defines five states, not the three `story project new` seeds). Read from
-# `story state list` rather than from a file — see story_state_list.
-story_closed_state() {
-  if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
-  story_state_list | awk -F' *\\(' '
-    /\(CLOSED[,)]/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }
-  '
+# Until SH-652 this scraped `story state list` for the first CLOSED state,
+# which disagreed with the verifier the moment a project ordered another
+# CLOSED state ahead of `done` — every green story then failed reap forever.
+story_completion_state() {
+  printf '%s' "$COMPLETION_STATE"
 }
 
 # _story_worktree_status <path> <caller-toplevel> — removable|current|locked|
@@ -3604,7 +3696,7 @@ _complete_prepare() {
   CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  CMP_DONE_STATE=$(story_closed_state)
+  CMP_DONE_STATE=$(story_completion_state)
 
   local wt_container wname
   wname=$(resolve_wname "$id")
@@ -3686,10 +3778,11 @@ _complete_prepare() {
     CMP_NOTE=" Nothing named \`$CMP_WNAME\` exists under $CMP_DIR — if $id was dispatched before \`project link checkout\` recorded that directory, its worktree is elsewhere and is not cleaned up here."
   fi
 
-  # Closing is an action only when the story is still open AND we resolved a
-  # state to close it into.
+  # Closing is an action only when the story is still open. The state it
+  # closes into is the constant; a project below the required-states floor
+  # is reported by `story move` itself when the close runs.
   CMP_NEEDS_CLOSE=false
-  if [ "$CMP_SUPER" != "CLOSED" ] && [ -n "$CMP_DONE_STATE" ]; then
+  if [ "$CMP_SUPER" != "CLOSED" ]; then
     CMP_NEEDS_CLOSE=true
   fi
 
@@ -3787,9 +3880,7 @@ cmd_complete_execute() {
   if [ -n "$no_close" ]; then
     skipped+=("close:$id(--no-close)")
   elif [ "$CMP_NEEDS_CLOSE" != true ]; then
-    if [ -z "$CMP_DONE_STATE" ]; then
-      close_note=" Could not close: this project defines no state with a CLOSED superstate."
-    fi
+    : # already CLOSED; nothing to move
   elif [ -n "$DRY_RUN" ]; then
     commands+=("story move $id $CMP_DONE_STATE")
     closed=true
@@ -4139,7 +4230,7 @@ cmd_reap_leased() {
     || refuse "cleanup-lease-story-mismatch" "story.sh reap: lease story \`$lease_story\` does not match requested story \`$canonical_id\`."
   state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  done_state=$(story_closed_state)
+  done_state=$(story_completion_state)
   [ "$super" = CLOSED ] \
     || refuse "not-closed" "story.sh reap: $canonical_id is not closed (state \`$state\`) -- refusing to reclaim a worktree for a story that isn't done."
   [ "$state" = "$done_state" ] \
@@ -4906,6 +4997,18 @@ done
 # --agent override.
 if [ "${1:-}" != "dispatch" ] && [ "${1:-}" != "capabilities" ]; then
   configure_agent "${STORY_AGENT:-claude}"
+fi
+
+# A knob that lands nowhere is refused, never dropped (SH-357). STORY_DONE_STATE
+# used to choose the completion state for `complete`, `reap` and `<done-state>`;
+# since SH-652 the completion state is the required `done`, so a value here
+# would be silently ignored — and a user who exported it per the old README
+# would read `done` as a bug rather than a decision. Checked ahead of every
+# verb because the variable reaches this helper two ways: the user's own shell,
+# and the daemon's environment by `STORY_*` prefix passthrough.
+if [ -n "${STORY_DONE_STATE+set}" ]; then
+  refuse "story-done-state-retired" \
+    "STORY_DONE_STATE is set (\`${STORY_DONE_STATE}\`), but the completion state is no longer configurable: verified work lands in the required \`$COMPLETION_STATE\` state, and \`complete\`/\`reap\` use the same one (SH-652). Unset STORY_DONE_STATE. To close a story into a different CLOSED state, run \`story move <id> <state>\` yourself; \`reap\` will then refuse it as not completed, by design."
 fi
 
 case "${1:-}" in

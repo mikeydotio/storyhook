@@ -651,7 +651,10 @@ superstate (OPEN or CLOSED) that decides whether stories in it count as
 open work; moving a story into a CLOSED state closes and archives it.
 
 State order matters: it is the column order on the web dashboard's
-board, and the first OPEN state is where new stories land.
+board, and the first OPEN state is where new stories land. Order is
+layout, never outcome: verified work always lands in the required
+'done' state, and reordering another CLOSED state ahead of it changes
+the board, not where the verifier writes.
 
 When to use:
   Setting a project up ('review', 'verifying', 'wont-fix'), or adjusting
