@@ -972,6 +972,10 @@ impl VerificationActuator for ShellVerificationActuator {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             .env(
+                "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS",
+                self.termination_grace.as_millis().to_string(),
+            )
+            .env(
                 "STORYHOOK_ACTIVITY_CONTEXT",
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
