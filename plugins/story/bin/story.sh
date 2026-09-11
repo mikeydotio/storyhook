@@ -163,6 +163,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
+source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -1032,7 +1033,14 @@ dispatch_ready_note() {
     pid-exited)
       printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
       ;;
+    bootstrap-*)
+      printf 'Codex initialization failed (%s): SessionStart runs on the first submitted turn; the task-free turn did not establish exact hook identity and completed Plan-mode initialization. No story charter was delivered' "$WAIT_READY_REASON"
+      ;;
     no-sentinel)
+      if [ "$AGENT" = codex ]; then
+        printf 'Codex runs SessionStart only after the first prompt. Its initialization prompt was submitted, but no dispatch sentinel appeared; check the enabled Storyhook hook package and hook errors. No story charter was delivered'
+        return
+      fi
       printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
       ;;
     hook-identity-missing)
@@ -2204,6 +2212,9 @@ cmd_dispatch() {
                 + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent)
              end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
+          (if $agent == "codex" and $auto then
+             "initialize Codex with one task-free prompt; require attempt-bound exact hooks and transcript turn completion"
+           else empty end),
           (if $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
@@ -2374,6 +2385,13 @@ cmd_dispatch() {
   # itself is the only fact that can only be true if new-window succeeded, so
   # it alone decides failure; stderr is still discarded either way since none
   # of these calls has a message worth surfacing on the happy path.
+  local CODEX_BOOTSTRAP_FILE="" CODEX_BOOTSTRAP_TOKEN="" CODEX_BOOTSTRAP_PHASE=not-started
+  if [ "$AGENT" = codex ] && [ -n "$auto" ]; then
+    if ! codex_bootstrap_prepare "$worktree_path"; then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "could not prepare Codex initialization metadata. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+  fi
   local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
@@ -2385,7 +2403,7 @@ cmd_dispatch() {
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
     if ! tmux respawn-pane -k -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
-         -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args \
+         -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
          -t "$pane" "$launch_cmd" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
@@ -2398,7 +2416,7 @@ cmd_dispatch() {
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
     # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args "${new_window_args[@]}")
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
@@ -2447,7 +2465,7 @@ cmd_dispatch() {
   # guard keys on worktree/branch). A forced pre-existing claim stays put.
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
-    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" \
+    codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
       && provider_ready=true
   elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
@@ -2459,7 +2477,7 @@ cmd_dispatch() {
     ready_tail=$(pane_tail "$pane")
     cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). No story charter was delivered. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
@@ -2480,7 +2498,7 @@ cmd_dispatch() {
     mode_tail=$(pane_tail "$pane")
     cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). No story charter was delivered. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
             --argjson claimed "$reused_claim" \
@@ -2498,7 +2516,7 @@ cmd_dispatch() {
     approval_tail=$(pane_tail "$pane")
     cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
     refuse_with plan-approval-unarmed \
-      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. No story charter was delivered. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
