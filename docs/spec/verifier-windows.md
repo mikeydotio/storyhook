@@ -34,13 +34,17 @@ The default server stays independent of story dispatch cleanup.
 `STORYHOOK_VERIFIER_MIRROR=0` prohibits every tmux call. Journal banners still
 emit when enabled by the activity environment. Missing Git identity or tmux
 causes a helper failure that verification ignores; identity never falls back
-to a shared project window. The activity mirror also needs Python 3.10 or
-later; its absence leaves the journal and verifier working without that view.
+to a shared project window. The activity mirror also needs Python 3; macOS's
+system Python 3.9 is supported. Strict path resolution rejects missing stores,
+dangling links, and link cycles before any tmux call. A missing interpreter
+leaves the journal and verifier working without that view.
 
 ## Verification
 
 Tests exercise distinct projects, linked worktrees, directory aliases, repeated
 attempts, concurrent creation, daemon phases, separate stores, literal shell
 metacharacters, legacy windows, exact targets, and non-fatal mirror failure.
+macOS regressions select the system interpreter explicitly so a newer Python
+on the interactive shell's PATH cannot hide a compatibility failure.
 Real tmux runs use private test sockets. Only new and impacted tests run in
 the agent worktree; the central verifier owns the full suite.
