@@ -64,7 +64,7 @@ repeated here so a reader does not have to open eight stories to see why.
 |---|---|---|---|---|
 | D-A | **The verifier submits.** For a candidate with no linked open close-on-merge PR, the verifier's first step is submission from the cleanup lease's worktree and branch: refuse a dirty worktree (return the story naming the files), push over HTTPS, create the PR against the project's integration branch or **adopt** the one already open for that head, `link-pr`, comment the URL. `MissingPullRequest` becomes a submit step; `MultiplePullRequests` still returns. | Matches the stated order. Submission is derived from store facts (lease + no linked PR), so a daemon restart or a skipped verb cannot lose it; resubmission after remediation needs no extra agent step; and it removes `git push` from the agent's toolchain entirely, which dissolves the push-hook contradiction (D-C) structurally rather than by exemption. Rejected: an agent-invoked submit verb. | SH-647 | open |
 | D-B | **Per-project queue and locks; cross-project suites may overlap.** Lock key = the canonical git common dir, hashed into the lock name, so every worktree of one clone still serializes with that clone's verifier and a different repository does not. One verifier worker per project, each with its own ordering, incident halt and conflict hold. | User determination: "project-wide (not machine-wide)". Trade-off stated, not hidden: two projects' suites now contend for CPU on one machine; SH-627's quiesce rule still governs the release tier; no machine-wide cap (YAGNI — D14's lane budget bounds agents). | SH-648 | done — see "SH-648" under As built |
-| D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected: other projects have no gate of their own. | done, **outside this repository** — the hook lives in no tracked file, its verdict token is `delegated`, and nothing in this suite fences it. Proven both ways on the day: this repository → delegated, exit 0; a plain repository with a red `make test` → blocked. | done |
+| D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected at that time: other projects had no gate of their own. | SH-681 corrected ownership: canonical source is Agentics `hooks/pre-push-tests.sh`; the original live delegation patch affected Claude only. See the evidence and subsequent retirement under As built. | superseded by SH-682 / AGE-102 retirement; SH-681 repair archived |
 | D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | done — see "SH-649" under As built for the receipt contract this put on the value |
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
@@ -86,7 +86,7 @@ not, and each row names one.
 |---|---|---|---|
 | Both charters tell the agent to push, open the PR and link it; nothing deterministic does | `PROMPT_TPL`, `AUTO_PROMPT_TAIL` (`plugins/story/bin/story.sh`) | 441, 504 | SH-647 — **closed** |
 | `link-pr` only records a URL; it never pushes or opens anything (the verifier now does, through `story.sh submit` and `record_generation_submitted`) | `PrLinkService::link` (`src/service/pr_link.rs`) | module doc | SH-647 — **closed** |
-| The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | `~/.claude/hooks/pre-push-tests.sh` (untracked) | — | done (D-C) |
+| The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | Agentics `hooks/pre-push-tests.sh`; installed Claude and Codex copies (ownership corrected by SH-681) | — | D-C covered Claude only; SH-682 / AGE-102 subsequently retired both live hooks |
 | One global worker; a queue spanning every project | `VerificationActivity::acquire` (`src/daemon/verification.rs`); `ordered_candidates` (`src/service/verification.rs`) | 88-110; 650 | done (SH-648): `acquire` asserts per project, `poll_verification` supervises one `poll_project_verification` per project, `ordered_candidates_for` |
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | done (SH-648): `<name>.<hash of the canonical common dir>.lock`; `--held` |
 | Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | SH-651 |
@@ -438,6 +438,28 @@ the SH-136 rule); the invariant here is only that it **survives**.
 Deviations from this document are recorded here, one entry per child, rather
 than in a second file. Each child lands with its own `### SH-N — <what
 changed>` entry and a status update in the decisions table above.
+
+### SH-681 — push-hook ownership, publication evidence, and retirement
+
+The D-C completion claim covered a local Claude patch. Agentics owned the
+canonical gate and its installer; the installed Codex copy matched the
+canonical source and lacked delegation. SH-665's retained logs identify
+840-second suites launched before shell execution, including for a diagnostic
+comment containing quoted push text. This was a pre-tool gate failure, not
+evidence of a GitHub transport failure. The
+[SH-681 RCA](../rca/remote-publication-hook-stalls.md) records timestamps,
+artifact digests, source commits, and the 140 targeted repair checks.
+
+Before SH-681 installed its tested repair, SH-682 completed a separate
+user-approved retirement of both live files and registrations. A unanimous
+council retained the repair in closed archival
+[Agentics PR #187](https://github.com/mikeydotio/agentics/pull/187), with no
+reinstallation. [Retirement PR #186](https://github.com/mikeydotio/agentics/pull/186)
+is the active source direction, owned by AGE-102 / SH-682; their central
+verification blocker is separate. Only this compatible evidence change enters
+SH-681 verification. The installed v2.4.2 dispatch prompt also still asks
+agents to publish although tracked source already implements SH-647; the RCA
+records that drift without changing the cache or release state.
 
 ### SH-649 — `[verify] gate`, and the receipt contract it put on the value
 
