@@ -155,6 +155,25 @@ if [ ! -d "$repo_root/e2e/node_modules" ] || ! (cd "$repo_root/e2e" && npx --no-
   exit 1
 fi
 
+# --- Keep the display awake for the whole run (SH-628). -------------------
+#
+# WindowServer retains every IOSurface headless WebKit commits while all
+# displays are asleep, and aborts the console session -- every agent session,
+# every GUI app, this gate -- once the system-wide count reaches 65,535.
+# Measured 2026-09-08/09, not assumed: 411 webkit tests with the display on
+# peaked at 448 live surfaces; 103,753 surfaces created in thirteen dark
+# minutes ended in the 01:31 crash. A display wake releases them, so the
+# condition to avoid is simply "Playwright running while the display sleeps".
+# `-u` turns the display on if it is already off, `-d` holds it on for the
+# run, `-i` keeps the machine from idling under it. Chromium's headless shell
+# never touches WindowServer, but wrapping every project keeps the rule one
+# line rather than a per-engine table. Absent `caffeinate` (not macOS) the
+# array is empty and expands to nothing.
+keep_display_awake=()
+if command -v caffeinate >/dev/null 2>&1; then
+  keep_display_awake=(caffeinate -d -u -i)
+fi
+
 # --- One fully isolated run per project. ---------------------------------
 #
 # Everything from here down used to be this whole script's top level, run
@@ -663,7 +682,7 @@ WRAPPER
   # refusal that names the machine, not one launch timeout per test.
   export E2E_PROJECT="$project"
   status=0
-  npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
+  "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
 
   # --- Was the run's binary rebuilt under it? Informational either way

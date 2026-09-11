@@ -1366,6 +1366,23 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
     StoryService::new(&fixture.ctx())
         .comment(&parent, "A remark.")
         .expect("commenting");
+    // Restoring a historical export must not apply today's authoring policy.
+    storyhook::store::test_support::inject_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::parse_id("SH", &parent).unwrap(),
+        &[
+            storyhook::domain::StoryEvent::StoryTitleSet {
+                at: storyhook_test_support::FIXTURE_NOW.into(),
+                title: "Don't change this historic title".into(),
+            },
+            storyhook::domain::StoryEvent::StoryDescriptionSet {
+                at: storyhook_test_support::FIXTURE_NOW.into(),
+                description: "Utilize this historic description.".into(),
+            },
+        ],
+    )
+    .unwrap();
     StoryService::new(&fixture.ctx())
         .set_state("SH-3", "done", None, None, None)
         .expect("closing SH-3");

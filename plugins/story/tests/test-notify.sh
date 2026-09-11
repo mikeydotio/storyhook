@@ -33,7 +33,8 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" \
 assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Tab" \
   "notify: Codex remediation uses its configured submit key"
 
-rm -f "$FAKE_TMUX_STATE/storyhook_agent"
+saved_identity=$(cat "$FAKE_TMUX_STATE/pane_identity")
+rm -f "$FAKE_TMUX_STATE/storyhook_agent" "$FAKE_TMUX_STATE/pane_identity"
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
@@ -44,6 +45,7 @@ assert_eq "$(jqf "$out" .reason)" "pane-provider-unknown" \
   "notify: refusal identifies missing provider metadata"
 
 printf 'codex' > "$FAKE_TMUX_STATE/storyhook_agent"
+printf '%s' "$saved_identity" > "$FAKE_TMUX_STATE/pane_identity"
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
@@ -53,7 +55,12 @@ assert_eq "$(jqf "$out" .ok)" "false" "notify: changed pane refused"
 assert_eq "$(jqf "$out" .reason)" "pane-changed" \
   "notify: refusal identifies the unrelated occupant"
 
-printf 'claude' > "$FAKE_TMUX_STATE/storyhook_agent"
+id=$(new_story "$repo" "Claude verifier remediation")
+out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX=fake TMUX_PANE=%0 \
+  STORY_AGENT=claude STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$id")
+assert_eq "$(jqf "$out" .ok)" true "notify: Claude has its own managed registration"
+export FAKE_TMUX_PANES="$id	1	%1"
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \

@@ -26,6 +26,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 type Verification =
+  | { status: "held"; blockers: string[] }
+  | { status: "landingpending" }
   | { status: "queued"; wait_seconds: number; position: number }
   | {
       status: "superseding";
@@ -57,6 +59,8 @@ async function injectVerificationCards(page: Page, slug: string): Promise<void> 
         state?: string;
         verification: Verification;
       }> = [
+        { id: "SH-94907", title: "SH-656 held", priority: "high", verification: { status: "held", blockers: ["SH-11", "SH-12"] } },
+        { id: "SH-94908", title: "SH-656 landing pending", priority: "high", verification: { status: "landingpending" } },
         {
           id: "SH-94906",
           title: RESUBMITTED_TITLE,
@@ -206,4 +210,16 @@ test("starting is explicit and elapsed running values advance on the shared time
       /12m 5s total · rust suite 3m 3s/,
     );
   });
+});
+
+
+test("held dependencies and pending landings stay visible without queue positions", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  await injectVerificationCards(page, slug);
+  await openProject(page, "Alpha Project");
+  const held = card(page, "SH-656 held");
+  await expect(held.locator(".verification-chip")).toHaveText("Verification held · open blockers: SH-11, SH-12");
+  await expect(held).toHaveAttribute("aria-label", /Verification held · open blockers: SH-11, SH-12/);
+  await expect(card(page, "SH-656 landing pending").locator(".verification-chip")).toHaveText("Landing pending · confirming merge outcome");
+  await expect(card(page, QUEUED_TITLE).locator(".verification-chip")).toContainText("position 1");
 });

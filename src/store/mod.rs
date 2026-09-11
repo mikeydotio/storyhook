@@ -62,6 +62,7 @@ pub mod conformance;
 pub mod error;
 pub mod fault;
 pub mod ids;
+pub mod landing;
 pub mod migrate;
 pub mod rebuild;
 pub mod sqlite;
@@ -80,6 +81,7 @@ pub use conformance::ConformanceFixture;
 pub use error::StoreError;
 pub use fault::{DELIVERY_BACKSTOP, FaultPoint};
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
+pub use landing::LandingIntent;
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
 #[cfg(feature = "test-seam")]
 pub use rebuild::folds;
@@ -250,6 +252,8 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Every unresolved external merge authorization across projects.
+    fn landing_intents(&self) -> Result<Vec<LandingIntent>, StoreError>;
     /// The project with this id.
     fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError>;
 
@@ -513,6 +517,11 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Inserts immutable external merge authority, refusing a second unresolved attempt.
+    fn insert_landing_intent(&mut self, intent: &LandingIntent) -> Result<(), StoreError>;
+
+    /// Resolves exactly the supplied intent; a stale identity cannot release a newer attempt.
+    fn remove_landing_intent(&mut self, intent: &LandingIntent) -> Result<bool, StoreError>;
     /// Creates a project and returns its id.
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError>;
 

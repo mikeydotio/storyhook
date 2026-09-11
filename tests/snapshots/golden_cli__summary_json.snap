@@ -74,7 +74,7 @@ source: tests/golden_cli.rs
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 62,
+            "head_global_seq": 63,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -109,7 +109,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 63,
+            "head_global_seq": 64,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -282,7 +282,7 @@ source: tests/golden_cli.rs
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 62,
+            "head_global_seq": 63,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -317,7 +317,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 63,
+            "head_global_seq": 64,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,

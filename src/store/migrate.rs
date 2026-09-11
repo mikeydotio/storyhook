@@ -392,8 +392,15 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 38,
+        name: "landing_intents",
+        sql: include_str!("schema/0038_landing_intents.sql"),
+        // Operational authority only; no historical events or projections change.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 39,
         name: "story_reset",
-        sql: include_str!("schema/0038_story_reset.sql"),
+        sql: include_str!("schema/0039_story_reset.sql"),
         foreign_keys_off: false,
     },
 ];
