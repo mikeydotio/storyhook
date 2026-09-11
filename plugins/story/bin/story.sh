@@ -2991,46 +2991,12 @@ cmd_handoff() {
 
 # ---- subcommand: triage -------------------------------------------------------
 #
-# _find_blocking_cycles — READ-ONLY. stdin is `<blocker-id>\t<blocked-id>`
-# edges, one per line (blocker must close before blocked is ready); echoes
-# every story id that sits on a cycle, one per line, empty when there is
-# none. Kahn's algorithm: repeatedly strip a node with no remaining
-# unresolved blocker, decrementing its neighbors' counts; whatever is left
-# once nothing more can be stripped cannot be explained by anything BUT a
-# cycle, because every acyclic path bottoms out at a node with in-degree
-# zero. This is what skills/story-triage/SKILL.md used to hand to the model
-# as "eyeball `story graph`'s output ... this is a manual check" — the CLI
-# does not expose raw edges via `story graph`, but `story list --json`
-# already carries every story's own `blocked-by` relationships, which is
-# all a cycle check needs. Bare (no --include-closed): a closed story is
-# never a blocker worth resolving -- `is_ready` already treats a
-# `blocked-by` edge to a closed story as non-blocking -- so SH-409's
-# default exclusion narrows this edge set to exactly the ones a cycle
-# here could actually stall, not fewer.
+# stdin is blocker-id<TAB>dependent-id. Strongly connected components identify
+# exact cycle members; Kahn residuals would also include downstream dependents.
+# Closed stories have no outgoing dependency rows in the open-story snapshot,
+# so a satisfied dependency cannot complete an unresolved cycle.
 _find_blocking_cycles() {
-  awk -F'\t' '
-    NF == 2 { blocker[NR]=$1; blocked[NR]=$2; nodes[$1]=1; nodes[$2]=1; n=NR }
-    END {
-      for (i=1;i<=n;i++) {
-        indeg[blocked[i]]++
-        adj[blocker[i]] = adj[blocker[i]] (adj[blocker[i]] == "" ? "" : "\x1f") blocked[i]
-      }
-      qn=0
-      for (id in nodes) if (indeg[id]+0 == 0) { queue[qn++]=id; queued[id]=1 }
-      qi=0
-      while (qi<qn) {
-        cur=queue[qi++]
-        removed[cur]=1
-        split(adj[cur], parts, "\x1f")
-        for (k in parts) {
-          nb=parts[k]
-          if (nb == "") continue
-          indeg[nb]--
-          if (indeg[nb] == 0 && !(nb in queued)) { queue[qn++]=nb; queued[nb]=1 }
-        }
-      }
-      for (id in nodes) if (!(id in removed)) print id
-    }'
+  python3 "$STORY_PLUGIN_ROOT/lib/blocking_cycles.py"
 }
 
 # cmd_triage — SH-308. Gathers the four reads story-triage's own step 1 used
@@ -3073,7 +3039,8 @@ cmd_triage() {
     .stories[]? | .story as $s
     | ($s.relationships[]? | select(.relation == "blocked-by") | [.other_id, $s.id] | @tsv)
   ')
-  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles)
+  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles 2>&1) \
+    || fail "triage: cycle analysis failed: $cycle_ids"
   cycle_json=$(printf '%s\n' "$cycle_ids" | jq -R -s 'split("\n") | map(select(length > 0))')
 
   # A full-project `list --json` is too big for --argjson: it goes on jq's own
