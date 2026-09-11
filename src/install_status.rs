@@ -189,16 +189,18 @@ fn store_row(env: &Environment) -> Row {
 }
 
 /// No registration for storyhook in the provider's configuration — which
-/// means one of two things, and the row says which (SH-640).
+/// means one of two things, and the row says which (SH-640, SH-671).
 ///
 /// A provider that was never installed here is the quiet case this row exists
 /// for: a Codex-only or Claude-only machine must not carry a finding. A
-/// provider whose installed copies are still on disk was installed here and
-/// has since lost its registration — a new session of that provider gets no
-/// `/story` at all — and that is a finding, never an `ok`. Absence is resolved
-/// against what the disk already holds rather than promoted to "never" (the
-/// SH-372 rule): the copies are the evidence, since the managed-path manifest
-/// names both providers on every install and cannot tell them apart.
+/// provider that *was* installed here and has since lost its registration —
+/// a new session of that provider gets no `/story` at all — is a finding,
+/// never an `ok`. Absence is resolved against evidence rather than promoted
+/// to "never" (the SH-372 rule), and there are two kinds: the provider's own
+/// surviving copies (SH-640), and storyhook's own install receipt (SH-671),
+/// which is the one that is still there after the provider sweeps its copies
+/// too — as Claude Code 2.1.268 did on 2026-09-10, when this row read a
+/// broken machine as a never-installed one.
 fn unregistered(label: &'static str, target: PluginTarget) -> Row {
     let residue = match crate::plugin::install_residue(target) {
         Ok(residue) => residue,
@@ -211,21 +213,43 @@ fn unregistered(label: &'static str, target: PluginTarget) -> Row {
             );
         }
     };
-    if residue.is_empty() {
+    let receipt = match crate::plugin::install_receipt(target) {
+        Ok(receipt) => receipt,
+        Err(error) => return Row::flagged(label, "unknown", error.to_string()),
+    };
+    if residue.is_empty() && receipt.is_none() {
         return Row::ok(label, "not registered");
     }
-    let copies = residue
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut evidence = Vec::new();
+    if let Some(body) = receipt {
+        let path = crate::plugin::install_receipt_path(target)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "its install receipt".to_string());
+        let installed_at = body
+            .lines()
+            .find_map(|line| line.strip_prefix("installed_at "))
+            .unwrap_or("an unrecorded time");
+        evidence.push(format!(
+            "`story plugin install {}` recorded an install here at {installed_at} ({path})",
+            target.install_token()
+        ));
+    }
+    if !residue.is_empty() {
+        let copies = residue
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        evidence.push(format!("installed copies remain at {copies}"));
+    }
     Row::flagged(
         label,
         "not registered",
         format!(
-            "DEREGISTERED: {} no longer lists the storyhook marketplace, but installed \
-             copies remain at {copies} — run `story plugin install {}`",
+            "DEREGISTERED: {} no longer lists the storyhook marketplace, but {} — run \
+             `story plugin install {}`",
             target.display_name(),
+            evidence.join(", and "),
             target.install_token()
         ),
     )

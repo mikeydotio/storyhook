@@ -371,6 +371,20 @@ remove` mirrors the real one. `story plugin uninstall` for either provider
 now sweeps the residue *directories* the doctor reads; the Codex launcher and
 rule keep their own marker-checked removal that preserves a user's file.
 
+**The evidence must be storyhook's own (SH-671).** Residue is the provider's
+leftovers, and a provider can take those too: on 2026-09-10 Claude Code 2.1.268
+rewrote its registry without storyhook *and* swept `~/.claude/plugins/cache/
+storyhook`, so `install_residue` found nothing, the row read the quiet `not
+registered`, and the report closed `every component agrees` over a machine
+whose dashboard dispatch was broken. `story plugin install <target>` now
+leaves a receipt at `<data dir>/provider-installs/<target>` — written only
+after the provider's own registration succeeded, never on a failed reinstall
+(an earlier install keeps being one), removed by `story plugin uninstall
+<target>` — and `unregistered` flags on residue *or* receipt. The receipt is
+per target, which the managed-path manifest is not, and lives in storyhook's
+own directory, which no provider rewrites. A machine that never installed the
+provider has neither and stays quiet.
+
 **What caused the loss is recorded as evidence, not settled.** The candidate
 the story named — `install_claude`'s remove-then-add with no rollback — did
 not run: `~/.claude/plugins/marketplaces/` and its `claude-plugins-official`
