@@ -68,6 +68,8 @@ fn expected_vocabulary() -> BTreeMap<String, String> {
         ("expand", "➕"),
         ("filters", "🎛️"),
         ("home", "🏠"),
+        ("play", "▶️"),
+        ("stop", "⏹️"),
         ("search", "🔍"),
         ("settings", "⚙️"),
         ("sort", "↕️"),

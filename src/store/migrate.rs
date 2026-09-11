@@ -384,6 +384,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0036_dropped_state.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 37,
+        name: "verification_control",
+        sql: include_str!("schema/0037_verification_control.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
