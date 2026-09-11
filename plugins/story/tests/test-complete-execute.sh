@@ -175,13 +175,15 @@ assert_eq "$(jqf "$out" .closed)" "true" "--no-clean: closed"
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "0" "--no-clean: nothing removed"
 [ -d "$repo/.claude/worktrees/$wncl" ] || fail_test "--no-clean: worktree was removed anyway"
 
-# --- STORY_DONE_STATE override ---
+# --- STORY_DONE_STATE is retired: refused by name, never silently ignored (SH-652)
 (cd "$repo" && story state add archived --super CLOSED >/dev/null 2>&1)
 ov=$(new_story "$repo" "Override")
 out=$(cd "$repo" && STORY_DONE_STATE=archived bash "$SCRIPT" complete execute "$ov" 2>&1)
-assert_eq "$(jqf "$out" .closed_as)" "archived" "override: honours STORY_DONE_STATE"
-assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')" "archived" \
-  "override: story really moved into the overridden state"
+assert_eq "$(jqf "$out" .ok)" "false" "retired knob: refused"
+assert_eq "$(jqf "$out" .reason)" "story-done-state-retired" "retired knob: named reason"
+assert_contains "$(jqf "$out" .display)" "STORY_DONE_STATE" "retired knob: names the knob"
+assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')" "todo" \
+  "retired knob: nothing moved"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$id" --bogus 2>&1)
