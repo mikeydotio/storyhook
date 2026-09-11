@@ -2503,10 +2503,12 @@ cmd_dispatch() {
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
+            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
             --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
+              bootstrap_phase:$bootstrap,
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true

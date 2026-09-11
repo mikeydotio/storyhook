@@ -7,7 +7,7 @@
 codex_bootstrap_prepare() {
   local worktree="$1" private_dir
   private_dir=$(git -C "$worktree" rev-parse --absolute-git-dir) || return 1
-  CODEX_BOOTSTRAP_TOKEN=$(uuidgen) || return 1
+  CODEX_BOOTSTRAP_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || return 1
   CODEX_BOOTSTRAP_FILE="$private_dir/storyhook-codex-bootstrap-$CODEX_BOOTSTRAP_TOKEN.json"
   jq -n --arg attempt "$CODEX_BOOTSTRAP_TOKEN" --arg cwd "$(cd "$worktree" && pwd -P)" \
     '{version:1,phase:"pending",attempt:$attempt,cwd:$cwd}' > "$CODEX_BOOTSTRAP_FILE"
@@ -58,13 +58,13 @@ codex_bootstrap_pane_owned() {
   local pane="$1" pid="$2" current
   current=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || current=""
   if [ -z "$pid" ] || [ "$current" != "$pid" ]; then
-    WAIT_READY_REASON=pid-mismatch; return 1
+    WAIT_READY_REASON="pid-mismatch"; return 1
   fi
   if ! kill -0 "$pid" 2>/dev/null; then
-    WAIT_READY_REASON=pid-exited; return 1
+    WAIT_READY_REASON="pid-exited"; return 1
   fi
   if ! pane_runs "$pane"; then
-    WAIT_READY_REASON=wrong-process; return 1
+    WAIT_READY_REASON="wrong-process"; return 1
   fi
 }
 
@@ -90,10 +90,10 @@ codex_bootstrap_completed() {
 
 codex_bootstrap_ready() {
   local pane="$1" pid="$2" worktree="$3" launch="$4" attempt=0
-  CODEX_BOOTSTRAP_PHASE=not-started
+  CODEX_BOOTSTRAP_PHASE="not-started"
   wait_ready "$pane" "$launch" || return 1
   codex_bootstrap_pane_owned "$pane" "$pid" || return 1
-  ensure_provider_plan_mode "$pane" || { WAIT_READY_REASON=bootstrap-plan-unconfirmed; return 1; }
+  ensure_provider_plan_mode "$pane" || { WAIT_READY_REASON="bootstrap-plan-unconfirmed"; return 1; }
   codex_bootstrap_pane_owned "$pane" "$pid" || return 1
   # Do not retry an uncertain submission. Even a task-free primer is one turn.
   local SEND_RETRIES=0
@@ -101,9 +101,9 @@ codex_bootstrap_ready() {
   send_prompt_confirmed "$pane" \
     "Storyhook initialization only. Do not use tools, ask questions, make a plan, or work on stories. Reply READY only if the startup hook does not stop this turn." \
     "story-bootstrap-$CODEX_BOOTSTRAP_TOKEN" \
-    || { WAIT_READY_REASON=bootstrap-submit-unconfirmed; return 1; }
+    || { WAIT_READY_REASON="bootstrap-submit-unconfirmed"; return 1; }
   wait_ready_sentinel "$pane" "$pid" "$worktree" "$STORY_PLUGIN_ROOT" || return 1
-  WAIT_READY_REASON=bootstrap-incomplete
+  WAIT_READY_REASON="bootstrap-incomplete"
   while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
     codex_bootstrap_pane_owned "$pane" "$pid" || return 1
     if codex_bootstrap_completed "$CODEX_BOOTSTRAP_FILE" "$STORY_PLUGIN_ROOT" "$CODEX_BOOTSTRAP_TOKEN"; then
@@ -111,7 +111,7 @@ codex_bootstrap_ready() {
       # completion and TUI readiness are separate observations.
       if [ "$(input_state "$pane")" = empty ] && ensure_provider_plan_mode "$pane"; then
         codex_bootstrap_pane_owned "$pane" "$pid" || return 1
-        rm "$CODEX_BOOTSTRAP_FILE" || { WAIT_READY_REASON=bootstrap-cleanup-failed; return 1; }
+        rm "$CODEX_BOOTSTRAP_FILE" || { WAIT_READY_REASON="bootstrap-cleanup-failed"; return 1; }
         CODEX_BOOTSTRAP_PHASE=complete
         WAIT_READY_REASON=ok
         return 0

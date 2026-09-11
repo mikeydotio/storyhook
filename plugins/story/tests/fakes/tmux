@@ -504,6 +504,7 @@ case "${1:-}" in
         publish_sentinel=true
       elif [ "$nw_codex_autonomous" = true ]; then
         case "${FAKE_TMUX_CODEX_SENTINEL_MODE:-missing}" in
+          malformed) publish_sentinel=true; sentinel_json='{' ;;
           identity)
             publish_sentinel=true
             sentinel_json=$(jq -cn --arg root "${FAKE_TMUX_CODEX_PLUGIN_ROOT:-}" \
