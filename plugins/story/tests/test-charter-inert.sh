@@ -75,6 +75,21 @@ check_inert "the Codex attended prompt" "$codex_attended"
 check_inert "the Codex autonomous (council) charter" "$codex_auto"
 check_inert "the Codex autonomous (solo) charter" "$codex_solo"
 
+# SH-676: inertness must preserve automatic plan approval in every variant.
+# The original approval wording introduced a semicolon in the shared head.
+# Removing that instruction to pass the character guard would restore the stall.
+for variant in "auto:$auto" "solo:$solo" \
+               "Codex auto:$codex_auto" "Codex solo:$codex_solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  for needle in "StoryHook approves it automatically" \
+                "Do not request a human approval reply"; do
+    case "$text" in
+      *"$needle"*) ;;
+      *) fail_test "charter-inert: the $label charter lost '$needle' -- preserve automatic plan approval" ;;
+    esac
+  done
+done
+
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
 for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
@@ -91,7 +106,8 @@ done
 # are the load-bearing spans -- the things the agent is actually told to run.
 # Shared between both --auto charters (the head/tail SH-219 split in two):
 for needle in "story show $id --json" "story move $id verifying" \
-              "story link-pr $id PR-URL" "new and directly impacted tests" \
+              "the verifier pushes your branch and opens or adopts the pull request" \
+              "new and directly impacted tests" \
               "story block $id" "prefer adopting it into" \
               "context window is still unused" "before you resume the work"; do
   for variant in "auto:$auto" "solo:$solo"; do
@@ -106,11 +122,18 @@ done
 for variant in "auto:$auto" "solo:$solo"; do
   label="${variant%%:*}"; text="${variant#*:}"
   case "$text" in
-    *"Do not run make test, land-pr.sh, story move $id done, reap"*) ;;
+    *"make test, land-pr.sh, story move $id done, reap"*) ;;
     *) fail_test "charter-inert: the $label charter no longer forbids child-owned verification" ;;
   esac
   case "$text" in
     *"gh pr merge"*) fail_test "charter-inert: the $label charter still instructs the bare gh merge path" ;;
+  esac
+  # SH-647: submission is the verifier's; the agent is told to do neither.
+  case "$text" in
+    *"Commit and push"*) fail_test "charter-inert: the $label charter still tells the agent to push" ;;
+  esac
+  case "$text" in
+    *"story link-pr $id PR-URL"*) fail_test "charter-inert: the $label charter still tells the agent to link the PR" ;;
   esac
 done
 # COUNCIL-only obligation:
@@ -134,14 +157,13 @@ esac
 
 # Codex's provider-only addition is itself load-bearing: it carries the
 # persistence obligation across the UI mode switch that has no ExitPlanMode
-# tool boundary, plus the PR-title traceability contract. All three built-in
-# variants must name the resolved story in both obligations.
+# tool boundary. All three built-in variants must name the resolved story.
+# (PR-title traceability moved to the verifier with submission, SH-647.)
 for variant in "attended:$codex_attended" "auto:$codex_auto" "solo:$codex_solo"; do
   label="${variant%%:*}"; text="${variant#*:}"
   for needle in "story comment $id your-exact-approved-plan" \
                 "the first implementation step" \
-                "post the plan verbatim rather than summarizing it" \
-                "every linked pull request title contains the exact story ID $id"; do
+                "post the plan verbatim rather than summarizing it"; do
     case "$text" in
       *"$needle"*) ;;
       *) fail_test "charter-inert: the Codex $label prompt no longer instructs '$needle'" ;;
@@ -149,14 +171,14 @@ for variant in "attended:$codex_attended" "auto:$codex_auto" "solo:$codex_solo";
   done
 done
 
-# The PR-title instruction is a Codex provider contract. Claude's built-in
-# prompts remain byte-identical and must not inherit it through the shared
-# attended or autonomous templates.
-for variant in "attended:$attended" "auto:$auto" "solo:$solo"; do
+# SH-647 retired the agent-side PR-title contract entirely: the verifier titles
+# every PR it opens. No built-in variant, Claude or Codex, may still carry it.
+for variant in "attended:$attended" "auto:$auto" "solo:$solo" \
+               "codex-attended:$codex_attended" "codex-auto:$codex_auto" "codex-solo:$codex_solo"; do
   label="${variant%%:*}"; text="${variant#*:}"
   case "$text" in
     *"every linked pull request title contains the exact story ID $id"*)
-      fail_test "charter-inert: the Claude $label prompt inherited Codex's PR-title contract"
+      fail_test "charter-inert: the $label prompt still carries the retired PR-title contract (SH-647)"
       ;;
   esac
 done

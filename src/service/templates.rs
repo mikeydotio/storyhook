@@ -36,18 +36,19 @@ follow the workflow below.
 - Use the assigned story, or select one with `story next`.
 - Use a feature branch in the assigned checkout.
 - Move the story to In Progress: `story move {prefix}-<n> in-progress`.
+- Before beginning or resuming implementation, run `story help obviation-review`
+  and `story load-context --story {prefix}-<n>`. Follow the review procedure for
+  every candidate; likely-obviated work stays open and blocked for human review.
 - Make the change. Add tests for new behavior and defects.
 - If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
 - Leave the full suite and its lock to the central verifier.
-- Commit the work. Push the latest commits and create a PR against the repository's default branch.
-- Link exactly one open PR: `story link-pr {prefix}-<n> <pr-url>`.
-- Keep automatic closure enabled. Do not use `--no-close-on-merge`.
+- Commit the work. Do not push or open a PR: the verifier pushes your branch and opens a PR against the repository's default branch.
 - Record test results and final context: `story comment {prefix}-<n> "<context>"`.
-- Move the story to Verifying: `story move {prefix}-<n> verifying`. Make this your last action.
-- Stop work. Do not merge, close the story, or remove the work lane yourself.
-- The verifier runs `make test` on the proposed merge.
+- Move the story to Verifying: `story move {prefix}-<n> verifying`, from inside the story's worktree so the verifier can find your branch. Make this your last action.
+- Stop work. Do not push, open a PR, run `story link-pr`, merge, close the story, or remove the work lane yourself.
+- The verifier pushes the branch, opens or adopts the PR, then runs `make test` on the proposed merge.
 - If tests pass, it merges the PR and moves the story to `{done_state}`. It then removes the work lane.
-- If the story returns to In Progress, read its comments. Fix the same PR, test, push, and submit again.
+- If the story returns to In Progress, read its comments. Fix it in the worktree, test, commit, and submit again.
 
 ## Planning
 
@@ -146,9 +147,10 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
   use it only when the blocker genuinely isn't a story.
 - When unblocked: `story unblock {prefix}-<n>` (or `--on {prefix}-<blocker>`
   to clear just that edge)
-- When submitted: link exactly one open close-on-merge PR, then move the story
-  to `verifying` as your final action. Do not run the full suite, merge, close,
-  or reap from an agent worktree.
+- When submitted: move the story to `verifying` as your final action, from
+  inside its worktree; the verifier pushes the branch and opens the PR. Do not
+  push, open a PR, run the full suite, merge, close, or reap from an agent
+  worktree.
 - What is ready: `story next --count 5`
 - What is blocked: `story list --blocked`
 
@@ -177,7 +179,6 @@ what still gets filed.
 | Create a story | `story new "<title>"` |
 | Move to a state | `story move {prefix}-<n> <state>` |
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
-| Link the submitted PR | `story link-pr {prefix}-<n> <pr-url>` |
 | Set priority | `story prioritize {prefix}-<n> high` |
 | What a level means | `story help priority-rubric` |
 | Adopt or file a mid-work find | `story help scope-rubric` |
@@ -223,6 +224,8 @@ pub fn claude_md() -> String {
 This project uses **storyhook** for task tracking. Full usage instructions are in `AGENTS.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
+Before beginning or resuming implementation, run `story help obviation-review`
+and `story load-context --story <id>` for the assigned story and follow the review procedure.
 
 Run `story help <command>` for detailed usage on any command, or `story help --compact` for the full reference.
 "#
@@ -241,9 +244,12 @@ to manage tasks.
 
 - Run `story load-context` at the start of each session to understand project state.
 - Run `story next` to find the highest-priority ready task.
-- After targeted tests, push one PR, link it with `story link-pr`, then make
-  `story move <id> verifying` your last action. The verifier owns the full
-  suite, merge, completion, and cleanup.
+- Before beginning or resuming implementation, run `story help obviation-review`
+  and `story load-context --story <id>`. Follow the review procedure for every
+  candidate; likely-obviated work stays open and blocked for human review.
+- After targeted tests, commit, then make `story move <id> verifying` your last
+  action, from inside the story's worktree. The verifier pushes your branch,
+  opens the PR, and owns the full suite, merge, completion, and cleanup.
 - Use `story handoff --since 2h` to summarize work at session end.
 - Found a second problem while working? Prefer adopting it into the story you
   are on over filing a new one — run `story help scope-rubric` before you file.

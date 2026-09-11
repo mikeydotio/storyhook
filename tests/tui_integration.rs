@@ -1087,7 +1087,7 @@ fn reordering_statuses_reorders_the_board_columns() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 
@@ -1101,7 +1101,7 @@ fn reordering_statuses_reorders_the_board_columns() {
                     "verifying".to_string(),
                     "blocked".to_string(),
                     "done".to_string(),
-                    "closed".to_string(),
+                    "dropped".to_string(),
                 ],
             },
         },

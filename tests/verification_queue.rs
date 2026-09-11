@@ -5,16 +5,16 @@ use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ResumePlan, ShellVerificationActuator, TickResult, VerificationActivity,
-    VerificationActuator, VerificationGuard, VerificationOutcome, journal_path, resume_plan,
-    tick_with, tick_with_activity, tick_with_reconciliation,
+    NotifyDelivery, ResumePlan, ShellVerificationActuator, SubmissionFailure, TickResult,
+    VerificationActivity, VerificationActuator, VerificationGuard, VerificationOutcome,
+    journal_path, resume_plan, tick_with, tick_with_activity, tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
     CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, Priority, StoryCleanupLease, StoryEvent,
-    SuperState, TmuxCleanupTarget, fold_story,
+    SubmittedPullRequest, SuperState, TmuxCleanupTarget, fold_story,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -22,8 +22,9 @@ use storyhook::service::gate_command::GateCommand;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
-    VerificationProblem, VerificationQueue, acknowledge_verification_incident,
+    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
+    acknowledge_verification_incident,
 };
 use storyhook::store::{
     ExpectedSeq, GlobalSeq, PrLink, ReadOps, SqliteStore, Store, StoreError, StoryNo,
@@ -132,7 +133,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 
     let statuses = status_snapshot(
         &ordered,
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -154,7 +155,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
     drop(guard);
     let statuses = status_snapshot(
         &ordered,
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -349,7 +350,7 @@ fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_w
 
     let statuses = status_snapshot(
         &[new_candidate],
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -392,7 +393,9 @@ fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_w
             .next()
             .unwrap()
             .unwrap()],
-        VerificationActivity::new().active().as_ref(),
+        VerificationActivity::new()
+            .active_for(fixture.project())
+            .as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -427,7 +430,7 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 
     let statuses = status_snapshot(
         &[candidate],
-        activity.active().as_ref(),
+        activity.active_for(fixture.project()).as_ref(),
         fixture.env(),
         FIXTURE_NOW,
     );
@@ -442,6 +445,29 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
     ));
 }
 
+/// What a fake answers when asked to submit a candidate it has no scripted
+/// answer for: adopt the pull request already linked, which is the steady
+/// state of every resubmission (SH-647). A candidate with nothing linked and
+/// nothing scripted is a fixture that did not expect to be submitted at all,
+/// and says so loudly rather than inventing a pull request.
+fn adopt_linked(
+    candidate: &VerificationCandidate,
+) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    match &candidate.pull_request {
+        Ok(link) => Ok(SubmittedPullRequest {
+            url: link.url.clone(),
+            number: link.number,
+            base: "dev".into(),
+            head_oid: "fixture-head".into(),
+            adopted: true,
+        }),
+        Err(problem) => panic!(
+            "fixture asked to submit {} with no scripted answer and no linked pull request: {problem:?}",
+            candidate.story_id
+        ),
+    }
+}
+
 struct ActivityObservingActuator {
     activity: VerificationActivity,
     env: Environment,
@@ -453,7 +479,7 @@ impl ActivityObservingActuator {
     fn assert_owned(&self, candidate: &VerificationCandidate) {
         let active = self
             .activity
-            .active()
+            .active_for(candidate.project)
             .expect("ownership must be visible while verification is active");
         assert_eq!(active.project, candidate.project);
         assert_eq!(active.story_id, candidate.story_id);
@@ -486,6 +512,13 @@ impl VerificationActuator for ActivityObservingActuator {
     ) -> storyhook::daemon::verification::LandingOutcome {
         panic!("this test does not leave unresolved landing authority")
     }
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -515,11 +548,14 @@ impl VerificationActuator for ActivityObservingActuator {
         panic!("a delivered notification never re-dispatches")
     }
 
-    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
         assert_eq!(
-            self.activity.active(),
-            None,
-            "process-local ownership must end before post-merge cleanup"
+            self.activity
+                .active_for(candidate.project)
+                .unwrap()
+                .story_id,
+            candidate.story_id,
+            "manual cancellation must retain ownership through post-merge cleanup"
         );
         assert!(
             lifecycle::read_inflight(&self.env).is_empty(),
@@ -592,6 +628,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
             )
             .unwrap(),
             expected
@@ -600,7 +637,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
             actuator.observed_story.lock().unwrap().as_deref(),
             Some(id.as_str())
         );
-        assert_eq!(activity.active(), None);
+        assert_eq!(activity.active_for(fixture.project()), None);
         assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 
         if expected == TickResult::RetryLater {
@@ -608,7 +645,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
             assert!(matches!(
                 status_snapshot(
                     &ordered,
-                    activity.active().as_ref(),
+                    activity.active_for(fixture.project()).as_ref(),
                     fixture.env(),
                     FIXTURE_NOW
                 )[0]
@@ -641,6 +678,7 @@ fn ownership_is_cleared_during_unwind() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
         );
     }));
 
@@ -649,7 +687,7 @@ fn ownership_is_cleared_during_unwind() {
         actuator.observed_story.lock().unwrap().as_deref(),
         Some("SH-1")
     );
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -684,11 +722,12 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
         &actuator,
         &activity,
         &inflight,
+        fixture.project(),
     )
     .expect_err("the injected outcome write must fail");
 
     assert!(error.to_string().contains("outcome recording interrupted"));
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -776,7 +815,7 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         gate: GateCommand::DEFAULT.into(),
     });
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let returned = fixture
@@ -880,7 +919,7 @@ fn recording_the_verified_merge_closes_the_story_and_the_pr_projection() {
                 "blocked",
                 "abandoned",
                 "done",
-                "closed",
+                "dropped",
             ]
             .map(str::to_string),
         )
@@ -924,6 +963,10 @@ struct FakeActuator {
     notified: Mutex<Vec<String>>,
     redispatched: Mutex<Vec<(String, ResumePlan)>>,
     reaped: Mutex<Vec<String>>,
+    /// Scripted submission answer; `None` adopts the linked pull request.
+    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+    /// Every story this fake was asked to submit, in order.
+    submitted: Mutex<Vec<String>>,
 }
 
 impl FakeActuator {
@@ -935,7 +978,19 @@ impl FakeActuator {
             notified: Mutex::new(Vec::new()),
             redispatched: Mutex::new(Vec::new()),
             reaped: Mutex::new(Vec::new()),
+            submission: None,
+            submitted: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Scripts the answer this fake gives `submit` (SH-647); `None` (the
+    /// default) adopts whatever pull request the candidate already links.
+    fn with_submission(
+        mut self,
+        submission: Result<SubmittedPullRequest, SubmissionFailure>,
+    ) -> Self {
+        self.submission = Some(submission);
+        self
     }
 
     fn with_notify_script(self, script: impl IntoIterator<Item = NotifyScript>) -> Self {
@@ -966,6 +1021,20 @@ impl VerificationActuator for FakeActuator {
     ) -> storyhook::daemon::verification::LandingOutcome {
         panic!("this test does not leave unresolved landing authority")
     }
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        self.submitted
+            .lock()
+            .unwrap()
+            .push(candidate.story_id.clone());
+        match &self.submission {
+            Some(scripted) => scripted.clone(),
+            None => adopt_linked(candidate),
+        }
+    }
+
     fn verify(
         &self,
         _candidate: &VerificationCandidate,
@@ -1055,7 +1124,7 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
     });
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let row = fixture
@@ -1097,6 +1166,13 @@ impl VerificationActuator for ResubmittingActuator<'_> {
     ) -> storyhook::daemon::verification::LandingOutcome {
         panic!("this test does not leave unresolved landing authority")
     }
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1219,6 +1295,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
                 |_| Ok(None),
             )
             .unwrap(),
@@ -1260,7 +1337,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
         assert!(
             fixture
                 .store()
-                .read(|tx| tx.verification_incident())
+                .read(|tx| tx.verification_incident(fixture.project()))
                 .unwrap()
                 .is_none()
         );
@@ -1310,6 +1387,13 @@ impl VerificationActuator for WebMutationActuator<'_> {
     ) -> storyhook::daemon::verification::LandingOutcome {
         panic!("this test does not leave unresolved landing authority")
     }
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1403,6 +1487,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
                 &actuator,
                 &activity,
                 &inflight,
+                fixture.project(),
             )
             .unwrap(),
             TickResult::Returned
@@ -1424,7 +1509,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
         assert!(
             fixture
                 .store()
-                .read(|tx| tx.verification_incident())
+                .read(|tx| tx.verification_incident(fixture.project()))
                 .unwrap()
                 .is_none()
         );
@@ -1443,7 +1528,7 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let story_no = StoryNo::parse_id("SH", &id).unwrap();
@@ -1485,6 +1570,13 @@ impl VerificationActuator for SequencedActuator {
     ) -> storyhook::daemon::verification::LandingOutcome {
         panic!("this test does not leave unresolved landing authority")
     }
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1568,6 +1660,7 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
         &actuator,
         &activity,
         &inflight,
+        fixture.project(),
         |reserved| {
             assert_eq!(reserved.story_id, held);
             reserved_generations
@@ -1575,7 +1668,10 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
                 .unwrap()
                 .push(reserved.verifying_generation);
             assert_eq!(
-                activity.active().as_ref().map(|active| &active.story_id),
+                activity
+                    .active_for(fixture.project())
+                    .as_ref()
+                    .map(|active| &active.story_id),
                 Some(&held),
                 "process-local ownership must span reconciliation"
             );
@@ -1621,7 +1717,7 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
     assert_eq!(generations[0], first_generation);
     assert_ne!(generations[0], generations[1]);
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [held.as_str()]);
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -1658,10 +1754,13 @@ fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue(
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
             |reserved| {
                 assert_eq!(reserved.story_id, id);
                 assert_eq!(
-                    activity.active().map(|active| active.story_id),
+                    activity
+                        .active_for(fixture.project())
+                        .map(|active| active.story_id),
                     Some(id.clone()),
                     "the reservation must survive the re-dispatch"
                 );
@@ -1748,6 +1847,7 @@ fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
             |_| panic!("a refused re-dispatch must not enter the reservation wait"),
         )
         .unwrap(),
@@ -1764,7 +1864,7 @@ fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
     assert!(awaiting.contains("pane-unavailable"), "{awaiting}");
     assert_eq!(actuator.redispatched.lock().unwrap().len(), 1);
     assert!(actuator.notified.lock().unwrap().is_empty());
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -1793,6 +1893,7 @@ fn a_notify_failure_that_is_not_absence_parks_without_redispatching() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
             |_| panic!("a failed notification must not enter the reservation wait"),
         )
         .unwrap(),
@@ -1809,7 +1910,7 @@ fn a_notify_failure_that_is_not_absence_parks_without_redispatching() {
         actuator.redispatched.lock().unwrap().is_empty(),
         "a live pane is never respawned over"
     );
-    assert_eq!(activity.active(), None);
+    assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
 
@@ -1841,6 +1942,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
             &actuator,
             &activity,
             &inflight,
+            fixture.project(),
             |_| {
                 *entered.lock().unwrap() = true;
                 Ok(None)
@@ -1879,7 +1981,13 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap(),
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
         TickResult::Returned
     );
     let row = fixture
@@ -2615,6 +2723,208 @@ fn shell_notification_timeout_terminates_the_helper_process_group() {
     assert_recorded_process_stopped(&root.path().join("notify-child-pid"));
 }
 
+const FIXTURE_SUBMIT_URL: &str = "https://github.com/acme/widgets/pull/7";
+
+/// A `story.sh submit` stand-in that answers the receipt a real run would for
+/// the lease it was handed, mutated by a jq expression, and exits as told.
+fn write_submit_receipt_helper(
+    root: &std::path::Path,
+    mutation: &str,
+    exit_status: i32,
+) -> PathBuf {
+    let helper = root.join("submit-receipt-helper.sh");
+    std::fs::write(
+        &helper,
+        format!(
+            r#"#!/bin/bash
+[ "$3" = submit ] || {{ printf 'expected the submit verb, got %s\n' "$3" >&2; exit 64; }}
+lease="$STORYHOOK_REAP_LEASE_V1"
+story=$(printf '%s' "$lease" | jq -r .story_id)
+jq -n --argjson lease "$lease" --arg story "$story" --arg url "{FIXTURE_SUBMIT_URL}" \
+  '{{ok:true,receipt_version:1,story_id:$story,lease:$lease,pushed:true,
+     pull_request:{{url:$url,number:7,base:"dev",head_oid:"0123abcd",adopted:false}},
+     display:"fixture submission"}} | {mutation}'
+exit {exit_status}
+"#
+        ),
+    )
+    .unwrap();
+    helper
+}
+
+/// A `story.sh submit` stand-in that refuses with exactly `body`.
+fn write_refusing_submit_helper(root: &std::path::Path, body: &str) -> PathBuf {
+    let helper = root.join("submit-refusing-helper.sh");
+    std::fs::write(
+        &helper,
+        format!("#!/bin/bash\nprintf '%s\\n' '{body}'\nexit 1\n"),
+    )
+    .unwrap();
+    helper
+}
+
+fn submit_actuator(root: &std::path::Path, helper: PathBuf) -> ShellVerificationActuator {
+    ShellVerificationActuator::with_paths(
+        Environment::at(root),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    )
+}
+
+#[test]
+fn shell_submission_requires_a_latest_generation_lease_before_spawning() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let mut candidate = cleanup_candidate(&fixture, root.path());
+    candidate.cleanup_lease = None;
+    let actuator = submit_actuator(root.path(), root.path().join("must-not-run"));
+
+    let failure = actuator.submit(&candidate).unwrap_err();
+    match failure {
+        SubmissionFailure::Infrastructure { detail } => {
+            assert!(detail.contains("no cleanup lease"), "{detail}");
+        }
+        other => panic!("a missing lease is the verifier's problem, not the agent's: {other:?}"),
+    }
+}
+
+#[test]
+fn shell_submission_accepts_an_exact_typed_receipt() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = submit_actuator(
+        root.path(),
+        write_submit_receipt_helper(root.path(), ".", 0),
+    );
+
+    let pull_request = actuator.submit(&candidate).unwrap();
+
+    assert_eq!(
+        pull_request,
+        SubmittedPullRequest {
+            url: FIXTURE_SUBMIT_URL.into(),
+            number: 7,
+            base: "dev".into(),
+            head_oid: "0123abcd".into(),
+            adopted: false,
+        }
+    );
+}
+
+/// The helper's `class` decides whose problem a refusal is; a refusal that
+/// carries none is the verifier's, never the agent's — an agent told to fix
+/// "usage: story.sh submit <story-id>" could do nothing with it.
+#[test]
+fn shell_submission_classifies_refusals_by_the_helpers_class() {
+    let fixture = ServiceFixture::new();
+    let repair = r#"{"ok":false,"reason":"dirty-worktree","class":"repair","display":"Dirty: a.rs, b.rs.","dirty_files":["a.rs","b.rs"]}"#;
+    let infrastructure = r#"{"ok":false,"reason":"push-failed","class":"infrastructure","display":"origin unreachable"}"#;
+    let bare = r#"{"ok":false,"display":"usage: story.sh submit <story-id>"}"#;
+    for (body, expected) in [
+        (
+            repair,
+            SubmissionFailure::Refused {
+                reason: "dirty-worktree".into(),
+                display: "Dirty: a.rs, b.rs.".into(),
+            },
+        ),
+        (
+            infrastructure,
+            SubmissionFailure::Infrastructure {
+                detail: "origin unreachable".into(),
+            },
+        ),
+        (
+            bare,
+            SubmissionFailure::Infrastructure {
+                detail: "usage: story.sh submit <story-id>".into(),
+            },
+        ),
+    ] {
+        let root = scratch_dir();
+        let candidate = cleanup_candidate(&fixture, root.path());
+        let actuator =
+            submit_actuator(root.path(), write_refusing_submit_helper(root.path(), body));
+
+        assert_eq!(actuator.submit(&candidate).unwrap_err(), expected, "{body}");
+    }
+}
+
+/// A receipt the daemon cannot trust is infrastructure, never a refusal: none
+/// of these is anything an agent could repair.
+#[test]
+fn shell_submission_rejects_untrustworthy_receipts_as_infrastructure() {
+    let fixture = ServiceFixture::new();
+    for (mutation, status, expected) in [
+        (".", 7, "exited"),
+        (".story_id = \"SH-999\"", 0, "does not echo"),
+        (".lease.branch = \"worktree-elsewhere\"", 0, "does not echo"),
+        (".receipt_version = 2", 0, "unsupported version"),
+        ("del(.pull_request)", 0, "without a pull request"),
+        (
+            ".pull_request.url = \"not a pull request\"",
+            0,
+            "unusable URL",
+        ),
+        (".pull_request.number = 9", 0, "disagree"),
+    ] {
+        let root = scratch_dir();
+        let candidate = cleanup_candidate(&fixture, root.path());
+        let actuator = submit_actuator(
+            root.path(),
+            write_submit_receipt_helper(root.path(), mutation, status),
+        );
+
+        match actuator.submit(&candidate).unwrap_err() {
+            SubmissionFailure::Infrastructure { detail } => {
+                assert!(detail.contains(expected), "{mutation}: {detail}");
+            }
+            other => {
+                panic!("{mutation}: an untrustworthy receipt was returned to the agent: {other:?}")
+            }
+        }
+    }
+
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("garbage-helper.sh");
+    std::fs::write(&helper, "#!/bin/bash\nprintf 'pushed!\\n'\nexit 0\n").unwrap();
+    match submit_actuator(root.path(), helper)
+        .submit(&candidate)
+        .unwrap_err()
+    {
+        SubmissionFailure::Infrastructure { detail } => {
+            assert!(detail.contains("invalid receipt"), "{detail}");
+        }
+        other => panic!("non-JSON output was returned to the agent: {other:?}"),
+    }
+}
+
+#[test]
+fn shell_submission_timeout_terminates_the_helper_process_group() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(&fixture, root.path());
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        Environment::at(root.path()),
+        write_hanging_helper(root.path()),
+        PathBuf::from("/usr/bin/true"),
+        Duration::from_secs(1),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let failure = actuator.submit(&candidate).unwrap_err();
+
+    let SubmissionFailure::Infrastructure { detail } = failure else {
+        panic!("a timeout is the verifier's problem: {failure:?}");
+    };
+    assert!(detail.contains("`submit`"), "{detail}");
+    assert!(detail.contains("100ms"), "{detail}");
+    assert_recorded_process_stopped(&root.path().join("submit-child-pid"));
+}
+
 #[test]
 fn shell_cleanup_timeout_terminates_the_helper_process_group() {
     let fixture = ServiceFixture::new();
@@ -2885,7 +3195,7 @@ fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() 
     .with_notify_script([NotifyScript::Absent("pane-dead")]);
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     let row = story_row(&fixture, &id);
@@ -2897,7 +3207,7 @@ fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() 
     assert!(notified[0].contains("CENTRAL VERIFICATION RED"));
     drop(notified);
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Idle,
         "a returned story is out of the queue until resubmitted"
     );
@@ -2914,7 +3224,7 @@ fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() 
         gate: GateCommand::DEFAULT.into(),
     });
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     assert_eq!(story_row(&fixture, &id).state, "done");
@@ -2936,7 +3246,13 @@ fn an_unreachable_agent_is_marked_awaiting_when_the_refusal_is_not_absence() {
     })
     .with_notify_script([NotifyScript::Fail("could not query tmux window")]);
 
-    tick_with(fixture.store(), &Environment::at(root.path()), &actuator).unwrap();
+    tick_with(
+        fixture.store(),
+        &Environment::at(root.path()),
+        &actuator,
+        fixture.project(),
+    )
+    .unwrap();
     let row = story_row(&fixture, &id);
     assert_eq!(row.state, "in-progress");
     assert!(
@@ -2960,19 +3276,19 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
     let env = Environment::at(root.path());
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::RetryLater
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::RetryLater
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let row = fixture
@@ -2986,7 +3302,7 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
     assert!(row.snapshot.comments[0].text.contains("HALTED"));
     let incident = fixture
         .store()
-        .read(|tx| tx.verification_incident())
+        .read(|tx| tx.verification_incident(fixture.project()))
         .unwrap()
         .unwrap();
     assert!(incident.halted);
@@ -3004,12 +3320,12 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let incident = fixture
         .store()
-        .read(|tx| tx.verification_incident())
+        .read(|tx| tx.verification_incident(fixture.project()))
         .unwrap()
         .unwrap();
     assert_eq!(incident.attempts, 1);
@@ -3031,7 +3347,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     let reopened = SqliteStore::open(fixture.store().path()).unwrap();
     assert_eq!(
         reopened
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .as_ref(),
         Some(&incident),
@@ -3084,7 +3400,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     assert_eq!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .as_ref()
             .map(|current| current.incident_id.as_str()),
@@ -3110,12 +3426,12 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted,
         "acknowledgement must make the still-current candidate eligible again"
     );
@@ -3182,7 +3498,7 @@ fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_some(),
         "a stale acknowledgement must clear nothing"
@@ -3194,7 +3510,7 @@ fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );
@@ -3218,11 +3534,11 @@ fn a_halt_fires_one_post_commit_verification_hook() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let lines: Vec<serde_json::Value> = std::fs::read_to_string(fixture.cwd().join("hooks.log"))
@@ -3267,13 +3583,13 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
     );
@@ -3311,15 +3627,648 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &actuator).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
         TickResult::Returned
     );
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .is_none()
+    );
+}
+
+/// A fresh lease for `story_id`, rooted under `root`.
+fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story_id.into(),
+        repository_path: root.to_path_buf(),
+        worktree_path: root.join(".claude/worktrees").join(story_id),
+        branch: format!("worktree-{story_id}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: root.join("tmux.sock"),
+        },
+    }
+}
+
+/// A story dispatched from a worktree and moved to `verifying` from inside
+/// it: the lease follows the transition, exactly as `story move` records it
+/// (SH-647). With `url`, the agent (or an earlier generation) linked a PR.
+fn leased_submission(
+    fixture: &ServiceFixture,
+    root: &std::path::Path,
+    title: &str,
+    url: Option<&str>,
+) -> (String, StoryCleanupLease) {
+    let ctx = fixture.ctx();
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: title.into(),
+            priority: Some(Priority::High.as_str().to_string()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    if let Some(url) = url {
+        PrLinkService::new(&ctx).link(&id, url, true).unwrap();
+    }
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let lease = lease_for(root, &id);
+    append_cleanup_lease(fixture, &id, lease.clone());
+    (id, lease)
+}
+
+fn submitted_pr(url: &str, number: u64, adopted: bool) -> SubmittedPullRequest {
+    SubmittedPullRequest {
+        url: url.into(),
+        number,
+        base: "dev".into(),
+        head_oid: "0123abcd".into(),
+        adopted,
+    }
+}
+
+#[test]
+fn a_blocker_added_during_submission_holds_the_generation_before_testing() {
+    struct BlockOnSubmit<'a> {
+        fixture: &'a ServiceFixture,
+        blocker: String,
+    }
+    impl VerificationActuator for BlockOnSubmit<'_> {
+        fn submit(
+            &self,
+            candidate: &VerificationCandidate,
+        ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+            storyhook::service::RelationService::new(&self.fixture.ctx())
+                .relate(&candidate.story_id, "blocked-by", &self.blocker, false)
+                .unwrap();
+            Ok(submitted_pr(PR_ONE, 1, false))
+        }
+        fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+            panic!("the new open blocker must hold verification")
+        }
+        fn land(
+            &self,
+            _: &VerificationCandidate,
+            _: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            panic!("a held submission must not land")
+        }
+        fn recover_landing(
+            &self,
+            _: &VerificationCandidate,
+            _: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            panic!("nothing was admitted")
+        }
+        fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {
+            panic!("held work stays submitted")
+        }
+        fn redispatch(&self, _: &VerificationCandidate, _: &ResumePlan) -> Result<(), AppError> {
+            panic!("held work stays submitted")
+        }
+        fn reap(&self, _: &VerificationCandidate) -> Result<(), AppError> {
+            panic!("nothing landed")
+        }
+    }
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "blocked during submit", None);
+    let blocker = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "dependency".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let actuator = BlockOnSubmit {
+        fixture: &fixture,
+        blocker: blocker.clone(),
+    };
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    let candidate = VerificationQueue::new(fixture.store())
+        .ordered_for(fixture.project())
+        .unwrap()
+        .remove(0);
+    assert_eq!(candidate.story_id, id);
+    assert_eq!(candidate.blocked_by, [blocker]);
+    assert_eq!(candidate.pull_request.unwrap().url, PR_ONE);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn submitting_actuator(
+    outcome: VerificationOutcome,
+    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+) -> FakeActuator {
+    let actuator = FakeActuator::new(outcome);
+    match submission {
+        Some(scripted) => actuator.with_submission(scripted),
+        None => actuator,
+    }
+}
+
+/// The target: a leased story with no pull request is submitted first — the
+/// link and a SUBMITTED comment land under the generation guard — and then
+/// verified in the same tick against the pull request the helper opened.
+#[test]
+fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, lease) = leased_submission(&fixture, root.path(), "submit me", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "landed".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, false))),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Completed
+    );
+
+    assert_eq!(
+        actuator.submitted.lock().unwrap().as_slice(),
+        std::slice::from_ref(&id)
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(
+        row.state, "done",
+        "verification ran on the submitted pull request"
+    );
+    let submitted_comment = row
+        .snapshot
+        .comments
+        .iter()
+        .find(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+        .expect("the submission is recorded on the story");
+    assert!(
+        submitted_comment.text.contains(&lease.branch),
+        "{}",
+        submitted_comment.text
+    );
+    assert!(
+        submitted_comment.text.contains(PR_ONE),
+        "{}",
+        submitted_comment.text
+    );
+    assert!(
+        submitted_comment.text.contains("opened"),
+        "{}",
+        submitted_comment.text
+    );
+    let links = fixture
+        .store()
+        .read(|tx| tx.pr_links(fixture.project()))
+        .unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].1.url, PR_ONE);
+    assert!(links[0].1.close_on_merge);
+    assert_eq!(links[0].1.status, "merged");
+}
+
+/// Every leased generation is submitted, linked pull request or not: after a
+/// RED return the agent only commits, so the push is what carries the fix.
+#[test]
+fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verifying() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "fixed", Some(PR_ONE));
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "landed".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, true))),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Completed
+    );
+
+    assert_eq!(
+        actuator.submitted.lock().unwrap().as_slice(),
+        std::slice::from_ref(&id),
+        "submitted exactly once, then verified"
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "done");
+    let submitted_comments = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+        .count();
+    assert_eq!(submitted_comments, 1);
+    assert!(row.snapshot.comments.iter().any(|comment| {
+        comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX) && comment.text.contains("adopted")
+    }));
+}
+
+/// An unleased story is not the verifier's to push: it is returned naming the
+/// cause — the story entered `verifying` from outside its worktree — and the
+/// actuator is never asked to submit.
+#[test]
+fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_attempt() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let ctx = fixture.ctx();
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "moved from the main checkout".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    let root = scratch_dir();
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "must-not-run".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, false))),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    assert!(actuator.submitted.lock().unwrap().is_empty());
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("no cleanup lease"), "{}", notified[0]);
+    assert!(
+        notified[0].contains("story move <id> verifying"),
+        "{}",
+        notified[0]
+    );
+}
+
+/// A refusal the helper classes as the agent's returns the story with the
+/// helper's own words — the dirty files — and never reaches verification.
+#[test]
+fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "must-not-run".into(),
+            gate: "make test".into(),
+        },
+        Some(Err(SubmissionFailure::Refused {
+            reason: "dirty-worktree".into(),
+            display: "story.sh submit: SH-1's worktree has uncommitted changes. Dirty: src/lib.rs."
+                .into(),
+        })),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("Dirty: src/lib.rs")),
+        "the diagnosis is durable on the story"
+    );
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("Dirty: src/lib.rs"), "{}", notified[0]);
+    let links = fixture
+        .store()
+        .read(|tx| tx.pr_links(fixture.project()))
+        .unwrap();
+    assert!(links.is_empty(), "a refused submission links nothing");
+}
+
+/// Infrastructure is the verifier's: a retryable incident is recorded, the
+/// story stays in `verifying`, and the next tick re-runs the same idempotent
+/// steps — adopting whatever the failed attempt left on GitHub.
+#[test]
+fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retries() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let (id, _) = leased_submission(&fixture, root.path(), "flaky github", None);
+    let failing = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "must-not-run".into(),
+            gate: "make test".into(),
+        },
+        Some(Err(SubmissionFailure::Infrastructure {
+            detail: "gh could not list pull requests: error connecting to api.github.com".into(),
+        })),
+    );
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &failing, fixture.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "verifying", "the story is still the verifier's");
+    assert!(row.awaiting.is_none());
+    assert!(
+        failing.notified.lock().unwrap().is_empty(),
+        "the agent is not bothered"
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident(fixture.project()))
+        .unwrap()
+        .expect("an incident is recorded");
+    assert!(
+        incident.detail.contains("api.github.com"),
+        "{}",
+        incident.detail
+    );
+    assert!(!incident.halted);
+
+    // GitHub came back: the crashed attempt's pull request is adopted and the
+    // story proceeds to verification.
+    let recovered = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "landed".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(PR_ONE, 1, true))),
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &recovered, fixture.project()).unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(story_row(&fixture, &id).state, "done");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(fixture.project()))
+            .unwrap()
+            .is_none(),
+        "the incident clears with the generation"
+    );
+}
+
+/// The helper's answer and the story's own link must name one pull request.
+#[test]
+fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "two PRs", Some(PR_ONE));
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "must-not-run".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(PR_TWO, 2, true))),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    assert_eq!(story_row(&fixture, &id).state, "in-progress");
+    let notified = actuator.notified.lock().unwrap();
+    assert!(
+        notified[0].contains(PR_ONE) && notified[0].contains(PR_TWO),
+        "{}",
+        notified[0]
+    );
+}
+
+/// A submission that lands on a repository the project has not registered is
+/// a configuration fault between the worktree's origin and the project's:
+/// never linked, and the queue halts loudly rather than re-pushing forever.
+#[test]
+fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "elsewhere", None);
+    let actuator = submitting_actuator(
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "must-not-run".into(),
+            gate: "make test".into(),
+        },
+        Some(Ok(submitted_pr(
+            "https://github.com/other/repo/pull/9",
+            9,
+            false,
+        ))),
+    );
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Halted
+    );
+
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident(fixture.project()))
+        .unwrap()
+        .expect("a halting incident is recorded");
+    assert!(incident.halted);
+    assert!(
+        incident.detail.contains("not registered"),
+        "{}",
+        incident.detail
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.pr_links(fixture.project()))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A fake whose submission moves the story out of `verifying` underneath the
+/// verifier — the agent reclaiming its story mid-submit.
+struct MovingActuator<'a> {
+    fixture: &'a ServiceFixture,
+    story_id: String,
+}
+
+impl VerificationActuator for MovingActuator<'_> {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a superseded submission must not land")
+    }
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test leaves no unresolved landing authority")
+    }
+
+    fn submit(
+        &self,
+        _candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        StoryService::new(&self.fixture.ctx())
+            .set_state(&self.story_id, "in-progress", None, None, None)
+            .unwrap();
+        Ok(submitted_pr(PR_ONE, 1, false))
+    }
+
+    fn verify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        panic!("a superseded generation must never be verified")
+    }
+
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        panic!("nothing is returned to an agent that already took its story back")
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a superseded generation is never re-dispatched")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        panic!("nothing landed, nothing to reap")
+    }
+}
+
+/// A recorded submission belongs to its generation: a story taken back while
+/// the helper ran is left exactly as the agent left it — no link, no comment,
+/// no verification.
+#[test]
+fn a_submission_recorded_after_the_generation_moved_is_superseded() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "taken back", None);
+    let actuator = MovingActuator {
+        fixture: &fixture,
+        story_id: id.clone(),
+    };
+
+    assert_eq!(
+        tick_with(
+            fixture.store(),
+            &Environment::at(root.path()),
+            &actuator,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.pr_links(fixture.project()))
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -3338,7 +4287,7 @@ fn a_green_attempt_closes_then_reaps_the_story() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     let story_no = StoryNo::parse_id("SH", &id).unwrap();
@@ -3383,7 +4332,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
                 "shipped",
                 "abandoned",
                 "done",
-                "closed",
+                "dropped",
             ]
             .map(str::to_string),
         )
@@ -3400,7 +4349,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     let story_no = StoryNo::parse_id("SH", &id).unwrap();
@@ -3461,7 +4410,7 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     });
 
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
     assert_eq!(
@@ -3469,7 +4418,7 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         std::slice::from_ref(&id)
     );
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Idle
     );
     assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
@@ -3803,7 +4752,7 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
         gate: GateCommand::DEFAULT.into(),
     });
     assert_eq!(
-        tick_with(fixture.store(), &env, &actuator).unwrap(),
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
 
@@ -4046,7 +4995,7 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
         let root = scratch_dir();
         let env = Environment::at(root.path());
         let actuator = FakeActuator::new(outcome);
-        tick_with(fixture.store(), &env, &actuator).unwrap();
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap();
         let story_no = StoryNo::parse_id("SH", &id).unwrap();
         let row = fixture
             .store()
@@ -4078,7 +5027,7 @@ fn a_dependency_hold_does_not_clear_an_existing_infrastructure_halt() {
         disposition: VerificationFailureDisposition::Permanent,
     });
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &failure).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
         TickResult::Halted
     );
     let blocker = StoryService::new(&fixture.ctx())
@@ -4092,15 +5041,700 @@ fn a_dependency_hold_does_not_clear_an_existing_infrastructure_halt() {
         .relate(&id, "blocked-by", &blocker, false)
         .unwrap();
     assert_eq!(
-        tick_with(fixture.store(), fixture.env(), &failure).unwrap(),
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
         TickResult::Halted
     );
     assert!(
         fixture
             .store()
-            .read(|tx| tx.verification_incident())
+            .read(|tx| tx.verification_incident(fixture.project()))
             .unwrap()
             .unwrap()
             .halted
     );
+}
+// ---------------------------------------------------------------------------
+// One verifier per project (SH-648)
+// ---------------------------------------------------------------------------
+
+/// A story submitted in a project other than the fixture's seeded one.
+fn submitted_in(
+    fixture: &ServiceFixture,
+    project: storyhook::store::ProjectId,
+    title: &str,
+    priority: Priority,
+    url: &str,
+) -> String {
+    let ctx = fixture.ctx_for(project);
+    let id = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: title.into(),
+            priority: Some(priority.as_str().to_string()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    PrLinkService::new(&ctx).link(&id, url, true).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    id
+}
+
+/// The second fixture project, with its own origin: a submission there links
+/// a PR on a different repository, as a second registered checkout would.
+fn second_project(fixture: &ServiceFixture) -> storyhook::store::ProjectId {
+    let project = fixture.add_project("gadgets", "GD");
+    fixture.link_origin_for(project, "https://github.com/acme/gadgets");
+    project
+}
+
+const GADGETS_PR_ONE: &str = "https://github.com/acme/gadgets/pull/1";
+
+/// An actuator that holds one project's verification open until released,
+/// and lands every other project's on sight. Its `entered` channel names the
+/// project whose worker reached the blocking call, so a test can prove two
+/// workers are inside `verify` at once.
+struct ProjectGateActuator {
+    held: storyhook::store::ProjectId,
+    entered: std::sync::mpsc::Sender<storyhook::store::ProjectId>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl VerificationActuator for ProjectGateActuator {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test leaves no unresolved landing authority")
+    }
+
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.entered
+            .send(candidate.project)
+            .expect("the test observes every entry");
+        if candidate.project == self.held {
+            self.release
+                .lock()
+                .expect("locking the release channel")
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("the test must release the held verifier");
+        }
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        }
+    }
+
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a delivered notification never re-dispatches")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        Ok(())
+    }
+}
+
+/// D-B: two projects' verifications overlap. Project A's worker is held
+/// inside its actuator; project B's tick, sharing the SAME activity registry
+/// and in-flight ledger, completes while A is held, and both attempts are
+/// visible as owned at the same instant.
+#[test]
+fn two_projects_verify_concurrently() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "held", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(
+        &fixture,
+        gadgets,
+        "flows past",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let actuator = ProjectGateActuator {
+        held: widgets,
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    };
+
+    let (widgets_result, gadgets_result) = thread::scope(|scope| {
+        let widgets_worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+                widgets,
+            )
+        });
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("widgets' worker must reach its actuator"),
+            widgets
+        );
+
+        let gadgets_result = tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            gadgets,
+        )
+        .unwrap();
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("gadgets' worker must reach its actuator while widgets is held"),
+            gadgets
+        );
+        assert_eq!(
+            activity
+                .active_for(widgets)
+                .map(|active| active.story_id)
+                .as_deref(),
+            Some(widgets_story.as_str()),
+            "widgets is still owned while gadgets ran to completion"
+        );
+        assert_eq!(
+            activity.active_for(gadgets),
+            None,
+            "gadgets' attempt released its own slot and nobody else's"
+        );
+
+        release_tx.send(()).unwrap();
+        (widgets_worker.join().unwrap().unwrap(), gadgets_result)
+    });
+
+    assert_eq!(widgets_result, TickResult::Completed);
+    assert_eq!(gadgets_result, TickResult::Completed);
+    assert!(activity.active_all().is_empty());
+    for (project, id, prefix) in [
+        (widgets, &widgets_story, "SH"),
+        (gadgets, &gadgets_story, "GD"),
+    ] {
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(project, StoryNo::parse_id(prefix, id).unwrap()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "done", "{id}");
+    }
+}
+
+/// Both owned at once is the observable the previous test cannot assert
+/// while one tick runs on the calling thread: two held workers, two entries
+/// in `active_all`, two `verify` records in the in-flight ledger.
+#[test]
+fn two_held_verifications_are_both_visible_as_owned() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    submitted(&fixture, "held one", Priority::High, PR_ONE);
+    submitted_in(
+        &fixture,
+        gadgets,
+        "held two",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let mut gates = Vec::new();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    for project in [widgets, gadgets] {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        gates.push((
+            project,
+            release_tx,
+            ProjectGateActuator {
+                held: project,
+                entered: entered_tx.clone(),
+                release: Mutex::new(release_rx),
+            },
+        ));
+    }
+
+    let fixture = &fixture;
+    let activity = &activity;
+    let inflight = &inflight;
+    thread::scope(|scope| {
+        let workers: Vec<_> = gates
+            .iter()
+            .map(|(project, _, actuator)| {
+                scope.spawn(move || {
+                    tick_with_activity(
+                        fixture.store(),
+                        fixture.env(),
+                        actuator,
+                        activity,
+                        inflight,
+                        *project,
+                    )
+                })
+            })
+            .collect();
+        let mut entered = vec![
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+        ];
+        entered.sort();
+        assert_eq!(entered, [widgets, gadgets]);
+
+        assert_eq!(activity.active_all().len(), 2);
+        let published = lifecycle::read_inflight(fixture.env());
+        assert_eq!(published.len(), 2, "{published:?}");
+        assert!(published.iter().all(|entry| entry.command == "verify"));
+        assert_ne!(published[0].request_id, published[1].request_id);
+
+        for (_, release, _) in &gates {
+            release.send(()).unwrap();
+        }
+        for worker in workers {
+            assert_eq!(worker.join().unwrap().unwrap(), TickResult::Completed);
+        }
+    });
+    assert!(activity.active_all().is_empty());
+    assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+/// A halt is the project's own: widgets halts on a permanent infrastructure
+/// failure and stays halted, gadgets drains, and each project's dashboard
+/// and acknowledgement see only their own incident.
+#[test]
+fn a_halt_in_one_project_leaves_the_other_draining() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(&fixture, gadgets, "healthy", Priority::High, GADGETS_PR_ONE);
+
+    let halting = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "not inside a git worktree".into(),
+        disposition: VerificationFailureDisposition::Permanent,
+    });
+    let landing = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
+
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &halting, widgets).unwrap(),
+        TickResult::Halted
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &halting, widgets).unwrap(),
+        TickResult::Halted,
+        "widgets stays halted until acknowledged"
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &landing, gadgets).unwrap(),
+        TickResult::Completed,
+        "gadgets must drain while widgets is halted"
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident(widgets))
+        .unwrap()
+        .expect("widgets' halt is durable");
+    assert_eq!(incident.story.to_id("SH"), widgets_story);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(gadgets))
+            .unwrap()
+            .is_none(),
+        "gadgets has no incident of its own"
+    );
+    let gadgets_row = fixture
+        .store()
+        .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", &gadgets_story).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(gadgets_row.state, "done");
+
+    let headers = [Header::from_bytes("Host", "127.0.0.1:3456").unwrap()];
+    let data = |slug: &str| -> serde_json::Value {
+        let response = rest::route(
+            fixture.store(),
+            fixture.env(),
+            &Method::Get,
+            &format!("/api/repos/{slug}/data"),
+            &headers,
+            "",
+            &TrustedHosts::default(),
+        );
+        serde_json::from_str(response.reply.text_body().expect("UTF-8 text response")).unwrap()
+    };
+    assert_eq!(
+        data("fixture")["verification_incident"]["story_id"],
+        widgets_story
+    );
+    assert_eq!(
+        data("gadgets")["verification_incident"],
+        serde_json::Value::Null,
+        "another project's halt must not be reported on this project's dashboard"
+    );
+
+    let ack_headers = [
+        Header::from_bytes("Host", "127.0.0.1:3456").unwrap(),
+        Header::from_bytes("X-Storyhook", "1").unwrap(),
+        Header::from_bytes("Content-Type", "application/json").unwrap(),
+    ];
+    let body = serde_json::json!({"incident_id": incident.incident_id}).to_string();
+    let wrong_project = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        "/api/repos/gadgets/verification/ack",
+        &ack_headers,
+        &body,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(
+        wrong_project.reply.status,
+        422,
+        "widgets' incident cannot be acknowledged through gadgets: {}",
+        wrong_project
+            .reply
+            .text_body()
+            .expect("UTF-8 text response")
+    );
+    let ack = rest::route(
+        fixture.store(),
+        fixture.env(),
+        &Method::Post,
+        "/api/repos/fixture/verification/ack",
+        &ack_headers,
+        &body,
+        &TrustedHosts::default(),
+    );
+    assert_eq!(ack.reply.status, 200);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(widgets))
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// The conflict queue-hold reserves ONE project's worker for the conflicted
+/// story. Inside widgets' hold, gadgets' tick — the same activity registry —
+/// runs to completion.
+#[test]
+fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    let widgets_story = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
+    let gadgets_story = submitted_in(
+        &fixture,
+        gadgets,
+        "unrelated",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let conflicting = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "base moved".into(),
+    });
+    let landing = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
+    let other_drained_during_hold = Mutex::new(None);
+
+    let result = tick_with_reconciliation(
+        fixture.store(),
+        fixture.env(),
+        &conflicting,
+        &activity,
+        &inflight,
+        widgets,
+        |reserved| {
+            assert_eq!(reserved.story_id, widgets_story);
+            assert_eq!(
+                activity
+                    .active_for(widgets)
+                    .map(|active| active.story_id)
+                    .as_deref(),
+                Some(widgets_story.as_str()),
+                "the hold keeps widgets' worker reserved"
+            );
+            let drained = tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &landing,
+                &activity,
+                &inflight,
+                gadgets,
+            )?;
+            *other_drained_during_hold.lock().unwrap() = Some(drained);
+            Ok(None)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Returned);
+    assert_eq!(
+        *other_drained_during_hold.lock().unwrap(),
+        Some(TickResult::Completed),
+        "gadgets must land while widgets' worker is held for reconciliation"
+    );
+    let gadgets_row = fixture
+        .store()
+        .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", &gadgets_story).unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(gadgets_row.state, "done");
+    assert!(activity.active_all().is_empty());
+}
+
+/// A queued story's position counts its own project's queue, never the
+/// machine's: two projects with two stories each both report positions 1
+/// and 2 in their progress comments.
+#[test]
+fn a_queued_candidate_position_counts_only_its_own_project() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let gadgets = second_project(&fixture);
+    let widgets_first = submitted(&fixture, "widgets first", Priority::High, PR_ONE);
+    let widgets_second = submitted(&fixture, "widgets second", Priority::Low, PR_TWO);
+    let gadgets_first = submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets first",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+    let gadgets_second = submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets second",
+        Priority::Low,
+        "https://github.com/acme/gadgets/pull/2",
+    );
+
+    publish_once(
+        fixture.store(),
+        fixture.env(),
+        "2026-01-01T00:02:00Z",
+        &VerificationActivity::new(),
+    )
+    .unwrap();
+
+    assert!(last_comment(&fixture, &widgets_first).contains("QUEUED (position 1)"));
+    assert!(last_comment(&fixture, &widgets_second).contains("QUEUED (position 2)"));
+    let gadgets_comment = |id: &str| -> String {
+        let row = fixture
+            .store()
+            .read(|tx| tx.story(gadgets, StoryNo::parse_id("GD", id).unwrap()))
+            .unwrap()
+            .unwrap();
+        row.snapshot.comments.last().unwrap().text.clone()
+    };
+    assert!(
+        gadgets_comment(&gadgets_first).contains("QUEUED (position 1)"),
+        "{}",
+        gadgets_comment(&gadgets_first)
+    );
+    assert!(
+        gadgets_comment(&gadgets_second).contains("QUEUED (position 2)"),
+        "{}",
+        gadgets_comment(&gadgets_second)
+    );
+}
+
+/// The supervisor itself: one worker per registered project from the start,
+/// both inside their actuators at once; a project registered while the
+/// daemon runs gets a worker on the catalog change; stop drains every worker.
+#[test]
+fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use storyhook::daemon::bus::{Change, ChangeBus};
+    use storyhook::daemon::verification::poll_verification_with;
+
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let widgets = fixture.project();
+    let gadgets = second_project(&fixture);
+    submitted(&fixture, "widgets work", Priority::High, PR_ONE);
+    submitted_in(
+        &fixture,
+        gadgets,
+        "gadgets work",
+        Priority::High,
+        GADGETS_PR_ONE,
+    );
+
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let bus = ChangeBus::new();
+    let stop = AtomicBool::new(false);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let releases: Mutex<Vec<(storyhook::store::ProjectId, std::sync::mpsc::Sender<()>)>> =
+        Mutex::new(Vec::new());
+
+    /// Stops the supervisor when the scope unwinds, so an assertion that
+    /// fails below turns this test red instead of joining a supervisor
+    /// nobody told to stop (measured: without this, every mutation of the
+    /// supervisor hung the binary rather than failing the case).
+    struct StopOnDrop<'a> {
+        stop: &'a AtomicBool,
+        bus: &'a ChangeBus,
+    }
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.bus.publish(Change::Catalog);
+        }
+    }
+
+    thread::scope(|scope| {
+        let _stop_on_unwind = StopOnDrop {
+            stop: &stop,
+            bus: &bus,
+        };
+        let supervisor = scope.spawn(|| {
+            poll_verification_with(
+                fixture.store(),
+                fixture.env(),
+                &bus,
+                &stop,
+                &activity,
+                &inflight,
+                |project| {
+                    let (release_tx, release_rx) = std::sync::mpsc::channel();
+                    releases.lock().unwrap().push((project, release_tx));
+                    ProjectGateActuator {
+                        held: project,
+                        entered: entered_tx.clone(),
+                        release: Mutex::new(release_rx),
+                    }
+                },
+            );
+        });
+
+        let mut entered = vec![
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .unwrap(),
+        ];
+        entered.sort();
+        assert_eq!(
+            entered,
+            [widgets, gadgets],
+            "both projects' workers must be inside their actuators at once"
+        );
+        assert_eq!(activity.active_all().len(), 2);
+
+        // A project registered while the daemon runs.
+        let sprockets = fixture.add_project("sprockets", "SP");
+        fixture.link_origin_for(sprockets, "https://github.com/acme/sprockets");
+        submitted_in(
+            &fixture,
+            sprockets,
+            "sprockets work",
+            Priority::High,
+            "https://github.com/acme/sprockets/pull/1",
+        );
+        bus.publish(Change::Catalog);
+        assert_eq!(
+            entered_rx
+                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .expect("the catalog change must spawn sprockets' worker"),
+            sprockets
+        );
+        assert_eq!(activity.active_all().len(), 3);
+
+        for (_, release) in releases.lock().unwrap().iter() {
+            release.send(()).unwrap();
+        }
+        // Every worker lands its story, then idles; stop drains them.
+        let deadline = Instant::now() + lifecycle::CONTROL_DEADLINE;
+        while Instant::now() < deadline && !activity.active_all().is_empty() {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            activity.active_all().is_empty(),
+            "{:?}",
+            activity.active_all()
+        );
+        drop(_stop_on_unwind);
+        supervisor.join().unwrap();
+    });
+
+    for (project, prefix) in [(widgets, "SH"), (gadgets, "GD")] {
+        let rows = fixture
+            .store()
+            .read(|tx| tx.stories(project, &storyhook::store::StoryQuery::all().state("done")))
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{prefix}: {rows:?}");
+    }
 }

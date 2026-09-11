@@ -103,9 +103,9 @@ grep -qF -- "--resume" "$SKILL" \
 grep -qF -- 'resume-available' "$SKILL" \
   || fail_test "router skill never routes the interactive resume confirmation"
 grep -qF -- "--over-budget" "$SKILL" \
-  || fail_test "router skill never mentions --over-budget (SH-655's lane-budget override)"
+  || fail_test "router skill never mentions --over-budget (deprecated compatibility flag)"
 grep -qF -- 'lane-budget' "$SKILL" \
-  || fail_test "router skill never routes the lane-budget refusal"
+  || fail_test "router skill never describes the informational lane-budget census"
 grep -qF "STORY_AUTO_PROMPT" "${docs[@]}" \
   || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
 

@@ -306,7 +306,7 @@ require_certified_by_gate() {
         return 0
     fi
     gate_progress_emit_item "release gate" failed
-    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). The configured [verify] gate must certify the tree it ran on by ending in scripts/gate-receipt.sh postlude at tier gate or full — make test and make test-full do; make test-changed and a bare test runner do not. Gate log: $log"
+    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
 }
 
 # Posts the red verdict for the gate `run_verification_gate` just reported as

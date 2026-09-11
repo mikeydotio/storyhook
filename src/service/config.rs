@@ -103,6 +103,9 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
         role: Option<String>,
         description: Option<String>,
     ) -> Result<StateDef, AppError> {
+        if slug == "closed" {
+            return Err(AppError::Validation("state `closed` is reserved for legacy history; use `dropped` for abandoned work or choose another custom name".into()));
+        }
         let project = self.ctx.project();
         Ok(self.ctx.store().write(|tx| {
             let mut states = tx.states(project)?;

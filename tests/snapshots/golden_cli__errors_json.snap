@@ -102,7 +102,7 @@ stderr: <empty>
 $ story context --format --json
 exit: 2
 stdout: 
-{"error":"usage: story load-context [--format markdown|json]","exit_code":2,"result":"error"}
+{"error":"usage: story load-context [--format markdown|json] [--story <id>]","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

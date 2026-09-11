@@ -58,6 +58,7 @@ impl LandRepo {
             "machine-lock.sh",
             "merge-preflight.sh",
             "gate-receipt.sh",
+            "tree-receipt.sh",
             "tracked-tree.sh",
         ] {
             std::os::unix::fs::symlink(
@@ -187,6 +188,35 @@ impl LandRepo {
             .env_remove("STORYHOOK_MACHINE_LOCKS")
             .output()
             .expect("running unlocked certification core")
+    }
+
+    /// The directory `machine-lock.sh` uses for `name` from this repository,
+    /// read from its own `--plan`: the key carries the repository's project
+    /// component (SH-648), pinned in `tests/machine_lock.rs`, never spelled
+    /// here a second time.
+    fn lock_path(&self, name: &str) -> PathBuf {
+        let out = command(
+            self.path(),
+            "bash",
+            &[
+                &self.script("machine-lock.sh"),
+                "--plan",
+                name,
+                "--",
+                "true",
+            ],
+        )
+        .env("STORYHOOK_LOCK_DIR", self.lock_root())
+        .output()
+        .expect("planning the lock");
+        assert_ok(&out, "planning the merge lock");
+        let printed = String::from_utf8_lossy(&out.stdout);
+        PathBuf::from(
+            printed
+                .lines()
+                .find_map(|line| line.strip_prefix("lock="))
+                .unwrap_or_else(|| panic!("--plan must print `lock=`\nstdout: {printed}")),
+        )
     }
 
     fn hold_merge_lock(&self, seconds: u64) -> ChildGuard {
@@ -597,7 +627,7 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
 
     const HOLD_SECS: u64 = 2;
     let mut holder = repo.hold_merge_lock(HOLD_SECS);
-    wait_for(&repo.lock_root().join("merge.lock").join("pid"));
+    wait_for(&repo.lock_path("merge").join("pid"));
     let out = repo.run_core(
         &base,
         &head,

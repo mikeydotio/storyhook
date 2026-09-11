@@ -289,8 +289,19 @@ pub trait ReadOps {
     /// projects before either can make a safe decision.
     fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
 
-    /// The machine-wide verifier incident, if infrastructure owns the queue.
-    fn verification_incident(&self) -> Result<Option<VerificationIncident>, StoreError>;
+    /// This project's verifier incident, if infrastructure owns its queue
+    /// (SH-648: one worker, one queue and one incident per project).
+    fn verification_incident(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<VerificationIncident>, StoreError>;
+
+    /// Whether this project permits new verifier admissions; defaults to true.
+    fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
+
+    /// Every project's verifier incident, ordered by project — for the
+    /// surfaces that report across projects (the progress publisher).
+    fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
 
     /// Every lane belonging to a run, ordered by lane index.
     fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
@@ -530,7 +541,8 @@ pub trait WriteOps: ReadOps {
     /// retained until they settle; only an idle lane may reach this operation.
     fn delete_engine_lane(&mut self, run_id: &str, lane_index: u32) -> Result<(), StoreError>;
 
-    /// Creates or replaces the one machine-wide verifier incident.
+    /// Creates or replaces the incident of the project it names — one per
+    /// project, never one per machine.
     fn put_verification_incident(
         &mut self,
         incident: &VerificationIncident,
@@ -538,6 +550,13 @@ pub trait WriteOps: ReadOps {
 
     /// Clears the incident only when its identity still matches `incident_id`.
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError>;
+
+    /// Persists manual verifier admission permission independently of incidents.
+    fn put_verification_enabled(
+        &mut self,
+        project: ProjectId,
+        enabled: bool,
+    ) -> Result<(), StoreError>;
 
     /// Registers a git origin as belonging to this project.
     ///

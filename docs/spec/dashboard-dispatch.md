@@ -218,9 +218,10 @@ unilaterally.
 > mode remains: the child must still produce and persist a plan before implementation,
 > but Storyhook's provider-native posture approves it without a person. The surviving
 > controls are the named dashboard token, the fixed autonomous charter, isolation in a
-> disposable worktree, the explicit version/release/deploy prohibition, a pushed PR,
-> the required full-suite green receipt before merge, and `reap`'s destructive-safety
-> guards. Attended dispatch retains human plan approval unchanged.
+> disposable worktree, the explicit version/release/deploy prohibition, a PR the
+> verifier pushes and opens from the dispatched commit (SH-647, so the branch on
+> origin is exactly what a human reviews before merge), the required full-suite green
+> receipt before merge, and `reap`'s destructive-safety guards. Attended dispatch retains human plan approval unchanged.
 
 **F4 — the token's scope and limits, stated plainly.** Minted once per daemon lifetime
 (`lifecycle::mint_token`), not per-user, not rotated except by restart. Its
@@ -599,7 +600,11 @@ The shared SessionStart hook now derives its canonical plugin root from its own 
 adds it to the protocol-2 dispatch sentinel. Auto and Full Auto Codex readiness requires the
 sentinel's `plugin_root` to exactly equal the canonical root that owns the running helper.
 No sentinel, a protocol-1 or malformed sentinel, and a different root all refuse and roll back
-before the plan watcher or prompt is delivered. Attended Codex remains screen-gated because a
+before the plan watcher or story charter is delivered. SH-675 corrects the startup order:
+Codex invokes SessionStart on its first turn, so autonomous dispatch first submits one
+task-free initialization turn that the matching hook stops. A private attempt receipt and
+matching transcript completion are required before the charter. See
+[Codex dispatch initialization](codex-dispatch-initialization.md). Attended Codex remains screen-gated because a
 person is present; Claude retains its existing sentinel-and-pane gate without requiring root
 identity. The `request_user_input` denial remains defense in depth after this fail-closed
 handoff boundary.

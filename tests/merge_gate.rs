@@ -353,7 +353,15 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         &[
             "bash",
             "-c",
-            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+            // `--held` asked from INSIDE the speculative checkout: the poller
+            // worktree's swapped gitlink resolves the repository's own common
+            // dir, so the key the inner `run-tests.sh` take derives is the one
+            // the outer `verify-pr.sh` hold recorded (SH-648) — the fact the
+            // reentrancy invariant now rests on.
+            &format!(
+                "bash '{}' --held gate || exit 99; [ -z \"${{STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+                checkout().join("scripts/machine-lock.sh").display()
+            ),
         ],
     );
 
@@ -3101,6 +3109,14 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     assert!(
         detail.contains("gate-receipt.sh postlude"),
         "names the remedy: {detail}"
+    );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" preflight"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" postlude gate"),
+        "{detail}"
     );
     let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
     assert!(detail.contains(&tree), "names the tree: {detail}");

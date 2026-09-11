@@ -148,6 +148,65 @@ fn unblock_clears_awaiting() {
         .stdout(predicate::str::contains("awaiting:").not());
 }
 
+/// SH-658: production CLI -> daemon -> service -> ready queue, with an
+/// unrelated story reference in the explanation to catch spurious nudges.
+#[test]
+fn block_on_explanation_releases_the_ready_queue_when_the_blocker_finishes() {
+    let project = TestEnv::shared()
+        .project()
+        .seed_story("worker")
+        .seed_story("blocker")
+        .seed_story("context")
+        .build();
+    project
+        .run(&[
+            "block",
+            "SH-1",
+            "--on",
+            "SH-2",
+            "needs API; background in SH-3",
+        ])
+        .success()
+        .stdout(predicate::str::contains("reason names SH-3").not());
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1").not());
+    project.run(&["move", "SH-2", "done"]).success();
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1"));
+    project
+        .run(&["show", "SH-1"])
+        .success()
+        .stdout(predicate::str::contains(
+            "Blocked on SH-2: needs API; background in SH-3",
+        ));
+    project
+        .run(&["block", "SH-1", "external approval"])
+        .success();
+    project
+        .run(&["list", "--ready"])
+        .success()
+        .stdout(predicate::str::contains("SH-1").not());
+}
+
+#[test]
+fn block_on_warning_reads_the_preserved_prose_hold() {
+    let project = TestEnv::shared()
+        .project()
+        .seed_story("worker")
+        .seed_story("blocker")
+        .seed_story("unlinked blocker")
+        .build();
+    project.run(&["block", "SH-1", "waiting on SH-3"]).success();
+    project
+        .run(&["block", "SH-1", "--on", "SH-2", "dependency explanation"])
+        .success()
+        .stdout(predicate::str::contains("reason names SH-3"));
+}
+
 #[test]
 fn prioritize_sets_priority() {
     let dir = scratch_dir();

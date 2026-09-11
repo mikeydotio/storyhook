@@ -594,6 +594,31 @@ fn story_context_matches_the_equivalent_cli_invocation() {
     assert_eq!(via_tool, via_cli);
 }
 
+#[test]
+fn story_context_obviation_matches_cli_and_advertises_review() {
+    let via_tool = call(
+        "story_context",
+        &map(&[
+            ("project", json!("SH")),
+            ("format", json!("json")),
+            ("story", json!("SH-1")),
+        ]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&[
+        "load-context",
+        "--format",
+        "json",
+        "--story",
+        "SH-1",
+    ]))
+    .unwrap();
+    assert_eq!(via_tool, via_cli);
+    let description = description_of("story_context");
+    assert!(description.contains("obviation"));
+    assert!(description.contains("before implementation"));
+    assert!(description.contains("resuming"));
+}
+
 // ---------------------------------------------------------------------------
 // 2b. The tool descriptions carry the three sentences their stories require.
 //     Wiring fences in SH-360's exact sense: each proves the sentence exists,

@@ -49,11 +49,11 @@ pub(crate) fn write_states(
     tx.put_states(project, states)
 }
 
-/// Writes a state set, adding any required states it lacks.
+/// Writes a restored state set, normalizing legacy names and adding missing states.
 ///
 /// The path *foreign data* takes: `story import-project` and `story migrate`,
 /// both of which carry a catalog written by something other than this binary.
-/// Returns what was actually written, which is the input plus any repair.
+/// Returns the normalized catalog used to replay the incoming history.
 ///
 /// A repair is still not a licence to reinterpret: a required slug present
 /// under the wrong superstate is refused here exactly as it would be on a user

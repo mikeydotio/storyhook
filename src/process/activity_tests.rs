@@ -57,6 +57,7 @@ fn both_deadline_modes_record_output_and_timeouts() {
         idle,
         TerminationPolicy::Kill,
         &progress,
+        &Cancellation::default(),
         |_| Ok(()),
     )
     .unwrap_or_else(|error| panic!("{}", error.detail()));
@@ -78,6 +79,7 @@ fn both_deadline_modes_record_output_and_timeouts() {
             idle,
             TerminationPolicy::Kill,
             &progress,
+            &Cancellation::default(),
             |_| Ok(()),
         ),
         Err(CaptureError::Timeout(_))

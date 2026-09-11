@@ -249,12 +249,15 @@ or legacy `master` with no receipt — defence in depth behind the GitHub
 rulesets that already block direct pushes there by policy. Every feature ref
 is *reported*, never refused: which tier's receipt the tree
 carries, or that it carries none, and that `scripts/merge-preflight.sh` is
-what actually decides whether this content may land. The autonomous dispatch
-charter (`plugins/story/bin/story.sh`'s `PROMPT_TPL`/`AUTO_PROMPT_TAIL`)
-changed to match: commit, push, and open the PR *before* running the test
-suite, so work is preserved on the remote even if testing turns something up
-— then run `make test` and merge only once it passes, since the merge gate
-still requires it.
+what actually decides whether this content may land. Since SH-647 the
+autonomous dispatch charter (`plugins/story/bin/story.sh`'s
+`PROMPT_TPL`/`AUTO_PROMPT_TAIL`) no longer pushes at all: the agent commits and
+moves the story to `verifying` from inside its worktree, and the verifier
+pushes the leased branch and opens the PR as its first step, then runs the gate
+on the speculative merge tree and merges only once it passes. The push gate's
+narrowing still governs any branch a human pushes by hand; a dispatched agent
+no longer pushes, so it no longer meets the gate at all. Design of record for
+the dispatched path: `docs/spec/verification-workflow.md`.
 
 **Why this is sound and not merely convenient.** Nothing about `main`'s actual
 protection moved: `merge-preflight.sh` still refuses a merge tree with no
@@ -927,7 +930,7 @@ over a mechanism that is not actually reliable.
 
 ## One suite at a time on this machine (SH-457)
 
-`scripts/run-tests.sh` runs under the machine-wide `gate` lock
+`scripts/run-tests.sh` runs under the repository's `gate` lock
 (`scripts/machine-lock.sh`, SH-456). Every caller therefore queues: both Rust
 batteries, `scripts/run-changed.sh`, and a bare `bash scripts/run-tests.sh`
 typed by hand.
@@ -955,7 +958,7 @@ rather than asking anyone to remember a step.
 
 Liveness is sufficient for a waiter and insufficient for a holder: an
 infinite loop, deadlocked mutex or wedged syscall leaves the process alive
-while it holds every later verification off the machine-wide gate. The lock
+while it holds every later verification off the repository's gate. The lock
 therefore watches the SH-524 append-only journal while `gate` is held. Each
 growth event resets the full inactivity budget; total runtime has no ceiling.
 
@@ -1115,7 +1118,7 @@ all.
 wedged a `bash scripts/run-rust-battery.sh core` run for **ten hours and
 twenty-one minutes** (2026-08-31 22:35 → 2026-09-01 08:56): the test binary at
 0% CPU with its own `story daemon --serve --port 0` child alive and never
-reaped. It held the machine-wide `gate` lock the whole time, and every
+reaped. It held the repository's `gate` lock the whole time, and every
 subsequent verification on the machine queued behind it.
 
 Nothing above the test could have ended it. `run-tests.sh`,
@@ -1323,7 +1326,7 @@ binary's blocks, so an unsupported hard link fails loudly with both paths.
 
 This closes every producer door without naming one: Makefile builds, E2E,
 baseline capture and a hand-run `cargo build` can all replace the shared path,
-and no already-running consumer follows it. Widening the machine-wide `gate`
+and no already-running consumer follows it. Widening the repository's `gate`
 lock remains rejected because it enlarges the critical section and still
 cannot cover a hand-run producer. A per-leg `CARGO_TARGET_DIR` remains rejected
 because it covers only listed legs while paying the graph's disk and cold-build

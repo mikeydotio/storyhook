@@ -513,7 +513,7 @@ fn unrelating_from_a_closed_target_succeeds_for_every_kind() {
         let service = RelationService::new(&ctx);
         service.relate(&a, asked, &b, false).unwrap();
         StoryService::new(&ctx)
-            .set_state(&b, "closed", None, None, None)
+            .set_state(&b, "dropped", None, None, None)
             .unwrap();
 
         let result = service.relate(&a, asked, &b, true);
@@ -727,7 +727,7 @@ fn closing_a_related_story_leaves_the_relation_intact() {
         .relate(&a, "blocks", &b, false)
         .unwrap();
     StoryService::new(&ctx)
-        .set_state(&b, "closed", None, None, None)
+        .set_state(&b, "dropped", None, None, None)
         .unwrap();
 
     assert_eq!(snapshot(&fixture, &b).superstate, SuperState::Closed);
@@ -783,9 +783,12 @@ fn block_on_writes_every_edge_and_the_reason_in_one_call() {
             ("blocked-by".to_string(), blocker_b.clone()),
         ]
     );
+    let worker_snapshot = snapshot(&fixture, &worker);
+    assert_eq!(worker_snapshot.awaiting, None);
+    assert_eq!(worker_snapshot.comments.len(), 1);
     assert_eq!(
-        snapshot(&fixture, &worker).awaiting.as_deref(),
-        Some("needs both")
+        worker_snapshot.comments[0].text,
+        format!("Blocked on {blocker_a}, {blocker_b}: needs both")
     );
     assert_eq!(
         relations(&fixture, &blocker_a),
@@ -882,10 +885,19 @@ fn block_on_repeated_with_the_same_blocker_does_not_duplicate_the_edge() {
         relations(&fixture, &blocker),
         [("blocks".to_string(), worker.clone())]
     );
-    // The reason itself is a plain overwrite, same as `set_awaiting`.
+    // Explanations remain in history, without becoming independent holds.
+    let worker_snapshot = snapshot(&fixture, &worker);
+    assert_eq!(worker_snapshot.awaiting, None);
     assert_eq!(
-        snapshot(&fixture, &worker).awaiting.as_deref(),
-        Some("second reason")
+        worker_snapshot
+            .comments
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            format!("Blocked on {blocker}: first reason"),
+            format!("Blocked on {blocker}: second reason"),
+        ]
     );
 }
 
@@ -918,12 +930,16 @@ fn unblock_from_removes_just_the_named_edge_leaving_the_rest_alone() {
     let blocker_a = new_story(&ctx, "blocker a");
     let blocker_b = new_story(&ctx, "blocker b");
 
+    StoryService::new(&ctx)
+        .set_awaiting(&worker, "still true")
+        .unwrap();
+
     let service = RelationService::new(&ctx);
     service
         .block_on(
             &worker,
             &[blocker_a.clone(), blocker_b.clone()],
-            Some("still true"),
+            Some("needs both dependencies"),
         )
         .unwrap();
 
@@ -964,6 +980,150 @@ fn unblock_from_an_edge_that_is_not_there_is_a_no_op() {
 }
 
 // --- closed blockers (SH-500) ---------------------------------------------
+
+/// SH-658: test the service's actual folded events, including the lifecycle
+/// edge retraction, so changing only a constructed snapshot cannot pass.
+#[test]
+fn block_on_explanation_stops_blocking_when_the_last_dependency_closes() {
+    for closure in ["done", "dropped"] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let worker = new_story(&ctx, "worker");
+        let a = new_story(&ctx, "a");
+        let b = new_story(&ctx, "b");
+        let ready = || {
+            let index = [&worker, &a, &b]
+                .into_iter()
+                .map(|id| (id.clone(), snapshot(&fixture, id)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            storyhook::domain::is_ready(&index[&worker], &index)
+        };
+
+        RelationService::new(&ctx)
+            .block_on(&worker, &[a.clone(), b.clone()], Some("needs both"))
+            .unwrap();
+        assert!(!ready());
+        StoryService::new(&ctx)
+            .set_state(&a, closure, None, None, None)
+            .unwrap();
+        assert!(!ready(), "the second blocker still blocks");
+        StoryService::new(&ctx)
+            .set_state(&b, closure, None, None, None)
+            .unwrap();
+        assert!(
+            ready(),
+            "the explanation must not outlive its dependencies as a hold"
+        );
+        assert_eq!(snapshot(&fixture, &worker).comments.len(), 1);
+        fixture.assert_no_drift();
+    }
+}
+
+#[test]
+fn block_on_preserves_an_independent_prose_hold_in_either_authoring_order() {
+    for prose_first in [false, true] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let worker = new_story(&ctx, "worker");
+        let blocker = new_story(&ctx, "blocker");
+        let prose = || RelationService::new(&ctx).block_on(&worker, &[], Some("external review"));
+        if prose_first {
+            prose().unwrap();
+        }
+        RelationService::new(&ctx)
+            .block_on(
+                &worker,
+                std::slice::from_ref(&blocker),
+                Some("dependency explanation"),
+            )
+            .unwrap();
+        if !prose_first {
+            prose().unwrap();
+        }
+        StoryService::new(&ctx)
+            .set_state(&blocker, "done", None, None, None)
+            .unwrap();
+        let worker_snapshot = snapshot(&fixture, &worker);
+        assert_eq!(worker_snapshot.awaiting.as_deref(), Some("external review"));
+        let index = std::collections::BTreeMap::<String, StorySnapshot>::new();
+        assert!(!storyhook::domain::is_ready(&worker_snapshot, &index));
+        StoryService::new(&ctx).clear_awaiting(&worker).unwrap();
+        assert!(storyhook::domain::is_ready(
+            &snapshot(&fixture, &worker),
+            &index
+        ));
+    }
+}
+
+#[test]
+fn block_on_explanation_survives_explicit_unblocking_without_holding_readiness() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+    let service = RelationService::new(&ctx);
+    service
+        .block_on(
+            &worker,
+            &[blocker.clone(), blocker.clone()],
+            Some("  rationale\nwith detail  "),
+        )
+        .unwrap();
+    service
+        .unblock_from(&worker, std::slice::from_ref(&blocker))
+        .unwrap();
+    let worker_snapshot = snapshot(&fixture, &worker);
+    assert!(storyhook::domain::is_ready(
+        &worker_snapshot,
+        &std::collections::BTreeMap::<String, StorySnapshot>::new()
+    ));
+    assert_eq!(worker_snapshot.comments.len(), 1);
+    assert_eq!(
+        worker_snapshot.comments[0].text,
+        format!("Blocked on {blocker}: rationale\nwith detail")
+    );
+}
+
+#[test]
+fn block_on_blank_reason_rolls_back_both_edges_and_preserves_the_subject() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+    let before = snapshot(&fixture, &worker);
+    assert!(
+        RelationService::new(&ctx)
+            .block_on(&worker, std::slice::from_ref(&blocker), Some(" \n\t "))
+            .is_err()
+    );
+    assert_eq!(snapshot(&fixture, &worker), before);
+    assert!(relations(&fixture, &blocker).is_empty());
+    fixture.assert_no_drift();
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn block_on_failed_commit_rolls_back_edges_and_explanation_together() {
+    use storyhook::store::fault::{FaultAction, FaultPoint, arm};
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+    let before = snapshot(&fixture, &worker);
+    let error = {
+        let _fault = arm(
+            FaultPoint::BeforeCommit,
+            FaultAction::Fail("interrupted block".to_string()),
+        );
+        RelationService::new(&ctx)
+            .block_on(&worker, std::slice::from_ref(&blocker), Some("explanation"))
+            .unwrap_err()
+    };
+    assert!(error.to_string().contains("interrupted block"));
+    assert_eq!(snapshot(&fixture, &worker), before);
+    assert!(relations(&fixture, &blocker).is_empty());
+    fixture.assert_no_drift();
+}
 
 #[test]
 fn closing_a_blocker_retracts_both_relationship_histories_and_indexes() {

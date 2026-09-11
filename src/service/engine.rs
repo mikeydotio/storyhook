@@ -70,17 +70,6 @@ pub const COMPLETED: &str = "completed";
 /// Consecutive hard stops that halt a run (D10). A completion zeroes the count.
 pub const HARD_STOP_BREAKER: u32 = 3;
 
-/// The machine-wide ceiling on lanes filled across every live run (D14).
-///
-/// **Derived, not picked.** A filled lane is exactly one `story.sh dispatch`
-/// subprocess, and this machine already bounds those:
-/// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
-/// literal would be a second opinion about one machine, which this project has
-/// paid for repeatedly (SH-136).
-/// `the_lane_budget_is_spelled_as_the_dispatch_capacity_not_a_copy_of_its_digits`
-/// (`tests/engine_reconcile.rs`) fails if the two ever drift.
-pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
-
 /// How long a live agent may legitimately show **no output on its pty and no
 /// story event**, in seconds: one foreground tool call.
 ///
@@ -350,10 +339,9 @@ pub struct ReconcileReport {
     pub quarantined: Vec<(u32, HardStopKind)>,
     /// Lane indices filled this pass, with the story each claimed.
     pub filled: Vec<(u32, String)>,
-    /// The machine-wide census the fill measured its budget against
-    /// (SH-655): every live agent window on the dispatcher's tmux server,
-    /// manual sessions included. `None` when the pass never reached a fill
-    /// (the run was not running, or reconciliation stopped earlier).
+    /// Informational census of live agent windows on the dispatcher's tmux
+    /// server, including manual sessions. It never limits a run (SH-672).
+    /// `None` when the pass did not attempt to fill any idle lanes.
     pub census: Option<WindowCensus>,
     /// The run's state after the pass.
     pub run_state: EngineRunState,
@@ -384,8 +372,9 @@ pub struct ReconcileReport {
 /// persistent shell (`plugins/story/bin/story.sh`'s own `remain-on-exit`
 /// rationale) — so the pane is normally already dead the instant a story
 /// reaches this handoff, exactly like an ordinary completion. Reading the
-/// window next would report every successful lane as `WindowGone`, and D4's
-/// serial, machine-wide verification queue can legitimately outrun any one
+/// window next would report every successful lane as `WindowGone`, and the
+/// project's serial verification queue (D4 as narrowed by SH-648: one worker
+/// per project) can legitimately outrun any one
 /// lane's own [`STALL_CEILING_SECS`] besides, so reading the clock next would
 /// eventually report the same success as `Stalled` instead. Neither is a
 /// failure; the story is exactly where it is supposed to be.
@@ -567,8 +556,8 @@ pub trait Dispatcher: Send + Sync {
     fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
-    /// lanes on — every dispatched session, engine-filled or manual, counted
-    /// against the one machine budget (SH-655). Taken once per fill pass;
+    /// lanes on — every dispatched session, engine-filled or manual.
+    /// Informational only (SH-672), taken once per fill pass;
     /// an unanswered census is no evidence (SH-626), never zero.
     fn census(&self) -> WindowCensus;
 }
@@ -1740,25 +1729,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cloned()
             .collect();
 
-        // THE MACHINE CENSUS (SH-655). `occupied_lane_count` sees the store's
-        // own lanes; a session `/story do` opened by hand is the same window,
-        // worktree and cold build and is in no table. So the budget is also
-        // measured against the live agent windows on this dispatcher's tmux
-        // server — taken ONCE per pass, outside the claim transaction (a
-        // subprocess inside a write transaction would hold the store for as
-        // long as tmux takes to answer), and advanced by hand for every
-        // window this pass has opened since, which the census cannot yet see.
-        // An unanswered census is no evidence (SH-626): the store's count
-        // still bounds the engine's own lanes, and the daemon journals the
-        // outage on its edge rather than once per pass.
-        let census = if idle.is_empty() {
+        // The census is diagnostic only (SH-672). Capacity belongs to this
+        // run and is checked in the same transaction that reserves its lane.
+        // Keep the subprocess outside that transaction so tmux cannot hold
+        // the store's write lock while answering.
+        report.census = if idle.is_empty() {
             None
         } else {
             Some(self.dispatcher.census())
         };
-        let census_live = census.as_ref().and_then(WindowCensus::live);
-        report.census = census;
-        let mut dispatched_this_pass = 0usize;
 
         for lane in idle {
             let dispatched_at = self.ctx.now();
@@ -1778,10 +1757,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         let lanes = tx.engine_lanes(run_id)?;
                         let eligible = current.state == EngineRunState::Running
                             && scope_is_available(tx, self.ctx.project(), &current.scope)?
-                            && occupied_lane_count(tx)? < ENGINE_LANE_BUDGET
-                            && census_live.is_none_or(|live| {
-                                live + dispatched_this_pass < ENGINE_LANE_BUDGET
-                            })
                             && occupied_run_lane_count(&lanes) < current.lanes as usize
                             && lanes.iter().any(|candidate| candidate == &lane);
                         if eligible {
@@ -1846,7 +1821,6 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     live.outcome = None;
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
-                    dispatched_this_pass += 1;
                     report.filled.push((lane.lane_index, story));
                 }
                 DispatchOutcomeState::Refused => {
@@ -2448,27 +2422,7 @@ fn observation_is_current(
     Ok(current.map(|row| row.head_global_seq.get()) == head_global_seq)
 }
 
-/// Capacity belongs to occupied lanes, including evidence retained by a halted
-/// run. Call inside the same write transaction that reserves the next lane.
-fn occupied_lane_count(tx: &impl ReadOps) -> Result<usize, StoreError> {
-    let mut occupied = 0;
-    for project in tx.projects()? {
-        for run in tx.engine_runs(&project.slug)? {
-            occupied += tx
-                .engine_lanes(&run.id)?
-                .iter()
-                .filter(|lane| {
-                    matches!(
-                        lane.state,
-                        EngineLaneState::Dispatching | EngineLaneState::Working
-                    )
-                })
-                .count();
-        }
-    }
-    Ok(occupied)
-}
-
+/// Counts this run's reservations and live work inside the claim transaction.
 fn occupied_run_lane_count(lanes: &[EngineLaneRecord]) -> usize {
     lanes
         .iter()
@@ -2587,6 +2541,24 @@ pub(crate) fn run_shell_dispatch(
     options: &DispatchOptions,
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
+    run_shell_dispatch_cancellable(
+        script, project, story, agent, auto, full_auto, options, env, None,
+    )
+}
+
+/// Dispatch with verifier-owned cancellation; ordinary dispatch uses an unset token.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_shell_dispatch_cancellable(
+    script: &Path,
+    project: &str,
+    story: &str,
+    agent: Option<EngineAgent>,
+    auto: bool,
+    full_auto: bool,
+    options: &DispatchOptions,
+    env: &Environment,
+    cancellation: Option<&crate::process::Cancellation>,
+) -> Result<DispatchOutcome, AppError> {
     let [
         story_prompt,
         story_auto_prompt,
@@ -2673,7 +2645,22 @@ pub(crate) fn run_shell_dispatch(
         );
     }
 
-    let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+    let captured = match cancellation {
+        Some(cancellation) => crate::process::run_captured_cancellable(
+            command,
+            DISPATCH_TIMEOUT,
+            crate::process::TerminationPolicy::TerminateThenKill {
+                grace: Duration::from_secs(30),
+            },
+            cancellation,
+            |_| Ok(()),
+        ),
+        None => run_captured(command, DISPATCH_TIMEOUT),
+    }
+    .map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage dispatch output: {detail}"))
         }
@@ -2725,6 +2712,9 @@ fn run_shell_unclaim(
         .env("GIT_TERMINAL_PROMPT", "0");
 
     let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage unclaim output: {detail}"))
         }
@@ -2822,6 +2812,9 @@ pub(crate) fn run_shell_capabilities(
         .env("GIT_TERMINAL_PROMPT", "0");
 
     let captured = run_captured(command, CAPABILITIES_TIMEOUT).map_err(|error| match error {
+        CaptureError::Cancelled => {
+            AppError::Validation("the operator cancelled verification".into())
+        }
         CaptureError::Stage(detail) => {
             AppError::Storage(format!("could not stage capabilities output: {detail}"))
         }

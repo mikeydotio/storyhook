@@ -13,8 +13,10 @@ readiness, state admission, and landing cannot disagree. `obviated-by` retains
 its unconditional readiness restriction without becoming a transition blocker.
 
 Configured catalog order determines advancement. Backward and same-state moves
-are allowed. The exact `closed` slug remains available for abandonment; `done`
-is forbidden while blocked even if reordered earlier. Entering reserved
+are allowed. Following the SH-663 rename, the exact `dropped` slug remains
+available for abandonment; `done` is forbidden while blocked even if reordered
+earlier. Historical `closed` events use the same catalog-aware resolver as replay.
+Entering reserved
 `blocked` is always allowed; leaving it uses the latest non-blocked pipeline
 state as the comparison point. A story created in `blocked` uses the first
 configured non-blocked OPEN state. This prevents a detour through `blocked`
@@ -52,6 +54,11 @@ These checks apply at transaction commit, including maintenance paths, so replay
 exemption cannot invalidate a live merge already authorized.
 
 Recovery reconciles unresolved intents before rescheduling their stories.
+Each project worker recovers only its own intents and observes its durable stop
+permission. Cancellation before certification returns cannot authorize a merge.
+Cancellation during landing preserves ambiguous authority; a confirmed merge
+still records completion. The landing table uses migration 38, after the dev
+incident, state rename, and verifier control migrations.
 Completion and intent release are atomic. A definitive refusal before a merge
 request permits release; timeout, connection loss, or a currently OPEN PR do not
 prove that an earlier request cannot still complete. Ambiguous intents remain
@@ -69,7 +76,7 @@ request that survives it. References: [SQLite transactions](https://www.sqlite.o
 Regressions cover order permutations, the blocked detour, exact abandonment,
 undo, historical replay, maintenance, batch rollback, queue visibility, blockers
 arriving during tests or landing, and restart with ambiguous external outcomes.
-Mutation-check the exact `closed` exception. Run the impacted-test selector on
+Mutation-check the exact `dropped` exception. Run the impacted-test selector on
 the changed tree and only new/directly impacted tests. The centralized verifier
 owns the full suite and merge. Submit one linked SH-656 PR and move to verifying
 as the last action.

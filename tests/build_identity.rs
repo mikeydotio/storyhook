@@ -3,7 +3,7 @@
 //! `build.rs` stamps every build with the git tree object id of its tracked
 //! content, via `scripts/tracked-tree.sh`. This suite proves both artifacts
 //! **for real** — a throwaway git repository, the actual tracked scripts
-//! (symlinked in, never copied — the `tests/push_gate.rs` convention), and
+//! (copied into fixtures so writes cannot reach the checkout), and
 //! `build.rs` itself compiled standalone with `rustc` and executed. The
 //! standalone-compile approach exists because `cargo test` never runs a
 //! crate's own build script as a test target, and a full `cargo build` in an
@@ -309,9 +309,9 @@ fn compiled_build_rs() -> &'static Path {
 }
 
 /// A repo shaped like a real checkout for `build.rs`'s purposes: a `.git`
-/// directory and the real `scripts/tracked-tree.sh`, symlinked in rather than
-/// copied (the `tests/push_gate.rs` convention) so this exercises the exact
-/// file that ships.
+/// directory and a copy of the real `scripts/tracked-tree.sh`. Every script
+/// belongs to the fixture: bundle setup may overwrite it, and copying onto a
+/// symlink to the checkout would truncate the source itself (SH-665).
 struct ManifestFixture {
     dir: TempDir,
 }
@@ -329,11 +329,11 @@ impl ManifestFixture {
         fixture.git(&["commit", "-qm", "init"]);
 
         std::fs::create_dir(fixture.path().join("scripts")).expect("fixture: scripts dir");
-        std::os::unix::fs::symlink(
+        std::fs::copy(
             checkout().join("scripts").join("tracked-tree.sh"),
             fixture.path().join("scripts").join("tracked-tree.sh"),
         )
-        .expect("fixture: linking the tracked script");
+        .expect("fixture: copying the tracked script");
 
         fixture
     }
@@ -349,11 +349,11 @@ impl ManifestFixture {
         fixture.git(&["commit", "--allow-empty", "-qm", "init"]);
 
         std::fs::create_dir(fixture.path().join("scripts")).expect("fixture: scripts dir");
-        std::os::unix::fs::symlink(
+        std::fs::copy(
             checkout().join("scripts").join("tracked-tree.sh"),
             fixture.path().join("scripts").join("tracked-tree.sh"),
         )
-        .expect("fixture: linking the tracked script");
+        .expect("fixture: copying the tracked script");
 
         fixture
     }
@@ -378,15 +378,14 @@ impl ManifestFixture {
 
     /// The smallest payloads `build.rs` will embed — two marketplace
     /// manifests and one regular file under `plugins/story`, plus the
-    /// verifier script family (SH-654), symlinked in by the names the real
+    /// verifier script family (SH-654), copied in by the names the real
     /// table carries rather than a second list — so a run that sets
     /// `OUT_DIR` (which is what makes `build.rs` embed at all) gets past the
     /// embedding to the stamp under test. Creates the `OUT_DIR` to hand it,
     /// since the embed writes there.
     fn with_marketplace_and_out_dir(&self, out_dir: &Path) {
         // Copied, not symlinked: `build.rs` refuses a symlink in a payload on
-        // purpose (a release binary must carry bytes, not a pointer), and the
-        // tracked-tree.sh symlink beside these is never embedded.
+        // purpose (a release binary must carry bytes, not a pointer).
         let scripts = self.path().join("scripts");
         std::fs::create_dir_all(&scripts).expect("fixture: scripts dir");
         for (name, _, _) in storyhook::daemon::verifier_bundle::files() {
@@ -414,7 +413,7 @@ impl ManifestFixture {
 
     fn replace_tracked_tree_script(&self, body: &str) {
         let script = self.path().join("scripts").join("tracked-tree.sh");
-        std::fs::remove_file(&script).expect("fixture: removing the production-script symlink");
+        std::fs::remove_file(&script).expect("fixture: removing the production-script copy");
         std::fs::write(script, body).expect("fixture: writing a tracked-tree probe script");
     }
 
@@ -430,6 +429,84 @@ impl ManifestFixture {
         }
         cmd.output().expect("running the compiled build.rs")
     }
+}
+
+/// SH-665: fixture setup and later writes must never reach checkout payloads.
+fn assert_manifest_payloads_are_owned(fixture: ManifestFixture) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let payloads = storyhook::daemon::verifier_bundle::files()
+        .map(|(name, _, _)| {
+            let source = checkout().join("scripts").join(name);
+            let bytes = std::fs::read(&source).expect("reading checkout payload");
+            let metadata = std::fs::metadata(&source).expect("checkout payload metadata");
+            (name, source, bytes, metadata)
+        })
+        .collect::<Vec<_>>();
+
+    for _ in 0..2 {
+        // Check aliases before copying or writing: a regression must fail
+        // without reproducing the original damage in the real checkout.
+        for (name, _, _, source_metadata) in &payloads {
+            let destination = fixture.path().join("scripts").join(name);
+            match std::fs::symlink_metadata(&destination) {
+                Ok(metadata) => {
+                    assert!(
+                        metadata.is_file(),
+                        "{name} must be a fixture-owned regular file"
+                    );
+                    assert_ne!(
+                        (metadata.dev(), metadata.ino()),
+                        (source_metadata.dev(), source_metadata.ino()),
+                        "{name} must not alias the checkout payload"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("reading fixture payload {name}: {error}"),
+            }
+        }
+
+        fixture.with_marketplace_and_out_dir(&fixture.path().join("out"));
+        for (name, source, bytes, source_metadata) in &payloads {
+            let destination = fixture.path().join("scripts").join(name);
+            let metadata = std::fs::symlink_metadata(&destination).unwrap();
+            assert!(metadata.is_file(), "{name} must remain a regular file");
+            assert_ne!(
+                (metadata.dev(), metadata.ino()),
+                (source_metadata.dev(), source_metadata.ino()),
+                "{name} must not alias the checkout payload after setup"
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), *bytes, "{name}");
+            assert_eq!(
+                metadata.permissions().mode(),
+                source_metadata.permissions().mode(),
+                "{name}"
+            );
+
+            std::fs::write(&destination, "fixture-local edit\n").unwrap();
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(
+                std::fs::read(source).unwrap(),
+                *bytes,
+                "{name}: checkout bytes changed"
+            );
+            assert_eq!(
+                std::fs::metadata(source).unwrap().permissions().mode(),
+                source_metadata.permissions().mode(),
+                "{name}: checkout permissions changed"
+            );
+        }
+    }
+}
+
+#[test]
+fn manifest_payloads_are_owned_in_a_populated_repo() {
+    assert_manifest_payloads_are_owned(ManifestFixture::with_git_and_script());
+}
+
+#[test]
+fn manifest_payloads_are_owned_in_an_empty_repo() {
+    assert_manifest_payloads_are_owned(ManifestFixture::with_empty_git_and_script());
 }
 
 fn emitted_build_id(out: &Output) -> Option<String> {

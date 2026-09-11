@@ -100,6 +100,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         }
 
         let mut message = String::new();
+        message.push_str("Before implementation of each assigned story, run `story help obviation-review` and `story load-context --story <id>`.\n\n");
         message.push_str(help_topics::compact_reference());
         message.push_str("PROJECT STATE\n");
 
