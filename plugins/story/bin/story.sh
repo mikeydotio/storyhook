@@ -454,6 +454,9 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # PR-title traceability moved to the verifier with submission (SH-647): the
 # verifier titles every pull request it opens "<n>: <title>", so neither the
 # agent nor this clause needs to.
+# Explicit readiness declaration for autonomous Codex; no model classification
+# is required when the child follows this protocol. Keep the charter shell-inert.
+CODEX_AUTO_PLAN_CLAUSE="In Codex Default mode, present a completed implementation plan as one JSON object with exactly four fields: type set to storyhook.implementation-plan, version set to integer 1, story_id set to <n>, and plan set to the complete plan text as a JSON string. Output only that object, without fences or surrounding prose. In Plan mode, use the native proposed_plan envelope instead. Use this declaration only for a complete implementation plan, never for operational permissions or unresolved choices. Approval applies to the decoded plan text and grants no additional permissions."
 CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
@@ -2059,6 +2062,9 @@ cmd_dispatch() {
     fi
   fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
+    if [ -n "$auto" ]; then
+      prompt_tpl="$prompt_tpl $CODEX_AUTO_PLAN_CLAUSE"
+    fi
     prompt_tpl="$prompt_tpl $CODEX_BUILTIN_CLAUSE"
   fi
   # Keep legacy placeholders available to wholesale prompt overrides even

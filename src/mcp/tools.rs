@@ -1013,7 +1013,8 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         Invocation::Claim { .. } => Some("story_claim"),
         Invocation::Unclaim { .. } => Some("story_unclaim"),
 
-        Invocation::Help
+        Invocation::SessionEligibility { .. }
+        | Invocation::Help
         | Invocation::Project { .. }
         | Invocation::Publish { .. }
         | Invocation::MemberAdd { .. }

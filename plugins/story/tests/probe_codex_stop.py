@@ -92,7 +92,7 @@ def run_plan_turn(command, repo, env):
                 print(stderr.read().decode(), file=sys.stderr)
 
 
-def run_probe(repo, story_id, mode='default'):
+def run_probe(repo, story_id, mode='default', structured=False):
     """Drive the installed provider against a model endpoint owned by this test."""
     real_codex = shutil.which('codex')
     assert real_codex, 'codex is required for the opt-in provider probe'
@@ -116,7 +116,8 @@ def run_probe(repo, story_id, mode='default'):
             elif any('approved automatically' in str(item) for item in request['input']):
                 text = 'CONTINUED_AFTER_AUTOMATIC_APPROVAL'
             else:
-                text = PLAN
+                text = (json.dumps({'type': 'storyhook.implementation-plan', 'version': 1,
+                                    'story_id': story_id, 'plan': PLAN}) if structured else PLAN)
             msg = {'id': 'msg_probe', 'type': 'message', 'role': 'assistant',
                    'content': [{'type': 'output_text', 'text': text}]}
             events = [
@@ -174,7 +175,7 @@ def run_probe(repo, story_id, mode='default'):
             expected = '<proposed_plan>' if mode == 'plan' else 'CONTINUED_AFTER_AUTOMATIC_APPROVAL'
             assert expected in result, result + '\nJOURNALS: ' + repr([(str(p),p.read_text()) for p in Path(env['CODEX_HOME']).rglob('*.storyhook-plan-approval')])
             classified = [r for r in requests if any(i.get('role') == 'user' and any(c.get('text', '').startswith('{"assistant_message":') for c in i.get('content', [])) for i in r['input'])]
-            assert len(classified) == 1, len(classified)
+            assert len(classified) == (0 if structured else 1), len(classified)
             for request in classified:
                 assert not request.get('tools'), request.get('tools')
                 assert all(not i.get('tools') for i in request['input'] if i.get('type') == 'additional_tools')
@@ -185,8 +186,10 @@ def run_probe(repo, story_id, mode='default'):
             saved = json.loads(journals[0].read_text())
             assert saved['story_id'] == story_id, saved
             assert saved['mode'] == mode, saved
-            assert len(requests) == 3, len(requests)
-            print(f'PASS ({mode}): real Codex plan → production Stop → isolated Luna → native continuation; 3 requests, zero tools')
+            assert len(requests) == (2 if structured else 3), len(requests)
+            assert saved['source'] == ('structured' if structured else 'prose'), saved
+            print(f'PASS ({mode}, structured={structured}): production Stop and native continuation; '
+                  f'{len(requests)} requests, {len(classified)} classifier calls')
         finally:
             server.shutdown()
             server.server_close()
@@ -196,3 +199,5 @@ def run_probe(repo, story_id, mode='default'):
 if __name__ == '__main__':
     run_probe(sys.argv[1], sys.argv[2])
     run_probe(sys.argv[1], sys.argv[2], 'plan')
+    run_probe(sys.argv[1], sys.argv[2], structured=True)
+    run_probe(sys.argv[1], sys.argv[2], 'plan', structured=True)
