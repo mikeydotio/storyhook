@@ -159,6 +159,10 @@ fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
     )
     .unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // launchd can resolve Apple's Python even when the interactive shell uses
+    // Homebrew. Exercise that interpreter instead of inheriting the shell's.
+    #[cfg(target_os = "macos")]
+    std::os::unix::fs::symlink("/usr/bin/python3", bin.join("python3")).unwrap();
     let mut path = std::ffi::OsString::from(bin);
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -179,10 +183,22 @@ fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
             env.daemon_is_live(),
             "daemon exited before opening the view"
         );
-        assert!(Instant::now() < deadline, "view never opened: {text}");
+        let journal: String =
+            std::fs::read_dir(env.environment().daemon_state_dir().join("activity"))
+                .unwrap()
+                .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+                .collect();
+        assert!(
+            !journal.contains("tmux activity view unavailable"),
+            "activity helper failed: {journal}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "view never opened: {text}\nactivity journal: {journal}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert!(text.contains("storyhook-verifier:verification\n"));
+    assert!(text.contains("=storyhook-verifier:=activity-"));
     assert!(text.contains(&format!(
         "{}\n--store-path\n{}\ndaemon\nlogs\n--follow\n",
         storyhook_test_support::story_binary().display(),

@@ -1,15 +1,10 @@
 //! `scripts/verify-window.sh` — the SH-545 verifier tmux mirror, provoked
 //! directly against a stub `tmux` on `PATH`.
 //!
-//! Design of record: a `/council-vote` decided this shape (unanimous
-//! ranked-choice runoff); its own working trail does not survive worktree
-//! teardown per this project's own standing rule, so the full verdict and
-//! reasoning are recorded as a comment on story SH-545 (`story show
-//! SH-545`), not here. One fixed session/window on tmux's default server,
-//! reused across every candidate; content is a genuine `tail -F` read of
-//! the gate's own log file, or a static banner; every path or text a
-//! caller supplies reaches tmux as its own argv element, never
-//! interpolated into a shell-command string.
+//! SH-545 established a fixed session on the default server, independent log
+//! readers and literal argv. SH-662 adds project window identity and real-tmux
+//! concurrency regressions in the live module. Decisions are on those stories;
+//! the current contract is docs/spec/verifier-windows.md.
 //!
 //! # Why a purpose-built stub rather than the plugin's fake tmux
 //!
@@ -40,7 +35,7 @@
 //!   fixture) but changes behavior on any machine where one is — the
 //!   guard is what makes the failure the SAME regardless of the host.
 //! - Changing the session/window target to interpolate the passed text
-//!   (instead of the fixed constants) makes
+//!   (instead of the project identity) makes
 //!   `the_target_never_changes_across_different_calls` red.
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -103,6 +98,7 @@ fn run_window(tmux_dir: &Path, args: &[&str]) -> Output {
     Command::new("bash")
         .arg(checkout().join("scripts/verify-window.sh"))
         .args(args)
+        .current_dir(tmux_dir.parent().unwrap())
         .env("HOME", home)
         .env("PATH", path)
         .env_remove("STORYHOOK_VERIFIER_MIRROR")
@@ -118,6 +114,12 @@ struct Fixture {
 impl Fixture {
     fn new(has_session_ok: bool) -> Self {
         let root = scratch_dir();
+        let git = Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "{git:?}");
         let tmux_dir = root.path().join("bin");
         std::fs::create_dir(&tmux_dir).unwrap();
         std::fs::create_dir(root.path().join("stable home")).unwrap();
@@ -296,42 +298,16 @@ fn the_target_never_changes_across_different_calls() {
     );
 
     let calls = fixture.calls();
-    // `has-session`/`list-windows` address the session alone
-    // (`storyhook-verifier`); `new-window` uses tmux's own trailing-colon
-    // session syntax (`storyhook-verifier:`); `set-window-option`/
-    // `respawn-pane` address the session:window pair
-    // (`storyhook-verifier:verification`). All three are legitimate,
-    // fixed forms of the identical constant target -- what must never
-    // appear is a FOURTH value derived from a call's own text.
-    const FIXED_TARGET_FORMS: [&str; 3] = [
-        "storyhook-verifier",
-        "storyhook-verifier:",
-        "storyhook-verifier:verification",
-    ];
-    let target_lines: Vec<&str> = calls
-        .lines()
-        .filter(|line| line.contains("storyhook-verifier"))
+    let calls = tmux_calls(&calls);
+    let targets: Vec<_> = calls
+        .iter()
+        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .map(|call| call.windows(2).find(|arg| arg[0] == "-t").unwrap()[1])
         .collect();
-    assert!(
-        !target_lines.is_empty(),
-        "expected at least one tmux target argument naming the session; calls:\n{calls}"
-    );
-    for line in &target_lines {
-        assert!(
-            FIXED_TARGET_FORMS.contains(line),
-            "every tmux target across every call must be one of the fixed constant \
-             forms {FIXED_TARGET_FORMS:?} -- never a story id or per-candidate value; \
-             offending line {line:?}; calls:\n{calls}"
-        );
-    }
-    // The FIXED_TARGET_FORMS check above already proves the point
-    // structurally: "SH-999" is not one of the three allowed literals, so
-    // it cannot have appeared as a target line -- it appears elsewhere in
-    // `calls` only as the banner's own displayed TEXT (bash -c's `$1`),
-    // which is correct and expected. This is what keeps `reap`'s
-    // kill-by-story-id sweep (scoped to a story's own dispatch socket)
-    // structurally irrelevant to this window regardless of what a banner
-    // happens to say.
+    assert_eq!(targets.len(), 3);
+    assert!(targets[0].starts_with("=storyhook-verifier:=verification-"));
+    assert!(targets.iter().all(|target| *target == targets[0]));
+    assert!(!targets[0].contains("SH-999"));
 }
 
 #[test]
@@ -357,7 +333,9 @@ fn ensure_creates_a_session_only_when_none_exists() {
 fn journal_view_passes_binary_and_store_as_literal_arguments() {
     let fixture = Fixture::new(true);
     let binary = "/path with spaces/story";
-    let store = "/store's directory/$(inert).db";
+    let store_path = fixture.root.path().join("store's $(inert).db");
+    std::fs::write(&store_path, "").unwrap();
+    let store = store_path.to_str().unwrap();
     let output = run_window(&fixture.tmux_dir(), &["logs", binary, store]);
     assert!(output.status.success(), "{output:?}");
     let log = fixture.calls();
@@ -371,7 +349,58 @@ fn journal_view_passes_binary_and_store_as_literal_arguments() {
 }
 
 #[test]
-fn verifier_phases_do_not_replace_an_active_journal_view() {
+#[cfg(target_os = "macos")]
+fn journal_identity_works_with_system_python_and_rejects_unresolved_paths() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+    let fixture = Fixture::new(true);
+    symlink("/usr/bin/python3", fixture.tmux_dir().join("python3")).unwrap();
+    let store = fixture.root.path().join("store.db");
+    std::fs::write(&store, "").unwrap();
+    let alias = fixture.root.path().join("alias.db");
+    symlink(&store, &alias).unwrap();
+    let canonical = std::fs::canonicalize(&store).unwrap();
+    let digest = format!("{:x}", Sha256::digest(canonical.as_os_str().as_bytes()));
+    for path in [&store, &alias] {
+        let output = run_window(
+            &fixture.tmux_dir(),
+            &["logs", "/literal/story", path.to_str().unwrap()],
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    let targets: Vec<_> = calls
+        .iter()
+        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .map(|call| call.windows(2).find(|pair| pair[0] == "-t").unwrap()[1])
+        .collect();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0], targets[1]);
+    assert!(targets[0].ends_with(&digest));
+
+    let missing = fixture.root.path().join("missing.db");
+    let dangling = fixture.root.path().join("dangling.db");
+    symlink(&missing, &dangling).unwrap();
+    let cycle = fixture.root.path().join("cycle.db");
+    symlink(&cycle, &cycle).unwrap();
+    for path in [&missing, &dangling, &cycle] {
+        let output = run_window(
+            &fixture.tmux_dir(),
+            &["logs", "/literal/story", path.to_str().unwrap()],
+        );
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            !output.stderr.is_empty(),
+            "path failure must explain its cause"
+        );
+        assert_eq!(fixture.calls(), log, "unresolved paths must not reach tmux");
+    }
+}
+
+#[test]
+fn daemon_phases_have_a_project_view_and_still_emit_journal_banners() {
     let fixture = Fixture::new(true);
     let mut path = fixture.tmux_dir().into_os_string();
     path.push(":");
@@ -379,6 +408,7 @@ fn verifier_phases_do_not_replace_an_active_journal_view() {
     let output = Command::new("bash")
         .arg(checkout().join("scripts/verify-window.sh"))
         .args(["banner", "landing SH-590"])
+        .current_dir(fixture.root.path())
         .env("PATH", path)
         .env("STORYHOOK_VERIFIER_MIRROR", "1")
         .env("STORYHOOK_ACTIVITY_LOG_DIR", fixture.root.path())
@@ -386,7 +416,17 @@ fn verifier_phases_do_not_replace_an_active_journal_view() {
         .unwrap();
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("landing SH-590"));
-    assert!(!fixture.calls_exist());
+    let log = fixture.calls();
+    let calls = tmux_calls(&log);
+    let respawn = calls
+        .iter()
+        .find(|call| call.first() == Some(&"respawn-pane"))
+        .expect("daemon phases must now have their own project view");
+    assert!(
+        respawn
+            .iter()
+            .any(|arg| arg.starts_with("=storyhook-verifier:=verification-"))
+    );
 }
 
 #[test]
@@ -458,4 +498,37 @@ fn existing_session_banner_and_tail_respawns_use_the_stable_home_cwd() {
     }) {
         assert_stable_home_cwd(call, &fixture.home(), &log);
     }
+}
+
+#[path = "support/verify_window_live.rs"]
+mod live;
+
+#[test]
+fn standalone_calls_do_not_inherit_a_dispatch_socket() {
+    let fixture = Fixture::new(true);
+    let tmux_dir = fixture.tmux_dir();
+    std::fs::write(
+        tmux_dir.join("tmux"),
+        "#!/bin/sh\n[ -z \"${TMUX:-}\" ] && [ -z \"${TMUX_PANE:-}\" ] || exit 23\nexit 0\n",
+    )
+    .unwrap();
+    let mut path = tmux_dir.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(checkout().join("scripts/verify-window.sh"))
+        .args(["banner", "default server only"])
+        .current_dir(fixture.root.path())
+        .env("PATH", path)
+        .env("HOME", fixture.home())
+        .env("TMUX", "/dispatch/socket,123,0")
+        .env("TMUX_PANE", "%99")
+        .env("STORYHOOK_VERIFIER_MIRROR", "1")
+        .env_remove("STORYHOOK_ACTIVITY_LOG_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mirror must use the default server: {output:?}"
+    );
 }
