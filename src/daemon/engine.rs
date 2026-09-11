@@ -129,6 +129,12 @@ fn reconcile_one<S: Store>(store: &S, env: &Environment, run: &EngineRunRecord, 
             run.id, run.project_slug
         );
     } else {
+        if let Ok(report) = &result
+            && let Some(census) = &report.census
+            && let Some((level, message)) = census_journal_edge(census)
+        {
+            super::activity::emit(level, "engine", "event", &activity_context, &message);
+        }
         super::activity::emit(
             "INFO",
             "engine",
@@ -136,6 +142,45 @@ fn reconcile_one<S: Store>(store: &S, env: &Environment, run: &EngineRunRecord, 
             &activity_context,
             "reconciliation completed",
         );
+    }
+}
+
+/// The last unanswered window census, so the outage is journaled on its
+/// EDGE and never once per pass (SH-655, the SH-626 rule one probe over).
+/// Process-wide rather than a store column: the census is one fact about the
+/// machine, not about a lane or a run, and `EngineService` is rebuilt for
+/// every sweep — so after a daemon restart the outage is journaled once
+/// more, which is the price of a marker that needs no migration.
+static CENSUS_EDGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The journal line, if any, that this pass's census earns: an ERROR when
+/// tmux stops answering or the reason changes, an INFO when it answers
+/// again; nothing while the answer is steady in either direction.
+fn census_journal_edge(
+    census: &crate::lane_budget::WindowCensus,
+) -> Option<(&'static str, String)> {
+    let mut previous = CENSUS_EDGE.lock().unwrap_or_else(|e| e.into_inner());
+    match census {
+        crate::lane_budget::WindowCensus::Unanswered { detail } => {
+            if previous.as_deref() == Some(detail.as_str()) {
+                return None;
+            }
+            *previous = Some(detail.clone());
+            Some((
+                "ERROR",
+                format!(
+                    "window census unanswered; lanes are filled against the store's own count alone until tmux answers: {detail}"
+                ),
+            ))
+        }
+        crate::lane_budget::WindowCensus::Counted { .. } => {
+            previous.take().map(|_| {
+                (
+                    "INFO",
+                    "window census answers again; the machine lane budget counts live sessions once more".to_string(),
+                )
+            })
+        }
     }
 }
 
@@ -201,5 +246,45 @@ pub(crate) fn poll_engine<S: Store>(
                 Some(_) => break,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod census_edge_tests {
+    use super::census_journal_edge;
+    use crate::lane_budget::WindowCensus;
+
+    /// One test for the whole sequence, because the edge is process-wide
+    /// state: an outage journals once on entry, once per change of reason,
+    /// and once on recovery -- never on a steady pass in either direction.
+    #[test]
+    fn the_census_outage_is_journaled_on_its_edges_only() {
+        let counted = WindowCensus::Counted { windows: vec![] };
+        let down = |d: &str| WindowCensus::Unanswered {
+            detail: d.to_string(),
+        };
+        assert_eq!(
+            census_journal_edge(&counted),
+            None,
+            "answering from the start earns nothing"
+        );
+        let entry = census_journal_edge(&down("no server")).expect("entry is journaled");
+        assert_eq!(entry.0, "ERROR");
+        assert!(entry.1.contains("no server"), "{}", entry.1);
+        assert_eq!(
+            census_journal_edge(&down("no server")),
+            None,
+            "a steady outage is silent"
+        );
+        let changed =
+            census_journal_edge(&down("timed out")).expect("a changed reason is journaled");
+        assert!(changed.1.contains("timed out"), "{}", changed.1);
+        let recovery = census_journal_edge(&counted).expect("recovery is journaled");
+        assert_eq!(recovery.0, "INFO");
+        assert_eq!(
+            census_journal_edge(&counted),
+            None,
+            "a steady recovery is silent"
+        );
     }
 }

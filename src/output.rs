@@ -908,6 +908,10 @@ pub enum Response {
     /// project snapshot that a human would want — `story list` is that
     /// command — and inventing one would be a second, worse `list`.
     ProjectSnapshot(Box<ProjectSnapshotView>),
+    /// The machine lane budget and the live agent windows counted against
+    /// it (SH-655). JSON is what `cmd_dispatch` reads; the human form is one
+    /// line and the window list.
+    LaneBudget(Box<crate::lane_budget::LaneBudgetView>),
     /// One story's raw event history, oldest first.
     ///
     /// Rendered as JSON, for the same reason as [`Response::ProjectSnapshot`]:
@@ -1318,6 +1322,7 @@ fn render_json(response: &Response) -> String {
             return format!("{raw}\n");
         }
         Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
+        Response::LaneBudget(view) => serde_json::to_string_pretty(view.as_ref()),
         Response::StoryHistory(events) => serde_json::to_string_pretty(events),
         // `command` and `actor` stay separate fields rather than the rendered
         // "move (story.sh:dispatch)" a human sees: a script must be able to tell
@@ -1576,6 +1581,7 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::LaneBudget(view) => view.render_human(),
         Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),

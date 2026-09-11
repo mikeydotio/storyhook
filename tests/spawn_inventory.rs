@@ -126,6 +126,11 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
+    // The lane census (SH-655): `tmux list-windows` through the same
+    // file-backed, group-bounded `run_captured` the engine's probe uses, on
+    // the caller's own PATH and environment so a client verb asks the server
+    // its `$TMUX` names. A descendant has no pipe to hold.
+    ("src/lane_budget.rs", "\"tmux\"", Kind::Waited),
     // `install_status::installed_binary` — the `story` on this machine's own
     // `$PATH`, asked for its version so the report can say whether the build
     // answering you is the build this machine runs (SH-530). `Reads`, because

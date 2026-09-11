@@ -26,7 +26,9 @@
 #                        it standalone any more); chained onto new-window it is
 #                        recorded instead — see below.
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
-#   list-windows      -> print the caller-seeded `$STATE/windows` inventory.
+#   list-windows      -> print the caller-seeded `$STATE/windows` inventory, or
+#                        `$STATE/agent_windows` when the format names
+#                        `@storyhook-agent` (the SH-655 lane census).
 #   kill-window       -> log its argv, terminate the recorded pane process, and
 #                        remove the target window id from that inventory,
 #                        including every linked-session occurrence.
@@ -820,7 +822,22 @@ case "${1:-}" in
     printf '%s' "${FAKE_TMUX_PANES:-}" >"$STATE/killed_window"
     ;;
   list-windows)
-    [ ! -f "$STATE/windows" ] || cat "$STATE/windows"
+    # Two callers, two inventories (SH-655). The reap/unclaim paths ask for
+    # `#{window_id}\t#{window_name}` and read `$STATE/windows`; the lane
+    # census (`story lane-budget`) asks for a format naming `@storyhook-agent`
+    # and reads `$STATE/agent_windows`, seeded by a test in that census's own
+    # shape (`session:window<TAB>agent<TAB>pane_dead`). Keyed on the format
+    # text rather than on which flags were passed, because that is the one
+    # thing the two callers cannot both say. An absent seed prints nothing —
+    # an empty server — which is a counted zero, not a refusal.
+    case " $* " in
+      (*'@storyhook-agent'*)
+        [ ! -f "$STATE/agent_windows" ] || cat "$STATE/agent_windows"
+        ;;
+      (*)
+        [ ! -f "$STATE/windows" ] || cat "$STATE/windows"
+        ;;
+    esac
     ;;
   list-panes)
     # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit

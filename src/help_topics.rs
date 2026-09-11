@@ -3155,6 +3155,40 @@ Related:
         // `priority` became an alias for `prioritize` and stopped being
         // available.
         m.insert(
+            "lane-budget",
+            r#"story lane-budget [--json]
+
+The machine lane budget, and the live agent sessions counted against it.
+
+A live agent session is a tmux window that a dispatch opened -- its
+@storyhook-agent option is set -- and whose pane is not dead. Every
+dispatch counts, whether the Full Auto engine filled the lane or a person
+ran /story do; a finished session's window stays around (remain-on-exit)
+and no longer counts. The budget is the engine's own machine-wide lane
+budget, so the two doors measure one number.
+
+When to use:
+  Before dispatching by hand on a busy machine, and by /story do itself,
+  which refuses a new session past the budget unless --over-budget says
+  you meant it. The census is taken from the tmux server your own shell
+  is attached to; a daemon on another socket cannot answer for it, which
+  is why this command never starts one.
+
+  If tmux cannot be asked, the answer is "unanswered", not zero: --json
+  then carries "probe": "unanswered" with the probe's own words, and no
+  "live" or "available" field at all. A caller must not read silence as
+  room.
+
+Examples:
+  story lane-budget          # 6 of 4 lanes in use on this machine -- at the budget
+  story lane-budget --json   # {"budget": 4, "probe": "counted", "live": 6, ...}
+
+Related:
+  story engine status  -- The engine's own lanes and runs
+"#,
+        );
+
+        m.insert(
             "test-environment",
             crate::env::test_environment::HELP_TOPIC.as_str(),
         );
@@ -3208,6 +3242,7 @@ BULK & INTEGRATION
 PROJECT MANAGEMENT
   story phase list|show|add|remove  Manage story phases
   story doctor [--fix]            Integrity checks and repair
+  story lane-budget               Live agent sessions against the machine lane budget
   story report [--html]           Generate project report
   story scaffold <variant>        Generate agent instruction files
   story hooks install|uninstall   Manage git hooks

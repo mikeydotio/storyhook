@@ -40,20 +40,6 @@ target:
    b. Green: storyhook merges the PR, moves the story to Done, reaps the
    story's tmux window, worktree, and per-story caches and build products.
 
-What each step does today, and which child closes the gap:
-
-| Step | Target | Today | Closed by |
-|---|---|---|---|
-| 1 | storyhook pushes and opens the PR | the **agent** pushes, runs `gh pr create`, `story link-pr`, then `story move <n> verifying` (both charters in `story.sh`, the scaffolded `AGENTS.md`); `VerificationProblem::{MissingPullRequest, MultiplePullRequests, UnregisteredPullRequest}` catch a partial submission **after** the fact and return the story | SH-647 (D-A) |
-| 2 | one verifier per project; suites serialize per project | **one global worker** (`VerificationActivity`, a single slot) over a queue spanning every project (`ordered_candidates`); the `gate` and `merge` locks are keyed by **name only**, so two clones and two unrelated repositories serialize together | SH-648 (D-B) |
-| 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
-| 2 | not mergeable → instruct the agent and hold the queue | as stated, **but only while the dispatched pane is alive**; a dead pane releases the hold and parks the story with `awaiting` — see "The conflict queue-hold" | SH-650 (D-E) |
-| 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
-| 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
-| 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the literal state `done` while `reap-leased` requires the project's **first CLOSED state** — the two agree only in a project whose first CLOSED state is spelled `done` | SH-652 (D-G) |
-| 4b | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is the reap's retry path: it touches only a CLOSED story whose latest verification carries the verifier's CLEANUP COMPLETE/REQUIRED marker, and never the remote branch | done, SH-653 (D-H) |
-| — | (unstated) the verifier serves any project | `scripts/verify-pr.sh` is a repo-relative literal in the shipped daemon, so only a storyhook checkout can be verified | SH-654, filed beside the epic, not in it |
-
 ## Decisions of record
 
 Taken in an unattended session on 2026-09-10, each with one clear best answer
@@ -310,11 +296,13 @@ not parse it — the SH-136 rule); the invariant here is only that it
 
 ### What the verifier cannot do, stated rather than glossed
 
-- It verifies only a **storyhook checkout**: the daemon spawns
-  `scripts/verify-pr.sh` relative to the candidate's registered checkout, and
-  that script assumes its siblings and a `Makefile` with a `test` target beside
-  it. Any other registered project halts the queue with an invalid-JSON
-  infrastructure failure (SH-654).
+- It **lands** only a project whose gate can mint a receipt. Since SH-654 the
+  verifier itself runs against any registered checkout (see "The verifier
+  runs from the daemon's bundle" under As built), but the receipt contract
+  SH-649 put on the gate can only be met by `gate-receipt.sh postlude`, and
+  that writer lives in this checkout and enrols this checkout's
+  `.githooks` — so a foreign project passes its gate and is then refused, by
+  name, at the certifies-nothing check. SH-665 owns that gap.
 - It runs the gate tier, never the release tier, and so cannot find what only
   the browser suite finds (SH-416, SH-418, SH-622 are the precedents); the
   `browser-watch.sh` poller is what runs `make test-full` between releases.
@@ -333,128 +321,3 @@ not parse it — the SH-136 rule); the invariant here is only that it
 | `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — the reap's retry path since SH-653 |
 | `release-observer.md` | the third lock name and the observer that takes it |
 | `activity-log.md` | the verifier's tmux mirror and the daemon journal a stalled verification is diagnosed from |
-
-## As built
-
-Deviations from this document are recorded here, one entry per child, rather
-than in a second file. Each child lands with its own `### SH-N — <what
-changed>` entry and a status update in the decisions table above.
-
-### SH-649 — `[verify] gate`, and the receipt contract it put on the value
-
-Built as D-D states, with one addition the decision did not name and three
-limits stated rather than glossed.
-
-**The addition: a gate that exits 0 but mints no receipt is refused by
-name.** D-D said the receipt tier stays non-configurable and left the
-consequence implicit — that a gate other than `make test`/`make test-full`
-certifies nothing and lands nothing. The story found the failure surfaced two
-steps downstream with a diagnosis about the wrong layer (the SH-576/SH-578
-shape), so `verify-pr.sh` now asks `merge-preflight.sh` again right after the
-gate ("The gate", above). Wrapping an arbitrary gate in
-`gate-receipt.sh preflight`/`postlude` ourselves was rejected: it nests when
-the gate is `make test`, whose own preflight discards the outer one.
-
-**Limits.**
-
-- The pointer is read from the **registered checkout's working tree**, not
-  from the merge tree being verified. The merge tree is only computed inside
-  `verify-pr.sh`, and a shell-side TOML parse would be a second reader
-  (SH-136). A PR that changes `[verify] gate` is therefore verified under the
-  checkout's current value, and takes effect once merged and checked out.
-- No project-identity check on the pointer, unlike `[github]`'s reader
-  (`pr_link.rs`): the actuator has no store handle, and the checkout is
-  already trusted for `scripts/verify-pr.sh` itself — a registered top level,
-  read root-only, never climbing.
-- A gate that emits no `gate-progress.sh` journal lines runs under
-  `VERIFICATION_IDLE_TIMEOUT`'s silence cap alone (derived from the default
-  gate's measured contended runtime); `make test` renews it per leg.
-- Until SH-654 ships the verifier scripts with storyhook, only a storyhook
-  checkout can be verified at all, so the receipt contract is the honest
-  boundary of "configurable" rather than a regression.
-
-Tests: `tests/gate_command.rs` (the rule, the reader, the pointer round
-trip), `tests/verification_queue.rs` (the shell actuator's argv, the refusal
-that spawns nothing, the derived comment text), `tests/merge_gate.rs` (the
-public path with a named gate, without one, and the certifies-nothing refusal
-with its positive control through the production receipt writer).
-
-### SH-653 — `story cleanup` is the reap's retry path, and the marker it reads is generation-scoped
-
-Built as D-H states, with two decisions the row left open, two siblings
-adopted on the way, and three limits stated rather than glossed.
-
-**The marker is read from the story's latest verification generation, never
-from "any comment on the story".** A story that was landed, reaped and marked
-COMPLETE, then reopened, re-verified and landed again, still carries the first
-generation's COMPLETE; a gate that read comments flat would have released
-cleanup to reap the second generation's worktree in the window before the
-verifier's own reap ran, concurrently with it. `latest_generation`
-(`src/service/verification.rs`) is now the one reader of a generation's lease,
-its GREEN and its reap marker — ordered by event position, never by timestamp
-(SH-336), `Complete` outranking `Required`, a retracted comment counting as
-none — and `next_cleanup` reads the same struct, which is the adopted sibling:
-under the flat scan the daemon's own retry read the stale COMPLETE as this
-generation's and never retried a failed second reap. Cleanup's history-derived
-lease comes from that generation too, where it used to be the last lease
-anywhere in history; the on-disk marker dispatch wrote stays a second source,
-and is load-bearing — the verifier's `reap_leased` fails outright when a
-generation has no history lease and writes CLEANUP REQUIRED, and the marker
-is then the only lease anything can reap from.
-
-**The remote branch leaves cleanup's scope entirely.** D-H said "never a
-remote branch `land-pr.sh` has not already removed"; the first draft refused a
-candidate whose remote branch still existed. Rejected on the mechanism:
-`reap-leased` never consults the remote, so cleanup would have answered
-differently from the verifier's own retry for the same workspace — the D-H
-complaint itself — and the refusal would have been permanent, since nothing
-else ever deletes that branch. Cleanup now neither reads nor writes the
-remote: no `ls-remote`, no remote-branch fetch, no `push --delete`, no
-`removed_remote_branch` on the report. Reachability from the freshly fetched
-default branch is still required of what cleanup *does* delete, the worktree
-HEAD and the local branch tip, so work committed after `done` is still refused
-as `unmerged-work`; a divergent remote-only commit no longer blocks the local
-reap, because nothing on the remote can be lost by a tool that never touches
-it.
-
-**CLOSED, not the completion state.** `reap-leased` also refuses
-`not-completion-state`. D-H says CLOSED, the marker already proves the
-verifier moved the story to `done`, a story later moved to another CLOSED
-state still has a disposable workspace, and SH-652 owns the resolver — so
-cleanup deliberately reads only `superstate`, and this is a stated deviation
-from `reap-leased`, not an oversight.
-
-**Adopted: an already-reaped lease is not a removal.** A candidate whose
-worktree and local branch were already gone was reported as a removal with
-every flag false, after paying the fetch — which, gated on the verifier's
-markers, would have listed every story ever reaped on every pass. Decided from
-local facts before the fetch: after a COMPLETE the absence is what the verifier
-verified and earns no line (a worktree recreated on the leased branch still
-does, which is why COMPLETE stays in scope); after a REQUIRED it is reported as
-`already-clean`, since a retry with nothing left to retry is worth saying.
-
-**Limits.**
-
-- A marker is a comment, and `StoryComment` carries no author: anyone can
-  write `CENTRAL VERIFICATION CLEANUP REQUIRED —` on a closed story and
-  release its workspace to cleanup. `next_cleanup` has the identical exposure
-  and always did; the gate is against a *state-blind* reaper, not a forged one.
-- A lease whose story the verifier never marked — every legacy lease from
-  before the verifier existed — is preserved forever and reported as
-  `not-verifier-released` on every pass. That is the decision, stated: the
-  verifier owns the first reap, and there is no second door.
-- A story whose latest generation carries no history lease is reachable only
-  through the on-disk marker; if that marker is gone too, nothing reaps it and
-  `story cleanup --dry-run` does not name it, because it has no lease to name.
-
-Tests: `tests/story_cleanup.rs` (the first end-to-end drive of
-`CleanupService::run` through the store — the gate precedes all git work, each
-refusal reason, the stale-generation case, the already-clean and
-verified-absent cases, and the daemon's `tick` running the one service),
-`src/service/cleanup.rs` (the `verifier_release` table; the remote branch
-surviving a local reap, as a positive control), `src/service/verification.rs`
-(`latest_generation`: adjacency, generation scoping, prefix-not-substring,
-precedence, retraction, `landed`), `tests/verification_queue.rs` (the
-reopen-and-land sequence `next_cleanup` used to misread). Mutation-checked:
-dropping the superstate clause, dropping the marker clause, and widening the
-generation scan to the whole log each fail their test.

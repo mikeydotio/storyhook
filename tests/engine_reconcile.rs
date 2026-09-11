@@ -16,6 +16,7 @@
 mod store_support;
 
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
+use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, ENGINE_LANE_BUDGET,
     EngineService, HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
@@ -2338,5 +2339,107 @@ fn fill_stops_at_the_machine_lane_budget() {
             .count(),
         ENGINE_LANE_BUDGET,
         "and the engine asked the dispatcher exactly that many times"
+    );
+}
+
+/// SH-655: a session `/story do` opened by hand is in no table, so the fill
+/// also measures the budget against the live agent windows on the tmux
+/// server — and a window this pass opened, which the census taken at the
+/// start of the pass cannot yet see, counts too.
+#[test]
+fn fill_counts_manually_dispatched_windows_against_the_budget() {
+    let fixture = ServiceFixture::new();
+    let manual = 2;
+    let room = ENGINE_LANE_BUDGET - manual;
+    let over = ENGINE_LANE_BUDGET + 2;
+    for n in 0..over {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..room)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..manual).map(|n| format!("storyhook:SH-9{n}")).collect(),
+    });
+    let run_id = started_run(&fixture, &fake, u32::try_from(over).unwrap());
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(
+        report.filled.len(),
+        room,
+        "{manual} manual sessions leave room for {room} engine lanes under a budget of {ENGINE_LANE_BUDGET}"
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, DispatcherCall::Dispatch(_)))
+            .count(),
+        room,
+        "the pass stopped asking once the census plus its own dispatches reached the budget"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Counted { windows }) if windows.len() == manual),
+        "the pass reports the census it measured against: {:?}",
+        report.census
+    );
+}
+
+/// SH-655: a full machine of manual sessions leaves the engine nothing to
+/// fill, and an unanswered census is no evidence — the store's own count
+/// alone bounds the pass, so the fill is unchanged from before the census
+/// existed.
+#[test]
+fn a_full_machine_fills_nothing_and_an_unanswered_census_changes_nothing() {
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let fake = FakeDispatcher::new(Vec::new());
+    fake.set_census(WindowCensus::Counted {
+        windows: (0..ENGINE_LANE_BUDGET)
+            .map(|n| format!("storyhook:SH-9{n}"))
+            .collect(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert!(
+        report.filled.is_empty(),
+        "a machine already at its budget of manual sessions fills nothing: {:?}",
+        report.filled
+    );
+    assert!(fake.calls().is_empty(), "and never asked the dispatcher");
+
+    let fixture = ServiceFixture::new();
+    for n in 0..ENGINE_LANE_BUDGET {
+        new_story(&fixture, &format!("story {n}"), &[]);
+    }
+    let steps: Vec<DispatcherStep> = (0..2)
+        .map(|_| {
+            DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": true, "window_name": "w", "worktree_path": "/tmp/w"}),
+            ))
+        })
+        .collect();
+    let fake = FakeDispatcher::new(steps);
+    fake.set_census(WindowCensus::Unanswered {
+        detail: "no server running".to_string(),
+    });
+    let run_id = started_run(&fixture, &fake, 2);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        report.filled.len(),
+        2,
+        "no evidence is not a full machine: both lanes fill on the store's count alone"
+    );
+    assert!(
+        matches!(&report.census, Some(WindowCensus::Unanswered { detail }) if detail == "no server running"),
+        "the unanswered census travels on the report for the daemon to journal: {:?}",
+        report.census
     );
 }
