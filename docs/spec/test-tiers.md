@@ -179,12 +179,12 @@ one store serves both rather than teaching every reader about a second one.
 **Reached through the store-backed `verifying` queue, not a broad PR poll
 (SH-521).** Agents run targeted tests, link exactly one close-on-merge PR,
 move their story to required OPEN state `verifying`, and stop. The daemon
-selects one candidate globally — one worker, one queue over every project —
-by priority, then story `created_at` (not time in the queue: `verifying_since`
-is carried and not sorted on), refreshes its current base and head, and runs
-the exact merge tree in one persistent verifier worktree. SH-648 makes the
-worker and the queue per project and SH-651 makes the tiebreak the time the
-story entered `verifying`; `docs/spec/verification-workflow.md` is the design
+selects one candidate per project (SH-648), ordered by priority, then the time
+the story most recently entered `verifying` (SH-651). Missing entry timestamps
+follow known timestamps within equal priority; project slug and story ID break
+remaining ties. It refreshes the current base and head, and runs the exact
+merge tree in one persistent verifier worktree per project.
+`docs/spec/verification-workflow.md` is the design
 of record for the whole lifecycle from submission to reap, this section for
 the gate it runs. A green run writes the same `gate-receipt.sh` receipt, lands through
 `land-pr.sh`, records `done`, and reaps. Conflict or red returns the story to

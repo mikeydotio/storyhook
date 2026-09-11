@@ -59,9 +59,9 @@ being picked.
 **Superseded in part by SH-645 (2026-09-10).** The rows above are the record
 of what was decided, with D14 revised by SH-672; `docs/spec/verification-workflow.md`
 is now the design of record for everything from submission to reap, and three
-rows read differently against it. D4's "priority then age": the age that ships
-is story `created_at`, and SH-651 makes it the time the story entered
-`verifying`. D5's "serialize every project": what shipped for a year was one
+rows read differently against it. D4's "priority then age": since SH-651, age
+is the time the story most recently entered `verifying`. Resubmission resets
+that age. D5's "serialize every project": what shipped for a year was one
 global worker over one queue spanning every project; since SH-648 the worker,
 the queue, the incident halt and the conflict hold are per project. D14's
 "the locks in D4/D5 are sized against" a machine-wide budget: the `gate` and
@@ -401,12 +401,25 @@ fixture can lie about needs a test; a column with a CHECK does not):
 The engine has no busy loop. `reconcile` runs when woken by
 `crate::daemon::engine::poll_engine` (SH-466), on:
 
-- `Change::Project(slug)` on the daemon's bus, for a slug some live run names —
-  which is how a lane's own `story move` reaches the engine;
+- any `Change::Project(slug)` or `Change::Catalog` on the daemon's bus —
+  without filtering against a stale list of live projects, so a newly started
+  run is discovered immediately;
 - a coarse liveness tick, whose period derives from the stall ceiling rather
   than being picked (SH-394's rule, one axis over from wall clocks);
-- any control command (`start`, `pause`, `resume`, `stop`, `ack`), each of
-  which already publishes `Change::Project` on success.
+- subscriber queue overflow, detected by an increase in that subscription's
+  dropped-message counter, which earns a recovery pass once per observed increase.
+
+HTTP controls publish `Change::Project` on success. The shared change watcher
+attributes CLI controls by comparing live run records along with story event
+sequences. Lane-only observation writes remain `Resync` notifications for UI
+clients; the engine ignores ordinary `Resync`, `Ping`, and `Reload` notices
+while retaining its original wait deadline. Shutdown/drain flags prevent a
+new pass. A finished run's CLI acknowledgement updates the UI through `Resync`.
+
+The fallback currently derives to **300 seconds** (five minutes). Pane-only
+progress and otherwise unattributed configuration changes are sampled at this
+cadence in the absence of another qualifying wake. Persisted observations
+record when the engine actually looked; they are not a one-second heartbeat.
 
 One pass, per live run:
 
@@ -1862,14 +1875,13 @@ fetch connectivity check walks those shared entries, so it can install every
 requested remote object and still exit with `fatal: bad object`.
 
 `verify-pr.sh` now establishes the verifier worktree before its first fetch.
-A format marker distinguishes worktrees created under SH-552's private-Git-dir
-contract. A markerless, mismatched, or unresolvable verifier is disposable:
-the script removes it through `git worktree remove --force` and recreates it
-detached at a known local commit, replacing its HEAD, reflog and index as one
-Git-owned lifecycle operation. A healthy marked verifier is reused so its
-build caches survive. The private `--ensure-verifier-worktree` seam lets a
-real-Git regression reproduce the missing-object fetch failure and prove both
-recovery and healthy reuse without imitating GitHub.
+SH-683 replaces the earlier force-remove/recreate recovery with a shared,
+owned lifecycle. Healthy checkouts are reused regardless of an old format
+marker. Invalid owned state is retained with its checkout, index, administration
+and private objects before replacement; ambiguous ownership is refused. Both
+creator and speculative borrower hold ownership before inspecting or mutating
+the worktree. See [Shared verifier lifecycle](verifier-worktree-lifecycle.md)
+for restart recovery, process supervision and operator limits.
 
 ### SH-466 — restart reconciliation
 
@@ -2749,3 +2761,30 @@ tagging, and pane-liveness limits remain.
 
 The compile bound from SH-655 remains separate and unchanged: concurrent
 rustc processes still acquire the machine's shared compiler slots.
+
+### SH-642 — observations do not wake their own reconciler
+
+The daemon previously treated every non-ping bus notification as a reason to
+reconcile. Each pass updated a lane's `last_observed_at`; the store watcher
+could not attribute that write and emitted `Resync`, producing another pass.
+This made the historical 72-second fallback, and later the derived 300-second
+fallback, irrelevant during active runs.
+
+Two unanimous UX/QA/performance council votes chose subscriber filtering and
+shared live-run attribution. `ChangeWatcher` now reads project sequences and
+live `EngineRunRecord` values in one transaction, compares run identities and
+values (including same-second controls and removals), and publishes each
+affected project once. The snapshot excludes lanes and completed-run history.
+Failures retain both the prior snapshot and token, report context, and retry;
+an unreadable snapshot cannot be mistaken for project removal.
+
+The engine retains machine-wide sweeps on project/catalog events and recovers
+from actual subscriber overflow using its dropped counter. Ordinary UI resyncs
+cannot start another pass or reset the fallback deadline. No observation writes,
+progress evidence, shared bus messages, or stall constants are suppressed.
+
+Regression coverage drives SQLite-backed controls and watcher snapshots, the
+production wait with real bus notifications, and CLI start/resume through a
+real daemon. It covers lane-write feedback, overflow, deadline starvation,
+same-second controls, snapshot failure, removal/replacement, UI invalidation,
+and shutdown. Council decisions and the approved plan are retained on SH-642.

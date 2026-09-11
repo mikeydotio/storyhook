@@ -178,6 +178,9 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "test_output.py",
     "tracked-tree.sh",
     "tree-receipt.sh",
+    "verifier-owner.py",
+    "verifier-worktree.py",
+    "verifier_state.py",
     "verify-pr.sh",
     "verify-window.sh",
 ];

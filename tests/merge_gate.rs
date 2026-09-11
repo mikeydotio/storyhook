@@ -485,10 +485,9 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         .collect();
     for stream in ["stdout", "stderr"] {
         assert!(
-            rows.iter()
-                .any(|row| row["source"] == "machine-lock.sh/merge-watch.sh"
-                    && row["stream"] == stream
-                    && row["message"] == format!("gate-{stream}")),
+            rows.iter().any(|row| row["source"] == "merge-watch.sh"
+                && row["stream"] == stream
+                && row["message"] == format!("gate-{stream}")),
             "gate stream missing from activity: {journal}"
         );
     }
@@ -591,20 +590,33 @@ fn verifier_preserves_tracked_edits_before_and_during_the_gate() {
                 payload["result"], "infrastructure-failure",
                 "during_gate={during_gate}, staged={staged}: {payload}"
             );
-            assert_eq!(
-                fs::read_to_string(poller.join("f")).unwrap(),
-                "preserve these edits\n"
-            );
-            assert_eq!(poller.join("gate-started").exists(), during_gate);
-            if during_gate {
-                assert_ne!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
+            let evidence = if during_gate {
+                let recovery = fs::read_dir(repo.common_dir().join("storyhook"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with("verification-recovery-")
+                    })
+                    .expect("retain the complete damaged verifier unit");
+                assert!(recovery.join("lease/.git/index").is_file());
+                assert!(recovery.join("admin/HEAD").is_file());
                 assert!(
-                    !repo.merge_object_artifacts().is_empty(),
-                    "retain private recovery state"
+                    !poller.exists(),
+                    "retained files must not masquerade as a usable checkout"
                 );
+                recovery.join("worktree")
             } else {
                 assert_eq!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
-            }
+                poller.clone()
+            };
+            assert_eq!(
+                fs::read_to_string(evidence.join("f")).unwrap(),
+                "preserve these edits\n"
+            );
+            assert_eq!(evidence.join("gate-started").exists(), during_gate);
         }
     }
 }
@@ -1790,8 +1802,8 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
         "checking connectivity after repair",
     );
 
-    let sentinel = verifier.join("persistent-cache-sentinel");
-    fs::write(&sentinel, "keep\n").expect("writing the persistent cache sentinel");
+    let sentinel = verifier.join("disposable-cache-sentinel");
+    fs::write(&sentinel, "stale\n").expect("writing a disposable cache sentinel");
     let reused = run(
         repo.path(),
         "bash",
@@ -1803,9 +1815,11 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
     );
     assert_ok(&reused, "reusing the healthy verifier worktree");
     assert!(
-        sentinel.exists(),
-        "a healthy formatted verifier must preserve its caches"
+        !sentinel.exists(),
+        "new verification must clear disposable cache inputs"
     );
+    let admin = stdout(&run(&verifier, "git", &["rev-parse", "--absolute-git-dir"]));
+    let index = fs::read(Path::new(&admin).join("index")).expect("read the healthy index");
 
     fs::write(
         repo.common_dir()
@@ -1813,56 +1827,26 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
         "legacy\n",
     )
     .expect("downgrading the verifier format marker");
-    let wrapper_root = scratch_dir();
-    let git_wrapper = wrapper_root.path().join("git");
-    fs::write(
-        &git_wrapper,
-        r#"#!/bin/sh
-if [ "$1" = worktree ] && [ "$2" = remove ]; then
-    "$SH555_REAL_GIT" "$@"
-    exit 42
-fi
-exec "$SH555_REAL_GIT" "$@"
-"#,
-    )
-    .expect("writing the Git exit-status wrapper");
-    let mut permissions = fs::metadata(&git_wrapper)
-        .expect("reading the Git wrapper metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&git_wrapper, permissions).expect("making the Git wrapper executable");
-    let real_git = stdout(&run(repo.path(), "sh", &["-c", "command -v git"]));
-    let wrapped_path = format!(
-        "{}:{}",
-        wrapper_root.path().display(),
-        std::env::var("PATH").unwrap_or_default()
+    let marker_repair = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
     );
-    let postcondition_repair = Command::new("bash")
-        .args([
-            script.as_os_str(),
-            "--ensure-verifier-worktree".as_ref(),
-            base.as_ref(),
-        ])
-        .current_dir(repo.path())
-        .env("PATH", wrapped_path)
-        .env("SH555_REAL_GIT", real_git)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .output()
-        .expect("running verifier repair through the Git wrapper");
     assert_ok(
-        &postcondition_repair,
-        "accepting a completed removal despite Git's stale exit status",
+        &marker_repair,
+        "reusing a healthy verifier with an old marker",
     );
-    let payload: serde_json::Value = serde_json::from_slice(&postcondition_repair.stdout)
-        .expect("the postcondition repair must return JSON");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&marker_repair.stdout).expect("the marker repair must return JSON");
     assert_eq!(payload["result"], "verifier-worktree-ready");
-    assert!(
-        !sentinel.exists(),
-        "the mismatched verifier must have been rebuilt"
+    assert_eq!(
+        fs::read(Path::new(&admin).join("index")).expect("read the reused index"),
+        index,
+        "a stale format marker alone must not rebuild healthy administration"
     );
 }
 
