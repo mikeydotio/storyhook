@@ -262,10 +262,16 @@ Repository configuration:
     plain command line, run directly and never through a shell: words
     separated by spaces, made of letters, digits and _ . : / = @ + , -
     only. Anything else — quotes, $, &&, |, >, * — is refused by name.
-    The gate must certify the tree it ran on by ending in
-    scripts/gate-receipt.sh postlude at tier gate or full, as make test
-    and make test-full do; a gate that exits 0 without one is refused
-    before landing.
+    The verifier supplies STORYHOOK_GATE_RECEIPT: an absolute path to
+    its portable receipt writer. In your gate script, call
+    "$STORYHOOK_GATE_RECEIPT" preflight before testing, then
+    "$STORYHOOK_GATE_RECEIPT" postlude gate (or postlude full) only
+    after every required test passes. Quote the path in the script;
+    these shell expressions do not belong in the gate configuration.
+    No StoryHook scripts or Git hooks are needed in your repository.
+    StoryHook's own make test and make test-full keep their existing
+    scripts/gate-receipt.sh wrapper. A zero exit without a gate/full
+    receipt is refused before landing; changed is insufficient.
 
   [github]
   api_url = "https://github.example.com/api/v3"

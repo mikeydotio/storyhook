@@ -175,6 +175,8 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "merge-preflight.sh",
     "merge-watch.sh",
     "test_output.py",
+    "tracked-tree.sh",
+    "tree-receipt.sh",
     "verify-pr.sh",
     "verify-window.sh",
 ];

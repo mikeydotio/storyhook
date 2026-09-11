@@ -3102,6 +3102,14 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
         detail.contains("gate-receipt.sh postlude"),
         "names the remedy: {detail}"
     );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" preflight"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" postlude gate"),
+        "{detail}"
+    );
     let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
     assert!(detail.contains(&tree), "names the tree: {detail}");
     assert_eq!(fs::read_to_string(&record).expect("the gate ran"), "--ci\n");
