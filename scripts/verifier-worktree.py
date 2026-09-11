@@ -282,9 +282,43 @@ class Workspace:
         # Use the same checked deletion path on ordinary exit and restart.
         self.recover()
 
-    def ensure(self, base):
+    def tracked_clean(self):
+        """Include index changes and unreadability when judging retained evidence."""
+        return (self.git("diff", "--quiet", "--no-ext-diff", check=False).returncode == 0
+                and self.git("diff", "--cached", "--quiet", "--no-ext-diff", "HEAD", "--",
+                             check=False).returncode == 0)
+
+    def startup_damage(self, admin):
+        """Unfinished Git operations belong to the retained diagnostic unit."""
+        pending = ("index.lock", "HEAD.lock", "MERGE_HEAD", "AUTO_MERGE",
+                   "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_START",
+                   "rebase-merge", "rebase-apply", "sequencer")
+        return not self.tracked_clean() or any(
+            (admin / name).exists() or (admin / name).is_symlink() for name in pending)
+
+    def clean_startup(self, base):
+        """Remove disposable inputs only after owned damage has been retained."""
+        # Intent survives a partial clean. Every ensure revalidates ownership,
+        # mappings and tracked evidence before it can resume these deletions.
+        self.state["startup_cleanup"] = {"base": base}
+        self.persist()
+        cleaned = self.git("clean", "-ffdx")
+        if cleaned.stdout:
+            print(f"verifier-worktree: removed disposable leftovers at {self.worktree}",
+                  file=sys.stderr)
+        self.git("checkout", "-q", "--detach", base)
+        if (not self.tracked_clean()
+                or self.git("clean", "-nffdx").stdout
+                or self.git("rev-parse", "HEAD").stdout.strip() != base
+                or self.git("symbolic-ref", "-q", "HEAD", check=False).returncode != 1):
+            raise Refusal(f"startup cleanup did not establish a clean detached verifier at {base}: {self.worktree}; retained {self.path}")
+        self.state.pop("startup_cleanup")
+        self.persist()
+
+    def ensure(self, base, replaced=False):
         """Establish a stable, canonical and ordinarily resolvable verifier."""
         self.recover()
+        base = self.git("rev-parse", "--verify", f"{base}^{{commit}}").stdout.strip()
         admin = self.registration()
         if admin:
             if not self.worktree.exists():
@@ -315,9 +349,11 @@ class Workspace:
             healthy = reflog.returncode == 0 and all(
                 self.git("cat-file", "-e", oid, check=False).returncode == 0
                 for oid in reflog.stdout.splitlines())
-        if not healthy:
+        if not healthy or (self.managed and self.startup_damage(admin)):
+            if replaced:
+                raise Refusal(f"replacement verifier is still damaged at {self.worktree}; preserve {self.path} and inspect checkout hooks")
             self.archive(admin)
-            return self.ensure(base)
+            return self.ensure(base, replaced=True)
         # A broken foreign ref is an actionable refusal, never justification
         # for repeatedly rebuilding this otherwise healthy verifier.
         self.git("rev-list", "--objects", "--all", "--reflog")
@@ -327,6 +363,7 @@ class Workspace:
             if (self.worktree / value).resolve() != self.common:
                 raise Refusal(f"resolved common directory mismatch: {value}")
         if self.managed:
+            self.clean_startup(base)
             atomic(self.common / "storyhook/verification-worktree.format", b"private-gitdir-v1\n")
         self.state["admin"] = str(admin)
         self.persist()

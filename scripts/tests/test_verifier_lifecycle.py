@@ -422,6 +422,170 @@ class VerifierLifecycle(unittest.TestCase):
         self.assertEqual(result["result"], "infrastructure-failure")
         self.assertEqual((self.wt / ".git").read_bytes(), original)
 
+    def test_startup_archives_staged_and_unstaged_damage_before_cleaning(self):
+        """Startup preserves tracked damage and accompanying extras as one unit."""
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+                evidence = "staged" if staged else "unstaged"
+                (self.wt / "f").write_text(evidence)
+                (self.wt / "extra").write_text(evidence)
+                if staged:
+                    self.git("add", "f", cwd=self.wt)
+                index = (self.admin / "index").read_bytes()
+                result = self.ensure()
+                self.assertEqual(result["result"], "verifier-worktree-ready", result)
+                self.assertEqual((self.wt / "f").read_text(), "base\n")
+                self.assertFalse((self.wt / "extra").exists())
+                retained = [p for p in self.wt.parent.glob("verification-recovery-*/worktree/f")
+                            if p.read_text() == evidence]
+                self.assertEqual(len(retained), 1)
+                self.assertEqual((retained[0].parent / "extra").read_text(), evidence)
+                self.assertEqual((retained[0].parents[1] / "admin/index").read_bytes(), index)
+                self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+                self.assertEqual(len(list(self.wt.parent.glob("verification-recovery-*"))),
+                                 2 if staged else 1)
+
+    def test_startup_cleans_ignored_nested_and_symlink_leftovers(self):
+        """Extras cannot leak between stories, including ignored nested repos."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        (self.common / "info/exclude").write_text("ignored/\n")
+        (self.wt / "ignored").mkdir()
+        (self.wt / "ignored/cache").write_text("stale")
+        (self.wt / "nested").mkdir()
+        self.git("init", "-q", str(self.wt / "nested"))
+        (self.wt / "nested/data").write_text("stale")
+        (self.wt / "empty").mkdir()
+        (self.wt / "line\nbreak").write_text("stale")
+        external = self.root / "external"
+        external.mkdir()
+        (external / "keep").write_text("foreign")
+        (self.wt / "external-link").symlink_to(external, target_is_directory=True)
+        (self.wt / "dangling").symlink_to(self.root / "missing")
+        result = self.ensure()
+        self.assertEqual(result["result"], "verifier-worktree-ready", result)
+        self.assertEqual({p.name for p in self.wt.iterdir()}, {".git", "f"})
+        self.assertEqual((external / "keep").read_text(), "foreign")
+        self.assertEqual(list(self.wt.parent.glob("verification-recovery-*")), [])
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_startup_clears_collisions_before_pinned_base_checkout(self):
+        """The next candidate sees its own tree despite old ignored path collisions."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        (self.common / "info/exclude").write_text("g\n")
+        (self.wt / "g").mkdir()
+        (self.wt / "g/stale").write_text("stale")
+        self.base = self.head
+        result = self.ensure()
+        self.assertEqual(result["result"], "verifier-worktree-ready", result)
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base)
+        self.assertEqual((self.wt / "g").read_text(), "candidate\n")
+        self.assertEqual(self.git("status", "--porcelain", "--ignored", cwd=self.wt), "")
+        result = self.speculate("test \"$(cat g)\" = candidate && test ! -e stale")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_startup_recovers_corrupt_index_and_stale_git_operation(self):
+        """Owned damaged administration is retained, not left to block checkout."""
+        for name in ("index", "index.lock", "MERGE_HEAD", "rebase-merge"):
+            with self.subTest(name=name):
+                self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+                path = self.admin / name
+                if name == "rebase-merge":
+                    path.mkdir()
+                    (path / "head-name").write_text("stale operation")
+                else:
+                    path.write_text("stale operation")
+                result = self.ensure()
+                self.assertEqual(result["result"], "verifier-worktree-ready", result)
+                self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
+                retained = list(self.wt.parent.glob("verification-recovery-*/admin/" + name))
+                self.assertTrue(retained)
+                self.assertTrue(any((p / "head-name" if p.is_dir() else p).read_bytes()
+                                    == b"stale operation" for p in retained))
+                if name != "index":
+                    self.assertFalse(path.exists())
+
+    def test_startup_cleanup_failure_refuses_admission_and_retries(self):
+        """A real deletion permission error cannot be reported ready."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        protected = self.wt / "protected"
+        protected.mkdir()
+        (protected / "leftover").write_text("stale")
+        protected.chmod(0o500)
+        try:
+            result = self.ensure()
+            self.assertEqual(result["result"], "infrastructure-failure", result)
+            self.assertIn("clean", result["detail"])
+            self.assertIn(str(self.wt), result["detail"])
+            self.assertEqual((protected / "leftover").read_text(), "stale")
+        finally:
+            protected.chmod(0o700)
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        self.assertFalse(protected.exists())
+
+    def test_startup_interrupted_cleanup_rechecks_damage_before_retry(self):
+        """Partial deletion followed by tracked damage must archive remaining evidence."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        for name in ("first", "remaining"):
+            (self.wt / name).write_text(name)
+        wrapper = self.root / "git-wrapper"
+        wrapper.mkdir()
+        real_git = self.command("sh", "-c", "command -v git").stdout.strip()
+        (wrapper / "git").write_text(
+            '#!/bin/bash\n'
+            'if [ "${3:-}" = clean ] && [ "${4:-}" = -ffdx ]; then\n'
+            '  "' + real_git + '" -C "$2" clean -ffdx -- first || exit $?\n'
+            '  kill -KILL "$PPID"\n  exit 0\nfi\n'
+            'exec "' + real_git + '" "$@"\n')
+        (wrapper / "git").chmod(0o755)
+        original_path = self.env["PATH"]
+        self.env["PATH"] = str(wrapper) + ":" + original_path
+        try:
+            result = self.ensure()
+            self.assertEqual(result["result"], "infrastructure-failure", result)
+        finally:
+            self.env["PATH"] = original_path
+        self.assertFalse((self.wt / "first").exists())
+        self.assertTrue((self.wt / "remaining").exists())
+        (self.wt / "f").write_text("post-interruption edit")
+        result = self.ensure()
+        self.assertEqual(result["result"], "verifier-worktree-ready", result)
+        retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_text(), "post-interruption edit")
+        self.assertEqual((retained[0].parent / "remaining").read_text(), "remaining")
+        self.assertFalse((retained[0].parent / "first").exists())
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_startup_post_checkout_edits_never_admit_a_dirty_gate(self):
+        """Final checks catch hooks changing tracked or ignored inputs after cleaning."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        hook = self.common / "hooks/post-checkout"
+        (self.common / "info/exclude").write_text("ignored\n")
+        for path in ("f", "ignored"):
+            with self.subTest(path=path):
+                hook.write_text(f"#!/bin/sh\nprintf hook-evidence > {path}\n")
+                hook.chmod(0o755)
+                result = self.ensure()
+                self.assertEqual(result["result"], "infrastructure-failure", result)
+                self.assertIn("startup cleanup", result["detail"])
+                self.assertEqual((self.wt / path).read_text(), "hook-evidence")
+                hook.unlink()
+                self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_startup_replacement_damage_is_bounded_and_retained(self):
+        """A hook damaging every fresh checkout cannot trigger endless rebuilding."""
+        hook = self.common / "hooks/post-checkout"
+        hook.write_text("#!/bin/sh\nprintf hook-evidence > f\n")
+        hook.chmod(0o755)
+        result = self.ensure()
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("replacement verifier is still damaged", result["detail"])
+        self.assertEqual((self.wt / "f").read_text(), "hook-evidence")
+        self.assertEqual(len(list(self.wt.parent.glob("verification-recovery-*"))), 1)
+        hook.unlink()
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
 
 if __name__ == "__main__":
     unittest.main()

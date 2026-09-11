@@ -1678,8 +1678,8 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
         "checking connectivity after repair",
     );
 
-    let sentinel = verifier.join("persistent-cache-sentinel");
-    fs::write(&sentinel, "keep\n").expect("writing the persistent cache sentinel");
+    let sentinel = verifier.join("disposable-cache-sentinel");
+    fs::write(&sentinel, "stale\n").expect("writing a disposable cache sentinel");
     let reused = run(
         repo.path(),
         "bash",
@@ -1691,9 +1691,11 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
     );
     assert_ok(&reused, "reusing the healthy verifier worktree");
     assert!(
-        sentinel.exists(),
-        "a healthy formatted verifier must preserve its caches"
+        !sentinel.exists(),
+        "new verification must clear disposable cache inputs"
     );
+    let admin = stdout(&run(&verifier, "git", &["rev-parse", "--absolute-git-dir"]));
+    let index = fs::read(Path::new(&admin).join("index")).expect("read the healthy index");
 
     fs::write(
         repo.common_dir()
@@ -1717,9 +1719,10 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
     let payload: serde_json::Value =
         serde_json::from_slice(&marker_repair.stdout).expect("the marker repair must return JSON");
     assert_eq!(payload["result"], "verifier-worktree-ready");
-    assert!(
-        sentinel.exists(),
-        "a stale format marker alone must not discard a healthy verifier"
+    assert_eq!(
+        fs::read(Path::new(&admin).join("index")).expect("read the reused index"),
+        index,
+        "a stale format marker alone must not rebuild healthy administration"
     );
 }
 
