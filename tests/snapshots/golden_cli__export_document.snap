@@ -323,6 +323,11 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "in-progress"
+        },
+        {
+          "at": "[timestamp]",
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-2",
           "relation": "blocked-by"
@@ -334,11 +339,6 @@ source: tests/golden_cli.rs
             "backend",
             "phase:1"
           ]
-        },
-        {
-          "at": "[timestamp]",
-          "kind": "StoryStateChanged",
-          "state": "in-progress"
         }
       ],
       "id": "SH-3"
