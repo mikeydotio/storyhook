@@ -40,7 +40,7 @@ Records under `<common>/storyhook/verifier-lifecycle/<worktree-hash>` carry:
 | File | Meaning |
 |---|---|
 | `.lock` | Permanent kernel lock inode |
-| `.owner` | Version, exact paths, nonce, boot UUID, supervisor and session identities, gate-launch/completion state |
+| `.owner` | Version, exact paths, nonce, boot UUID, supervisor and session identities, gate-launch/completion state, the gate leader's exit code once observed |
 | `.state` | Exact workspace/admin/lease mappings, pinned base, allocation phase and pending recovery operations |
 
 Reentrancy requires the exact nonce, paths, boot identity and recorded session.
@@ -50,11 +50,16 @@ owner new authority. Process age is not evidence of abandonment.
 Before recovery, acquire the flock and exclude all recorded surviving sessions.
 Automatic same-boot recovery requires evidence that arbitrary gate execution
 never began or that its supervised session finished. A verified boot change
-also proves prior processes cannot survive. An interrupted arbitrary gate with
-uncertain descendants is retained and refused even when its leader is gone.
-Gates must not daemonize out of their supervised session. Portable inspection
-cannot exclude an arbitrary detached descendant that also closes inherited
-descriptors; this is an explicit limit, not an automatic-recovery claim.
+also proves prior processes cannot survive. The gate supervisor records its
+leader's exit code the moment it observes it; a recorded leader exit whose
+session census is empty is that "finished" evidence. An interrupted arbitrary
+gate — started, no leader exit recorded — with uncertain descendants is
+retained and refused even when its leader is gone. Survivors of an exited
+leader hold no authority: they are signalled and reaped within the cleanup
+grace (SH-695, below). Gates must not daemonize out of their supervised
+session. Portable inspection cannot exclude an arbitrary detached descendant
+that also closes inherited descriptors; this is an explicit limit, not an
+automatic-recovery claim.
 
 ## Recovery transitions
 
@@ -155,6 +160,32 @@ archive behavior, including their private Git administration and object lease.
 The complete council decision and nested-budget reasoning are recorded on
 SH-686. Authority monitoring stops before verifier-owned story transitions;
 this process contract also applies to manual cancellation and timeouts.
+
+### Exited-session reaping — SH-695
+
+A supervised leader that exits while its session still has members is not an
+ambiguity: the leader has answered, and what survives it is a leak. Both
+supervisors send TERM to the session's confirmed members, wait their own
+cancellation grace, escalate to KILL at the deadline, and refuse only when
+members outlive the reaping eighth. The outer supervisor also signals the
+recorded gate session when the gate supervisor is provably gone. One stderr
+line names the session, the exit code and the survivors, so the leak stays
+visible in the gate log without halting the queue. The gate supervisor records
+`gate_leader_exit` at the moment it observes its leader's exit, normal or
+cancelled, and clears it with the other gate fields once the session is
+settled. Same-boot admission refuses a started gate with no recorded leader
+exit as interrupted; a started gate with a recorded exit is admitted once the
+census of its recorded session is empty, the same instrument the completed
+path uses. A recorded exit without a started gate and its integer session is
+refused as an incomplete identity; records written before this change carry no
+such field and read as unknown. The cleanup budget is validated before the
+record says a gate started, so a refused policy cannot leave an interrupted
+gate behind. Where Python offers `waitid` with `WNOWAIT`, the leader's exit is
+observed without reaping it, so its pid and session identity stay pinned while
+survivors are signalled; older interpreters reap at observation and keep that
+reuse window, a stated portable limit. The three `sleep 300` orphans the hook
+tests leave on purpose are the motivating case and are unchanged; the decisions
+are recorded on SH-695.
 
 `tests/verifier_lifecycle.rs` runs isolated real-Git Python cases, including
 production entry points, concurrent preflight, killed owners with surviving
