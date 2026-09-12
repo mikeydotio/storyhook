@@ -2,7 +2,7 @@
 
 - **Date**: 2026-09-11 PDT / 2026-09-12 UTC
 - **Severity/Impact**: `dev` red from ac7f2aef2 until the fix landed. `tests/fault_injection.rs` (1 of 3) and `tests/crash_matrix.rs` (8 of 13) failed on every gate run against that base, so no story could be certified. No user, runtime, or data impact.
-- **Status**: Fixed in `3ff9d9c00` (worker) and `85af3bd32` (harness diagnosis); story SH-693.
+- **Status**: Fixed in `3ff9d9c00` (worker), `85af3bd32` (harness diagnosis) and `feba4b3f0` (golden corpus, the second casualty); story SH-693.
 
 ## Summary
 
@@ -39,6 +39,12 @@ ODC classification: **Checking / Missing / start-up + fault injection**. The "is
 - `tests/fault_injection.rs::an_armed_daemon_left_idle_is_not_killed_by_its_own_housekeeping`: any poller, present or future, that writes on an idle pass turns this red with a message that names the finding. The window is `3 × block_delivery::IDLE_POLL`, the shortest cadence the daemon runs.
 - `crash_the_daemon` reports a daemon that dies before serving, with the reading (SIGKILL means the point was reached, just not by the command), the two paths that reach a point without a client, and the daemon's stderr. Pinned by `an_armed_daemon_that_dies_before_serving_is_reported_as_such`.
 - The invariant is written where it is enforced: the module doc of `src/daemon/block_delivery.rs`, and the As-built section of `docs/spec/block-interruption.md`.
+
+## The second casualty, found by submitting
+
+The first verification of this fix (PR 792, 2026-09-12 18:25 UTC) failed in the rust-suite leg on nine `tests/golden_cli.rs` snapshots. Every diff was an "AGENT BLOCK DELIVERY … interrupt unreached: no agent reached: Codex helper: could not find plugins/story/bin/story.sh for agent `codex`" comment on a story the golden corpus blocks, plus the `head_global_seq` shifts that follow: SH-690's worker recording delivery outcomes into a fixture whose committed snapshots predate it. The same terminated gate that let the start-up write through let this through. The snapshot text encoded "no codex helper on this machine" and the comment's position depended on the worker's poll timing, so regenerating alone would have pinned a race. `feba4b3f0` points the corpus's daemon at a dispatch stub (`STORYHOOK_DISPATCH_SCRIPT`, the tree-wide convention), settles each delivery immediately after the operation that enqueues it with a bound derived from `IDLE_POLL`, and regenerates the nine snapshots; three gated runs were identical.
+
+The verifier reported that run as an infrastructure HALT rather than a RED verdict: the rust-suite leg failed early, and `verifier-owner.py`'s quiescence census found a `sleep 300` that `tests/event_hooks.rs` deliberately orphans still alive in the gate session. A green leg is followed by minutes of other legs, so the sleep is dead by teardown; a red one is not. A halt that masks a red verdict is SH-692's subject and is cross-referenced there.
 
 ## Judged and not adopted
 
