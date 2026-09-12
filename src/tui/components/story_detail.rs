@@ -608,7 +608,7 @@ impl Component for StoryDetail {
             for comment in &story.comments {
                 lines.push(Line::from(vec![
                     Span::raw(" ".repeat(label_width)),
-                    Span::styled(&comment.at[..10.min(comment.at.len())], theme.story_id),
+                    Span::styled(day(&comment.at), theme.story_id),
                     Span::raw(" "),
                     Span::raw(comment.text.clone()),
                 ]));
@@ -666,14 +666,14 @@ impl Component for StoryDetail {
         lines.push(Line::from(""));
         lines.push(render_field(
             "Created",
-            &story.created_at,
+            &crate::local_time::stamp(&story.created_at),
             false,
             label_width,
             &theme,
         ));
         lines.push(render_field(
             "Updated",
-            &story.updated_at,
+            &crate::local_time::stamp(&story.updated_at),
             false,
             label_width,
             &theme,
@@ -765,10 +765,12 @@ fn referenced_by_rows(story: &StorySnapshot, fetched: Option<&ReferencedBy>) -> 
     rows
 }
 
-/// The date half of an RFC3339 timestamp — what every dated row in the drawer
-/// shows, and all a fixed-width column has room for.
+/// The calendar date of a stored instant in the process's zone — what every
+/// dated row in the drawer shows, and all a fixed-width column has room for.
+/// The zone conversion is `crate::local_time`'s (SH-679); this is only the
+/// drawer's name for it.
 fn day(at: &str) -> String {
-    at[..10.min(at.len())].to_string()
+    crate::local_time::day(at)
 }
 
 /// Render a single field row with a dimmed label and value.
@@ -1563,11 +1565,32 @@ mod tests {
         }
     }
 
+    /// The expected row for a reference stored at `at`. Its date is built
+    /// through the same door the drawer uses, because these tests are about
+    /// row assembly, not zone arithmetic: `crate::local_time`'s own tests pin
+    /// the conversion against fixed offsets, and no literal date could be
+    /// stable across every zone this test process might run in.
     fn reference(at: &str, text: &str) -> ReferenceRow {
         ReferenceRow::Reference {
-            at: at.to_string(),
+            at: day(at),
             text: text.to_string(),
         }
+    }
+
+    /// The drawer's date is the process-zone calendar date of the stored
+    /// instant, never a byte-slice of the UTC string (SH-679). Late on the 1st
+    /// UTC is the 1st or the 2nd depending on the zone this test runs in; the
+    /// only wrong answers are anything else, and the raw string for a value
+    /// that is not an instant.
+    #[test]
+    fn a_dated_row_shows_the_local_calendar_date_of_the_stored_instant() {
+        let shown = day("2026-03-01T23:30:00Z");
+        assert!(
+            shown == "2026-03-01" || shown == "2026-03-02",
+            "expected a local date on either side of midnight, got {shown}"
+        );
+        assert_eq!(shown, crate::local_time::day("2026-03-01T23:30:00Z"));
+        assert_eq!(day("not an instant"), "not an instant");
     }
 
     /// All three sources, in the order `story show` prints them, with the same
@@ -1592,13 +1615,13 @@ mod tests {
         assert_eq!(
             referenced_by_rows(&story, Some(&fetched)),
             vec![
-                reference("2026-01-03", "[git] abc1234: feat: land it"),
+                reference("2026-01-03T00:00:00Z", "[git] abc1234: feat: land it"),
                 reference(
-                    "2026-01-04",
+                    "2026-01-04T00:00:00Z",
                     "[pr] https://github.com/mikeydotio/storyhook/pull/297 (merged)"
                 ),
                 reference(
-                    "2026-01-05",
+                    "2026-01-05T00:00:00Z",
                     "[comment] SH-220: TUI parity filed separately as SH-248"
                 ),
             ]
@@ -1624,7 +1647,7 @@ mod tests {
         assert_eq!(
             referenced_by_rows(&story, Some(&fetched)),
             vec![reference(
-                "2026-02-01",
+                "2026-02-01T00:00:00Z",
                 "[pr] https://github.com/mikeydotio/storyhook/pull/12 (open)"
             )]
         );
@@ -1643,7 +1666,10 @@ mod tests {
 
         assert_eq!(
             referenced_by_rows(&story, Some(&fetched)),
-            vec![reference("2026-02-02", "[comment] SH-9: obviated by SH-1")]
+            vec![reference(
+                "2026-02-02T00:00:00Z",
+                "[comment] SH-9: obviated by SH-1"
+            )]
         );
     }
 
@@ -1665,7 +1691,7 @@ mod tests {
         assert_eq!(
             referenced_by_rows(&story, Some(&fetched)),
             vec![reference(
-                "2026-03-01",
+                "2026-03-01T00:00:00Z",
                 "[git] 9999999: fix: a commit the snapshot has not seen"
             )]
         );
@@ -1681,7 +1707,7 @@ mod tests {
         assert_eq!(
             referenced_by_rows(&story, None),
             vec![
-                reference("2026-01-03", "[git] abc1234: feat: land it"),
+                reference("2026-01-03T00:00:00Z", "[git] abc1234: feat: land it"),
                 ReferenceRow::Notice(DERIVED_UNAVAILABLE.to_string()),
             ]
         );

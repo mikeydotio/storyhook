@@ -140,3 +140,15 @@ No deviations from the council's verdict. The one implementation detail the
 council's question did not scope — where on the wire the field lives — is
 recorded above under "The wire" rather than as a deviation, since no
 candidate proposal's specific placement claim survived the runoff unchanged.
+
+### SH-679: display is local, ordering is not
+
+Since SH-679 every human surface shows stored instants in the reader's zone
+(`docs/spec/local-time-display.md`): the dashboard through `timeNode()`, the
+CLI and TUI through `src/local_time.rs`. None of the comparators above
+changed. The list's "Updated" cell now reads the local calendar date, but the
+`"updated"` sort accessor still returns the raw `updated_at` string and the
+`head_global_seq` tiebreak still decides a same-second tie, which
+`e2e/specs/local-time.spec.ts` pins by sorting two rows whose UTC dates differ
+while their local dates agree. Any new comparator keys on the stored string,
+never on what `timeNode()` or `local_time::day()` rendered.
