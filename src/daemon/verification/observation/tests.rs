@@ -81,6 +81,25 @@ fn stale_authority_prevents_spawn() {
 }
 
 #[test]
+fn a_block_cleared_between_observer_reads_still_withdraws_the_attempt() {
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let ctx = f.ctx();
+    let svc = StoryService::new(&ctx);
+    svc.set_awaiting(&c.story_id, "temporary hold").unwrap();
+    svc.clear_awaiting(&c.story_id).unwrap();
+    assert!(
+        !current(f.store(), &c).unwrap(),
+        "the pre-block attempt retained authority"
+    );
+    let next = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+    assert!(
+        current(f.store(), &next).unwrap(),
+        "a fresh admission after unblock is valid"
+    );
+}
+
+#[test]
 fn completed_outcomes_are_rechecked_even_without_a_notification() {
     for outcome in [
         VerificationOutcome::Merged {

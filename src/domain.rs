@@ -2949,51 +2949,29 @@ impl StoryIndex for BTreeMap<&str, &StorySnapshot> {
     }
 }
 
+/// Whether an open story is explicitly held or has an open dependency.
+/// Draft and obviation eligibility are separate from operational blocking.
+pub fn is_blocked(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
+    story.superstate == SuperState::Open
+        && (story.state == "blocked"
+            || story.awaiting.is_some()
+            || story.relationships.iter().any(|relation| {
+                relation.relation == "blocked-by"
+                    && all_stories
+                        .story(&relation.other_id)
+                        .is_some_and(|other| other.superstate == SuperState::Open)
+            }))
+}
+
+/// Whether work is eligible, including publication and obviation constraints.
 pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
-    if story.superstate != SuperState::Open {
-        return false;
-    }
-    // A draft is not yet ready for anyone to act on — SH-175's council
-    // verdict decided this on its own semantic grounds (a story `story
-    // publish` hasn't been run on isn't finished being specified), not by
-    // analogy to `story list`, which deliberately keeps showing drafts
-    // inline.
-    if story.draft {
-        return false;
-    }
-    // `"blocked"` is one of the `REQUIRED_STATES`, pinned to
-    // `SuperState::Open` in every project by construction, so this is a safe
-    // check against a guaranteed reserved slug rather than a fragile string
-    // match against project-configurable state names. Without it, a story
-    // parked in `blocked` with no `awaiting` and no unmet `blocked-by` edge
-    // reported ready — SH-126's council verdict.
-    if story.state == "blocked" {
-        return false;
-    }
-    if story.awaiting.is_some() {
-        return false;
-    }
-    if story
-        .relationships
-        .iter()
-        .any(|r| r.relation == "obviated-by")
-    {
-        return false;
-    }
-    // A blocker the index cannot answer for does not block. In a service's
-    // whole-project map that case is a dangling edge; in a client's partial
-    // one it is the ordinary case of a blocker that has been closed, deleted
-    // or archived out of the snapshot — none of which block. Reading absence
-    // as "blocked" instead would strand every story whose dependency landed.
-    for relation in &story.relationships {
-        if relation.relation == "blocked-by"
-            && let Some(other) = all_stories.story(&relation.other_id)
-            && other.superstate == SuperState::Open
-        {
-            return false;
-        }
-    }
-    true
+    story.superstate == SuperState::Open
+        && !story.draft
+        && !is_blocked(story, all_stories)
+        && !story
+            .relationships
+            .iter()
+            .any(|r| r.relation == "obviated-by")
 }
 
 /// The reserved label naming work the Full Auto engine must never dispatch

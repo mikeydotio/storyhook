@@ -414,7 +414,20 @@ while :; do
     recorded="$(cat "$lock/started" 2>/dev/null || true)"
     meta="$(cat "$lock/meta" 2>/dev/null || true)"
 
-    if [ -z "$holder" ]; then
+    if [ -d "$lock/interrupt" ]; then
+        # Native interruption can kill the wrapper before its cleanup trap.
+        # Only the captured-tree controller may acknowledge child quiescence.
+        controller="$(cat "$lock/interrupt/owner" 2>/dev/null || true)"
+        controller_started="$(cat "$lock/interrupt/started" 2>/dev/null || true)"
+        if [ -n "$controller" ] && [ -n "$controller_started" ] && \
+            { ! kill -0 "$controller" 2>/dev/null || [ "$(process_started "$controller")" != "$controller_started" ]; }; then
+            die "interruption cleanup incomplete for '$name' at $lock: controller $controller is gone; ownership retained until captured children are proven stopped"
+        fi
+        if [ "$announced" = 0 ]; then
+            note "waiting for interruption cleanup of '$name' at $lock (controller ${controller:-starting})"
+            announced=1
+        fi
+    elif [ -z "$holder" ]; then
         # Nameless: a holder mid-write, or one killed inside that window.
         nameless=$((nameless + 1))
         if [ "$nameless" -gt "$IDENTITY_GRACE_POLLS" ]; then
@@ -471,7 +484,7 @@ done
 # ago can be overtaken by a new holder, and deleting that holder's directory
 # would hand the lock to two processes at once.
 release() {
-    if [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then
+    if [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ] && [ ! -d "$lock/interrupt" ]; then
         rm -rf "$lock" 2>/dev/null || true
     fi
 }
@@ -524,6 +537,7 @@ on_signal() {
     kill -s "$1" $$
 }
 
+printf '1\n' > "$lock/interrupt-protocol" || die "could not record interruption protocol in $lock"
 printf '%s\n' "$(process_started $$)" > "$lock/started" \
     || {
         emit_lock_activity failed

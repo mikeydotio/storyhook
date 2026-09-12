@@ -348,13 +348,15 @@ pub enum AgentPresence {
 /// answering (SH-626: a probe that could not run has not answered no), and
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
 /// gate, so the agent is presumed live.
-pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 6] = [
+pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 8] = [
     ("pane-query-failed", AgentPresence::NotAbsent),
     ("pane-unavailable", AgentPresence::Absent),
     ("pane-provider-unknown", AgentPresence::NotAbsent),
     ("pane-dead", AgentPresence::Absent),
     ("pane-changed", AgentPresence::Absent),
     ("delivery-failed", AgentPresence::NotAbsent),
+    ("target-changed", AgentPresence::NotAbsent),
+    ("interruption-failed", AgentPresence::NotAbsent),
 ];
 
 /// Classifies a notify refusal slug against [`NOTIFY_REFUSALS`]; an unknown
@@ -1825,7 +1827,10 @@ fn candidate_authority(
 ) -> Result<CandidateAuthority, AppError> {
     let current = queue.current_for(candidate)?;
     match current {
-        Some(current) if current.verifying_generation == candidate.verifying_generation => {
+        Some(current)
+            if current.verifying_generation == candidate.verifying_generation
+                && current.blocking_revision == candidate.blocking_revision =>
+        {
             Ok(CandidateAuthority::Current(Box::new(current)))
         }
         other => Ok(CandidateAuthority::Superseded(other.map(Box::new))),

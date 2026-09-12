@@ -58,6 +58,8 @@
 //! exception is [`diff_read_model`], whose entire job is to fold independently
 //! and disagree.
 
+pub mod block_delivery;
+pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub mod conformance;
 pub mod error;
 pub mod fault;
@@ -250,6 +252,9 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Ordered block transition deliveries for a project.
+    fn block_deliveries(&self, project: ProjectId) -> Result<Vec<BlockDelivery>, StoreError>;
+
     /// The project with this id.
     fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError>;
 
@@ -507,6 +512,20 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Append an ordered block transition effect inside the mutation transaction.
+    fn enqueue_block_delivery(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        action: BlockAction,
+    ) -> Result<(), StoreError>;
+    /// Update acknowledgement only if the prior state still matches.
+    fn update_block_delivery(
+        &mut self,
+        delivery: &BlockDelivery,
+        expected: DeliveryStatus,
+    ) -> Result<bool, StoreError>;
+
     /// Creates a project and returns its id.
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError>;
 

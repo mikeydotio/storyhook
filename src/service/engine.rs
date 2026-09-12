@@ -1547,7 +1547,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
         quarantined.probe_detail = window_detail.map(str::to_string);
-        let applied = self.ctx.store().write(|tx| {
+        let applied = self.ctx.write_stories(|tx| {
             let project = self.ctx.project();
             if !observation_is_current(tx, project, lane, head_global_seq)? {
                 return Ok(false);

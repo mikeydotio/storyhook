@@ -107,7 +107,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             return Err(AppError::Validation("state `closed` is reserved for legacy history; use `dropped` for abandoned work or choose another custom name".into()));
         }
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let mut states = tx.states(project)?;
             if states.iter().any(|state| state.slug == slug) {
                 return Err(AppError::Validation(format!("state `{slug}` already exists")).into());
@@ -138,7 +138,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     ) -> Result<StateEdit, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let states = tx.states(project)?;
             let current = states
                 .iter()
@@ -237,7 +237,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     ) -> Result<usize, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let states = tx.states(project)?;
             if !states.iter().any(|state| state.slug == slug) {
                 return Err(AppError::NotFound(format!("state `{slug}` not found")).into());
@@ -284,7 +284,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     /// state a new story opens in.
     pub fn reorder_states(&self, order: &[String]) -> Result<Vec<StateDef>, AppError> {
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let states = tx.states(project)?;
             let known: BTreeSet<&str> = states.iter().map(|state| state.slug.as_str()).collect();
 
@@ -357,7 +357,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
         if let Some(glyph) = emoji {
             validate_type_glyph(glyph)?;
         }
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             // `none` is the legacy untyped diagnostic sentinel and `default`
             // is reserved configuration vocabulary, so either real slug
             // would make a read ambiguous.
@@ -394,7 +394,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
         if let FieldEdit::Set(glyph) = &changes.emoji {
             validate_type_glyph(glyph)?;
         }
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let types = tx.types(project)?;
             let current = types
                 .iter()
@@ -432,7 +432,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     /// Removes a story type that no story is using.
     pub fn remove_type(&self, slug: &str) -> Result<(), AppError> {
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let types = tx.types(project)?;
             if types.len() <= 1 {
                 return Err(AppError::Validation("cannot remove the last type".to_string()).into());
@@ -474,7 +474,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     pub fn add_member(&self, input: &MemberInput) -> Result<Member, AppError> {
         let project = self.ctx.project();
         let member = build_member(input, &self.ctx.now());
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             if tx
                 .members(project)?
                 .iter()

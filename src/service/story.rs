@@ -277,7 +277,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn create(&self, input: &NewStoryInput) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let snapshot = self.ctx.store().write(|tx| {
+        let snapshot = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
@@ -346,7 +346,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn assign(&self, id: &str, member: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
@@ -517,7 +517,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 }
             })
             .transpose()?;
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let project_record = tx.project(project)?.ok_or_else(|| {
@@ -656,7 +656,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let claimed = self.ctx.store().write(|tx| {
+        let claimed = self.ctx.write_stories(|tx| {
             if !eligible(&*tx)? {
                 return Ok(None);
             }
@@ -750,7 +750,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<(StorySnapshot, StorySnapshot), AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let prefix = project_prefix(&*tx, project)?;
@@ -841,7 +841,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<(StorySnapshot, StorySnapshot, UnclaimOutcome), AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (before, snapshot, outcome) = self.ctx.store().write(|tx| {
+        let (before, snapshot, outcome) = self.ctx.write_stories(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let prefix = project_prefix(&*tx, project)?;
@@ -994,7 +994,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn set_fields(&self, id: &str, edits: &FieldEdits) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (plan, before, snapshot) = self.ctx.store().write(|tx| {
+        let (plan, before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
@@ -1128,7 +1128,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn delete(&self, id: &str) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (canonical, title, retracted, removed) = self.ctx.store().write(|tx| {
+        let (canonical, title, retracted, removed) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
             let canonical = story_no.to_id(&prefix);
@@ -1181,7 +1181,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let now = self.ctx.now();
         let project = self.ctx.project();
 
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
@@ -1233,7 +1233,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn hide(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1264,7 +1264,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn unhide(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1292,7 +1292,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn publish(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1346,7 +1346,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn hide_state(&self, state_slug: &str) -> Result<String, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        let archived = self.ctx.store().write(|tx| {
+        let archived = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let rows = archivable_occupants(&*tx, project, state_slug)?;
@@ -1386,7 +1386,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         F: FnOnce(&StoryRow, &BTreeMap<String, StateDef>) -> Result<Vec<StoryEvent>, AppError>,
     {
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = intent.resolve(&*tx, project, &prefix, id)?;
