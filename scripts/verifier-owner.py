@@ -90,9 +90,8 @@ def supervisor_gone(record_path, session):
         return True
 
 
-def execute(command, record_path, record, field, cancellation, output=None):
+def execute(command, record_path, record, field, cancellation, budget, output=None):
     """Admit a new session only after its identity is durably recorded."""
-    budget = cleanup_budget()
     receive, release = os.pipe()
     child = os.fork()
     if child == 0:
@@ -196,12 +195,15 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
     if mode == "gate":
         if not held(common, worktree, key):
             raise Refusal("gate execution has no matching verifier owner")
+        # Policy is validated before the record says a gate started, so a
+        # refused budget cannot leave an interrupted gate behind (SH-695).
+        budget = cleanup_budget()
         owner = read(owner_path)
         owner["gate_started"] = True
         owner["gate_supervisor"] = os.getpid()
         owner["gate_leader_exit"] = None
         save(owner_path, owner)
-        status = execute(command, owner_path, owner, "gate_session", cancellation)
+        status = execute(command, owner_path, owner, "gate_session", cancellation, budget)
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None
@@ -211,6 +213,7 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         return status
     if mode != "run" or not command:
         raise Refusal("usage: verifier-owner.py held|run|gate <common> <worktree> [-- command...]")
+    budget = cleanup_budget()
     lock = str(key) + ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     os.set_inheritable(fd, True)
@@ -260,7 +263,7 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
                  "nonce": uuid.uuid4().hex, "boot": boot(), "gate_started": False,
                  "supervisor": os.getpid()}
         os.environ["STORYHOOK_VERIFIER_OWNER"] = owner["nonce"]
-        status = execute(command, owner_path, owner, "session", cancellation, output)
+        status = execute(command, owner_path, owner, "session", cancellation, budget, output)
         owner = read(owner_path)
         owner["session"] = None
         owner["completed"] = True

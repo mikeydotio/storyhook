@@ -13,6 +13,8 @@ each run by hand against scripts/verifier-owner.py before commit:
   reap case red (no TERM reached the member).
 - the leader reaped at observation (waitpid instead of waitid/WNOWAIT) ->
   the pinned-leader case red (zombie span 0.085 s against a 1 s floor).
+- the cleanup budget validated after the record write -> the invalid
+  budget case red (gate_started left true).
 """
 
 import json
@@ -1042,6 +1044,28 @@ while True:
         verdict_file.seek(0)
         verdict = json.loads(verdict_file.read().decode())
         self.assertEqual(verdict["result"], "tests-failed", verdict)
+
+    def test_invalid_cleanup_budget_refuses_before_marking_the_gate_started(self):
+        """A refused budget must leave no started gate behind in the record."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        status = self.root / "gate-status"
+        snapshot = self.root / "owner-snapshot"
+        owner_path, _ = self.owner_record()
+        leader = self.root / "leader.sh"
+        leader.write_text(
+            "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS=wat python3 " + shlex.quote(str(SCRIPTS / "verifier-owner.py"))
+            + " gate " + shlex.quote(str(self.common)) + " " + shlex.quote(str(self.wt)) + " -- true\n"
+            "echo $? > " + shlex.quote(str(status)) + "\n"
+            "cp " + shlex.quote(str(owner_path)) + " " + shlex.quote(str(snapshot)) + "\n")
+        result = self.owner("bash", str(leader))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(status.read_text().strip(), "1")
+        self.assertIn("cleanup budget", result.stderr)
+        owner = json.loads(snapshot.read_text())
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner.get("gate_supervisor"), owner)
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
 
 
 if __name__ == "__main__":
