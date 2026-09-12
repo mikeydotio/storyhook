@@ -15,6 +15,11 @@ each run by hand against scripts/verifier-owner.py before commit:
   the pinned-leader case red (zombie span 0.085 s against a 1 s floor).
 - the cleanup budget validated after the record write -> the invalid
   budget case red (gate_started left true).
+
+SH-698 observation regressions were mutation-checked in memory, leaving the
+production scripts unchanged: existence-before-content, a 15-second startup
+ceiling, ignored child death, and a restarted settlement deadline each turned
+its corresponding HarnessObservation case red.
 """
 
 import json
@@ -27,8 +32,20 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+
+# The fixture supplies this budget, rather than inheriting the enclosing gate's
+# policy. Cancellation cases override it explicitly to exercise shorter ladders.
+CLEANUP_BUDGET_MS = "30000"
+# Scheduling, polling, log flushing and reaping beyond the supervised allowance.
+MARGIN = 5
+# Startup has no production deadline. Three cleanup budgets allow interpreter,
+# fork/setsid and publication delays under concurrent builds; dead children fail
+# immediately, so this generosity costs time only for a live stalled fixture.
+MILESTONE_DEADLINE = 3 * int(CLEANUP_BUDGET_MS) / 1000 + MARGIN
+POLL_INTERVAL = 0.01
 
 
 class VerifierLifecycle(unittest.TestCase):
@@ -49,6 +66,7 @@ class VerifierLifecycle(unittest.TestCase):
                     "STORYHOOK_STORE_PATH": str(self.root / "store.db"),
                     "STORYHOOK_LOCK_DIR": str(self.root / "locks"),
                     "STORYHOOK_VERIFIER_MIRROR": "0", "TMPDIR": "/tmp"}
+        self.set_cleanup_budget(CLEANUP_BUDGET_MS)
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Lifecycle Fixture")
         self.git("config", "user.email", "lifecycle@example.test")
@@ -69,7 +87,7 @@ class VerifierLifecycle(unittest.TestCase):
     def command(self, *args, cwd=None, check=True):
         """Run real commands with bounded waits and fixture-only environment."""
         result = subprocess.run(args, cwd=cwd or self.repo, env=self.env,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=MILESTONE_DEADLINE)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -164,15 +182,15 @@ class VerifierLifecycle(unittest.TestCase):
         ready = self.root / "survivor-pid"
         code = "import os,time; pid=os.fork(); "
         code += "\nif pid==0: time.sleep(30); os._exit(0)"
-        code += "\nopen(" + repr(str(ready)) + ",'w').write(str(pid))"
+        code += "\nopen(" + repr(str(ready)) + ",'w').write(str(pid)+'\\n')"
         code += "\nprint('{\"result\":\"ready\"}',flush=True)"
         child, log = self.spawn(sys.executable, str(SCRIPTS / "verifier-owner.py"),
                                 "run-json", str(self.common), str(self.wt), "--",
                                 sys.executable, "-c", code)
-        self.wait_path(ready)
-        self.addCleanup(lambda: self.stop_pid(int(ready.read_text())))
-        self.assertEqual(child.wait(timeout=15), 0)
-        self.assertGone(int(ready.read_text()))
+        pid = self.wait_pid(ready, child, log)
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
+        self.assertGone(pid)
         log.seek(0)
         output = log.read().decode()
         json_lines = [line for line in output.splitlines() if line.startswith("{")]
@@ -256,23 +274,93 @@ class VerifierLifecycle(unittest.TestCase):
         self.assertEqual((self.wt / ".git").read_bytes(), pointer)
         self.assertTrue(private.exists())
 
-    def wait_path(self, path):
-        """Synchronize on a real child milestone, bounded by fixture timeout."""
-        deadline = time.monotonic() + 15
-        while not path.exists():
+    def wait_path(self, path, child, log):
+        """Wait for an existence-only milestone or diagnose its writer's death."""
+        self._wait_publication(path, child, log, pid_record=False)
+
+    def wait_pid(self, path, child, log):
+        """Read one newline-complete PID; open or partial writes are pending."""
+        return self._wait_publication(path, child, log, pid_record=True)
+
+    def _wait_publication(self, path, child, log, *, pid_record):
+        started = time.monotonic()
+        content = None
+
+        def published():
+            nonlocal content
+            if not pid_record:
+                return path.exists()
+            try:
+                content = path.read_text()
+            except FileNotFoundError:
+                content = None
+                return None
+            if not content.endswith("\n"):
+                return None
+            digits = content[:-1]
+            if not digits.isascii() or not digits.isdecimal() or int(digits) <= 0:
+                self.fail(f"malformed PID record {path}: {content!r}; child pid={child.pid}")
+            return int(digits)
+
+        while True:
+            value = published()
+            if value:
+                return value
+            status = child.poll()
+            if status is not None:
+                # The writer can publish its final bytes between our read and
+                # poll. Exit is conclusive only after a final publication read.
+                value = published()
+                if value:
+                    return value
+            elapsed = time.monotonic() - started
+            if status is not None or elapsed >= MILESTONE_DEADLINE:
+                reason = f"exited {status}" if status is not None else "deadline expired"
+                # pread leaves the child's shared log offset untouched.
+                evidence = os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).decode(errors="replace")
+                self.fail(f"child pid={child.pid} {reason} before publishing {path}; "
+                          f"elapsed={elapsed:.3f}s allowance={MILESTONE_DEADLINE}s "
+                          f"load={os.getloadavg()} content={content!r}\n{evidence}")
+            time.sleep(POLL_INTERVAL)
+
+    def set_cleanup_budget(self, milliseconds):
+        """Supply a valid fixture budget while preserving its input spelling."""
+        self.assertTrue(milliseconds.isascii() and milliseconds.isdecimal())
+        self.assertTrue(4000 <= int(milliseconds) <= 99999999)
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = milliseconds
+        self.budget = int(milliseconds) / 1000
+
+    @property
+    def settle_timeout(self):
+        """Allow the supplied cancellation ladder plus scheduling/reap margin."""
+        return self.budget + MARGIN
+
+    def wait_cancelled(self, child, pid):
+        """Observe the cancelled wrapper and gate within one shared allowance."""
+        deadline = time.monotonic() + self.settle_timeout
+        try:
+            child.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            self.fail(f"verifier pid={child.pid} did not finish cancellation within {self.settle_timeout}s")
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
             if time.monotonic() >= deadline:
-                self.fail(f"child did not publish {path}")
-            time.sleep(0.01)
+                self.fail(f"gate session pid={pid} survived cancellation within {self.settle_timeout}s")
+            time.sleep(POLL_INTERVAL)
 
     def spawn(self, *args):
         """Own a child and regular log files so survivors cannot hold pipes open."""
         log = tempfile.TemporaryFile()
         self.addCleanup(log.close)
         child = subprocess.Popen(args, cwd=self.repo, env=self.env, stdout=log, stderr=log)
+        cleanup_timeout = self.settle_timeout
         def cleanup():
             if child.poll() is None:
                 child.kill()
-            child.wait(timeout=10)
+            child.wait(timeout=cleanup_timeout)
         self.addCleanup(cleanup)
         return child, log
 
@@ -283,30 +371,29 @@ class VerifierLifecycle(unittest.TestCase):
         release = self.root / "release"
         code = "from pathlib import Path; import time; Path(\"" + str(ready) + "\").touch(); "
         code += "\nwhile not Path(\"" + str(release) + "\").exists(): time.sleep(.01)"
-        child, _ = self.spawn("python3", str(SCRIPTS / "verifier-owner.py"), "run",
+        child, log = self.spawn("python3", str(SCRIPTS / "verifier-owner.py"), "run",
                               str(self.common), str(self.wt), "--", "python3", "-c", code)
-        self.wait_path(ready)
+        self.wait_path(ready, child, log)
         pointer = (self.wt / ".git").read_bytes()
         result = self.ensure()
         self.assertEqual(result["result"], "infrastructure-failure")
         self.assertIn("live verifier owner", result["detail"])
         self.assertEqual((self.wt / ".git").read_bytes(), pointer)
         release.touch()
-        self.assertEqual(child.wait(timeout=15), 0)
+        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
     def test_killed_supervisor_cannot_reclaim_descriptor_closing_child(self):
         """A recorded surviving session protects files after every flock copy closes."""
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
         ready = self.root / "child-pid"
-        code = "import os,time; os.closerange(3,256); open(" + repr(str(ready)) + ",'w').write(str(os.getpid())); time.sleep(30)"
-        child, _ = self.spawn("python3", str(SCRIPTS / "verifier-owner.py"), "run",
+        code = "import os,time; os.closerange(3,256); open(" + repr(str(ready)) + ",'w').write(str(os.getpid())+'\\n'); time.sleep(30)"
+        child, log = self.spawn("python3", str(SCRIPTS / "verifier-owner.py"), "run",
                               str(self.common), str(self.wt), "--", "python3", "-c", code)
-        self.wait_path(ready)
-        pid = int(ready.read_text())
+        pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
         child.kill()
-        child.wait(timeout=10)
+        child.wait(timeout=self.settle_timeout)
         result = self.ensure()
         self.assertEqual(result["result"], "infrastructure-failure")
         self.assertIn("live owner session", result["detail"])
@@ -329,7 +416,7 @@ def finish(signum, frame):
     sys.exit(128 + signum)
 for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(signum, finish)
-ready.write_text(str(worker.pid))
+ready.write_text(str(worker.pid)+'\\n')
 while True:
     signal.pause()
 ''')
@@ -340,10 +427,10 @@ while True:
                 owner, log = self.spawn(sys.executable, str(SCRIPTS / "verifier-owner.py"),
                                         "run", str(self.common), str(self.wt), "--",
                                         sys.executable, str(leader), str(ready), str(result))
-                self.wait_path(ready)
-                self.addCleanup(lambda pid=int(ready.read_text()): self.stop_pid(pid))
+                pid = self.wait_pid(ready, owner, log)
+                self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=15)
+                status = owner.wait(timeout=self.settle_timeout)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), "0", "cleanup worker was cancelled directly")
@@ -360,14 +447,15 @@ def finish(signum, frame):
     sys.exit(0)
 for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(signum, finish)
-ready.write_text(str(os.getpid()))
+ready.write_text(str(os.getpid())+'\\n')
 while True:
     signal.pause()
 ''')
         gate = self.root / "gate.py"
-        gate.write_text('''import signal, subprocess, sys
+        gate.write_text(f'''import signal, subprocess, sys
+SETTLE_TIMEOUT = {self.settle_timeout!r}
 def finish(signum, frame):
-    worker.wait(timeout=10)
+    worker.wait(timeout=SETTLE_TIMEOUT)
     sys.exit(128 + signum)
 for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(signum, finish)
@@ -384,10 +472,10 @@ while True:
                 owner, log = self.spawn(*supervisor, "run", *paths,
                                         *supervisor, "gate", *paths, sys.executable,
                                         str(gate), str(worker), str(ready), str(result))
-                self.wait_path(ready)
-                self.addCleanup(lambda pid=int(ready.read_text()): self.stop_pid(pid))
+                pid = self.wait_pid(ready, owner, log)
+                self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=15)
+                status = owner.wait(timeout=self.settle_timeout)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), str(int(signum)))
@@ -421,11 +509,11 @@ while True:
         child, log = self.spawn("bash", str(SCRIPTS / "merge-watch.sh"),
                                 "--speculative-run", tree, self.base, self.head,
                                 str(self.wt), "--", "true")
-        self.wait_path(ready)
+        self.wait_path(ready, child, log)
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
         owner = json.loads(owner_path.read_text())
         os.killpg(owner["session"], signal.SIGKILL)
-        child.wait(timeout=15)
+        child.wait(timeout=self.settle_timeout)
         self.assertNotEqual(child.returncode, 0)
         self.env["PATH"] = self.env["PATH"].split(":", 1)[1]
         result = self.ensure()
@@ -710,7 +798,7 @@ while True:
 
     def cancel_gate(self, resistant=False, damage=False, descendant=False, delay=0):
         """Interrupt the production outer group and check owned restoration."""
-        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "16000" if delay else "08000"
+        self.set_cleanup_budget("16000" if delay else "08000")
         result = self.ensure()
         self.assertEqual(result["result"], "verifier-worktree-ready", result)
         ready = self.root / "gate-ready"
@@ -724,10 +812,10 @@ while True:
             + ("subprocess.Popen(['python3', '-c', " + repr(
                 "import os,signal,time; from pathlib import Path; os.setpgrp(); "
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(" + repr(str(ready) + ".child")
-                + ").write_text(str(os.getpid())); time.sleep(60)") + "])\n"
+                + ").write_text(str(os.getpid())+'\\n'); time.sleep(60)") + "])\n"
                 "while not Path(" + repr(str(ready) + ".child") + ").exists(): time.sleep(.01)\n" if descendant else "")
             + ("Path('f').write_text('gate evidence')\n" if damage else "")
-            + "Path(" + repr(str(ready)) + ").write_text(str(os.getpid()))\n"
+            + "Path(" + repr(str(ready)) + ").write_text(str(os.getpid())+'\\n')\n"
             + "while True: time.sleep(.01)\n")
         tree = self.git("merge-tree", "--write-tree", self.base, self.head)
         log = tempfile.TemporaryFile()
@@ -738,6 +826,7 @@ while True:
             cwd=self.repo, env=self.env, stdout=log, stderr=log, start_new_session=True)
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
 
+        cleanup_timeout = self.settle_timeout
         def cleanup():
             owner = json.loads(owner_path.read_text())
             for sid in {child.pid, owner.get("session"), owner.get("gate_session")} - {None}:
@@ -750,23 +839,13 @@ while True:
                             os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-            child.wait(timeout=10)
+            child.wait(timeout=cleanup_timeout)
         self.addCleanup(cleanup)
-        self.wait_path(ready)
+        pid = self.wait_pid(ready, child, log)
+        if descendant:
+            descendant_pid = self.wait_pid(Path(str(ready) + ".child"), child, log)
         os.killpg(child.pid, signal.SIGTERM)
-        try:
-            child.wait(timeout=8)
-            deadline = time.monotonic() + 8
-            while True:
-                try:
-                    os.kill(int(ready.read_text()), 0)
-                except ProcessLookupError:
-                    break
-                if time.monotonic() >= deadline:
-                    self.fail("gate session survived cancellation of the verifier's owned group")
-                time.sleep(.01)
-        except subprocess.TimeoutExpired:
-            self.fail("verifier did not finish bounded cancellation cleanup")
+        self.wait_cancelled(child, pid)
         if not resistant:
             self.assertTrue(terminated.exists(), "TERM never reached the supervised gate")
         owner = json.loads(owner_path.read_text())
@@ -774,7 +853,7 @@ while True:
         self.assertIsNone(owner["gate_session"], owner)
         if descendant:
             with self.assertRaises(ProcessLookupError):
-                os.kill(int(Path(str(ready) + ".child").read_text()), 0)
+                os.kill(descendant_pid, 0)
         if damage:
             # Tracked evidence must survive even when restoration cannot succeed.
             retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
@@ -839,7 +918,7 @@ while True:
             "import os,signal,time\nfrom pathlib import Path\n"
             "def term(sig, frame):\n    Path(" + repr(str(terminated)) + ").touch()\n    raise SystemExit(143)\n"
             "signal.signal(signal.SIGTERM,term)\n"
-            "Path(" + repr(str(ready)) + ").write_text(str(os.getpid()))\n"
+            "Path(" + repr(str(ready)) + ").write_text(str(os.getpid())+'\\n')\n"
             "while True: time.sleep(.01)\n")
         bootstrap = self.root / "handshake-bootstrap.py"
         bootstrap.write_text(
@@ -851,7 +930,7 @@ while True:
             "def release(fd, data):\n"
             "    result=write(fd,data)\n"
             "    if data==b'1':\n"
-            "        deadline=time.monotonic()+10\n"
+            f"        deadline=time.monotonic()+{MILESTONE_DEADLINE!r}\n"
             "        while not Path(" + repr(str(ready)) + ").exists():\n"
             "            if time.monotonic()>deadline: raise RuntimeError('gate never ready')\n"
             "            time.sleep(.01)\n"
@@ -861,9 +940,9 @@ while True:
             "sys.argv=" + repr(["verifier-owner.py", "run", str(self.common), str(self.wt), "--", "python3", str(gate)]) + "\n"
             "sys.exit(owner.main())\n")
         child, log = self.spawn("python3", str(bootstrap))
-        self.wait_path(ready)
-        self.addCleanup(lambda: self.stop_pid(int(ready.read_text())))
-        child.wait(timeout=15)
+        pid = self.wait_pid(ready, child, log)
+        self.addCleanup(lambda: self.stop_pid(pid))
+        child.wait(timeout=self.settle_timeout)
         log.seek(0)
         self.assertTrue(terminated.exists(), log.read().decode())
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
@@ -892,7 +971,7 @@ while True:
     def gate_verdict(self, script, budget_ms=None):
         """Run one production gate through verify-pr.sh and return its verdict."""
         if budget_ms is not None:
-            self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = budget_ms
+            self.set_cleanup_budget(budget_ms)
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
         tree = self.git("merge-tree", "--write-tree", self.base, self.head)
         result = self.command("bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree,
@@ -940,11 +1019,11 @@ while True:
         """Rewrite the record as a gate supervisor that died mid-reap leaves it."""
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
         sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True)
-        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.wait, timeout=self.settle_timeout)
         self.addCleanup(lambda: self.stop_pid(sleeper.pid))
         if not alive:
             sleeper.kill()
-            sleeper.wait()
+            sleeper.wait(timeout=self.settle_timeout)
         owner_path, owner = self.owner_record()
         owner.update(gate_started=True, gate_session=sleeper.pid, gate_leader_exit=3)
         owner_path.write_text(json.dumps(owner))
@@ -967,7 +1046,7 @@ while True:
 
     def test_outer_reaps_the_gate_session_when_the_inner_supervisor_is_gone(self):
         """A dead gate supervisor's session is the outer's to settle, not to refuse."""
-        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "8000"
+        self.set_cleanup_budget("8000")
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
         terminated = self.root / "gate-terminated"
         member = self.root / "gate-member.sh"
@@ -981,7 +1060,7 @@ while True:
             "from verifier_state import read, save\n"
             "member = subprocess.Popen(['bash', " + repr(str(member)) + "], start_new_session=True,\n"
             "                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-            "Path(" + repr(str(member_pid)) + ").write_text(str(member.pid))\n"
+            "Path(" + repr(str(member_pid)) + ").write_text(str(member.pid)+'\\n')\n"
             "gone = subprocess.Popen(['true'])\n"
             "gone.wait()\n"
             "path = " + repr(str(self.common / "storyhook/verifier-lifecycle")) + "\n"
@@ -1008,7 +1087,7 @@ while True:
         """The leader remains a zombie, so its session id cannot be reused mid-reap."""
         if not hasattr(os, "waitid"):
             self.skipTest("this Python cannot observe an exit without reaping it")
-        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "8000"
+        self.set_cleanup_budget("8000")
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
         orphan = self.root / "orphan-pid"
         leader = self.root / "leader-pid"
@@ -1023,24 +1102,26 @@ while True:
              "trap '' TERM; echo $$ > " + shlex.quote(str(leader)) + "; sleep 300 & echo $! > "
              + shlex.quote(str(orphan)) + "; exit 5"],
             cwd=self.repo, env=self.env, stdout=verdict_file, stderr=subprocess.DEVNULL)
-        self.addCleanup(child.wait)
+        self.addCleanup(child.wait, timeout=MILESTONE_DEADLINE)
         self.addCleanup(lambda: child.poll() is None and child.kill())
-        self.wait_path(orphan)
-        self.addCleanup(lambda: self.stop_pid(int(orphan.read_text())))
-        leader_pid = int(leader.read_text())
+        orphan_pid = self.wait_pid(orphan, child, verdict_file)
+        self.addCleanup(lambda: self.stop_pid(orphan_pid))
+        leader_pid = self.wait_pid(leader, child, verdict_file)
         # A reaping poll also shows a zombie for one tick; the pin is that
         # the zombie outlives the TERM-resistant orphan's whole grace, which
         # is a quarter of the budget for the gate session (SH-686).
         zombie_seen = []
+        deadline = time.monotonic() + self.settle_timeout
         while child.poll() is None:
+            self.assertLess(time.monotonic(), deadline, "supervisor did not settle the exited leader")
             if self.process_state(leader_pid).startswith("Z"):
                 zombie_seen.append(time.monotonic())
             time.sleep(.01)
         self.assertEqual(child.returncode, 0)
         self.assertTrue(zombie_seen, "the exited leader was never observed as a zombie")
-        self.assertGreaterEqual(zombie_seen[-1] - zombie_seen[0], 8000 / 1000 / 4 / 2,
+        self.assertGreaterEqual(zombie_seen[-1] - zombie_seen[0], self.budget / 4 / 2,
                                 "the exited leader was reaped before its session settled")
-        self.assertGone(int(orphan.read_text()))
+        self.assertGone(orphan_pid)
         verdict_file.seek(0)
         verdict = json.loads(verdict_file.read().decode())
         self.assertEqual(verdict["result"], "tests-failed", verdict)
@@ -1066,6 +1147,184 @@ while True:
         self.assertIsNone(owner.get("gate_supervisor"), owner)
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
+
+
+class HarnessObservation(unittest.TestCase):
+    """Pin fixture observation independently of Git and production supervision."""
+
+    def setUp(self):
+        """Own only temporary files and the processes each observation starts."""
+        tmp = tempfile.TemporaryDirectory(prefix="sh698-", dir="/tmp")
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.harness = VerifierLifecycle()
+        self.harness.repo = self.root
+        self.harness.env = dict(os.environ)
+        self.harness.set_cleanup_budget(CLEANUP_BUDGET_MS)
+        self.addCleanup(self.harness.doCleanups)
+
+    def test_pid_reader_waits_for_empty_and_partial_records(self):
+        """The writer completes only after the reader observes pending content."""
+        for prefix in ("", "12"):
+            with self.subTest(prefix=prefix):
+                ready = self.root / ("partial" if prefix else "empty")
+                ready.write_text(prefix)
+                receive, release = os.pipe()
+                try:
+                    code = ("import os; from pathlib import Path; "
+                            "os.read(0, 1); Path(" + repr(str(ready))
+                            + ").write_text('12345\\n')")
+                    log = tempfile.TemporaryFile()
+                    self.addCleanup(log.close)
+                    child = subprocess.Popen([sys.executable, "-c", code], stdin=receive,
+                                             stdout=log, stderr=log)
+                    self.addCleanup(child.wait, timeout=MILESTONE_DEADLINE)
+                    self.addCleanup(lambda child=child: child.poll() is None and child.kill())
+                    sleep = time.sleep
+                    released = []
+
+                    def observed_pending(period):
+                        if not released:
+                            released.append(True)
+                            os.write(release, b"1")
+                        sleep(period)
+
+                    with mock.patch.object(time, "sleep", side_effect=observed_pending):
+                        self.assertEqual(self.harness.wait_pid(ready, child, log), 12345)
+                    self.assertTrue(released, "reader accepted an incomplete record")
+                finally:
+                    os.close(receive)
+                    os.close(release)
+
+    def test_dead_child_reports_status_and_evidence_without_poll_sleep(self):
+        """A reaped child cannot publish a missing milestone later."""
+        child, log = self.harness.spawn(sys.executable, "-c",
+                                        "print('fixture evidence'); raise SystemExit(3)")
+        child.wait(timeout=MILESTONE_DEADLINE)
+        with mock.patch.object(time, "sleep", side_effect=AssertionError("waited on dead child")):
+            with self.assertRaisesRegex(AssertionError, "exited 3") as failure:
+                self.harness.wait_path(self.root / "missing", child, log)
+        self.assertIn("fixture evidence", str(failure.exception))
+        self.assertIn(str(child.pid), str(failure.exception))
+
+    def test_completed_record_is_readable_after_writer_exits(self):
+        """Exit and final publication may both occur between reader polls."""
+        ready = self.root / "pid"
+        child, log = self.harness.spawn(sys.executable, "-c",
+            "from pathlib import Path; Path(" + repr(str(ready)) + ").write_text('12345\\n')")
+        child.wait(timeout=MILESTONE_DEADLINE)
+        self.assertEqual(self.harness.wait_pid(ready, child, log), 12345)
+
+    def test_exit_observation_rechecks_the_final_publication(self):
+        """Publishing between a read and poll must not look like early death."""
+        ready = self.root / "pid"
+        child = mock.Mock(pid=12345)
+
+        def exit_after_publish():
+            ready.write_text("12345\n")
+            return 0
+
+        child.poll.side_effect = exit_after_publish
+        with tempfile.TemporaryFile() as log:
+            self.assertEqual(self.harness.wait_pid(ready, child, log), 12345)
+
+    def test_incomplete_pid_at_exit_is_diagnostic(self):
+        """An incomplete final record fails with content and child evidence."""
+        for text in ("", "123"):
+            with self.subTest(text=text), tempfile.TemporaryFile() as log:
+                ready = self.root / "pid"
+                ready.write_text(text)
+                child = mock.Mock(pid=12345)
+                child.poll.return_value = 3
+                with self.assertRaisesRegex(AssertionError, "exited 3") as failure:
+                    self.harness.wait_pid(ready, child, log)
+                self.assertIn(repr(text), str(failure.exception))
+
+    def test_malformed_completed_pid_records_fail_before_signalling(self):
+        """Only a positive ASCII decimal PID is an owned cleanup target."""
+        for text in ("0\n", "-1\n", "wat\n", "12\n34\n", "١٢\n", "12 \n"):
+            with self.subTest(text=text), tempfile.TemporaryFile() as log:
+                ready = self.root / "pid"
+                ready.write_text(text)
+                child = mock.Mock(pid=12345)
+                child.poll.return_value = None
+                with self.assertRaisesRegex(AssertionError, "malformed PID"):
+                    self.harness.wait_pid(ready, child, log)
+
+    def test_pending_pid_uses_one_deadline_and_reports_load(self):
+        """File creation does not reset the allowance for completing its record."""
+        ready = self.root / "pid"
+        child = mock.Mock(pid=12345)
+        child.poll.return_value = None
+        with tempfile.TemporaryFile() as log:
+            log.write(b"fixture evidence")
+            log.flush()
+            with mock.patch.object(time, "monotonic", side_effect=[0, 0, MILESTONE_DEADLINE]), \
+                 mock.patch.object(time, "sleep", side_effect=lambda _: ready.write_text("12")), \
+                 mock.patch.object(os, "getloadavg", return_value=(48, 37, 48)):
+                with self.assertRaisesRegex(AssertionError, "deadline") as failure:
+                    self.harness.wait_pid(ready, child, log)
+            for evidence in (str(ready), "12345", "48", "fixture evidence", repr("12"),
+                             str(MILESTONE_DEADLINE)):
+                self.assertIn(evidence, str(failure.exception))
+
+    def test_live_writer_can_publish_after_a_cleanup_allowance_has_elapsed(self):
+        """Startup patience exceeds cleanup; a loaded but live child can finish."""
+        ready = self.root / "pid"
+        child = mock.Mock(pid=12345)
+        child.poll.return_value = None
+        with tempfile.TemporaryFile() as log:
+            with mock.patch.object(time, "monotonic", side_effect=[0, self.harness.settle_timeout]), \
+                 mock.patch.object(time, "sleep", side_effect=lambda _: ready.write_text("12345\n")):
+                self.assertEqual(self.harness.wait_pid(ready, child, log), 12345)
+
+    def test_existence_only_marker_does_not_require_a_pid_record(self):
+        """An empty touch marker remains sufficient for non-PID milestones."""
+        ready = self.root / "marker"
+        ready.touch()
+        child = mock.Mock(pid=12345)
+        with tempfile.TemporaryFile() as log:
+            self.harness.wait_path(ready, child, log)
+        child.poll.assert_not_called()
+
+    def test_valid_budget_overrides_preserve_spelling_and_derive_settlement(self):
+        """The same input governs supervision and its observation allowance."""
+        for milliseconds in ("30000", "8000", "16000", "08000"):
+            with self.subTest(milliseconds=milliseconds):
+                self.harness.set_cleanup_budget(milliseconds)
+                self.assertEqual(self.harness.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], milliseconds)
+                self.assertEqual(self.harness.settle_timeout, int(milliseconds) / 1000 + MARGIN)
+
+    def test_wrapper_exit_does_not_restart_gate_disappearance_deadline(self):
+        """A slow wrapper consumes the same allowance as its surviving gate."""
+        self.harness.set_cleanup_budget("8000")
+        child = mock.Mock(pid=12345)
+        now = [0]
+
+        def wrapper_exits(**kwargs):
+            self.assertEqual(kwargs["timeout"], self.harness.settle_timeout)
+            now[0] = self.harness.settle_timeout - POLL_INTERVAL
+
+        child.wait.side_effect = wrapper_exits
+        with mock.patch.object(time, "monotonic", side_effect=lambda: now[0]), \
+             mock.patch.object(time, "sleep", side_effect=lambda _: now.__setitem__(0, now[0] + POLL_INTERVAL)), \
+             mock.patch.object(os, "kill"):
+            with self.assertRaisesRegex(AssertionError, "gate session pid=23456 survived"):
+                self.harness.wait_cancelled(child, 23456)
+        self.assertEqual(now[0], self.harness.settle_timeout)
+
+    def test_spawn_cleanup_keeps_the_budget_given_to_that_child(self):
+        """Changing the next fixture input cannot tighten an existing cleanup."""
+        self.harness.set_cleanup_budget("30000")
+        original_timeout = self.harness.settle_timeout
+        with mock.patch.object(subprocess, "Popen") as spawn:
+            child = spawn.return_value
+            child.poll.return_value = None
+            self.harness.spawn("fixture-command")
+        self.harness.set_cleanup_budget("8000")
+        self.harness.doCleanups()
+        child.kill.assert_called_once()
+        child.wait.assert_called_once_with(timeout=original_timeout)
 
 
 if __name__ == "__main__":
