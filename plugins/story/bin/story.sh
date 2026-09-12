@@ -320,7 +320,7 @@ compose_claude_launch_tpl() {
 
 compose_codex_launch_tpl() {
   local mode="$1" model="$2" effort="$3" speed="$4"
-  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false"
+  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false"
   [ "$mode" = "base" ] || cmd="$cmd --approve-for-me --dangerously-bypass-hook-trust"
   [ -z "$model" ] || cmd="$cmd -m $model"
   [ -z "$effort" ] || cmd="$cmd -c model_reasoning_effort=\"$effort\""
@@ -343,11 +343,20 @@ configure_agent() {
     ;;
   codex)
     AGENT_LABEL="Codex"
-    # Storyhook owns this child session's startup lifecycle. A newly available
-    # Codex version otherwise inserts an interactive update chooser before the
-    # prompt, so the readiness gate correctly refuses to type and rolls the
-    # dispatch back. Suppress that chooser for this one managed process; the
-    # user's durable Codex update preference remains untouched.
+    # Storyhook owns this child session's startup lifecycle, so two startup
+    # behaviours are suppressed for THIS managed process only; the user's own
+    # durable Codex preferences remain untouched.
+    #   check_for_update_on_startup=false: a newly available Codex version
+    #   otherwise inserts an interactive update chooser before the prompt, so
+    #   the readiness gate correctly refuses to type and rolls the dispatch
+    #   back.
+    #   tui.animations=false: Codex 0.154.0 decorates the idle composer of an
+    #   Astra model with an animated Braille "sparkle" (and every model with a
+    #   shimmer and spinner). The empty-input check that confirms a submission
+    #   reads that very row (input_state, lib/session.sh), and the decoration
+    #   made the placeholder unrecognisable, so every autonomous dispatch
+    #   refused with bootstrap-submit-unconfirmed after a primer that had in
+    #   fact been submitted (SH-694). Off, the row is the plain placeholder.
     DEFAULT_LAUNCH_TPL=$(compose_codex_launch_tpl base "" "" "")
     DEFAULT_AUTO_LAUNCH_TPL=$(compose_codex_launch_tpl auto "" "" "")
     DEFAULT_WORKTREE_IGNORE_PATH=".codex/worktrees/"
