@@ -7,7 +7,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 62,
+        "head_global_seq": 64,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -49,7 +49,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 62,
+          "head_global_seq": 64,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -84,7 +84,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 63,
+          "head_global_seq": 65,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -146,7 +146,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 62,
+          "head_global_seq": 64,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -181,7 +181,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 63,
+          "head_global_seq": 65,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -235,7 +235,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 68,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -260,10 +260,15 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [],
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+              }
+            ],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -336,7 +341,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 83,
+          "head_global_seq": 86,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -368,7 +373,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 63,
+        "head_global_seq": 65,
         "story": {
           "assignee": "ada-lovelace",
           "awaiting": null,
