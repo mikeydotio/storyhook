@@ -4545,14 +4545,27 @@ cmd_submit_leased() {
 
   # Adopt-or-create is a 0-or-1 decision: GitHub permits one open pull request
   # per (head, base), and a fork's PR for the same head name is not ours
-  # (verify-pr.sh refuses cross-repository PRs for the same reason).
+  # (verify-pr.sh refuses cross-repository PRs for the same reason). Listed
+  # by HEAD alone (SH-691): a pull request already open for this head against
+  # any OTHER base is the misdirected shape that put five stories on `main`,
+  # and a listing by (head, base) cannot see it — `gh pr create` would then
+  # open a second one beside it and leave the wrong one for a person to
+  # merge. It is refused by name instead, with the remedy, the way
+  # `multiple-pull-requests` already is.
   local fields=number,url,baseRefName,headRefOid,isCrossRepository
-  local listed open count pr adopted title body url view_out
-  listed=$(cd "$worktree" && gh pr list --head "$branch" --base "$default" --state open \
+  local listed open wrong_base count pr adopted title body url view_out
+  listed=$(cd "$worktree" && gh pr list --head "$branch" --state open \
     --json "$fields" --limit 20 2>&1) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
   open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr list returned something other than JSON: $listed"
+  wrong_base=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName != $b)]')
+  if [ "$(printf '%s' "$wrong_base" | jq 'length')" -ne 0 ]; then
+    submit_refuse repair "wrong-base-pull-request" \
+      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
+      "$(jq -n --argjson p "$wrong_base" '{wrong_base_pull_requests: $p}')"
+  fi
+  open=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName == $b)]')
   count=$(printf '%s' "$open" | jq 'length')
   case "$count" in
     0)

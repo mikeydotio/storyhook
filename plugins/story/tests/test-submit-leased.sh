@@ -246,6 +246,32 @@ git -C "$repo" remote set-url origin "$origin"
 [ "$(remote_tip)" != "$unpushed" ] || fail_test "an unreachable origin cannot have been pushed to"
 assert_eq "$(create_count)" "$before" "nothing was opened while origin was unreachable"
 
+# --- SH-691: a pull request already open on the WRONG base is refused, not duplicated ---
+# Listing by (head, base) could not see it; `gh pr create` then opened a
+# second one beside it and left the misdirected one for a person to merge.
+jq -n --arg head "$branch" --arg oid "$unpushed" \
+  '[{number:77, url:"https://github.com/acme/widgets/pull/77", headRefName:$head, baseRefName:"main",
+     headRefOid:$oid, isCrossRepository:false, state:"OPEN", title:"", body:""}]' >"$FAKE_GH_STATE/prs.json"
+before=$(create_count)
+out=$(submit); status=$?
+assert_eq "$status" "1" "a pull request open against the wrong base refuses the submission"
+assert_eq "$(jqf "$out" .reason)" "wrong-base-pull-request" "…by name"
+assert_eq "$(jqf "$out" .class)" "repair" "…as something to repair, not the verifier's incident"
+assert_contains "$(jqf "$out" .display)" "#77" "…naming the pull request"
+assert_contains "$(jqf "$out" .display)" 'targets `main`' "…and the branch it targets"
+assert_contains "$(jqf "$out" .display)" 'not `dev`' "…and the branch it must target"
+assert_contains "$(jqf "$out" .display)" "gh pr edit 77 --base dev" "…with the remedy"
+assert_eq "$(jqf "$out" '.wrong_base_pull_requests | length')" "1" "the receipt carries the misdirected pull request"
+assert_eq "$(jqf "$out" '.wrong_base_pull_requests[0].number')" "77" "…by number"
+assert_eq "$(create_count)" "$before" "nothing was opened beside it"
+# A fork's pull request on the wrong base is still not ours to judge.
+jq '[.[0] + {isCrossRepository:true, number:78, url:"https://github.com/fork/widgets/pull/78"}]' \
+  "$FAKE_GH_STATE/prs.json" >"$FAKE_GH_STATE/prs.tmp" && mv -f "$FAKE_GH_STATE/prs.tmp" "$FAKE_GH_STATE/prs.json"
+out=$(submit); status=$?
+assert_eq "$status" "0" "a fork's wrong-base pull request does not block submission: $out"
+assert_eq "$(jqf "$out" .pull_request.base)" "dev" "…and the lane's own pull request targets the default"
+assert_eq "$(create_count)" "$((before + 1))" "…opened beside the fork's"
+
 # --- the verb is a router verb the agent-facing docs and usage name --------------------
 assert_contains "$(router_verbs "$SCRIPT")" "submit" "submit is a router verb"
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
