@@ -286,7 +286,8 @@ Worth knowing before changing anything here:
   omitted flag retains that adapter's host default. The helper also accepts
   `STORY_AGENT=claude|codex` for direct callers; `STORY_AGENT=claude-code` is a warned
   compatibility alias. Claude remains the default for callers that choose neither. Codex
-  uses `codex --no-alt-screen`, `.codex/worktrees/`, screen readiness, a confirmed
+  uses `codex --no-alt-screen` (update chooser and TUI animations switched off for the
+  managed process), `.codex/worktrees/`, screen readiness, a confirmed
   Shift+Tab transition into Plan mode, and Tab submission. Failure before submission keeps
   the existing rollback invariants intact. `doctor` reports and probes the selected
   provider rather than treating a Codex screen as Claude.

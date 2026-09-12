@@ -141,7 +141,7 @@ out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=
 assert_eq "$(jqf "$out" .agent)" "codex" "dry auto: selected provider"
 assert_eq "$(jqf "$out" .council)" "false" "dry auto: safe solo fallback"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
-  "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
+  "codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust" \
   "dry auto: Codex uses later automatic review and trusts the packaged hook"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "-e STORYHOOK_AUTO=$id_auto" "dry auto: Codex child receives the autonomous marker"

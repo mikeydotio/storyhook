@@ -41,6 +41,8 @@ type: spike
 labels: -
 awaiting: waiting on the benchmark harness
 flagged: no
+comments:
+- [timestamp] AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing
 
 $ story show SH-7
 SH-7 Document the data layer
@@ -64,6 +66,8 @@ flagged: no
 relationships:
 - blocked-by SH-2
 - child-of SH-1
+comments:
+- [timestamp] AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing
 
 $ story show SH-8
 SH-8 Retire the JSONL reader

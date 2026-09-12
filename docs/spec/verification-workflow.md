@@ -340,6 +340,13 @@ resume re-dispatch, `in-progress` — but without the hold: a red story
 re-enters the queue on resubmission and waits its turn (step 4a;
 `a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue`).
 
+The detail excerpt lists every failing case the log holds, and since SH-697 a
+Rust battery runs to completion after its first red test binary
+(`cargo test --no-fail-fast` in `scripts/run-tests.sh`), so one RED carries
+every failure of the leg that went red rather than the first binary's; the
+legs after it are still not reached (`test-tiers.md`, "a battery finishes
+after its first red binary").
+
 ### Green: merge, done, reap
 
 `Merged` means `land-pr.sh` ran under `machine-lock.sh merge`, re-read the
@@ -447,6 +454,20 @@ the SH-136 rule); the invariant here is only that it **survives**.
 Deviations from this document are recorded here, one entry per child, rather
 than in a second file. Each child lands with its own `### SH-N — <what
 changed>` entry and a status update in the decisions table above.
+
+### SH-695 — an exited gate's orphans are reaped, never a halt
+
+A red rust-suite leg that tears the gate down while a hook test's deliberate
+`sleep 300 &` grandchild is alive used to be reported as an infrastructure
+halt, not RED, and the owner record then refused every further gate on the
+boot. `verifier-owner.py` now settles the survivors of an exited leader on the
+same TERM, grace, KILL ladder the cancellation path uses, records the gate
+leader's exit code in the owner record before any census, and admits a started
+gate on the same boot once that exit is recorded and its session census is
+empty. A started gate with no recorded exit is still an interrupted gate and
+still refused. The mechanism and its decisions are in
+`docs/spec/verifier-worktree-lifecycle.md`, "Exited-session reaping — SH-695",
+and `docs/rca/sh-695-exited-gate-orphan-halt.md`.
 
 ### SH-651 — queue age follows the latest submission
 

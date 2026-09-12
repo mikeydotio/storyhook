@@ -92,3 +92,34 @@ and [hook integration tests](https://github.com/openai/codex/blob/main/codex-rs/
 and Python's [OS-backed token API](https://docs.python.org/3/library/secrets.html#secrets.token_hex).
 The three-seat council's decision, live evidence and approved plan are persisted
 as SH-675 comments; the worktree's council files are supplementary.
+
+## As-built: composer decoration (SH-694)
+
+Codex 0.154.0 animates the idle composer of an Astra model (the "Astra sparkle": Braille
+dots before and after the placeholder, redrawn every 150 ms while `tui.animations` and
+`tui.whimsy` are on, their defaults). Step 3's submission confirmation reads that row against
+the provider's empty-input pattern, so the primer's completed submission was reported as
+`bootstrap-submit-unconfirmed`; step 6's empty-input reconfirmation would have failed the
+same way. Three layers now hold:
+
+1. The managed launch passes `-c tui.animations=false` beside
+   `-c check_for_update_on_startup=false`, for attended, `--auto` and `--full-auto` alike.
+   The user's Codex config is untouched.
+2. `input_box_text` strips the Braille Patterns block (U+2800..U+28FF) from the input row
+   before any pattern is applied (`strip_composer_decoration`: one `LC_ALL=C sed` over the
+   UTF-8 byte sequence, locale-independent on BSD and GNU sed). The empty pattern is not
+   widened: a draft can contain the placeholder words.
+3. Every `bootstrap-*` refusal names the phase that failed and what was observed; none
+   asserts a hook-identity failure.
+
+| Boundary | Regression coverage |
+| --- | --- |
+| Launch switches | `test-dispatch-launch-template.sh` asserts `tui.animations=false` on the attended and `--auto` compositions; every launch-string pin carries it |
+| Decorated composer | `test-codex-sparkle-composer.sh`: the recorded row reads as the placeholder under C and UTF-8 locales; drafts stay text; block boundaries; a whole `--auto` dispatch under `FAKE_TMUX_CODEX_SPARKLE=1` delivers one primer and one charter |
+| Refusal wording | `test-dispatch-codex-bootstrap.sh`: submit-unconfirmed, plan-unconfirmed and incomplete refusals name their phase and never hook identity |
+
+Evidence: the story's recorded reproduction (100 frames at 0.5 s) and the mutation check
+(strip removed: the field refusal, verbatim). A live probe of the flag against the installed
+Codex 0.154.0 could not reach the composer without a trust-bypass flag or keypresses, so the
+flag's effect rests on Codex's documented key and its `sparkle.rs` gate. The postmortem is
+`docs/rca/codex-sparkle-composer-check.md`.
