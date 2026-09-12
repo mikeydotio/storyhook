@@ -1176,6 +1176,9 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
 /// `SetState`). An optional `reason` (SH-205) sets `awaiting` atomically with
 /// the move — the Blocked-column drop prompt's skippable field; omitted by
 /// every other drop, so no existing caller's payload shape needs to change.
+/// A move from `verifying` to `done` requires `comment` (SH-692): it is the
+/// operator's reason for overriding central verification, recorded on the
+/// story; without it the service answers 422 naming the rule.
 fn route_move_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;

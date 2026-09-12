@@ -173,8 +173,16 @@ while :; do sleep 30; done
 #[test]
 fn leaving_verifying_interrupts_the_gate_and_advances_the_queue() {
     run_with_gate(|f, bus, activity, first, second| {
+        // SH-692: completing a verifying story by hand is an override and
+        // carries its reason; the bare move is refused (tests/verification_override.rs).
         StoryService::new(&f.ctx())
-            .set_state(&first.story_id, "done", None, Some("verifying"), None)
+            .set_state(
+                &first.story_id,
+                "done",
+                Some("merged by hand"),
+                Some("verifying"),
+                None,
+            )
             .unwrap();
         bus.publish(Change::Project(first.project_slug.clone()));
         wait_for("withdrawn gate was not terminated", || {
@@ -183,6 +191,29 @@ fn leaving_verifying_interrupts_the_gate_and_advances_the_queue() {
         wait_for("the next queued gate did not start", || {
             marker(f, second, "started").exists()
         });
+        // The override and the withdrawal are both on the story (SH-692).
+        wait_for(
+            "the withdrawal was never recorded on the overridden story",
+            || {
+                withdrawal_records(f, &first.story_id)
+                    .iter()
+                    .any(|text| text.contains("left `verifying` (now `done`)"))
+            },
+        );
+        let number = StoryNo::parse_id("SH", &first.story_id).unwrap();
+        let comments = f
+            .store()
+            .read(|tx| tx.story(f.project(), number))
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .comments;
+        assert!(
+            comments
+                .iter()
+                .any(|comment| comment.text == "CENTRAL VERIFICATION OVERRIDDEN — merged by hand"),
+            "{comments:?}"
+        );
         assert_eq!(
             activity.active_for(f.project()).unwrap().story_id,
             second.story_id
