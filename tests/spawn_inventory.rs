@@ -95,6 +95,16 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),
+    // `block_delivery::process_one` — the agent helper (`story.sh notify`),
+    // asked to interrupt or resume a dispatched agent (SH-690). `Waited`: it
+    // runs through the shared `run_captured_with_termination`, so stdout and
+    // stderr are unlinked temporary files rather than pipes, the child has its
+    // own process group, and the 45 s budget terminates and then kills that
+    // whole group before a byte is read. A descendant — a tmux client, or the
+    // agent's own turn — has no EOF rendezvous with the worker and no
+    // unbounded lifetime to inherit. Landed unclassified because SH-690's gate
+    // was terminated before this contract ran (SH-692); classified in SH-693.
+    ("src/daemon/block_delivery.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),

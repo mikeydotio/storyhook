@@ -50,3 +50,18 @@ full suite and submission.
 The three-member council selected this transaction outbox unanimously. See
 SH-690's comments for the durable decision and rationale. Reference:
 [transactional outbox](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html).
+
+## As-built
+
+The worker's idle passes are reads (SH-693). `recover` and `process_one` in
+`src/daemon/block_delivery.rs` each read the deliveries they would act on and
+open a write transaction only when one exists; `finish`'s compare-and-swap on
+the expected status protects that write against a row that moved between the
+read and the lock. The reason is the store's fault model: every fault point
+fires inside every commit, an empty transaction included, so a write opened
+merely to look kills an armed daemon during its own start-up, before it has
+accepted the client command the fault was armed for. SH-690 shipped exactly
+that under a gate that was terminated before it reported (SH-692), and `dev`
+was red until SH-693 landed. The class detector is
+`tests/fault_injection.rs::an_armed_daemon_left_idle_is_not_killed_by_its_own_housekeeping`;
+the per-function pins are in `tests/block_delivery.rs`.

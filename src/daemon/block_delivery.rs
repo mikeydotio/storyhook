@@ -1,4 +1,11 @@
 //! One daemon worker drains durable block effects without holding a database lock.
+//!
+//! An idle pass is a read. A write transaction is opened only to change a
+//! delivery's status, never to find out whether there is one to change: every
+//! store fault point fires inside every commit, an empty transaction included,
+//! so a housekeeping write on a fresh daemon kills any armed daemon before it
+//! accepts its first connection (SH-693) — and, armed or not, holds
+//! `BEGIN IMMEDIATE` against every client once per [`IDLE_POLL`] for nothing.
 use super::bus::{Change, ChangeBus};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
 use crate::domain::{StoryEvent, SuperState, is_blocked};
@@ -51,18 +58,45 @@ fn finish(
     Ok(())
 }
 
-/// Report interrupted delivery attempts without replaying external side effects.
-pub fn recover(store: &impl Store, env: &Environment) -> Result<(), AppError> {
-    store.write(|tx| {
+/// Every delivery, across every project, currently in `status`.
+///
+/// A read, deliberately. The worker's passes are almost always idle, so the
+/// question "is there anything to do?" must not cost a write transaction: the
+/// callers open one only for the rows this returns, and [`finish`]'s
+/// compare-and-swap on the expected status protects that write against a row
+/// that moved between the read and the lock.
+fn deliveries_in(
+    store: &impl Store,
+    status: DeliveryStatus,
+) -> Result<Vec<BlockDelivery>, AppError> {
+    Ok(store.read(|tx| {
+        let mut found = Vec::new();
         for project in tx.projects()? {
-            let ctx = Ctx::new(store, project.id, env.home(), env.clone()).no_hooks(true);
-            for mut delivery in tx.block_deliveries(project.id)? {
-                if delivery.status == DeliveryStatus::Attempting {
-                    delivery.status = DeliveryStatus::Uncertain;
-                    delivery.detail = "daemon stopped before acknowledgement; the agent may have been reached; no automatic replay".into();
-                    finish(tx, &ctx, &delivery, DeliveryStatus::Attempting)?;
-                }
-            }
+            found.extend(
+                tx.block_deliveries(project.id)?
+                    .into_iter()
+                    .filter(|d| d.status == status),
+            );
+        }
+        Ok(found)
+    })?)
+}
+
+/// Report interrupted delivery attempts without replaying external side effects.
+///
+/// Read first, write only for the deliveries actually interrupted: a fresh
+/// daemon with nothing to recover opens no write transaction at all (SH-693).
+pub fn recover(store: &impl Store, env: &Environment) -> Result<(), AppError> {
+    let interrupted = deliveries_in(store, DeliveryStatus::Attempting)?;
+    if interrupted.is_empty() {
+        return Ok(());
+    }
+    store.write(|tx| {
+        for mut delivery in interrupted {
+            let ctx = Ctx::new(store, delivery.project, env.home(), env.clone()).no_hooks(true);
+            delivery.status = DeliveryStatus::Uncertain;
+            delivery.detail = "daemon stopped before acknowledgement; the agent may have been reached; no automatic replay".into();
+            finish(tx, &ctx, &delivery, DeliveryStatus::Attempting)?;
         }
         Ok(())
     })?;
@@ -76,6 +110,11 @@ pub fn process_one(
     env: &Environment,
     script: Option<&Path>,
 ) -> Result<bool, AppError> {
+    // The gate, not the decision: the write below re-scans under the lock and
+    // is the claim. An idle pass ends here, without a transaction (SH-693).
+    if deliveries_in(store, DeliveryStatus::Pending)?.is_empty() {
+        return Ok(false);
+    }
     let work = store.write(|tx| {
         let mut pending = Vec::new();
         for project in tx.projects()? {
@@ -251,6 +290,15 @@ pub fn process_one(
     Ok(true)
 }
 
+/// How long an idle pass waits for a change-bus wakeup before scanning again.
+///
+/// `pub` because `tests/fault_injection.rs` derives its idle window from it
+/// (SH-394: a bound is derived from the cadence it is meant to cover, never
+/// picked): this is the shortest cadence of every poller the daemon runs, so a
+/// window measured in multiples of it covers each poller's start-up pass and
+/// its steady state.
+pub const IDLE_POLL: Duration = Duration::from_secs(1);
+
 /// Drain ordered intents on committed changes, with fixed recovery and bounded shutdown.
 pub(crate) fn poll(store: &impl Store, env: &Environment, bus: &ChangeBus, stop: &AtomicBool) {
     let subscription = bus.subscribe();
@@ -272,7 +320,7 @@ pub(crate) fn poll(store: &impl Store, env: &Environment, bus: &ChangeBus, stop:
             }
             Ok(false) => {}
         }
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + IDLE_POLL;
         while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
             if matches!(
                 subscription.recv(Duration::from_millis(100)),
