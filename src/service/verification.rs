@@ -789,7 +789,8 @@ fn candidate_is_current(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
-    if row.state != VERIFYING_STATE {
+    let stories = super::query::story_map(tx, candidate.project)?;
+    if row.state != VERIFYING_STATE || crate::domain::is_blocked(&row.snapshot, &stories) {
         return Ok(false);
     }
     candidate_is_latest_generation(tx, row, candidate)
@@ -895,7 +896,11 @@ pub(crate) fn ordered_candidates_for(
         let registered =
             super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
+        let stories = super::query::story_map(tx, project.id)?;
         for row in rows {
+            if crate::domain::is_blocked(&row.snapshot, &stories) {
+                continue;
+            }
             let links = tx
                 .open_pr_links_for_story(project.id, row.story_no)?
                 .into_iter()
@@ -1028,6 +1033,44 @@ mod tests {
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),
         }
+    }
+
+    #[test]
+    fn blocked_generation_cannot_record_outcomes_or_comments() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let id = crate::service::StoryService::new(&ctx)
+            .create(&crate::service::NewStoryInput {
+                title: "Blocked result race".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        crate::service::StoryService::new(&ctx)
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let c = queue.next().unwrap().unwrap();
+        crate::service::StoryService::new(&ctx)
+            .set_awaiting(&id, "repair")
+            .unwrap();
+        assert!(matches!(
+            queue
+                .upsert_generation_comment(&ctx, &c, "result", "stale")
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(matches!(
+            queue.record_generation_returned(&ctx, &c, "stale").unwrap(),
+            GenerationWrite::Superseded
+        ));
     }
 
     #[test]
