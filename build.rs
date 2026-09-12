@@ -175,6 +175,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "machine-lock.sh",
     "merge-preflight.sh",
     "merge-watch.sh",
+    "origin-default-branch.sh",
     "test_output.py",
     "tracked-tree.sh",
     "tree-receipt.sh",

@@ -70,6 +70,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | done — see "SH-651" under As built |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | done — **built with different semantics**: the resolver is `domain::completion_state`, answering the required `done`, never the first CLOSED state, and `STORY_DONE_STATE` is refused rather than honoured; a council decision recorded on the story (`story show SH-652`) and under As built |
 | D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | open |
+| D-I | **The base is asked of origin, and landing checks it.** The branch a story PR is opened against, dispatched from, reaped against and landed on is origin's own advertised default (`git ls-remote --symref origin HEAD`), never the local `origin/HEAD` cache alone and never a literal; an origin that cannot say is a refusal by name, not a guess. `verify-pr.sh` and `land-pr.sh` each check the PR's base against that answer, independently; `land-pr.sh --base <branch>` is the only way to land elsewhere and `release.sh` states it. | Five story PRs opened against `main` by a stale cache and a `main` literal were certified, merged and closed as green, and the divergence was found by hand (SH-306's shape one layer over: the check that never ran). SH-136: the cache is a copy of a fact with an authority. SH-372/SH-394: absence and a literal are not answers. Rejected: refreshing the cache with `set-head -a` (a second copy, and a race on a shared ref); a project setting (a copy that drifts); `gh repo view` (GitHub-only). | SH-691 | done — see "SH-691" under As built |
 
 A child that lands updates its row's status and adds an entry under "As
 built" below. A child that deviates from its row records the deviation there
@@ -120,9 +121,11 @@ re-proves the lease, requires the story to be in `verifying`, refuses a dirty
 worktree naming the files, pushes the leased branch over HTTPS
 (`url.https://github.com/.insteadOf=git@github.com:`; no `--force` — a rewritten
 branch is returned to the agent as `push-rejected`), then opens one PR against
-the repository's default branch (`origin/HEAD`, `dev` here — the same fact
-dispatch based the worktree on) or **adopts** the one already open for that
-head. The helper records nothing on the story; it answers a typed
+the repository's default branch (asked of origin itself with `git ls-remote
+--symref origin HEAD`, `dev` here — the same fact dispatch based the worktree
+on; never the local `origin/HEAD` cache alone, and never a literal, since
+SH-691) or **adopts** the one already open for that head; one already open
+against any other base is refused by name (`wrong-base-pull-request`). The helper records nothing on the story; it answers a typed
 `SubmissionReceipt`, and the daemon records the `StoryPrLinked`
 (`close_on_merge`) and a marked `CENTRAL VERIFICATION SUBMITTED` comment in one
 generation-guarded write (`record_generation_submitted`), then proceeds into
@@ -454,6 +457,74 @@ the SH-136 rule); the invariant here is only that it **survives**.
 Deviations from this document are recorded here, one entry per child, rather
 than in a second file. Each child lands with its own `### SH-N — <what
 changed>` entry and a status update in the decisions table above.
+
+### SH-691 — the base is asked of origin, and landing checks it
+
+Five story pull requests (#734, #775, #776, #772, #782) were opened against
+`main`, certified, merged and closed as green; `dev` and `main` diverged by
+23 commits before anyone compared them by hand. Two faults, either sufficient:
+`default_branch()` in `plugins/story/lib/session.sh` read the LOCAL
+`refs/remotes/origin/HEAD` cache, which git writes at clone time and no fetch
+refreshes, so a checkout cloned before the default moved kept answering
+`main`; and where the cache was absent it printed the literal `main` (SH-394,
+SH-372). Nothing downstream asked whether a base was right: `verify-pr.sh`
+and `land-pr.sh` checked only that it did not CHANGE mid-flight.
+
+**The authority is origin, asked at the moment of need.** `git ls-remote
+--symref origin HEAD` advertises the remote's own HEAD — one read-only round
+trip, no `gh`, any host. The derivation exists three times, once per bundle
+(the plugin's `default_branch`, the bundled `scripts/origin-default-branch.sh`,
+and the binary's `origin_default_branch` in `src/service/cleanup.rs` for
+`story cleanup`); `tests/default_branch_contract.rs` pins the two shell
+copies to one answer on the same fixture remotes. Rejected: `git remote
+set-head origin -a` (writes a second copy of a fact that has an authority —
+SH-136 — and races other writers of the shared ref), `gh repo view`
+(GitHub-only), a project setting (a copy that would drift the way the cache
+did).
+
+**Unknown is unknown.** An origin that does not answer, or advertises no
+symbolic HEAD (unborn or detached — `ls-remote` prints no `ref:` line at exit
+0), makes the helper fail with the reason, and each verb decides: submit
+refuses `default-branch-unknown` (class infrastructure — the verifier's own
+retryable incident, nothing pushed); leased reap refuses
+`default-branch-unknown`; dispatch keeps its documented offline tiers and
+states the source (`base_source`: `origin`; `cache`, the local origin/HEAD
+cache, named in the warning with `git remote set-head origin -a` as the
+remedy; or `none`, the local checkout, which the e2e seeds need); complete
+plan/execute and the non-leased reap use origin, then the cache
+(`default_branch_source`, a warning line in the display), and fail only with
+neither — a stale default can only PRESERVE a branch there.
+`is_protected_branch <branch> <default>` takes the resolved default: a
+predicate does no network I/O and cannot classify a lookup failure for four
+different callers.
+
+**The detector, twice.** `verify-pr.sh` compares the PR's base with origin's
+default after the OPEN/MERGED checks and before refreshing refs: a mismatch
+is `invalid-submission` naming both branches, before any gate runs; an
+unanswerable origin is retryable. `land-pr.sh` re-derives independently under
+the merge lock, before any fetch, and refuses with its own exit code 3, which
+`classify_land` maps to the same verdict instead of the retryable
+`reconcile_land_refusal` path a generic exit 1 takes. `land-pr.sh [--base
+<branch>] <pr>` lets a caller STATE a different intent, forwarded to the
+locked phase only when given; `release.sh` passes it for both its landings
+from `branch-policy.sh` (the stable merge lands on `main`, which is not the
+default, deliberately), and `tests/branch_policy.rs` pins that. A PR already
+MERGED into the wrong base is recovered as merged — nothing left to prevent —
+and the script headers say so.
+
+**The adoption blind spot, adopted.** Submit listed open PRs by (head, base),
+so a PR already open for the head against another base was invisible and a
+second one was created beside it — the five incidents one step later. It
+lists by head now and refuses `wrong-base-pull-request` (class repair) naming
+the number, both branches and the remedy (`gh pr edit N --base <default>`, or
+close it); only PRs on the default remain adoption candidates; a fork's PR is
+still not judged.
+
+**Measured.** Restoring the `main` literal in `session.sh` fails the submit,
+dispatch, complete-plan and reap cases (base `main`, worktree on `main`'s tip,
+plan on `main`, a branch merged only into `dev` refused as unmerged);
+restoring the (head, base) listing makes the wrong-base case open a second
+PR beside the misdirected one.
 
 ### SH-695 — an exited gate's orphans are reaped, never a halt
 

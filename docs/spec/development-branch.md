@@ -22,9 +22,15 @@ Public releases start only from a clean local `dev` equal to `origin/dev`.
 version bump, and runs the full release gate. It then:
 
 1. Opens the stable-release PR from `release/<version>` to `main` and lands it
-   through `scripts/land-pr.sh`.
+   through `scripts/land-pr.sh --base main`.
 2. Re-pushes the same local release branch, opens a synchronization PR to
-   `dev`, and lands that PR through the same guarded path.
+   `dev`, and lands that PR through the same guarded path
+   (`--base dev`).
+
+`land-pr.sh` refuses a pull request whose base is not origin's default branch
+unless the caller states the intended base with `--base` (SH-691); the stable
+merge is the one landing in this repository that means to target a branch
+other than the default, so `release.sh` states both.
 3. Deletes the local release branch only after both merges succeed.
 4. Returns to stable `main` to build artifacts, create the tag, and create the
    draft GitHub release.

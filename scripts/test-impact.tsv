@@ -45,6 +45,8 @@ dead_public_surface	:(glob)**/*
 dead_public_surface	:(glob)crates/**/*.rs
 dead_public_surface	:(glob)src/**/*.rs
 dead_public_surface	:(glob)tests/**/*.rs
+default_branch_contract	plugins/story/lib/session.sh
+default_branch_contract	scripts/origin-default-branch.sh
 dispatch_ready_budget	:(glob)**/*
 dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*

@@ -103,6 +103,33 @@ out_all=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
 assert_eq "$(jqf "$out_all" '.plan.branch.name | test("^worktree-")')" "true" \
   "plan: only ever targets a worktree-* branch, never main"
 
+# --- SH-691: the default branch is origin's advertised one, never the cache's ---
+origin=$(git -C "$repo" remote get-url origin)
+git -C "$repo" push -q origin main:refs/heads/dev
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
+assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/main" \
+  "plan: fixture cache still says main"
+out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
+assert_eq "$(jqf "$out" .default_branch)" "dev" "plan: the default is asked of origin, not read from the stale cache"
+assert_eq "$(jqf "$out" .default_branch_source)" "origin" "plan: …and says so"
+assert_eq "$(jqf "$out" '.display | test("origin/HEAD cache")')" "false" "plan: no cache warning when origin answered"
+# origin unreachable: the read-only preview keeps working on the cache, and says so
+git -C "$repo" remote set-url origin /nonexistent/storyhook-origin.git
+out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "plan: still previews offline"
+assert_eq "$(jqf "$out" .default_branch)" "main" "plan: offline, the cached default is used"
+assert_eq "$(jqf "$out" .default_branch_source)" "cache" "plan: …and reported as the cache"
+assert_contains "$(jqf "$out" .display)" "git remote set-head origin -a" "plan: the display names the remedy"
+assert_contains "$(jqf "$out" .display)" "did not answer" "plan: the display carries git's reason"
+# neither origin nor cache: refused, never a literal
+git -C "$repo" remote set-head origin --delete
+out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "plan: with no origin answer and no cache there is no default to plan against"
+assert_contains "$(jqf "$out" .display)" "cannot establish origin's default branch" "plan: …and says why"
+git -C "$repo" remote set-url origin "$origin"
+git -C "$repo" remote set-head origin main
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
+
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "TST-9999" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "plan: unknown story is ok:false"

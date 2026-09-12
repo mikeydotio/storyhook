@@ -393,6 +393,12 @@ classify_land() {
     (2)
         jq -n --arg detail "$land_output" '{result:"conflict", detail:$detail}'
         ;;
+    (3)
+        # land-pr.sh's own wrong-base refusal (SH-691): the PR's shape is
+        # wrong, not the landing's luck, so it is the submission that is
+        # invalid — never a retryable refusal to reconcile.
+        invalid_json "PR #$landed_pr targets a branch it must not land on: $land_output"
+        ;;
     (*)
         refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)"
         refresh_status=$?
@@ -735,6 +741,16 @@ if [ "$state" = MERGED ]; then
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
+# The base must be the repository's integration branch — origin's own default,
+# asked of origin (SH-691). Until SH-691 the base was only checked for
+# stability, and five PRs opened against `main` by a stale local cache were
+# certified, merged and closed as green. Checked before any gate runs, and
+# again independently by land-pr.sh under the merge lock. A PR already MERGED
+# into the wrong base was recovered above as merged: nothing left to prevent.
+expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
+    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
+[ "$base" = "$expected_base" ] \
+    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
 verification_phase="pull request refs"
 gate_progress_emit_item "pull request refs" running
 _refs_start=$(date +%s)

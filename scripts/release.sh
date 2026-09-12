@@ -680,7 +680,9 @@ Merging this lands the bump on \`main\`; \`scripts/release.sh\` then assembles a
 fi
 
 step "Landing on $STORYHOOK_STABLE_BRANCH through the guarded merge path"
-run bash scripts/land-pr.sh "$stable_pr"
+# `--base` states the intent (SH-691): the stable merge deliberately lands on
+# a branch that is NOT origin's default, which land-pr.sh otherwise requires.
+run bash scripts/land-pr.sh --base "$STORYHOOK_STABLE_BRANCH" "$stable_pr"
 
 step "Returning to $STORYHOOK_STABLE_BRANCH"
 run git switch "$STORYHOOK_STABLE_BRANCH"
@@ -713,7 +715,7 @@ else
     --body "Synchronize the exact \`$next_version\` release commit back into \`$STORYHOOK_INTEGRATION_BRANCH\` after its guarded stable merge.")" \
     || die "could not open the integration synchronization pull request"
 fi
-run bash scripts/land-pr.sh "$integration_pr"
+run bash scripts/land-pr.sh --base "$STORYHOOK_INTEGRATION_BRANCH" "$integration_pr"
 
 step "Confirming both long-lived branches contain $next_version"
 run git switch "$STORYHOOK_INTEGRATION_BRANCH"
