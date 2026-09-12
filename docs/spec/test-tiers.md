@@ -142,6 +142,54 @@ to the first must reuse its own result, and an identical pure-validation leg
 must still reuse the shared result. The fixture reaches the scripts by symlink,
 never by a copy that can drift from what ships.
 
+### As built: a battery finishes after its first red binary (SH-697)
+
+The verifier's RED comment lists every `test … FAILED` line the gate log
+holds (`scripts/verify-pr.sh`'s `verification_failure_detail`, read through
+`scripts/test_output.py`), so the reporting side was never the gap. The log
+was stopping early: `cargo test -p storyhook --test a --test b …` is
+fail-fast **across test binaries** by Cargo's default, so the first
+`tests/*.rs` binary with a red case ended the invocation and every later
+binary in the same battery never ran. The checklist showed the shape
+(`rust-suite (164/4074)`, then RED), `scripts/test-delta.sh`'s "not re-run
+since" bucket measured it on every red run (SH-607: one failure, 611
+unknowns), and `tests/store_isolation.rs` records three of four sibling
+defects hidden exactly this way. libtest already runs every case inside one
+binary; SH-697 applies the same rule one level up.
+
+The audit of every category the story could mean, since it named two:
+
+| Category | Runner | Finishes after a failure |
+|---|---|---|
+| `rust-suite`, `rust-contracts`, the `test-changed` subset | `scripts/run-tests.sh` | **Now** — `--no-fail-fast` on every executing `cargo test` |
+| `plugin` | `plugins/story/tests/run-tests.sh` | Already — loops every file, exits 1 at the end |
+| `e2e/<project>` (WebKit included) | `scripts/run-e2e.sh` | Already — no `maxFailures` (declined above), and the project loop continues past a red project |
+| the legs of `_test-body` | `Makefile` | No, on purpose — see below |
+
+The flag lives in `run-tests.sh` as one `cargo_test_flags` array applied to
+every executing invocation — workspace, `-p storyhook --test …`, per-lib
+`--lib`, `--workspace --doc` — and to none of the `--list` discoveries,
+which execute nothing. That file is the single choke point behind
+`run-rust-battery.sh`, `run-changed.sh` and a hand-typed run, so the flag
+cannot drift between doors. The exit status is unchanged: Cargo still exits
+nonzero naming every failed target, so `leg.sh` records nothing reusable and
+`make` still stops at that leg. `tests/battery_completion.rs` proves it with
+the real Cargo over a two-binary crate (first red, second green: the second
+must run and the run must still fail) and pins the argv of all four
+executing paths through a recording fake.
+
+**Cross-leg continuation was declined for this story, not overlooked.** A red
+`rust-suite` still stops `rust-contracts`, `build` and `plugin` from running.
+Continuing would mean restructuring `_test-body` into a driver that
+accumulates status — the receipt-last-line invariant `tests/push_gate.rs`,
+`tests/selective_gate.rs` and `tests/orphan_check.rs` pin rests on make's own
+fail-fast, and `tests/gate_tiers.rs` reads the legs out of `make -n` — plus
+dependency-aware skipping (`plugin` and `e2e` need `build`; a compile error
+in `rust-suite` would fail three legs with one diagnostic), and it holds the
+machine-wide `gate` lock longer on a tree already known red. Per-leg reuse
+above bounds the cost of the second round trip to the legs that were
+actually red. It is filed as its own story, related to SH-697.
+
 ## Merge commits reach the gate a different way (SH-396)
 
 Everything above assumes the gate is reached by a **push**: `.githooks/pre-
