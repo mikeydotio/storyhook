@@ -143,3 +143,18 @@ Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a match
 the model as the blocking reason. On both hosts a PreToolUse hook fails OPEN at its timeout, so
 a lane whose denial times out asks anyway and stalls — caught by the engine's stall ceiling and
 quarantined, never silent.
+
+### Unsupported approval output
+
+`PreToolUse hook returned unsupported permissionDecision:allow` means a matching
+hook emitted an approval shape Codex does not support. Identify the producer
+across user, project, and plugin hook registrations before changing Storyhook.
+For an unchanged tool call, a hook with no objection must return no decision;
+optional feedback uses `additionalContext`. Preserve explicit denials and normal
+Codex permission handling. Do not add artificial `updatedInput` to silence the
+error: that field requests a tool-input rewrite.
+
+SH-707 reproduced this independently in Greenlight and a personal readonly hook,
+while installed and checkout Storyhook controls passed. See the
+[RCA and repair status](../../../docs/rca/sh-707-unsupported-hook-allow.md) and
+[Codex hook contract](https://developers.openai.com/codex/hooks).
