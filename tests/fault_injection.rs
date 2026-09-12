@@ -17,8 +17,9 @@
 
 use std::os::unix::process::ExitStatusExt;
 
+use storyhook::daemon::block_delivery::IDLE_POLL;
 use storyhook::store::FaultPoint;
-use storyhook_test_support::{TestEnv, crash_the_daemon};
+use storyhook_test_support::{TestEnv, crash_the_daemon, port_of, spawn_daemon, wait_for_server};
 
 /// **The regression test for the abort race**, and the only test whose subject is
 /// the mechanism rather than the store.
@@ -73,6 +74,58 @@ fn an_unarmed_daemon_is_not_killed_by_anything() {
         "the daemon holding the store (pid {}) must stand down when asked, rather than \
          needing a signal",
         stopped.pid
+    );
+}
+
+/// The dual of the control above, and the class detector for SH-693.
+///
+/// An armed daemon that is given nothing to do must live. The fault is armed
+/// for the client's one command, and every store fault point fires inside
+/// every commit, so a daemon whose own housekeeping opens a write transaction
+/// with nothing to write dies before that command is ever sent. SH-690's
+/// block-delivery worker did exactly that on its first pass, and every crash
+/// case then reported "the fault never fired" — a diagnosis pointing at the
+/// build, not at the daemon, which is what SH-692 spent its afternoon on. This
+/// is the assertion that names the actual finding.
+///
+/// The idle window is derived, not picked (SH-394): three passes of the
+/// block-delivery worker's own cadence, which is the shortest of every poller
+/// the daemon runs, so it covers each poller's start-up pass and its steady
+/// state. A poller on a longer cadence that writes on its first pass is caught
+/// the same way, because the first pass is what start-up is.
+#[test]
+fn an_armed_daemon_left_idle_is_not_killed_by_its_own_housekeeping() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("FI").build();
+    env.stop_daemon();
+    assert!(
+        !env.daemon_is_live(),
+        "the fixture's own daemon must stand down first, or it — not the armed one — would \
+         be the process holding the store"
+    );
+
+    let mut armed = spawn_daemon(&env, project.path(), Some(FaultPoint::BeforeCommit));
+    wait_for_server(port_of(&env, armed.pid()));
+    std::thread::sleep(IDLE_POLL * 3);
+
+    if let Some(status) = armed.try_wait() {
+        panic!(
+            "a daemon armed at {} and given nothing to do died ({status:?}) within {:?} of \
+             accepting connections. Some start-up or idle path opened a write transaction \
+             with nothing to write: every store fault point fires inside every commit, so it \
+             fired the fault that was armed for a client command this test never sent. Every \
+             crash case reads that as `the fault never fired`. See SH-693; \
+             `src/daemon/block_delivery.rs` is the shape, and its `IDLE_POLL` the cadence.",
+            FaultPoint::BeforeCommit.as_str(),
+            IDLE_POLL * 3,
+        );
+    }
+
+    env.stop_daemon();
+    assert!(
+        !env.daemon_is_live(),
+        "the armed daemon (pid {}) must stand down when asked, the same as an unarmed one",
+        armed.pid()
     );
 }
 
