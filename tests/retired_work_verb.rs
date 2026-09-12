@@ -96,7 +96,10 @@ fn names_retired_spelling(text: &str, needle: &str) -> bool {
     let is_word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     text.match_indices(needle).any(|(start, matched)| {
         let end = start + matched.len();
-        text[..start].chars().next_back().is_none_or(|c| !is_word(c))
+        text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_word(c))
             && text[end..].chars().next().is_none_or(|c| !is_word(c))
     })
 }
@@ -183,7 +186,6 @@ fn no_tracked_file_outside_the_changelog_spells_a_retired_work_verb() {
         failures.join("\n  ")
     );
 }
-
 
 /// The negative control this test's own failure taught it (SH-689): a longer
 /// word that merely starts with a retired name spells nothing retired.
