@@ -390,6 +390,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0037_verification_control.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 38,
+        name: "block_deliveries",
+        sql: include_str!("schema/0038_block_deliveries.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

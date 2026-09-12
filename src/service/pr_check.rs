@@ -199,7 +199,7 @@ pub fn run_check<S: Store>(
 
         if status.merged {
             merged.push(link.url.clone());
-            ctx.store().write(|tx| {
+            ctx.write_stories(|tx| {
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;
@@ -258,7 +258,7 @@ pub fn run_check<S: Store>(
             })?;
         } else if status.state == "closed" {
             closed_without_merging.push(link.url.clone());
-            ctx.store().write(|tx| {
+            ctx.write_stories(|tx| {
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;

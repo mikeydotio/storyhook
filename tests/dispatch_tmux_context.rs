@@ -88,7 +88,7 @@ fn web_dispatch_uses_default_server_despite_daemons_unrelated_tmux_context() {
         &helper,
         format!(
             r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=4
+DISPATCH_PROTOCOL=5
 set -eu
 export TMUX_TMPDIR='{}'
 socket=$(tmux display-message -p '#{{socket_path}}')
@@ -383,6 +383,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             created_at: "2026-01-01T00:00:00Z".into(),
             verifying_since: None,
             verifying_generation: None,
+            blocking_revision: None,
             checkout: env.home().to_path_buf(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),

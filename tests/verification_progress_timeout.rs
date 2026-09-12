@@ -63,6 +63,7 @@ fn verify_with_preparation(
         created_at: FIXTURE_NOW.into(),
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
+        blocking_revision: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),

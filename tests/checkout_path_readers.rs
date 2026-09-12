@@ -43,6 +43,10 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/block_delivery.rs",
+        "block delivery chooses a helper working directory after selecting its project by durable id",
+    ),
+    (
         "src/invoke.rs",
         "`project list` and `project show` report it; `project show` is dispatch's lookup",
     ),

@@ -161,6 +161,8 @@ pub struct VerificationCandidate {
     /// reused by a later submission of the same story, so verifier ownership
     /// and progress journals can reject stale attempts (SH-549).
     pub verifying_generation: Option<GlobalSeq>,
+    /// Latest durable block edge at admission; a transient hold revokes this attempt.
+    pub blocking_revision: Option<i64>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
     /// Exact disposable resources owned by this verification generation.
@@ -250,7 +252,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<GenerationWrite<()>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -325,7 +327,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             })?;
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -409,7 +411,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<GenerationWrite<()>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -457,7 +459,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         }
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if row.state != "in-progress" || !candidate_is_latest_generation(&*tx, &row, candidate)?
@@ -499,7 +501,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?;
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -586,7 +588,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<GenerationWrite<bool>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -686,6 +688,7 @@ fn cleanup_candidates_for(
                 // there is no queue wait left to report.
                 verifying_since: None,
                 verifying_generation: None,
+                blocking_revision: None,
                 checkout: checkout.clone(),
                 cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                 pull_request,
@@ -708,7 +711,7 @@ impl<S: Store> VerificationQueue<'_, S> {
     ) -> Result<(), AppError> {
         let project = ctx.project();
         let now = ctx.now();
-        self.store.write(|tx| {
+        ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, story_id)?;
             if row.superstate == SuperState::Closed {
@@ -790,10 +793,26 @@ fn candidate_is_current(
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
     let stories = super::query::story_map(tx, candidate.project)?;
-    if row.state != VERIFYING_STATE || crate::domain::is_blocked(&row.snapshot, &stories) {
+    if row.state != VERIFYING_STATE
+        || crate::domain::is_blocked(&row.snapshot, &stories)
+        || blocking_revision(tx, candidate.project, row.story_no)? != candidate.blocking_revision
+    {
         return Ok(false);
     }
     candidate_is_latest_generation(tx, row, candidate)
+}
+
+fn blocking_revision(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<i64>, StoreError> {
+    Ok(tx
+        .block_deliveries(project)?
+        .into_iter()
+        .rev()
+        .find(|d| d.story == story && d.action == crate::store::BlockAction::Interrupt)
+        .map(|d| d.id))
 }
 
 fn candidate_is_latest_generation(
@@ -944,6 +963,7 @@ pub(crate) fn ordered_candidates_for(
                 created_at: row.created_at,
                 verifying_since,
                 verifying_generation,
+                blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
                 checkout: checkout.clone().unwrap_or_default(),
                 cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                 pull_request,
@@ -1029,6 +1049,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             verifying_since: verifying_since.map(str::to_string),
             verifying_generation: None,
+            blocking_revision: None,
             checkout: PathBuf::new(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),

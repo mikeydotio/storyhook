@@ -23,13 +23,21 @@ story comments. Missing or unmarked panes do not roll back the block.
 `story.sh notify` remains the single provider/pane identity boundary. Its
 interrupt-only operation captures verified agent-owned gate wrapper identities
 before sending Escape, then requests cancellation through the lock holder's
-existing bounded cleanup. It never removes a live lock directly. Resume binds
+existing bounded cleanup. Protocol-1 gate holders honor a guard during this
+interval, including if native cancellation kills the wrapper before its trap.
+Captured PID/start evidence stays in the guard. Once every captured process is
+quiescent, the controller revalidates and atomically retires only that owned
+lock. Failure retains a visible guard; older holders that cannot honor it are
+refused with a diagnostic. Helper protocol 5 prevents older helpers from
+pasting the interrupt flag as text. Resume binds
 to the interrupted session, so replacement panes do not inherit old prompts.
 Tmux cannot acknowledge delivery atomically with SQLite: interrupted deliveries
 are reported as uncertain after restart and are never blindly replayed.
 
 The same blocking predicate governs verifier selection and transactional
-outcome authority. SH-686 observes authority loss, cancels the active attempt,
+outcome authority. A candidate also captures the latest durable block revision,
+so even a block lifted between observer reads withdraws that attempt.
+SH-686 observes authority loss, cancels the active attempt,
 retains ownership until cleanup, and advances to the next eligible candidate.
 SH-687's separate nested verifier-owner cleanup repair is not duplicated here.
 
