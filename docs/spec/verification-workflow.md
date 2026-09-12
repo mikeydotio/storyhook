@@ -526,6 +526,20 @@ plan on `main`, a branch merged only into `dev` refused as unmerged);
 restoring the (head, base) listing makes the wrong-base case open a second
 PR beside the misdirected one.
 
+### SH-695 — an exited gate's orphans are reaped, never a halt
+
+A red rust-suite leg that tears the gate down while a hook test's deliberate
+`sleep 300 &` grandchild is alive used to be reported as an infrastructure
+halt, not RED, and the owner record then refused every further gate on the
+boot. `verifier-owner.py` now settles the survivors of an exited leader on the
+same TERM, grace, KILL ladder the cancellation path uses, records the gate
+leader's exit code in the owner record before any census, and admits a started
+gate on the same boot once that exit is recorded and its session census is
+empty. A started gate with no recorded exit is still an interrupted gate and
+still refused. The mechanism and its decisions are in
+`docs/spec/verifier-worktree-lifecycle.md`, "Exited-session reaping — SH-695",
+and `docs/rca/sh-695-exited-gate-orphan-halt.md`.
+
 ### SH-651 — queue age follows the latest submission
 
 Verification uses priority, latest `verifying_since`, project slug, and story
