@@ -819,6 +819,7 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default. If Tails
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
 - Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
 - Live updates over a server-sent-events stream — every write, from any client, appears without a reload — with a slow poll as a fallback for the rare case a push is missed. Dark mode follows your system theme.
+- Times are shown in your browser's timezone. Hover any date or time for the stored UTC instant and the zone it is shown in; the store, the API and every sort stay UTC (`docs/spec/local-time-display.md`).
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
@@ -919,6 +920,7 @@ Only list hostnames that are themselves no more exposed than your tailnet.
 Global flags:
 
 - `--json` emits a structured JSON response envelope
+- timestamps in `--json` are RFC3339 UTC (`2026-09-12T20:31:59Z`); human output shows the same instants in the process's timezone with an explicit offset (`2026-09-12T13:31:59-07:00`), and `TZ=UTC` reproduces the stored string
 - `--quiet` suppresses normal success output
 - `--no-hooks` skips this command's git hooks
 - `--store-path <file>` names the store file for this command, overriding `$STORYHOOK_STORE_PATH`
