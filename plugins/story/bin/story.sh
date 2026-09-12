@@ -357,6 +357,8 @@ configure_agent() {
     #   made the placeholder unrecognisable, so every autonomous dispatch
     #   refused with bootstrap-submit-unconfirmed after a primer that had in
     #   fact been submitted (SH-694). Off, the row is the plain placeholder.
+    #   input_box_text (lib/session.sh) also strips the decoration itself, so
+    #   a launch override that leaves animations on is covered as well.
     DEFAULT_LAUNCH_TPL=$(compose_codex_launch_tpl base "" "" "")
     DEFAULT_AUTO_LAUNCH_TPL=$(compose_codex_launch_tpl auto "" "" "")
     DEFAULT_WORKTREE_IGNORE_PATH=".codex/worktrees/"
