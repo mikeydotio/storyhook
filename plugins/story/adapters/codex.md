@@ -29,7 +29,8 @@ marker here.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
 The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` worktree,
-tmux window, `codex --no-alt-screen` launch, readiness, Shift+Tab transition into Plan mode,
+tmux window, `codex --no-alt-screen` launch (update chooser and TUI animations off for the
+managed process), readiness, Shift+Tab transition into Plan mode,
 bracketed paste, and Tab submission. Do not repeat those side effects.
 
 With `--auto`, the helper adds `--approve-for-me` and

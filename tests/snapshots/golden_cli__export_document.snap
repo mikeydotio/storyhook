@@ -329,6 +329,11 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+        },
+        {
+          "at": "[timestamp]",
           "kind": "StoryLabelsSet",
           "labels": [
             "backend",
@@ -456,6 +461,11 @@ source: tests/golden_cli.rs
           "at": "[timestamp]",
           "awaiting": "waiting on the benchmark harness",
           "kind": "StoryAwaitingSet"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
         }
       ],
       "id": "SH-6"
@@ -506,6 +516,11 @@ source: tests/golden_cli.rs
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-5",
           "relation": "blocked-by"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
         },
         {
           "at": "[timestamp]",

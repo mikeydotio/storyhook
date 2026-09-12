@@ -44,12 +44,54 @@ def signal_session(sid, signum):
             pass
 
 
-def execute(command, record_path, record, field, cancellation, output=None):
-    """Admit a new session only after its identity is durably recorded."""
+def cleanup_budget():
+    """Read the cleanup policy once, before any lifecycle record is touched."""
     budget_ms = os.environ.get("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "30000")
     if not budget_ms.isascii() or not budget_ms.isdecimal() or len(budget_ms) > 8 or int(budget_ms) < 4000:
         raise Refusal("verifier cleanup budget must be 4000..99999999 milliseconds")
-    budget = int(budget_ms) / 1000
+    return int(budget_ms) / 1000
+
+
+def note(record_path, **fields):
+    """Publish a durable change to the current record, keeping its other fields."""
+    record = read(record_path)
+    record.update(fields)
+    save(record_path, record)
+
+
+# Observing an exit without reaping keeps the leader a zombie, so its pid and
+# session identity cannot be reused while survivors are still being signalled.
+# The portable fallback reaps at observation and accepts that window (SH-695).
+PINNED = hasattr(os, "waitid")
+
+
+def observe_exit(child):
+    """Report the leader's translated exit code once it has exited, else None."""
+    if PINNED:
+        info = os.waitid(os.P_PID, child, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if info is None:
+            return None
+        return info.si_status if info.si_code == os.CLD_EXITED else 128 + info.si_status
+    waited, status = os.waitpid(child, os.WNOHANG)
+    if not waited:
+        return None
+    code = os.waitstatus_to_exitcode(status)
+    return code if code >= 0 else 128 - code
+
+
+def supervisor_gone(record_path, session):
+    """A recorded gate supervisor is gone when no such process is in the session."""
+    supervisor = read(record_path).get("gate_supervisor")
+    if supervisor is None:
+        return True
+    try:
+        return os.getsid(supervisor) != session
+    except ProcessLookupError:
+        return True
+
+
+def execute(command, record_path, record, field, cancellation, budget, output=None):
+    """Admit a new session only after its identity is durably recorded."""
     receive, release = os.pipe()
     child = os.fork()
     if child == 0:
@@ -77,7 +119,7 @@ def execute(command, record_path, record, field, cancellation, output=None):
     grace = budget / (4 if field == "gate_session" else 2)
     deadline = None
     killed = False
-    status = None
+    code = None
     while True:
         if cancellation.signum is not None and deadline is None:
             deadline = time.monotonic() + grace
@@ -98,11 +140,13 @@ def execute(command, record_path, record, field, cancellation, output=None):
                     os.kill(child, cancellation.signum)
                 except ProcessLookupError:
                     pass
-        if status is None:
-            waited, value = os.waitpid(child, os.WNOHANG)
-            if waited:
-                status = value
-        if status is None and deadline is None:
+        if code is None:
+            code = observe_exit(child)
+            if code is not None and field == "gate_session":
+                # Recorded before any census: a later owner can then tell an
+                # exited leader from an interrupted gate of unknown state.
+                note(record_path, gate_leader_exit=code)
+        if code is None and deadline is None:
             # Healthy execution needs no machine-wide process census.
             time.sleep(.1)
             continue
@@ -112,8 +156,20 @@ def execute(command, record_path, record, field, cancellation, output=None):
             if gate:
                 sessions.add(gate)
         remaining = [pid for sid in sessions for pid in session_members(sid)]
-        if status is not None and not remaining:
+        if code is not None and not remaining:
             break
+        if code is not None and deadline is None:
+            # The leader has answered; what survives it is a leak, not a
+            # writer with authority. Reap it on the cancellation ladder rather
+            # than failing the whole queue closed over it (SH-695).
+            print(f"verifier-owner: {field} {child} exited {code} leaving survivors {remaining};"
+                  " signalling TERM, reaping within the cleanup grace", file=sys.stderr)
+            deadline = time.monotonic() + grace
+            signal_session(child, signal.SIGTERM)
+            if field == "session":
+                gate = read(record_path).get("gate_session")
+                if gate and supervisor_gone(record_path, child):
+                    signal_session(gate, signal.SIGTERM)
         if deadline is not None and time.monotonic() >= deadline and not killed:
             signal_session(child, signal.SIGKILL)
             # Escalation must also cover the recorded arbitrary execution
@@ -125,14 +181,10 @@ def execute(command, record_path, record, field, cancellation, output=None):
             killed = True
         if killed and time.monotonic() >= deadline + budget / 8:
             raise Refusal(f"could not reap execution session {child} after SIGKILL; live writers={remaining}; retained {record_path}")
-        if status is not None and deadline is None:
-            raise Refusal(f"execution session {child} still has live writers {remaining}; retained {record_path}")
         time.sleep(.05)
-    remaining = [pid for sid in sessions for pid in session_members(sid)]
-    if remaining:
-        raise Refusal(f"execution session {child} still has live writers {remaining}; retained {record_path}")
-    code = os.waitstatus_to_exitcode(status)
-    return code if code >= 0 else 128 - code
+    if PINNED:
+        os.waitpid(child, 0)
+    return code
 
 
 def run(mode, common, worktree, key, command, cancellation, output=None):
@@ -143,19 +195,25 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
     if mode == "gate":
         if not held(common, worktree, key):
             raise Refusal("gate execution has no matching verifier owner")
+        # Policy is validated before the record says a gate started, so a
+        # refused budget cannot leave an interrupted gate behind (SH-695).
+        budget = cleanup_budget()
         owner = read(owner_path)
         owner["gate_started"] = True
         owner["gate_supervisor"] = os.getpid()
+        owner["gate_leader_exit"] = None
         save(owner_path, owner)
-        status = execute(command, owner_path, owner, "gate_session", cancellation)
+        status = execute(command, owner_path, owner, "gate_session", cancellation, budget)
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None
         owner["gate_supervisor"] = None
+        owner["gate_leader_exit"] = None
         save(owner_path, owner)
         return status
     if mode != "run" or not command:
         raise Refusal("usage: verifier-owner.py held|run|gate <common> <worktree> [-- command...]")
+    budget = cleanup_budget()
     lock = str(key) + ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     os.set_inheritable(fd, True)
@@ -181,6 +239,13 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
                     raise ValueError("session is not a positive identity")
                 if type(previous["gate_started"]) is not bool:
                     raise ValueError("gate_started is not a boolean")
+                # Absent in records written before SH-695: read as unknown.
+                leader_exit = previous.get("gate_leader_exit")
+                if leader_exit is not None:
+                    if type(leader_exit) is not int or leader_exit < 0:
+                        raise ValueError("gate_leader_exit is not a non-negative exit code")
+                    if not previous["gate_started"] or type(previous.get("gate_session")) is not int:
+                        raise ValueError("gate leader exit recorded without its started gate session")
             except (KeyError, ValueError, TypeError) as error:
                 raise Refusal(f"incomplete owner identity in {owner_path}: {error}") from error
             if previous.get("boot") == boot():
@@ -189,13 +254,16 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
                         members = session_members(previous[field])
                         if members:
                             raise Refusal(f"previous live owner session {previous[field]} has writers {members}; {owner_path}")
-                if previous.get("gate_started"):
+                # A recorded leader exit plus the empty census above is the
+                # evidence that the supervised gate session finished; without
+                # the exit the gate was interrupted and its state is unknown.
+                if previous.get("gate_started") and previous.get("gate_leader_exit") is None:
                     raise Refusal(f"interrupted arbitrary gate has ambiguous ownership on this boot; preserve {owner_path} and {worktree}; establish writer quiescence before recovery")
         owner = {"version": 1, "common": str(common), "worktree": str(worktree),
                  "nonce": uuid.uuid4().hex, "boot": boot(), "gate_started": False,
                  "supervisor": os.getpid()}
         os.environ["STORYHOOK_VERIFIER_OWNER"] = owner["nonce"]
-        status = execute(command, owner_path, owner, "session", cancellation, output)
+        status = execute(command, owner_path, owner, "session", cancellation, budget, output)
         owner = read(owner_path)
         owner["session"] = None
         owner["completed"] = True

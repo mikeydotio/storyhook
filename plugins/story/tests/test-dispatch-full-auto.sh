@@ -165,7 +165,7 @@ assert_contains "$claude_commands" "--approve-claude-plan <pane> <pane-pid>" \
 codex=$(dry --agent=codex --auto --full-auto)
 codex_commands=$(jqf "$codex" '.commands|join(" ")')
 assert_contains "$codex_commands" \
-  "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
+  "codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust" \
   "Codex Full Auto: reuses SH-511's provider command"
 assert_contains "$codex_commands" \
   "env STORYHOOK_AUTO= STORYHOOK_FULL_AUTO=$id" \
