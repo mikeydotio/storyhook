@@ -130,7 +130,11 @@ fn supersedes(candidate: &VerificationCandidate, active: &ActiveVerification) ->
         && candidate.verifying_generation != active.generation
 }
 
-fn matching_progress(
+/// The journal's fold for exactly `candidate`'s generation, or `None` when
+/// the journal is absent or belongs to another generation. Shared with the
+/// verifier's withdrawal record (SH-692), which names the leg an attempt
+/// was on when it was cancelled.
+pub(crate) fn matching_progress(
     env: &Environment,
     candidate: &VerificationCandidate,
 ) -> Option<gate_progress::GateProgress> {

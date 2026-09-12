@@ -1,6 +1,7 @@
 //! The daemon-owned centralized verification worker (SH-521).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,10 +37,11 @@ use crate::process::{
 use crate::service::engine::{
     DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
 };
+use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VerificationCandidate, VerificationProblem, VerificationQueue,
+    VERIFICATION_WITHDRAWN_PREFIX, VerificationCandidate, VerificationProblem, VerificationQueue,
 };
 use crate::store::{
     EngineAgent, EngineLaneState, EngineSpeed, GlobalSeq, PrLink, ProjectId, ReadOps, Store,
@@ -191,6 +193,12 @@ impl VerificationGuard {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    /// When this worker acquired the generation it currently owns.
+    #[must_use]
+    pub fn started_at(&self) -> &str {
+        &self.active.started_at
     }
 
     /// Transfers this worker's existing reservation to a newer verification
@@ -1046,6 +1054,21 @@ impl VerificationActuator for ShellVerificationActuator {
         };
         let parsed: WireOutcome = match serde_json::from_slice(&captured.stdout) {
             Ok(parsed) => parsed,
+            // A verifier killed by a signal before it could answer is not a
+            // broken verifier (SH-692): the attempt was interrupted and the
+            // tree is unjudged. Name the signal and retry on the bounded
+            // cadence rather than halting the queue as "invalid JSON".
+            Err(_) if captured.status.signal().is_some() => {
+                let signal = captured.status.signal().unwrap_or_default();
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!(
+                        "verify-pr.sh was terminated by signal {signal} ({}) before it reported a verdict; the gate judged nothing and the attempt is retried. stderr: {}",
+                        signal_name(signal),
+                        String::from_utf8_lossy(&captured.stderr).trim()
+                    ),
+                    disposition: VerificationFailureDisposition::Retryable,
+                };
+            }
             Err(_) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
@@ -1504,9 +1527,21 @@ where
         else {
             // Authority loss is queue progress, not a durable manual stop.
             // Refresh creates a new attempt token for a resubmitted generation.
+            // The story is told first (SH-692): its attempt was cancelled and
+            // judged nothing, which is neither of the verdicts a reader of
+            // its last PROGRESS comment would otherwise assume.
+            record_generation_withdrawn(
+                &queue,
+                &ctx,
+                env,
+                &candidate,
+                &pull_request,
+                active.started_at(),
+            )?;
             continue;
         };
         if active.is_cancelled() && !matches!(outcome, VerificationOutcome::Merged { .. }) {
+            record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
             return Ok(TickResult::Stopped);
         }
         super::activity::emit(
@@ -1528,7 +1563,10 @@ where
         }
 
         match outcome {
-            VerificationOutcome::Cancelled => return Ok(TickResult::Stopped),
+            VerificationOutcome::Cancelled => {
+                record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
+                return Ok(TickResult::Stopped);
+            }
             VerificationOutcome::Merged { tree, detail, gate } => {
                 let green_comment = format!(
                     "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
@@ -2110,6 +2148,147 @@ pub fn resume_plan(
         Ok(ResumePlan::default())
     })?;
     Ok(plan)
+}
+
+/// The conventional name of a termination signal, for a diagnosis a reader
+/// meets in a story comment rather than in a shell.
+fn signal_name(signal: i32) -> String {
+    match signal {
+        libc::SIGHUP => "SIGHUP".to_string(),
+        libc::SIGINT => "SIGINT".to_string(),
+        libc::SIGKILL => "SIGKILL".to_string(),
+        libc::SIGTERM => "SIGTERM".to_string(),
+        other => format!("signal {other}"),
+    }
+}
+
+/// Where an attempt was when it ended, from its own progress journal: the
+/// running leg, its test counts when the leg has them, and the elapsed time
+/// since the verifier acquired the generation. Empty when nothing is known.
+fn attempt_position(
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    started_at: &str,
+    now: &str,
+) -> String {
+    let mut position = String::new();
+    if let Some(step) = super::verification_progress::matching_progress(env, candidate)
+        .as_ref()
+        .and_then(crate::service::gate_progress::GateProgress::current_step)
+    {
+        position.push_str(&format!("during `{}`", step.label));
+        if let Some((completed, total)) = step.tests {
+            position.push_str(&format!(" ({completed}/{total} tests)"));
+        }
+    }
+    if let Some(elapsed) = crate::service::engine::elapsed_secs(started_at, now) {
+        if !position.is_empty() {
+            position.push(' ');
+        }
+        position.push_str(&format!("after {elapsed}s"));
+    }
+    position
+}
+
+/// Why `candidate`'s generation lost authority, read fresh from the store so
+/// the record names what the story is now rather than what the observer
+/// noticed first.
+fn withdrawal_reason<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    store: &S,
+    candidate: &VerificationCandidate,
+) -> Result<String, AppError> {
+    match queue.current_for(candidate)? {
+        Some(current) if current.verifying_generation != candidate.verifying_generation => {
+            Ok(format!(
+                "the story was resubmitted as generation {}",
+                current
+                    .verifying_generation
+                    .map(|generation| generation.get().to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ))
+        }
+        Some(_) => Ok("the story was blocked and its verification interrupted".to_string()),
+        None => {
+            let row = store.read(|tx| {
+                let prefix = tx
+                    .project(candidate.project)?
+                    .map(|project| project.prefix)
+                    .unwrap_or_default();
+                let number = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)?;
+                tx.story(candidate.project, number)
+            })?;
+            Ok(match row {
+                Some(row) if row.state != crate::domain::VERIFYING_STATE_SLUG => {
+                    format!("the story left `verifying` (now `{}`)", row.state)
+                }
+                Some(row) if row.awaiting.is_some() => format!(
+                    "the story was blocked (awaiting: {})",
+                    row.awaiting.unwrap_or_default()
+                ),
+                Some(_) => "the story is no longer a current verification candidate (blocked, or its generation was superseded)".to_string(),
+                None => "the story no longer exists".to_string(),
+            })
+        }
+    }
+}
+
+/// Writes the withdrawal record for an attempt whose generation lost
+/// authority while it ran (SH-692): what was cancelled, where it was, why,
+/// and what that means — nothing was judged and no receipt exists.
+fn record_generation_withdrawn<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    pull_request: &PrLink,
+    started_at: &str,
+) -> Result<(), AppError> {
+    let now = ctx.now();
+    let reason = withdrawal_reason(queue, ctx.store(), candidate)?;
+    let position = attempt_position(env, candidate, started_at, &now);
+    let generation = candidate
+        .verifying_generation
+        .map(|generation| generation.get().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let body = format!(
+        "{VERIFICATION_WITHDRAWN_PREFIX} the verification attempt for pull request {} (generation {generation}) was cancelled{}{position} because {reason}. The gate judged nothing: this is neither a red nor a green verdict, and no receipt was written for its merge tree. The verifier moved on to the next queued story.",
+        pull_request.url,
+        if position.is_empty() { "" } else { " " },
+    );
+    let wrote = queue.record_generation_withdrawn(ctx, candidate, &body)?;
+    super::activity::emit(
+        "INFO",
+        "verifier",
+        "event",
+        &format!("project={} {}", candidate.project_slug, candidate.story_id),
+        &format!(
+            "verification withdrawn (generation {generation}): {reason}{}",
+            if wrote { "" } else { " (already recorded)" }
+        ),
+    );
+    Ok(())
+}
+
+/// Rewrites the generation's PROGRESS comment as INTERRUPTED when the owned
+/// attempt is stopped by the operator or by daemon shutdown (SH-692). The
+/// story stays `verifying` and current, so the marked upsert applies; the
+/// attempt restarts from the beginning when the verifier resumes.
+fn record_generation_interrupted<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    started_at: &str,
+) -> Result<(), AppError> {
+    let now = ctx.now();
+    let position = attempt_position(env, candidate, started_at, &now);
+    let body = format!(
+        "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED{}{position}\nThe verifier was stopped (operator stop or daemon shutdown) while this attempt ran. The gate judged nothing; the attempt restarts from the beginning when the verifier resumes.\n",
+        if position.is_empty() { "" } else { " " },
+    );
+    queue.upsert_generation_comment(ctx, candidate, GATE_PROGRESS_PREFIX, &body)?;
+    Ok(())
 }
 
 fn comment_once(
