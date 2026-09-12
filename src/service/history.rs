@@ -88,7 +88,7 @@ pub fn restore<S: Store>(
         .cloned()
         .partition(|event| !is_relation(event));
 
-    let cleanup = ctx.store().write(|tx| {
+    let cleanup = ctx.write_stories(|tx| {
         if !story_events.is_empty() {
             append_and_fold(
                 tx,

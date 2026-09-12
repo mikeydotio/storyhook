@@ -669,7 +669,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
         let now = self.ctx.now();
         let project = self.ctx.project();
 
-        let (created_ids, relationship_lines) = self.ctx.store().write(|tx| {
+        let (created_ids, relationship_lines) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = slug_map(&ordered);

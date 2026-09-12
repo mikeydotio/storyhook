@@ -5,6 +5,12 @@ activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 backup_restore	:(glob)**/*
 binary_lease	scripts/binary-lease.sh
+block_delivery_paths	:(glob)src/service/*.rs
+block_interrupt	:(glob)plugins/story/lib/*
+block_interrupt	plugins/story/bin/story.sh
+block_interrupt	scripts/gate-progress.sh
+block_interrupt	scripts/machine-lock.sh
+block_interrupt	tests/support/block_interrupt.py
 block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*

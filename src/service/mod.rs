@@ -30,6 +30,7 @@
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
 pub mod attachment;
+pub mod block_delivery;
 pub mod catalog;
 pub mod cleanup;
 mod cleanup_lease;

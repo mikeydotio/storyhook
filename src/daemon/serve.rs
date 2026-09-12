@@ -340,6 +340,12 @@ where
             let env = env.clone();
             scope.spawn(move || watch_parent(&env, &stop));
         }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::block_delivery::poll(store, &env, &bus, &stop));
+        }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-pr` feature, the same way `pr_check::run_check`, the
         // engine it spends its credential on, is unreachable without it.
