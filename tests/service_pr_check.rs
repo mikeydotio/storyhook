@@ -11,6 +11,7 @@ use storyhook::domain::{COMPLETION_STATE_SLUG, StoryEvent, SuperState};
 use storyhook::service::pr_check::run_check;
 use storyhook::service::{
     ConfigService, NewStoryInput, PrLinkService, RelationService, StoryService,
+    VERIFICATION_UNCERTIFIED_MERGE_PREFIX,
 };
 use storyhook::store::{ReadOps, Store, WriteOps};
 use storyhook_test_support::{FakeGithubApiFactory, RecordedCall, ServiceFixture, scratch_dir};
@@ -137,6 +138,75 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
             .filter_map(storyhook::store::StoredEvent::known)
             .any(|e| matches!(e, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
         "a StoryPrMerged event must have been appended"
+    );
+}
+
+/// SH-692: a pull request merged outside central verification — by hand,
+/// while the story sits in `verifying` — is recorded as a fact and never
+/// completes the story. Nothing certified the merge tree; completing it is
+/// either the verifier's own verdict or an operator's recorded override.
+#[test]
+fn check_records_an_uncertified_merge_on_a_verifying_story_without_closing_it() {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    let id = create(&fixture, "Merged under a running gate");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    PrLinkService::new(&ctx).link(&id, URL, true).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+
+    let response = run_check(&ctx, &fake, Some(id.as_str())).expect("checking pull requests");
+    let message = format!("{response:?}");
+    assert!(
+        message.contains("left verifying"),
+        "the check names what it did not do: {message}"
+    );
+
+    let project = fixture.project();
+    let story_no = storyhook::store::StoryNo::parse_id("SH", &id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(project, story_no))
+        .unwrap()
+        .expect("story exists");
+    assert_eq!(
+        row.state, "verifying",
+        "the poller never completes a verifying story"
+    );
+    assert!(!row.archived);
+    let notices: Vec<&str> = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| {
+            comment
+                .text
+                .starts_with(VERIFICATION_UNCERTIFIED_MERGE_PREFIX)
+        })
+        .map(|comment| comment.text.as_str())
+        .collect();
+    assert_eq!(notices.len(), 1, "{:?}", row.snapshot.comments);
+    assert!(notices[0].contains(URL), "{}", notices[0]);
+    assert!(
+        notices[0].contains(&format!("story move {id} done")),
+        "the notice names the override door: {}",
+        notices[0]
+    );
+
+    let events = fixture
+        .store()
+        .read(|tx| tx.events_for(project, story_no))
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .filter_map(storyhook::store::StoredEvent::known)
+            .any(|e| matches!(e, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
+        "the merge itself is still recorded"
     );
 }
 

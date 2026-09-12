@@ -1885,6 +1885,14 @@ after <state>, in either order; everything past them is treated as
 free-text comment, exactly like today, with no restrictions on its
 content.
 
+A story in `verifying` is owned by the central verifier. Moving it to
+`done` by hand overrides that verification and requires the comment:
+`story move <id> done "<why>"`. The reason is recorded on the story as
+`CENTRAL VERIFICATION OVERRIDDEN — <why>`; a bare move is refused. The
+verifier cancels its running attempt, records the withdrawal on the
+story, and moves on to the next queued story. To hand the story back
+without completing it, move it to `in-progress` instead.
+
 When to use:
   To update the status of a story as you work on it, or to close
   it when complete.
@@ -1893,6 +1901,7 @@ Examples:
   story move SH-1 in-progress                          # Start working on it
   story move SH-1 done                                 # Mark as done
   story move SH-1 done "shipped v2.1"                  # Done with comment
+  story move SH-1 done "merged by hand; gate re-run"   # Override verification
   story move SH-1 in-progress --if-state todo          # Claim only if still todo
   story move SH-1 blocked --reason "waiting on SH-9"   # Block with a reason
 

@@ -910,6 +910,16 @@ fn recording_the_verified_merge_closes_the_story_and_the_pr_projection() {
     fixture.link_origin("https://github.com/acme/widgets");
     let id = submitted(&fixture, "verified", Priority::High, PR_ONE);
     let ctx = fixture.ctx();
+    // The verdict precedes the close, as the verifier's own transaction
+    // writes it: a `verifying` story completes only certified (SH-692).
+    StoryService::new(&ctx)
+        .comment(
+            &id,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+            ),
+        )
+        .unwrap();
 
     VerificationQueue::new(fixture.store())
         .record_merged(&ctx, &id, PR_ONE)
@@ -1676,7 +1686,12 @@ impl VerificationActuator for WebMutationActuator<'_> {
             "/api/repos/{}/story/{}",
             candidate.project_slug, candidate.story_id
         );
-        self.post(&format!("{base}/move"), r#"{"state":"done"}"#);
+        // A UI completion of a `verifying` story is an override and carries
+        // its reason (SH-692); the bare move is refused.
+        self.post(
+            &format!("{base}/move"),
+            r#"{"state":"done","comment":"completed from the dashboard while the attempt ran"}"#,
+        );
         if self.reopen {
             self.post(&format!("{base}/reopen"), "{}");
         }
