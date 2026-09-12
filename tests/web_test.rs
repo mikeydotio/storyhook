@@ -1075,6 +1075,22 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="close-reason""#));
     assert!(body.contains(r#"id="close-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-close-instead""#));
+    // SH-692: a Verifying -> Done move is an override and needs the operator's
+    // reason. One required-reason prompt, reached from the board drop and the
+    // drawer's state select; the service refuses the bare move, so the page
+    // never sends one.
+    assert!(body.contains(r#"id="verify-override-modal""#));
+    assert!(body.contains(r#"id="verify-override-reason""#));
+    assert!(body.contains(r#"id="verify-override-submit""#));
+    assert!(body.contains(r#"id="verify-override-error""#));
+    assert!(body.contains(r#"currentSlug === "verifying" && targetSlug === "done""#));
+    assert!(body.contains(r#"st.state === "verifying" && stateSelect.value === "done""#));
+    assert!(body.contains("A reason for overriding verification is required."));
+    assert!(body.contains("function submitVerifyOverride"));
+    assert!(
+        !body.contains(r#"id="verify-override-skip""#),
+        "the override prompt gates the move: there is no Skip"
+    );
     assert!(
         !body.contains("renderDeleteConfirm"),
         "the inline confirmation footer form was replaced by the shared delete modal"
@@ -5486,6 +5502,119 @@ fn web_move_story_without_reason_leaves_awaiting_null() {
         serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(story_field(&json, "state"), "blocked");
     assert!(json["story"]["story"]["awaiting"].is_null(), "{json}");
+}
+
+/// Puts `SH-1` into `verifying` by its own event, the way
+/// `web_serve_api_data_reports_queued_verification…` does — but with the
+/// checkout kept (a mutation is refused without one) and the verifier
+/// stopped first, so no tick can return the story while the request under
+/// test is in flight (SH-692).
+fn park_in_verifying(fixture: &Served) {
+    use storyhook::domain::StoryEvent;
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::store::{ExpectedSeq, WriteOps};
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let stopped = post_json(
+        fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/verification/control"),
+        r#"{"action":"stop"}"#,
+    )
+    .unwrap();
+    assert_eq!(stopped.status(), 200);
+    fixture
+        .store
+        .write(|tx| {
+            let story = StoryNo::new(1);
+            let head = tx.append_events(
+                fixture.project,
+                story,
+                ExpectedSeq::Any,
+                &[StoryEvent::StoryStateChanged {
+                    at: "2026-01-01T00:01:00Z".into(),
+                    state: "verifying".into(),
+                }],
+                &Provenance::unrecorded(),
+            )?;
+            let stored = tx.events_for(fixture.project, story)?;
+            let (known, _) = storyhook::store::partition_known(story, &stored);
+            let states = tx.state_map(fixture.project)?;
+            let snapshot = storyhook::domain::fold_story("SH-1", &known, &states)
+                .map_err(storyhook::store::StoreError::from)?;
+            tx.put_story(fixture.project, &snapshot, head)
+        })
+        .unwrap();
+}
+
+/// SH-692: the dashboard's Done drop on a `verifying` card — the door the
+/// incident came through — is refused without a reason, naming the rule.
+#[test]
+fn web_move_a_verifying_story_to_done_without_a_comment_is_422() {
+    let fixture = served();
+    fixture.seed(&["new", "Under the gate"]);
+    park_in_verifying(&fixture);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    // The body, not just the status: a 422 for any other reason (no
+    // checkout, say) would make this pin vacuous.
+    let resp = fixture
+        .agent()
+        .post(format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+        ))
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send(r#"{"state":"done"}"#)
+        .unwrap();
+    let status = resp.status();
+    let body = resp.into_body().read_to_string().unwrap();
+    assert_eq!(status, 422, "{body}");
+    assert!(body.contains("under central verification"), "{body}");
+    assert!(body.contains("story move SH-1 done"), "{body}");
+
+    let row = fixture
+        .store
+        .read(|tx| tx.story(fixture.project, StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying", "a refused move changes nothing");
+}
+
+/// SH-692: with a reason, the drop is an override — recorded on the story
+/// as the marked comment, and the story completes.
+#[test]
+fn web_move_a_verifying_story_to_done_with_a_comment_records_the_override() {
+    let fixture = served();
+    fixture.seed(&["new", "Under the gate"]);
+    park_in_verifying(&fixture);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .post(format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+        ))
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send(r#"{"state":"done","comment":"merged by hand after a local gate run"}"#)
+        .unwrap();
+    let status = resp.status();
+    let body = resp.into_body().read_to_string().unwrap();
+    assert_eq!(status, 200, "{body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(story_field(&json, "state"), "done");
+    let comments = json["story"]["story"]["comments"].as_array().unwrap();
+    assert!(
+        comments.iter().any(|comment| comment["text"]
+            == "CENTRAL VERIFICATION OVERRIDDEN — merged by hand after a local gate run"),
+        "the reason is recorded as the override: {json}"
+    );
 }
 
 #[test]
