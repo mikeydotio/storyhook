@@ -44,14 +44,16 @@ def execute(command, record_path, record, field, output=None):
     os.close(release)
 
     def forward(signum, _frame):
-        """Forward cancellation to every recorded session, including subgroups."""
-        current = read(record_path)
-        for sid in {child, current.get("gate_session")} - {None}:
-            for pid in session_members(sid):
-                try:
-                    os.kill(pid, signum)
-                except ProcessLookupError:
-                    pass
+        """Let the lifecycle leader order cancellation and its own cleanup."""
+        # Broadcasting into the controlled lifecycle kills the gate supervisor's
+        # introspection workers before it can durably establish quiescence.
+        # Arbitrary gate sessions still require cancellation across subgroups.
+        targets = session_members(child) if field == "gate_session" else [child]
+        for pid in targets:
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
 
     for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, forward)

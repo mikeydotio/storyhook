@@ -289,6 +289,90 @@ class VerifierLifecycle(unittest.TestCase):
         self.assertIn(str(pid), result["detail"])
         self.stop_pid(pid)
 
+    def test_cancellation_preserves_lifecycle_cleanup_workers(self):
+        """The lifecycle leader must finish its workers before ownership settles."""
+        leader = self.root / "lifecycle.py"
+        leader.write_text('''import signal, subprocess, sys, time
+from pathlib import Path
+ready, result = map(Path, sys.argv[1:])
+worker = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE, text=True)
+def finish(signum, frame):
+    # Hold cleanup open while the cancellation fan-out finishes. Its workers
+    # belong to the lifecycle leader, not the arbitrary gate process tree.
+    time.sleep(.25)
+    worker.communicate("cleanup complete\\n")
+    result.write_text(str(worker.returncode))
+    sys.exit(128 + signum)
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, finish)
+ready.write_text(str(worker.pid))
+while True:
+    signal.pause()
+''')
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=signum):
+                ready = self.root / f"ready-{signum}"
+                result = self.root / f"result-{signum}"
+                owner, log = self.spawn(sys.executable, str(SCRIPTS / "verifier-owner.py"),
+                                        "run", str(self.common), str(self.wt), "--",
+                                        sys.executable, str(leader), str(ready), str(result))
+                self.wait_path(ready)
+                self.addCleanup(lambda pid=int(ready.read_text()): self.stop_pid(pid))
+                owner.send_signal(signum)
+                status = owner.wait(timeout=15)
+                log.seek(0)
+                self.assertEqual(status, 128 + signum, log.read().decode())
+                self.assertEqual(result.read_text(), "0", "cleanup worker was cancelled directly")
+
+    def test_cancellation_reaches_gate_workers_in_separate_process_groups(self):
+        """Arbitrary gate subgroups settle before their durable completion record."""
+        worker = self.root / "gate-worker.py"
+        worker.write_text('''import os, signal, sys
+from pathlib import Path
+os.setpgrp()
+ready, result = map(Path, sys.argv[1:])
+def finish(signum, frame):
+    result.write_text(str(signum))
+    sys.exit(0)
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, finish)
+ready.write_text(str(os.getpid()))
+while True:
+    signal.pause()
+''')
+        gate = self.root / "gate.py"
+        gate.write_text('''import signal, subprocess, sys
+def finish(signum, frame):
+    worker.wait(timeout=10)
+    sys.exit(128 + signum)
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, finish)
+worker = subprocess.Popen([sys.executable, *sys.argv[1:]])
+while True:
+    signal.pause()
+''')
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=signum):
+                ready = self.root / f"gate-ready-{signum}"
+                result = self.root / f"gate-result-{signum}"
+                supervisor = [sys.executable, str(SCRIPTS / "verifier-owner.py")]
+                paths = [str(self.common), str(self.wt), "--"]
+                owner, log = self.spawn(*supervisor, "run", *paths,
+                                        *supervisor, "gate", *paths, sys.executable,
+                                        str(gate), str(worker), str(ready), str(result))
+                self.wait_path(ready)
+                self.addCleanup(lambda pid=int(ready.read_text()): self.stop_pid(pid))
+                owner.send_signal(signum)
+                status = owner.wait(timeout=15)
+                log.seek(0)
+                self.assertEqual(status, 128 + signum, log.read().decode())
+                self.assertEqual(result.read_text(), str(signum))
+                record_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
+                record = json.loads(record_path.read_text())
+                self.assertFalse(record["gate_started"])
+                self.assertIsNone(record["gate_session"])
+                self.assertTrue(record["completed"])
+
     def stop_pid(self, pid):
         """Stop only a fixture PID recorded by this test's child."""
         try:
