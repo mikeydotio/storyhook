@@ -64,8 +64,16 @@ fn candidate(f: &Fixture) -> VerificationCandidate {
 fn stale_authority_prevents_spawn() {
     let f = Fixture::new();
     let c = candidate(&f);
+    // An operator completing the story by hand is an override and carries
+    // its reason (SH-692); the bare move is refused.
     StoryService::new(&f.ctx())
-        .set_state(&c.story_id, "done", None, None, None)
+        .set_state(
+            &c.story_id,
+            "done",
+            Some("completed by hand before the attempt started"),
+            None,
+            None,
+        )
         .unwrap();
     assert!(
         verify(
@@ -126,8 +134,16 @@ fn completed_outcomes_are_rechecked_even_without_a_notification() {
             &c,
             &Cancellation::default(),
             |_| {
+                // The hand completion that withdraws the attempt is an
+                // override with a reason (SH-692).
                 StoryService::new(&f.ctx())
-                    .set_state(&c.story_id, "done", None, None, None)
+                    .set_state(
+                        &c.story_id,
+                        "done",
+                        Some("completed by hand while the attempt ran"),
+                        None,
+                        None,
+                    )
                     .unwrap();
                 outcome
             },
