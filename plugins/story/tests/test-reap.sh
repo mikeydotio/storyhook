@@ -158,6 +158,29 @@ assert_eq "$(jqf "$out" .dry_run)" "true" "shipped-first catalog: reaches the dr
 [ -d "$repo/.claude/worktrees/$wdone" ] \
   || fail_test "shipped-first catalog: dry run removed the worktree"
 
+# --- SH-691: merged-ness is judged against origin's ADVERTISED default -------
+# The local origin/HEAD cache says `main`; origin's default is `dev`, and the
+# branch is merged only there. A reap that trusted the cache — or the old
+# `main` literal — would refuse this as unmerged.
+origin=$(git -C "$repo" remote get-url origin)
+dv=$(new_story "$repo" "Merged into dev only")
+wdv=$(mk_dispatched "$repo" "$dv")
+printf 'dev\n' >"$repo/.claude/worktrees/$wdv/dev.txt"
+git -C "$repo/.claude/worktrees/$wdv" add dev.txt
+git -C "$repo/.claude/worktrees/$wdv" -c user.name=t -c user.email=t@e commit -qm 'dev work'
+git -C "$repo" push -q origin "refs/heads/worktree-$wdv:refs/heads/dev"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
+assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/main" \
+  "dev-only: fixture cache still says main"
+close_story "$dv"
+out=$(cd "$repo" && bash "$SCRIPT" reap "$dv" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "dev-only: reaped — merged-ness was judged against origin's default: $out"
+assert_eq "$(jqf "$out" '.removed.branch')" "true" "dev-only: the branch merged only into dev was deleted"
+[ -d "$repo/.claude/worktrees/$wdv" ] && fail_test "dev-only: worktree survived a successful reap"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wdv") \
+  && fail_test "dev-only: branch survived a successful reap"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
+
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reap 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "reap: missing id is ok:false"
