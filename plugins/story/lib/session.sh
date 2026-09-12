@@ -294,6 +294,31 @@ delete_merged_local_branch() {
 }
 
 # ---- input-box / readiness helpers -------------------------------------------
+# COMPOSER_DECORATION_EXPR — a sed expression deleting every character of the
+# Unicode Braille Patterns block (U+2800..U+28FF), spelled as the UTF-8 byte
+# sequence E2 [A0-A3] [80-BF] so it runs under LC_ALL=C on BSD and GNU sed alike
+# and needs nothing from the caller's own locale (the daemon's is whatever it
+# inherited). Built once, at source time, from printf octal escapes: BSD sed has
+# no \x escapes (SH-694).
+COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][$(printf '\200')-$(printf '\277')]//g"
+
+# strip_composer_decoration <text> — echo <text> with every Braille Patterns
+# character removed. Codex 0.154.0 animates the idle composer of an Astra model
+# with a Braille "sparkle" — dots before AND after the placeholder, redrawn every
+# 150ms for the whole idle period — and the row that carries it is the very row
+# input_state reads to confirm a submission cleared the box; undecorated, it is
+# the plain placeholder EMPTY_INPUT_PATTERN already recognises. The managed launch
+# turns the animation off (tui.animations=false, bin/story.sh), but a launch
+# override does not have to, and a decoration nothing anticipated must never
+# again turn a confirmed submission into bootstrap-submit-unconfirmed silently
+# (SH-694). Only the OBSERVATION is stripped — nothing here touches what is
+# delivered to the pane — and the empty pattern itself is deliberately NOT
+# widened to "contains the placeholder": a real draft can contain those words,
+# and reading it as empty would report a never-submitted prompt as submitted.
+strip_composer_decoration() {
+  printf '%s' "$1" | LC_ALL=C sed -E "$COMPOSER_DECORATION_EXPR"
+}
+
 # input_box_text <content> — echo the trailing text of the ACTIVE input row (the
 # LAST line bearing READY_PROMPT_GLYPH), box padding stripped. The input row, NOT
 # the pane's last non-blank line: the real TUI (and the test fixtures) render a
@@ -305,6 +330,7 @@ input_box_text() {
   [ -n "$row" ] || { printf ''; return 0; }
   tail=${row##*"$READY_PROMPT_GLYPH"}   # everything after the last glyph
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
+  tail=$(strip_composer_decoration "$tail")   # then any animated decoration (SH-694)
   printf '%s' "$tail"
 }
 

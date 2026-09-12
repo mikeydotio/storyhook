@@ -349,3 +349,147 @@ fi
         storyhook::service::block_delivery::UNBLOCK_PROMPT
     );
 }
+
+/// A daemon start with nothing interrupted must not open a write transaction.
+///
+/// Every store fault point fires inside every commit, an empty transaction
+/// included, so a housekeeping write on a fresh daemon kills any armed daemon
+/// before it accepts its first connection. That is how SH-690 turned `dev` red
+/// (SH-693): the crash suite arms `before_commit` for the client's one command,
+/// and `recover()` reached the point first, on its own. Arming the same point
+/// here, in process and on this thread, makes the write observable without a
+/// daemon: a transaction that should not exist surfaces as the injected error,
+/// and `Ok` proves there was none.
+///
+/// Two stores, because "no rows at all" and "rows, none of them interrupted"
+/// are different gates and a fix that only checks for an empty table passes
+/// the first and fails the second.
+#[test]
+fn recovery_with_nothing_interrupted_opens_no_write_transaction() {
+    use storyhook::store::FaultPoint;
+    use storyhook::store::fault::{FaultAction, arm};
+    for seeded in [false, true] {
+        let f = ServiceFixture::new();
+        if seeded {
+            let id = story(&f, "Settled hold");
+            StoryService::new(&f.ctx())
+                .set_awaiting(&id, "repair")
+                .unwrap();
+            assert_eq!(
+                deliveries(&f)[0].status,
+                storyhook::store::DeliveryStatus::Pending,
+                "the seeded row must be real work for the delivery pass, and not for recovery"
+            );
+        }
+        let outcome = {
+            let _fault = arm(
+                FaultPoint::BeforeCommit,
+                FaultAction::Fail("an idle recovery pass opened a write transaction".into()),
+            );
+            storyhook::daemon::block_delivery::recover(f.store(), f.env())
+        };
+        assert!(
+            outcome.is_ok(),
+            "seeded={seeded}: recovery with no interrupted delivery must not open a write \
+             transaction — every store fault point fires inside every commit, so this write \
+             kills an armed daemon during its own start-up (SH-693): {outcome:?}"
+        );
+    }
+}
+
+/// The steady-state half of the same promise: an idle delivery pass is a read.
+///
+/// `process_one` runs on the daemon's first pass, right after recovery, and
+/// then once per [`storyhook::daemon::block_delivery::IDLE_POLL`] for the
+/// daemon's life. A write transaction on every one of those passes holds
+/// `BEGIN IMMEDIATE` against every client once a second for nothing, and fires
+/// every armed fault point on a daemon that has been given no work.
+#[test]
+fn an_idle_delivery_pass_opens_no_write_transaction() {
+    use storyhook::store::fault::{FaultAction, arm};
+    use storyhook::store::{DeliveryStatus, FaultPoint, WriteOps};
+    let f = ServiceFixture::new();
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), None))
+        .unwrap();
+    let id = story(&f, "Settled");
+    StoryService::new(&f.ctx())
+        .set_awaiting(&id, "repair")
+        .unwrap();
+    // Drain the one pending row the ordinary way, so the store holds a
+    // delivery that is real but is no longer work.
+    assert!(
+        storyhook::daemon::block_delivery::process_one(
+            f.store(),
+            f.env(),
+            Some(Path::new("/unused"))
+        )
+        .unwrap()
+    );
+    assert_eq!(deliveries(&f)[0].status, DeliveryStatus::Unreached);
+
+    let outcome = {
+        let _fault = arm(
+            FaultPoint::BeforeCommit,
+            FaultAction::Fail("an idle delivery pass opened a write transaction".into()),
+        );
+        storyhook::daemon::block_delivery::process_one(
+            f.store(),
+            f.env(),
+            Some(Path::new("/unused")),
+        )
+    };
+    assert!(
+        matches!(outcome, Ok(false)),
+        "a delivery pass with nothing pending must be a read, not a write (SH-693): {outcome:?}"
+    );
+}
+
+/// The other half of the gate: when a delivery WAS interrupted, recovery must
+/// still take the write path.
+///
+/// Pinned so the two tests above cannot be satisfied by never writing at all.
+/// Under the armed fault the repair fails at its commit and rolls back, which
+/// is the proof a transaction was opened; disarmed, the same call lands.
+#[test]
+fn recovery_still_writes_when_a_delivery_was_interrupted() {
+    use storyhook::store::fault::{FaultAction, arm};
+    use storyhook::store::{DeliveryStatus, FaultPoint, WriteOps};
+    let f = ServiceFixture::new();
+    let id = story(&f, "Interrupted delivery");
+    StoryService::new(&f.ctx())
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
+    StoryService::new(&f.ctx())
+        .set_awaiting(&id, "repair")
+        .unwrap();
+    let mut delivery = deliveries(&f).remove(0);
+    delivery.status = DeliveryStatus::Attempting;
+    f.store()
+        .write(|tx| tx.update_block_delivery(&delivery, DeliveryStatus::Pending))
+        .unwrap();
+
+    let outcome = {
+        let _fault = arm(
+            FaultPoint::BeforeCommit,
+            FaultAction::Fail("interrupted".into()),
+        );
+        storyhook::daemon::block_delivery::recover(f.store(), f.env())
+    };
+    let error = outcome.expect_err(
+        "an interrupted delivery is repaired inside a write transaction, which the armed \
+         fault must interrupt — an Ok here means recovery no longer writes at all",
+    );
+    assert!(
+        error.to_string().contains("interrupted"),
+        "the failure must be the injected one: {error}"
+    );
+    assert_eq!(
+        deliveries(&f)[0].status,
+        DeliveryStatus::Attempting,
+        "a repair that failed at its commit must roll back whole"
+    );
+
+    storyhook::daemon::block_delivery::recover(f.store(), f.env()).unwrap();
+    assert_eq!(deliveries(&f)[0].status, DeliveryStatus::Uncertain);
+}

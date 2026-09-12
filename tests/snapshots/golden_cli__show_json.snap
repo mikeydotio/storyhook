@@ -48,7 +48,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 62,
+        "head_global_seq": 64,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -90,10 +90,15 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "blocked",
-        "head_global_seq": 66,
+        "head_global_seq": 69,
         "story": {
           "awaiting": "waiting on the benchmark harness",
-          "comments": [],
+          "comments": [
+            {
+              "at": "[timestamp]",
+              "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+            }
+          ],
           "created_at": "[timestamp]",
           "id": "SH-6",
           "priority": "low",
@@ -136,10 +141,15 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 67,
+        "head_global_seq": 70,
         "story": {
           "awaiting": null,
-          "comments": [],
+          "comments": [
+            {
+              "at": "[timestamp]",
+              "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+            }
+          ],
           "created_at": "[timestamp]",
           "id": "SH-3",
           "labels": [
@@ -172,7 +182,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 70,
+        "head_global_seq": 73,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
@@ -196,7 +206,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 75,
+        "head_global_seq": 78,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",

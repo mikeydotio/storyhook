@@ -320,7 +320,7 @@ compose_claude_launch_tpl() {
 
 compose_codex_launch_tpl() {
   local mode="$1" model="$2" effort="$3" speed="$4"
-  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false"
+  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false"
   [ "$mode" = "base" ] || cmd="$cmd --approve-for-me --dangerously-bypass-hook-trust"
   [ -z "$model" ] || cmd="$cmd -m $model"
   [ -z "$effort" ] || cmd="$cmd -c model_reasoning_effort=\"$effort\""
@@ -343,11 +343,22 @@ configure_agent() {
     ;;
   codex)
     AGENT_LABEL="Codex"
-    # Storyhook owns this child session's startup lifecycle. A newly available
-    # Codex version otherwise inserts an interactive update chooser before the
-    # prompt, so the readiness gate correctly refuses to type and rolls the
-    # dispatch back. Suppress that chooser for this one managed process; the
-    # user's durable Codex update preference remains untouched.
+    # Storyhook owns this child session's startup lifecycle, so two startup
+    # behaviours are suppressed for THIS managed process only; the user's own
+    # durable Codex preferences remain untouched.
+    #   check_for_update_on_startup=false: a newly available Codex version
+    #   otherwise inserts an interactive update chooser before the prompt, so
+    #   the readiness gate correctly refuses to type and rolls the dispatch
+    #   back.
+    #   tui.animations=false: Codex 0.154.0 decorates the idle composer of an
+    #   Astra model with an animated Braille "sparkle" (and every model with a
+    #   shimmer and spinner). The empty-input check that confirms a submission
+    #   reads that very row (input_state, lib/session.sh), and the decoration
+    #   made the placeholder unrecognisable, so every autonomous dispatch
+    #   refused with bootstrap-submit-unconfirmed after a primer that had in
+    #   fact been submitted (SH-694). Off, the row is the plain placeholder.
+    #   input_box_text (lib/session.sh) also strips the decoration itself, so
+    #   a launch override that leaves animations on is covered as well.
     DEFAULT_LAUNCH_TPL=$(compose_codex_launch_tpl base "" "" "")
     DEFAULT_AUTO_LAUNCH_TPL=$(compose_codex_launch_tpl auto "" "" "")
     DEFAULT_WORKTREE_IGNORE_PATH=".codex/worktrees/"
@@ -1043,8 +1054,25 @@ dispatch_ready_note() {
     pid-exited)
       printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
       ;;
+    # One arm per initialization phase (SH-694). A single sentence used to
+    # blame hook identity for all of them, which was false for every phase
+    # but one and sent the first diagnosis of a screen-read failure after the
+    # hook. Each arm says what was observed, what was and was not typed, and
+    # where to look next; the caller appends "No story charter was delivered".
+    bootstrap-plan-unconfirmed)
+      printf 'Codex initialization failed (bootstrap-plan-unconfirmed): Plan mode could not be confirmed before the task-free initialization turn (%s). Nothing was typed into that pane' "$PLAN_MODE_REASON"
+      ;;
+    bootstrap-submit-unconfirmed)
+      printf 'Codex initialization failed (bootstrap-submit-unconfirmed): the task-free initialization turn was pasted, but the input row never read as empty within the confirmation window, so its submission could not be confirmed from the screen. The turn may still have reached Codex and run its SessionStart hook; it authorizes no work and carries no story instructions. Check `pane_tail` for a decorated or unexpected composer row: Codex 0.154.0 animates the idle placeholder of an Astra model unless the launch passes `-c tui.animations=false`'
+      ;;
+    bootstrap-incomplete)
+      printf 'Codex initialization failed (bootstrap-incomplete): its SessionStart hook published the dispatch sentinel, but within the poll budget the private receipt and transcript did not prove the stopped initialization turn completed without model work, or the composer did not read as empty and in Plan mode again afterwards'
+      ;;
+    bootstrap-cleanup-failed)
+      printf 'Codex initialization failed (bootstrap-cleanup-failed): the initialization turn completed, but its private receipt could not be removed from the worktree'\''s git directory, so the charter was withheld'
+      ;;
     bootstrap-*)
-      printf 'Codex initialization failed (%s): SessionStart runs on the first submitted turn; the task-free turn did not establish exact hook identity and completed Plan-mode initialization. No story charter was delivered' "$WAIT_READY_REASON"
+      printf 'Codex initialization failed (%s) before the story charter was delivered' "$WAIT_READY_REASON"
       ;;
     no-sentinel)
       if [ "$AGENT" = codex ]; then
