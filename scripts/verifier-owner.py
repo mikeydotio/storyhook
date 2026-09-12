@@ -59,8 +59,19 @@ def note(record_path, **fields):
     save(record_path, record)
 
 
+# Observing an exit without reaping keeps the leader a zombie, so its pid and
+# session identity cannot be reused while survivors are still being signalled.
+# The portable fallback reaps at observation and accepts that window (SH-695).
+PINNED = hasattr(os, "waitid")
+
+
 def observe_exit(child):
     """Report the leader's translated exit code once it has exited, else None."""
+    if PINNED:
+        info = os.waitid(os.P_PID, child, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if info is None:
+            return None
+        return info.si_status if info.si_code == os.CLD_EXITED else 128 + info.si_status
     waited, status = os.waitpid(child, os.WNOHANG)
     if not waited:
         return None
@@ -172,6 +183,8 @@ def execute(command, record_path, record, field, cancellation, output=None):
         if killed and time.monotonic() >= deadline + budget / 8:
             raise Refusal(f"could not reap execution session {child} after SIGKILL; live writers={remaining}; retained {record_path}")
         time.sleep(.05)
+    if PINNED:
+        os.waitpid(child, 0)
     return code
 
 

@@ -11,6 +11,8 @@ each run by hand against scripts/verifier-owner.py before commit:
   refusal case red;
 - the outer never signalling a dead supervisor's gate session -> the outer
   reap case red (no TERM reached the member).
+- the leader reaped at observation (waitpid instead of waitid/WNOWAIT) ->
+  the pinned-leader case red (zombie span 0.085 s against a 1 s floor).
 """
 
 import json
@@ -999,6 +1001,47 @@ while True:
         result = self.ensure()
         self.assertEqual(result["result"], "infrastructure-failure", result)
         self.assertIn("ambiguous ownership", result["detail"])
+
+    def test_exited_leader_stays_pinned_until_its_session_is_quiet(self):
+        """The leader remains a zombie, so its session id cannot be reused mid-reap."""
+        if not hasattr(os, "waitid"):
+            self.skipTest("this Python cannot observe an exit without reaping it")
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "8000"
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        orphan = self.root / "orphan-pid"
+        leader = self.root / "leader-pid"
+        tree = self.git("merge-tree", "--write-tree", self.base, self.head)
+        # The verdict is read apart from the gate's own noise; the orphan's
+        # stdio goes to the attempt log, so a regular file is enough here.
+        verdict_file = tempfile.TemporaryFile()
+        self.addCleanup(verdict_file.close)
+        child = subprocess.Popen(
+            ["bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree, self.base,
+             self.head, str(self.wt), "--", "bash", "-c",
+             "trap '' TERM; echo $$ > " + shlex.quote(str(leader)) + "; sleep 300 & echo $! > "
+             + shlex.quote(str(orphan)) + "; exit 5"],
+            cwd=self.repo, env=self.env, stdout=verdict_file, stderr=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        self.wait_path(orphan)
+        self.addCleanup(lambda: self.stop_pid(int(orphan.read_text())))
+        leader_pid = int(leader.read_text())
+        # A reaping poll also shows a zombie for one tick; the pin is that
+        # the zombie outlives the TERM-resistant orphan's whole grace, which
+        # is a quarter of the budget for the gate session (SH-686).
+        zombie_seen = []
+        while child.poll() is None:
+            if self.process_state(leader_pid).startswith("Z"):
+                zombie_seen.append(time.monotonic())
+            time.sleep(.01)
+        self.assertEqual(child.returncode, 0)
+        self.assertTrue(zombie_seen, "the exited leader was never observed as a zombie")
+        self.assertGreaterEqual(zombie_seen[-1] - zombie_seen[0], 8000 / 1000 / 4 / 2,
+                                "the exited leader was reaped before its session settled")
+        self.assertGone(int(orphan.read_text()))
+        verdict_file.seek(0)
+        verdict = json.loads(verdict_file.read().decode())
+        self.assertEqual(verdict["result"], "tests-failed", verdict)
 
 
 if __name__ == "__main__":
