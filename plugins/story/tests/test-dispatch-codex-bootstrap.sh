@@ -85,4 +85,56 @@ assert_eq "$(jqf "$out" .ok)" false "a hook receipt alone cannot deliver the cha
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-incomplete "missing completion is diagnosed"
 assert_eq "$(jqf "$out" .bootstrap_phase)" submitted "refusal identifies the submitted initialization phase"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 1 "incomplete initialization is never resubmitted"
+# The refusal names the phase that failed, never a hook-identity failure the
+# evidence does not support (SH-694): the field submit-unconfirmed refusal
+# blamed SessionStart identity while the hook had run and stopped the turn
+# correctly, and only the screen read of the composer had failed.
+assert_contains "$(jqf "$out" .display)" "bootstrap-incomplete" "incomplete: the display names its phase"
+assert_contains "$(jqf "$out" .display)" "did not prove the stopped initialization turn" \
+  "incomplete: the display says what was missing"
+case "$(jqf "$out" .display)" in *"hook identity"*) fail_test "incomplete: the display must not blame hook identity" ;; esac
+
+# bootstrap-submit-unconfirmed: the fake absorbs the one Tab, and initialization
+# never retries an uncertain submission (SEND_RETRIES=0), so nothing submits.
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-unconfirmed.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+id=$(new_story "$repo" "Unconfirmed initialization")
+out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
+  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+  FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_ENTER_ABSORB=1 \
+  FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  bash "$SCRIPT" dispatch "$id" --auto)
+assert_eq "$(jqf "$out" .ok)" false "unconfirmed: refused"
+assert_eq "$(jqf "$out" .reason)" pane-not-ready "unconfirmed: pane-not-ready"
+assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-submit-unconfirmed "unconfirmed: reason"
+assert_eq "$(jqf "$out" .bootstrap_phase)" submitted "unconfirmed: phase"
+assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "unconfirmed: an absorbed submission is never retried"
+assert_contains "$(jqf "$out" .display)" "input row never read as empty" \
+  "unconfirmed: the display names the screen read that failed"
+assert_contains "$(jqf "$out" .display)" "tui.animations=false" \
+  "unconfirmed: the display points at the known decoration cause"
+case "$(jqf "$out" .display)" in *"hook identity"*) fail_test "unconfirmed: the display must not blame hook identity" ;; esac
+assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" todo \
+  "unconfirmed: claim rolled back"
+
+# bootstrap-plan-unconfirmed: the TUI keeps discarding Shift+Tab; nothing is typed.
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-plan.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+id=$(new_story "$repo" "Plan-less initialization")
+out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
+  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+  FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_IGNORE_PLAN_KEYS=9 \
+  FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  bash "$SCRIPT" dispatch "$id" --auto)
+assert_eq "$(jqf "$out" .ok)" false "plan: refused"
+assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-plan-unconfirmed "plan: reason"
+assert_eq "$(jqf "$out" .bootstrap_phase)" not-started "plan: nothing was submitted"
+assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "plan: nothing was typed"
+assert_contains "$(jqf "$out" .display)" "Plan mode could not be confirmed before the task-free initialization turn (not-confirmed)" \
+  "plan: the display names the phase and the Plan-mode reason"
+case "$(jqf "$out" .display)" in *"hook identity"*) fail_test "plan: the display must not blame hook identity" ;; esac
 finish
