@@ -83,6 +83,55 @@ fn retired_spellings() -> Vec<Retired> {
     ]
 }
 
+/// Whether text names a retired command or skill, rather than a longer name.
+fn mentions_retired_spelling(text: &str, needle: &str) -> bool {
+    let continues_name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-');
+    text.match_indices(needle).any(|(start, matched)| {
+        !text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(continues_name)
+            && !text[start + matched.len()..]
+                .chars()
+                .next()
+                .is_some_and(continues_name)
+    })
+}
+
+#[test]
+fn retired_names_are_matched_at_identifier_boundaries() {
+    for retired in retired_spellings() {
+        let name = retired.needle;
+        for text in [
+            name.clone(),
+            format!("`{name}`"),
+            format!("/plugins/{name}/SKILL.md"),
+            format!("bash {name} SH-1"),
+            format!("prefix:{name}，next"),
+        ] {
+            assert!(mentions_retired_spelling(&text, &name), "missed {text:?}");
+        }
+        for text in [
+            format!("{name}tree cleanup"),
+            format!("{name}_extra"),
+            format!("{name}-extra"),
+            format!("{name}2"),
+            format!("my{name}"),
+            format!("my-{name}"),
+            format!("é{name}"),
+        ] {
+            assert!(
+                !mentions_retired_spelling(&text, &name),
+                "false positive {text:?}"
+            );
+        }
+        assert!(mentions_retired_spelling(
+            &format!("{name}tree first, then `{name}`"),
+            &name
+        ));
+    }
+}
+
 /// Every tracked file's text, keyed by its path relative to the repository
 /// root. Files that are not valid UTF-8 are skipped: a verb spelling cannot
 /// hide in a binary.
@@ -147,7 +196,7 @@ fn no_tracked_file_outside_the_changelog_spells_a_retired_work_verb() {
         let offenders: Vec<&str> = corpus
             .iter()
             .filter(|(path, _)| path.as_str() != HISTORY)
-            .filter(|(_, text)| text.contains(needle))
+            .filter(|(_, text)| mentions_retired_spelling(text, needle))
             .map(|(path, _)| path.as_str())
             .collect();
         if !offenders.is_empty() {
