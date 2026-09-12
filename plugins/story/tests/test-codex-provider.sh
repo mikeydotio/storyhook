@@ -162,6 +162,10 @@ assert_contains "$(jqf "$out" .prompt)" \
 assert_contains "$(jqf "$out" .prompt)" \
   "before changing files or running tests" \
   "dry auto: persistence precedes implementation"
+assert_contains "$(jqf "$out" .prompt)" "storyhook.implementation-plan" \
+  "dry auto: explicit structured request avoids prose classification"
+assert_contains "$(jqf "$out" .prompt)" "Default mode" \
+  "dry auto: structured request is advertised for Default mode"
 
 # A real fake-tmux Auto dispatch arms the pane watcher after Plan mode is
 # confirmed and before prompt submission. An arming failure is a pre-handoff

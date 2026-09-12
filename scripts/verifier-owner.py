@@ -81,13 +81,23 @@ def execute(command, record_path, record, field, cancellation, output=None):
     while True:
         if cancellation.signum is not None and deadline is None:
             deadline = time.monotonic() + grace
-            signal_session(child, cancellation.signum)
-            # The gate owns a separate session. Its supervisor receives the
-            # lifecycle signal too and must record its completion before exit.
-            if field == "session":
-                gate = read(record_path).get("gate_session")
-                if gate:
-                    signal_session(gate, cancellation.signum)
+            if field == "gate_session":
+                signal_session(child, cancellation.signum)
+            else:
+                # The lifecycle leader may be waiting on a nested shell.
+                # Broadcasting here kills its introspection workers before the
+                # inner supervisor can durably establish gate quiescence.
+                supervisor = read(record_path).get("gate_supervisor")
+                if supervisor is not None:
+                    try:
+                        if os.getsid(supervisor) == child:
+                            os.kill(supervisor, cancellation.signum)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    os.kill(child, cancellation.signum)
+                except ProcessLookupError:
+                    pass
         if status is None:
             waited, value = os.waitpid(child, os.WNOHANG)
             if waited:
@@ -135,11 +145,13 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
             raise Refusal("gate execution has no matching verifier owner")
         owner = read(owner_path)
         owner["gate_started"] = True
+        owner["gate_supervisor"] = os.getpid()
         save(owner_path, owner)
         status = execute(command, owner_path, owner, "gate_session", cancellation)
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None
+        owner["gate_supervisor"] = None
         save(owner_path, owner)
         return status
     if mode != "run" or not command:

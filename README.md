@@ -429,6 +429,7 @@ story search <query>
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
 story context [--format markdown|json] [--story <id>]
 story load-context [--format markdown|json] [--story <id>]   # alias of context
+story session-eligibility <id> --json   # read-only active-session eligibility snapshot
 story handoff [--since <duration>]
 
 story export

@@ -7,6 +7,8 @@
 # `story` calls, unchanged, so this file asserts nothing about them.
 source "$(dirname "$0")/lib.sh"
 
+PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/test_blocking_cycles.py" || exit 1
+
 repo=$(mk_story_repo)
 
 # --- a fresh project answers ok:true ---
@@ -58,6 +60,20 @@ out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
 case "$(jqf "$out" '[.findings[]|select(.category=="cycle")|.id]|join(",")')" in
   *"$d"*|*"$e"*) fail_test "chain: a plain dependency chain was flagged as a cycle" ;;
 esac
+
+# --- downstream dependents are blocked, but are not cycle members (SH-687) ---
+(cd "$repo" && story relate "$e" blocked-by "$a" >/dev/null 2>&1)
+out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
+cyc=$(jqf "$out" '[.findings[]|select(.category=="cycle")|.id]|sort|join(",")')
+assert_eq "$cyc" "$(printf '%s\n%s\n%s' "$a" "$b" "$c" | sort | paste -sd, -)" \
+  "downstream: only true cycle members flagged"
+assert_eq "$(jqf "$out" '[.findings[]|select(.category=="blocked")|.id]|index("'"$d"'") != null')" true \
+  "downstream: dependent is still blocked"
+
+# Closing one member breaks the open cycle; its dependents remain ordinary edges.
+(cd "$repo" && story close "$b" "cycle test resolved" >/dev/null 2>&1)
+out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
+assert_eq "$(jqf "$out" '.counts.cycle')" 0 "closed member: no remaining open cycle"
 
 # --- STORY_STALE_THRESHOLD reaches the real `story list --stale` call rather
 # than a hard-coded window -- every story here is seconds old, so nothing IS

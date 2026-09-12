@@ -15,6 +15,27 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
         let mut m = BTreeMap::new();
 
         m.insert(
+            "session-eligibility",
+            r#"story session-eligibility <id>
+
+Read the tracker facts for continuing an already active autonomous session.
+Always returns JSON: result plus session_eligibility containing schema_version
+(1), story_id, eligible (boolean), and reason (eligible, closed, inactive,
+awaiting, or blocked). All facts use one read transaction and the domain's
+configured active-state and readiness rules. Bare numeric IDs are accepted.
+
+This does not claim work, approve a plan, validate a provider session, or grant
+operational permissions. Missing stories, unreadable data, and an unresolved
+active role are errors, never eligible. A provider must recheck before acting.
+
+Example:
+  story session-eligibility SH-1 --json
+
+Related: story show, story claim, story load-context
+"#,
+        );
+
+        m.insert(
             "daemon",
             "\
 Manage the per-store daemon and inspect its operational journal.
