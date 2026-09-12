@@ -34,7 +34,12 @@ unblocked story with no awaiting request. It checks identity and state again
 after classification. Submitted, blocked, attended, and subagent sessions do not
 receive continuation. Complete proposed_plan envelopes remain with the watcher.
 
-GPT-5.6 Luna classifies the complete assistant message into approve_plan, other,
+SH-687 adds an explicit whole-message implementation-plan JSON request for
+built-in autonomous Default-mode sessions. Its exact type/version/story/plan
+contract bypasses Luna after deterministic validation. Invalid candidates never
+fall through to prose classification. See [the full inventory and contract](determinism-hardening.md).
+
+For ordinary prose, GPT-5.6 Luna classifies the complete assistant message into approve_plan, other,
 or uncertain with a strict JSON schema. Only a concrete implementation plan
 explicitly awaiting approval qualifies. Completion, substantive choices,
 operational permissions, quoted requests, and ambiguous output do not. Positive
@@ -51,7 +56,7 @@ collaboration mode. The existing exact-pane watcher still accepts the Plan-mode
 review UI. No free-text approval is typed into a terminal.
 
 An owned, no-symlink, flock-protected receipt next to the provider transcript
-allows at most one prose continuation per root session, including concurrent
+allows at most one structured or prose continuation per root session, including concurrent
 delivery and later turns. The receipt is fsynced before returning the decision.
 An interrupted delivery therefore favors at-most-once authorization over retry.
 Unknown receipt contents suppress continuation. This also prevents repeated
@@ -94,7 +99,7 @@ The native menu watcher remains available independently.
 |---|---|
 | Complete assistant message | 64 KiB; reject oversized messages without truncating |
 | Transcript tail / input payload | 4 MiB |
-| Tracker lookup | 2-second CLI deadline, 3-second process deadline; three checks before and after classification |
+| Tracker lookup | 2-second CLI deadline, 3-second process deadline; one transactional eligibility query before and after recognition |
 | Codex version / classifier | 2 / 20 seconds |
 | Returned child output | 1 MiB per stream |
 | Stop hook | 50 seconds, against at most 40 seconds of subprocess waits |
@@ -103,7 +108,7 @@ Each child owns a process group, killed on completion, timeout, or parent SIGTER
 Missing executables/authentication, changed schemas or runtime, malformed data,
 unknown modes, excessive output, and uncertain classifications never manufacture
 approval. They emit a contextual systemMessage. A project without an unambiguous
-active state role cannot use the prose fallback. Tracker snapshots are not a
+active state role cannot receive Stop-hook continuation. Tracker snapshots are not a
 transaction with the provider; the final recheck narrows that race without
 claiming atomic cross-process authorization.
 

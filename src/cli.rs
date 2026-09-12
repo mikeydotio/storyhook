@@ -250,6 +250,7 @@ Usage:
   story store new <path>                           (create an empty store beside the default one)
   story store backup [--label <text>]              (safe, on-demand backup of the ambient store)
   story load-context [--format markdown|json] [--story <id>]
+  story session-eligibility <id>                 (structured active-session check)
   story handoff [--since <duration>]
   story phase list
   story phase show <N>
@@ -738,6 +739,11 @@ pub enum Invocation {
         /// Report what would be imported and write nothing.
         dry_run: bool,
     },
+    /// Read the tracker facts authorizing an existing autonomous session to continue.
+    SessionEligibility {
+        /// The story whose active, unblocked state is being checked.
+        id: String,
+    },
     Context {
         /// Output format; omission preserves the ordinary Markdown briefing.
         format: Option<String>,
@@ -976,6 +982,7 @@ impl Invocation {
             | Self::Export
             | Self::ImportProject { .. }
             | Self::Migrate { .. }
+            | Self::SessionEligibility { .. }
             | Self::Context { .. }
             | Self::Handoff { .. }
             | Self::Phase { .. }
@@ -2410,6 +2417,16 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "token" => parse_token(args),
         "daemon" => parse_daemon(args),
         "store" => parse_store(args),
+        "session-eligibility" => {
+            if args.len() != 2 {
+                return Err(AppError::Usage(
+                    "usage: story session-eligibility <id>".into(),
+                ));
+            }
+            Ok(Invocation::SessionEligibility {
+                id: args[1].clone(),
+            })
+        }
         "show" => parse_show(args),
         "log" => parse_log(args),
         "comment" => parse_comment(args),

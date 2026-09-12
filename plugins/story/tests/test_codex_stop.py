@@ -202,22 +202,27 @@ class StopTests(unittest.TestCase):
         self.assertNotIn('decision', self.run_hook())
 
     def test_authoritative_story_state_contract(self):
-        for state, superstate, awaiting, blocked, expected in [
-            ('working', 'OPEN', None, [], True),
-            ('verifying', 'OPEN', None, [], False),
-            ('working', 'CLOSED', None, [], False),
-            ('working', 'OPEN', 'human input', [], False),
-            ('working', 'OPEN', None, [{'story': {'id': 'SH-672'}}], False),
-        ]:
-            with self.subTest(state=state, superstate=superstate, awaiting=awaiting, blocked=blocked):
-                responses = [
-                    {'result': 'ok', 'message': 'working (OPEN, active)\nverifying (OPEN, review)'},
-                    {'result': 'ok', 'story': {'story': {'id': 'SH-672', 'state': state,
-                                                       'superstate': superstate, 'awaiting': awaiting}}},
-                    {'result': 'ok', 'stories': blocked},
-                ]
-                with patch.object(stop, 'story_json', side_effect=responses):
-                    self.assertEqual(stop.eligible(str(self.root), 'SH-672'), expected)
+        for reason in ['eligible', 'inactive', 'closed', 'awaiting', 'blocked']:
+            expected = reason == 'eligible'
+            response = {'result': 'ok', 'session_eligibility': {
+                'schema_version': 1, 'story_id': 'SH-672', 'eligible': expected, 'reason': reason}}
+            with self.subTest(reason=reason), patch.object(stop, 'story_json', return_value=response) as read:
+                self.assertEqual(stop.eligible(str(self.root), 'SH-672'), expected)
+                read.assert_called_once_with(str(self.root), 'session-eligibility', 'SH-672')
+
+    def test_invalid_eligibility_contract_never_authorizes(self):
+        good = {'schema_version': 1, 'story_id': 'SH-672', 'eligible': True, 'reason': 'eligible'}
+        cases = [None, [], {}, good | {'schema_version': True}, good | {'schema_version': 2},
+                 good | {'eligible': 'true'}, good | {'story_id': 'SH-999'},
+                 good | {'reason': 'inactive'}, good | {'reason': 'future-reason'}]
+        for value in cases:
+            with self.subTest(value=value), patch.object(stop, 'story_json', return_value={
+                    'result': 'ok', 'session_eligibility': value}):
+                with self.assertRaises(RuntimeError):
+                    stop.eligible(str(self.root), 'SH-672')
+        with patch.object(stop, 'story_json', return_value={'result': 'error', 'error': 'store unavailable'}):
+            with self.assertRaisesRegex(RuntimeError, 'store unavailable'):
+                stop.eligible(str(self.root), 'SH-672')
 
     def test_tracker_calls_are_bounded_inside_the_hook_budget(self):
         with patch.object(stop, 'run_process', return_value='{"result":"ok"}') as run:

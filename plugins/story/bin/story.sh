@@ -454,6 +454,9 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # PR-title traceability moved to the verifier with submission (SH-647): the
 # verifier titles every pull request it opens "<n>: <title>", so neither the
 # agent nor this clause needs to.
+# Explicit readiness declaration for autonomous Codex; no model classification
+# is required when the child follows this protocol. Keep the charter shell-inert.
+CODEX_AUTO_PLAN_CLAUSE="In Codex Default mode, present a completed implementation plan as one JSON object with exactly four fields: type set to storyhook.implementation-plan, version set to integer 1, story_id set to <n>, and plan set to the complete plan text as a JSON string. Output only that object, without fences or surrounding prose. In Plan mode, use the native proposed_plan envelope instead. Use this declaration only for a complete implementation plan, never for operational permissions or unresolved choices. Approval applies to the decoded plan text and grants no additional permissions."
 CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
@@ -2059,6 +2062,9 @@ cmd_dispatch() {
     fi
   fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
+    if [ -n "$auto" ]; then
+      prompt_tpl="$prompt_tpl $CODEX_AUTO_PLAN_CLAUSE"
+    fi
     prompt_tpl="$prompt_tpl $CODEX_BUILTIN_CLAUSE"
   fi
   # Keep legacy placeholders available to wholesale prompt overrides even
@@ -2985,46 +2991,12 @@ cmd_handoff() {
 
 # ---- subcommand: triage -------------------------------------------------------
 #
-# _find_blocking_cycles — READ-ONLY. stdin is `<blocker-id>\t<blocked-id>`
-# edges, one per line (blocker must close before blocked is ready); echoes
-# every story id that sits on a cycle, one per line, empty when there is
-# none. Kahn's algorithm: repeatedly strip a node with no remaining
-# unresolved blocker, decrementing its neighbors' counts; whatever is left
-# once nothing more can be stripped cannot be explained by anything BUT a
-# cycle, because every acyclic path bottoms out at a node with in-degree
-# zero. This is what skills/story-triage/SKILL.md used to hand to the model
-# as "eyeball `story graph`'s output ... this is a manual check" — the CLI
-# does not expose raw edges via `story graph`, but `story list --json`
-# already carries every story's own `blocked-by` relationships, which is
-# all a cycle check needs. Bare (no --include-closed): a closed story is
-# never a blocker worth resolving -- `is_ready` already treats a
-# `blocked-by` edge to a closed story as non-blocking -- so SH-409's
-# default exclusion narrows this edge set to exactly the ones a cycle
-# here could actually stall, not fewer.
+# stdin is blocker-id<TAB>dependent-id. Strongly connected components identify
+# exact cycle members; Kahn residuals would also include downstream dependents.
+# Closed stories have no outgoing dependency rows in the open-story snapshot,
+# so a satisfied dependency cannot complete an unresolved cycle.
 _find_blocking_cycles() {
-  awk -F'\t' '
-    NF == 2 { blocker[NR]=$1; blocked[NR]=$2; nodes[$1]=1; nodes[$2]=1; n=NR }
-    END {
-      for (i=1;i<=n;i++) {
-        indeg[blocked[i]]++
-        adj[blocker[i]] = adj[blocker[i]] (adj[blocker[i]] == "" ? "" : "\x1f") blocked[i]
-      }
-      qn=0
-      for (id in nodes) if (indeg[id]+0 == 0) { queue[qn++]=id; queued[id]=1 }
-      qi=0
-      while (qi<qn) {
-        cur=queue[qi++]
-        removed[cur]=1
-        split(adj[cur], parts, "\x1f")
-        for (k in parts) {
-          nb=parts[k]
-          if (nb == "") continue
-          indeg[nb]--
-          if (indeg[nb] == 0 && !(nb in queued)) { queue[qn++]=nb; queued[nb]=1 }
-        }
-      }
-      for (id in nodes) if (!(id in removed)) print id
-    }'
+  python3 "$STORY_PLUGIN_ROOT/lib/blocking_cycles.py"
 }
 
 # cmd_triage — SH-308. Gathers the four reads story-triage's own step 1 used
@@ -3036,33 +3008,39 @@ _find_blocking_cycles() {
 # unambiguous CLI invocation with nothing to parse, and re-wrapping an
 # already-trivial call here would be complexity this story does not buy
 # anything with.
+# Every triage finding must rest on a successful, complete CLI response. A
+# transport failure or malformed envelope is never evidence of a clean backlog.
+triage_read() {
+  local out
+  if ! out=$(story_cli "$@" --json 2>&1); then
+    fail "triage: story $* failed: $out"
+  fi
+  if ! printf '%s' "$out" | jq -s -e '
+    length == 1 and (.[0] | type == "object" and .result == "ok"
+      and (.stories | type) == "array")
+  ' >/dev/null 2>&1; then
+    fail "triage: story $* returned an invalid response: $out"
+  fi
+  printf '%s\n' "$out"
+}
+
 cmd_triage() {
   [ "$#" -eq 0 ] || fail "usage: story.sh triage"
   require_story
 
   local stale="${STORY_STALE_THRESHOLD:-3d}"
   local list_json stale_json blocked_json
-  list_json=$(story_cli list --json 2>/dev/null) || true
-  [ -n "$list_json" ] || fail "story list produced no output."
-
-  # NOT defaulted to empty on failure: `--blocked` is a boolean flag that
-  # cannot itself be malformed, but `--stale` takes a value
-  # (STORY_STALE_THRESHOLD is env-overridable), and a bad one is a real,
-  # user-facing error the CLI already names clearly -- swallowing it into
-  # "no stale stories" would silently hide exactly the mistake a caller most
-  # needs to see. Mirrors _load_ready_stories' own "never a default" rule.
-  stale_json=$(story_cli list --stale "$stale" --json 2>/dev/null) || true
-  if [ "$(printf '%s' "$stale_json" | jq -r '.result // ""' 2>/dev/null)" != "ok" ]; then
-    fail "$(printf '%s' "$stale_json" | jq -r --arg stale "$stale" '.error // ("story list --stale " + $stale + " emitted no result")' 2>/dev/null)"
-  fi
-  blocked_json=$(story_cli list --blocked --json 2>/dev/null) || blocked_json='{"stories":[]}'
+  list_json=$(triage_read list) || { printf '%s\n' "$list_json"; return 1; }
+  stale_json=$(triage_read list --stale "$stale") || { printf '%s\n' "$stale_json"; return 1; }
+  blocked_json=$(triage_read list --blocked) || { printf '%s\n' "$blocked_json"; return 1; }
 
   local edges cycle_ids cycle_json
   edges=$(printf '%s' "$list_json" | jq -r '
     .stories[]? | .story as $s
     | ($s.relationships[]? | select(.relation == "blocked-by") | [.other_id, $s.id] | @tsv)
   ')
-  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles)
+  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles 2>&1) \
+    || fail "triage: cycle analysis failed: $cycle_ids"
   cycle_json=$(printf '%s\n' "$cycle_ids" | jq -R -s 'split("\n") | map(select(length > 0))')
 
   # A full-project `list --json` is too big for --argjson: it goes on jq's own

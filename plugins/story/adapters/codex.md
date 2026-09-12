@@ -80,6 +80,24 @@ The classifier capability contract is currently verified only for Codex 0.154.0;
 other runtimes emit a diagnostic and retain the native menu path. See
 [the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
 
+SH-687 adds an explicit handoff for built-in autonomous Default-mode sessions:
+
+```json
+{"type":"storyhook.implementation-plan","version":1,"story_id":"SH-123","plan":"Complete implementation plan text"}
+```
+
+The entire assistant message must be this object, with exactly these fields and
+the assigned story ID. Valid requests bypass Luna. Malformed, embedded, quoted,
+unknown-version and mismatched-story requests do not fall back to classification.
+The approved content is the decoded `plan` text; posting it verbatim remains the
+first implementation step. The same receipt limits structured and prose paths
+together. Native Plan mode continues to use `proposed_plan`; JSON there redirects
+to native review without authorizing implementation. A typed transactional
+`story session-eligibility <id> --json` query supplies tracker facts before and
+after recognition. Schema validation records readiness, not proof of plan
+completeness or extra operational permission. Attended and custom prompts are
+unchanged; ordinary prose keeps its bounded classifier fallback.
+
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.
 

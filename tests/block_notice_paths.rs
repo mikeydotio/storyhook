@@ -72,6 +72,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }
@@ -176,6 +177,10 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
             },
         ),
         ("Show", Invocation::Show { id: s() }),
+        (
+            "SessionEligibility",
+            Invocation::SessionEligibility { id: s() },
+        ),
     ]
 }
 
