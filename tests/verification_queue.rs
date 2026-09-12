@@ -20,10 +20,11 @@ use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::service::gate_command::GateCommand;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
+use storyhook::service::verification_control::VerificationAction;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
-    VerificationCandidate, VerificationProblem, VerificationQueue,
+    VERIFICATION_WITHDRAWN_PREFIX, VerificationCandidate, VerificationProblem, VerificationQueue,
     acknowledge_verification_incident,
 };
 use storyhook::store::{
@@ -1105,6 +1106,345 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
             .iter()
             .any(|comment| comment.text.contains("legacy generation failed"))
     );
+}
+
+/// SH-692: the attempt PR #791's second `story move … verifying` cancelled
+/// left nothing on the story — a resubmission withdraws the old generation's
+/// authority and the old attempt is discarded, which is right, but the story
+/// must say so. The superseded generation's PROGRESS comment ("running") is
+/// retracted and a WITHDRAWN record names the replacement generation.
+#[test]
+fn a_superseded_attempt_records_its_withdrawal_naming_the_replacement_generation() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(
+        &fixture,
+        "resubmitted while running",
+        Priority::High,
+        PR_ONE,
+    );
+    let stale_progress = format!(
+        "{GATE_PROGRESS_PREFIX} updated {FIXTURE_NOW}\n\nVerification (5/6, 3m 8s, running)\n"
+    );
+    StoryService::new(&fixture.ctx())
+        .comment(&id, &stale_progress)
+        .unwrap();
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = ResubmittingActuator {
+        fixture: &fixture,
+        outcomes: Mutex::new(VecDeque::from([
+            VerificationOutcome::TestsFailed {
+                tree: "stale-tree".into(),
+                log: "/tmp/stale.log".into(),
+                detail: "stale-tests-failed".into(),
+                gate: GateCommand::DEFAULT.into(),
+            },
+            VerificationOutcome::TestsFailed {
+                tree: "current-tree".into(),
+                log: "/tmp/current.log".into(),
+                detail: "current-generation-failed".into(),
+                gate: GateCommand::DEFAULT.into(),
+            },
+        ])),
+        verified_generations: Mutex::new(Vec::new()),
+        notified: Mutex::new(Vec::new()),
+        reaped: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            fixture.project(),
+            |_| Ok(None),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    let generations = actuator.verified_generations.lock().unwrap();
+    assert_eq!(generations.len(), 2);
+    let row = story_row(&fixture, &id);
+    let withdrawn: Vec<&str> = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(VERIFICATION_WITHDRAWN_PREFIX))
+        .map(|comment| comment.text.as_str())
+        .collect();
+    assert_eq!(withdrawn.len(), 1, "{:?}", row.snapshot.comments);
+    assert!(
+        withdrawn[0].contains(&format!(
+            "resubmitted as generation {}",
+            generations[1].get()
+        )),
+        "{}",
+        withdrawn[0]
+    );
+    assert!(
+        withdrawn[0].contains(&format!("(generation {})", generations[0].get())),
+        "the record names the generation that was cancelled: {}",
+        withdrawn[0]
+    );
+    assert!(withdrawn[0].contains(PR_ONE), "{}", withdrawn[0]);
+    assert!(withdrawn[0].contains("judged nothing"), "{}", withdrawn[0]);
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text == stale_progress),
+        "the superseded generation's 'running' PROGRESS comment is retracted: {:?}",
+        row.snapshot.comments
+    );
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("current-generation-failed")),
+        "the current generation's own verdict still lands: {:?}",
+        row.snapshot.comments
+    );
+}
+
+/// SH-692, the shape of the incident: a story is moved out of `verifying`
+/// by hand while its gate runs. The attempt is withdrawn, its outcome is
+/// discarded (never posted as a verdict about a story that has left the
+/// queue), and the story records the withdrawal naming its new state.
+#[test]
+fn a_story_that_leaves_verifying_mid_attempt_records_its_withdrawal() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(
+        &fixture,
+        "moved out from under the gate",
+        Priority::High,
+        PR_ONE,
+    );
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = DepartingActuator {
+        fixture: &fixture,
+        destination: "in-progress",
+        notified: Mutex::new(Vec::new()),
+    };
+
+    assert_eq!(
+        tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(
+        row.state, "in-progress",
+        "the operator's state is preserved"
+    );
+    let withdrawn: Vec<&str> = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(VERIFICATION_WITHDRAWN_PREFIX))
+        .map(|comment| comment.text.as_str())
+        .collect();
+    assert_eq!(withdrawn.len(), 1, "{:?}", row.snapshot.comments);
+    assert!(
+        withdrawn[0].contains("left `verifying` (now `in-progress`)"),
+        "{}",
+        withdrawn[0]
+    );
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("CENTRAL VERIFICATION RED")),
+        "a discarded outcome is never posted: {:?}",
+        row.snapshot.comments
+    );
+    assert!(
+        actuator.notified.lock().unwrap().is_empty(),
+        "nothing is delivered for a withdrawn attempt"
+    );
+    assert!(activity.active_for(fixture.project()).is_none());
+}
+
+/// SH-692: an operator stop (or daemon shutdown) during an attempt used to
+/// leave the story's PROGRESS comment reading "running" indefinitely. The
+/// stop rewrites it as INTERRUPTED; the story stays `verifying` and current,
+/// so the next verifier start re-runs it from the beginning.
+#[test]
+fn a_manual_stop_during_an_attempt_rewrites_progress_as_interrupted() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "stopped mid-attempt", Priority::High, PR_ONE);
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = StoppingActuator {
+        fixture: &fixture,
+        activity: &activity,
+    };
+
+    assert_eq!(
+        tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            fixture.project(),
+        )
+        .unwrap(),
+        TickResult::Stopped
+    );
+
+    let row = story_row(&fixture, &id);
+    assert_eq!(row.state, "verifying", "a stop preserves the submission");
+    let progress: Vec<&str> = row
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+        .map(|comment| comment.text.as_str())
+        .collect();
+    assert_eq!(progress.len(), 1, "{:?}", row.snapshot.comments);
+    assert!(progress[0].contains("INTERRUPTED"), "{}", progress[0]);
+    assert!(progress[0].contains("judged nothing"), "{}", progress[0]);
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.starts_with(VERIFICATION_WITHDRAWN_PREFIX)),
+        "a stop is an interruption of a still-current generation, not a withdrawal: {:?}",
+        row.snapshot.comments
+    );
+}
+
+/// Moves the story out of `verifying` while its attempt runs, then answers
+/// red — the outcome the verifier must discard (SH-692).
+struct DepartingActuator<'a> {
+    fixture: &'a ServiceFixture,
+    destination: &'static str,
+    notified: Mutex<Vec<String>>,
+}
+
+impl VerificationActuator for DepartingActuator<'_> {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        StoryService::new(&self.fixture.ctx())
+            .set_state(
+                &candidate.story_id,
+                self.destination,
+                None,
+                Some("verifying"),
+                None,
+            )
+            .expect("the operator moves the story while the attempt runs");
+        VerificationOutcome::TestsFailed {
+            tree: "departed-tree".into(),
+            log: "/tmp/departed.log".into(),
+            detail: "a verdict about a story that left".into(),
+            gate: GateCommand::DEFAULT.into(),
+        }
+    }
+
+    fn notify(
+        &self,
+        candidate: &VerificationCandidate,
+        message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        self.notified
+            .lock()
+            .unwrap()
+            .push(format!("{}: {message}", candidate.story_id));
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a withdrawn attempt never re-dispatches")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        panic!("a withdrawn attempt never reaps")
+    }
+}
+
+/// Latches the operator's stop on the owned attempt from inside it, the way
+/// a dashboard stop lands while a gate runs, and answers as a cancelled
+/// subprocess would (SH-692).
+struct StoppingActuator<'a> {
+    fixture: &'a ServiceFixture,
+    activity: &'a VerificationActivity,
+}
+
+impl VerificationActuator for StoppingActuator<'_> {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        adopt_linked(candidate)
+    }
+
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.activity
+            .control(
+                self.fixture.store(),
+                candidate.project,
+                VerificationAction::Stop,
+            )
+            .expect("the operator stops the verifier while the attempt runs");
+        VerificationOutcome::Cancelled
+    }
+
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        panic!("a stopped attempt never notifies")
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a stopped attempt never re-dispatches")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        panic!("a stopped attempt never reaps")
+    }
 }
 
 struct ResubmittingActuator<'a> {

@@ -104,8 +104,8 @@ pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 pub use verification::{
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
-    VERIFYING_STATE, VerificationCandidate, VerificationProblem, VerificationQueue,
-    acknowledge_verification_incident,
+    VERIFICATION_WITHDRAWN_PREFIX, VERIFYING_STATE, VerificationCandidate, VerificationProblem,
+    VerificationQueue, acknowledge_verification_incident,
 };
 
 /// Where a service reads "now" from.

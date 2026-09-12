@@ -18,6 +18,7 @@ use crate::store::{
     StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
+use super::gate_progress::GATE_PROGRESS_PREFIX;
 use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
@@ -69,6 +70,13 @@ pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATIO
 /// and opened or adopted its pull request (SH-647). One marked comment per
 /// generation: a resubmission that moves the branch replaces it.
 pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
+/// The marker every withdrawal record starts with (SH-692): an attempt the
+/// verifier cancelled because its generation lost authority — the story left
+/// `verifying`, was resubmitted, or was blocked — judged nothing, and the
+/// story says so instead of ending on a PROGRESS comment that reads
+/// "running" for ever.
+pub const VERIFICATION_WITHDRAWN_PREFIX: &str = "CENTRAL VERIFICATION WITHDRAWN —";
 
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -575,6 +583,66 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             }
             tx.put_verification_incident(&incident)?;
             Ok(GenerationWrite::Applied(incident))
+        })?)
+    }
+
+    /// Records that `candidate`'s attempt was withdrawn (SH-692): retracts the
+    /// generation's last PROGRESS comment, whose "running" would otherwise be
+    /// the story's final word, and appends `body`. Deliberately NOT
+    /// generation-guarded — a withdrawal is by definition written after the
+    /// generation lost authority — and written to the story in whatever state
+    /// it is now in, closed included, the way `story comment` is (SH-261): the
+    /// record is an observation about the attempt, not a change to the story.
+    /// Idempotent on an identical body. Returns whether anything was written.
+    pub(crate) fn record_generation_withdrawn(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        body: &str,
+    ) -> Result<bool, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(ctx.write_stories(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text == body)
+            {
+                return Ok(false);
+            }
+            let mut events = Vec::new();
+            if let Some(progress) = row
+                .snapshot
+                .comments
+                .iter()
+                .rev()
+                .find(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+            {
+                events.push(StoryEvent::StoryCommentRetracted {
+                    at: now.clone(),
+                    comment_at: progress.at.clone(),
+                    text: progress.text.clone(),
+                });
+            }
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: body.to_string(),
+            });
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            Ok(true)
         })?)
     }
 
