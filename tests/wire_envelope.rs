@@ -36,9 +36,9 @@ use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, EngineLaneView, EngineNeedsHumanView,
     EngineRunView, EngineScopeView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
-    ReferencedBy, Response, SetPrefixPlan, SettingKind, SettingSource, SettingView, StaleInfo,
-    StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome, render_error,
-    render_response,
+    ReferencedBy, ReportData, Response, SetPrefixPlan, SettingKind, SettingSource, SettingView,
+    StaleInfo, StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome,
+    render_error, render_response,
 };
 use storyhook::service::{CleanupFailure, CleanupRemoval, CleanupReport, CleanupSkip};
 use storyhook::store::{
@@ -420,6 +420,26 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             })),
         ),
         ("summary", Response::Summary(Box::new(summary()))),
+        (
+            "html_report",
+            Response::HtmlReport(Box::new(ReportData {
+                summary: summary(),
+                stories: vec![maximal_view(), view(snapshot("SH-2", "Second"))],
+                ready_ids: vec!["SH-2".to_string()],
+                blocked_ids: vec!["SH-1".to_string()],
+                next_ids: vec!["SH-2".to_string()],
+            })),
+        ),
+        (
+            "html_report_empty",
+            Response::HtmlReport(Box::new(ReportData {
+                summary: summary(),
+                stories: Vec::new(),
+                ready_ids: Vec::new(),
+                blocked_ids: Vec::new(),
+                next_ids: Vec::new(),
+            })),
+        ),
         (
             "summary_empty",
             Response::Summary(Box::new(SummaryView {
@@ -872,6 +892,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::EngineRun(_) => "engine_run",
             Response::Cleanup(_) => "cleanup",
             Response::Summary(_) => "summary",
+            Response::HtmlReport(_) => "html_report",
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",
             Response::PhaseList(_) => "phase_list",
@@ -886,7 +907,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 20] = [
+    const EVERY_VARIANT: [&str; 21] = [
         "message",
         "message_with_warnings",
         "story",
@@ -896,6 +917,7 @@ fn the_response_corpus_covers_every_variant() {
         "engine_run",
         "cleanup",
         "summary",
+        "html_report",
         "graph",
         "issues",
         "phase_list",
@@ -966,6 +988,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("stories_empty", "stories"),
         ("engine_run", "engine_run"),
         ("summary", "summary"),
+        ("html_report", "html_report"),
         ("graph_overview", "graph"),
         ("issues", "issues"),
         ("phase_list", "phase_list"),

@@ -5199,7 +5199,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       el("div", { class: "engine-banner-meta" }, [
         el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
         el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
-        el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
+        el("span", {}, ["First failure ", el("code", {}, [timeNode(incident.first_failed_at, "second")])])
       ]),
       el("div", { class: "engine-banner-quarantines" }, [incident.detail])
     ]));
@@ -5375,6 +5375,56 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var control = el("div", { class: "engine-launch" }, [button]);
     syncEngineControl(control);
     return control;
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  /** The viewer's local wall-clock for a stored RFC3339 UTC instant (SH-679).
+   * `mode` is "date" (YYYY-MM-DD), "minute" (YYYY-MM-DD HH:MM) or "second"
+   * (YYYY-MM-DD HH:MM:SS). Display only: every sort key and threshold still
+   * compares the raw server string (docs/spec/recency-ordering.md). The shape
+   * stays ISO-like rather than locale-formatted so the fixed-width metadata
+   * columns keep their width and a value reads the same as the CLI prints it.
+   * An unparseable value is shown as received: the stored string is the only
+   * evidence, and hiding it would be worse than showing it unconverted. */
+  function localStamp(at, mode) {
+    if (!at) return "";
+    var ms = Date.parse(at);
+    if (!Number.isFinite(ms)) return String(at);
+    var d = new Date(ms);
+    var date = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+    if (mode === "date") return date;
+    var time = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    if (mode === "second") time += ":" + pad2(d.getSeconds());
+    return date + " " + time;
+  }
+
+  /** The IANA zone the browser is converting into, for the hover title; "" when
+   * the runtime cannot say. Resolved once: a page's zone does not change
+   * between renders, and a list paints one <time> per row. */
+  var viewerZoneName = null;
+  function viewerZone() {
+    if (viewerZoneName !== null) return viewerZoneName;
+    try {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      viewerZoneName = zone ? String(zone) : "";
+    } catch (_error) {
+      viewerZoneName = "";
+    }
+    return viewerZoneName;
+  }
+
+  /** The one door for an absolute time in this page: a <time> whose text is
+   * `localStamp(at, mode)`, whose `datetime` is the stored instant, and whose
+   * title names that instant as UTC and the zone it is shown in. Callers pass
+   * a non-empty `at`; tests/dashboard_local_time.rs refuses any `*_at` field
+   * rendered around this function. */
+  function timeNode(at, mode) {
+    var zone = viewerZone();
+    return el("time", {
+      datetime: at,
+      title: at + " UTC" + (zone ? " · shown in " + zone : "")
+    }, [localStamp(at, mode)]);
   }
 
   function formatEngineElapsed(startedAt) {
@@ -10812,7 +10862,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
     var engineLaneDesc = engineLaneDescription(engineLane);
-    var updated = (st.updated_at || "").slice(0, 10);
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "";
     var order = nextRank(st.id);
     row.setAttribute(
       "aria-label",
@@ -10936,7 +10986,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var shownState = v.display_state || st.state;
     var promoted = shownState !== st.state;
     var order = nextRank(id);
-    var updated = (st.updated_at || "").slice(0, 10) || "—";
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "—";
     var detailsId = "mobile-story-details-" + id;
     item.style.borderLeft = blocked[id] ? "3px solid var(--danger)" : "";
 
@@ -12249,7 +12299,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var list = el("div", { class: "comments" }, []);
       comments.slice().reverse().forEach(function(c) {
         list.appendChild(el("div", { class: "comment" }, [
-          el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+          el("div", { class: "comment-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
           el("div", { class: "comment-text md" }, [renderMarkdown(c.text, st.id)])
         ]));
       });
@@ -12277,13 +12327,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var list = el("div", { class: "referenced-by-list" }, []);
     commits.forEach(function(c) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, ["[git] " + c.sha.slice(0, 7) + ": " + c.subject])
       ]));
     });
     prs.forEach(function(p) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(p.linked_at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [p.linked_at ? timeNode(p.linked_at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           el("a", { href: p.url, target: "_blank", rel: "noopener" }, [
             "PR " + p.owner + "/" + p.repo + "#" + p.number
@@ -12296,7 +12346,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // is half of one. Same storyRef() affordance the relationships list uses.
     mentions.forEach(function(m) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [m.at ? timeNode(m.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           storyRef(m.other_id),
           " " + m.snippet
