@@ -98,34 +98,42 @@ assert_contains "$disp" \
 # --- Codex, attended ---------------------------------------------------------
 
 disp=$(dispatch_and_capture CDA --agent=codex)
-assert_contains "$disp" 'with `codex --no-alt-screen -c check_for_update_on_startup=false`' \
+assert_contains "$disp" 'with `codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false`' \
   "codex attended default: unchanged from today"
 case "$disp" in *"-m "*) fail_test "codex attended default: unexpected -m flag" ;; esac
+# SH-694: Codex 0.154.0 animates the idle composer of an Astra model with a
+# Braille sparkle, which defeated the empty-input check that confirms the
+# initialization turn was submitted. The managed launch turns animations off
+# for this one process; the flag must survive every composition below.
+assert_contains "$disp" '-c tui.animations=false' \
+  "codex attended: TUI animations are disabled for the managed process (SH-694)"
 
 disp=$(dispatch_and_capture CDB --agent=codex --model=gpt-6-astra --effort=ultra)
 assert_contains "$disp" \
-  'codex --no-alt-screen -c check_for_update_on_startup=false -m gpt-6-astra -c model_reasoning_effort="ultra"' \
+  'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -m gpt-6-astra -c model_reasoning_effort="ultra"' \
   "codex attended Astra+ultra: composed flatly"
 
 disp=$(dispatch_and_capture CDT --agent=codex --model=gpt-5.6-terra --effort=low)
 assert_contains "$disp" \
-  'codex --no-alt-screen -c check_for_update_on_startup=false -m gpt-5.6-terra -c model_reasoning_effort="low"' \
+  'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -m gpt-5.6-terra -c model_reasoning_effort="low"' \
   "codex attended GPT-5.6+low: existing composition preserved"
 
 disp=$(dispatch_and_capture CDC --agent=codex --speed=fast)
-assert_contains "$disp" 'codex --no-alt-screen -c check_for_update_on_startup=false -c service_tier="priority"' \
+assert_contains "$disp" 'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -c service_tier="priority"' \
   "codex attended fast: service_tier flag appended"
 
 # --- Codex, --auto -----------------------------------------------------------
 
 disp=$(dispatch_and_capture CDD --agent=codex --auto)
 assert_contains "$disp" \
-  "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
+  "codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust" \
   "codex auto default: unchanged from today"
+assert_contains "$disp" '-c tui.animations=false' \
+  "codex auto: TUI animations are disabled for the managed process (SH-694)"
 
 disp=$(dispatch_and_capture CDE --agent=codex --auto --model=gpt-5.6-luna --speed=fast)
 assert_contains "$disp" \
-  'codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust -m gpt-5.6-luna -c service_tier="priority"' \
+  'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust -m gpt-5.6-luna -c service_tier="priority"' \
   "codex auto + model + fast: fixed auto flags precede the selectors"
 
 finish
