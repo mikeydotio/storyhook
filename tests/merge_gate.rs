@@ -493,14 +493,18 @@ fn a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure() {
             &pid_file.display().to_string(),
         ],
     );
-    assert_ok(&outcome, "a red gate with a lingering orphan is still classified");
-    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap_or_else(|error| {
-        panic!(
-            "one JSON verdict on stdout, got {error}: {}\nstderr: {}",
-            String::from_utf8_lossy(&outcome.stdout),
-            stderr(&outcome)
-        )
-    });
+    assert_ok(
+        &outcome,
+        "a red gate with a lingering orphan is still classified",
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&outcome.stdout).unwrap_or_else(|error| {
+            panic!(
+                "one JSON verdict on stdout, got {error}: {}\nstderr: {}",
+                String::from_utf8_lossy(&outcome.stdout),
+                stderr(&outcome)
+            )
+        });
     assert_eq!(payload["result"], "tests-failed", "{payload}");
     let detail = payload["detail"].as_str().expect("a detail");
     assert!(
@@ -508,12 +512,17 @@ fn a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure() {
         "the orphan must not be reported as an ambiguous writer: {detail}"
     );
     let orphan = fs::read_to_string(&pid_file).expect("the gate published its orphan's pid");
-    let state = stdout(&run(repo.path(), "ps", &["-o", "stat=", "-p", orphan.trim()]));
+    let state = stdout(&run(
+        repo.path(),
+        "ps",
+        &["-o", "stat=", "-p", orphan.trim()],
+    ));
     assert!(
         state.is_empty() || state.starts_with('Z'),
         "the orphan must be reaped with its gate, found state {state:?}"
     );
-    let log = fs::read_to_string(payload["log"].as_str().expect("a log path")).expect("read the log");
+    let log =
+        fs::read_to_string(payload["log"].as_str().expect("a log path")).expect("read the log");
     assert!(
         log.contains("leaving survivors"),
         "the reap must be visible in the attempt log:\n{log}"
