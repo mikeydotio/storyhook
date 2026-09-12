@@ -320,14 +320,12 @@ fn settled(project: &Project<'_>, story: &str, delivery: u32) {
 /// one machine and green on another.
 fn filters() -> Vec<(String, &'static str)> {
     vec![
-        // 2026-07-28T15:06:14Z — every `at`, `created_at`, `closed_at`, …
+        // 2026-07-28T15:06:14Z in `--json` and `2026-07-28T08:06:14-07:00` in
+        // human text (SH-679: the CLI shows stored instants in the process's
+        // zone, so the offset is whatever this machine's `TZ` says) — every
+        // `at`, `created_at`, `closed_at`, `report --html`'s "Generated …".
         (
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z".to_string(),
-            "[timestamp]",
-        ),
-        // `report --html`: "Generated 2026-07-28 15:06 UTC"
-        (
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC".to_string(),
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})".to_string(),
             "[timestamp]",
         ),
         // `report --html`'s Updated column is a bare date. Scoped to that cell

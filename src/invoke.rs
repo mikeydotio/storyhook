@@ -21,7 +21,6 @@
 //! the services. `tests/invoker_seam.rs` now asserts that neither it nor
 //! anything it reached can come back.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +36,7 @@ use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::{ConfirmationPlan, EngineRunView, Response, render_html_report};
+use crate::output::{ConfirmationPlan, EngineRunView, Response};
 use crate::service::engine::{EngineService, ShellDispatcher, StartRequest, StoreOnlyDispatcher};
 use crate::service::{
     AttachmentService, CatalogService, CleanupService, Clock, ConfigService, Ctx, DeleteOutcome,
@@ -685,15 +684,10 @@ pub fn dispatch<S: Store>(
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
             if html {
-                let data = query(ctx, |service| service.report_data())?;
-                let ready: BTreeSet<&str> = data.ready_ids.iter().map(String::as_str).collect();
-                let blocked: BTreeSet<&str> = data.blocked_ids.iter().map(String::as_str).collect();
-                Ok(Response::Message(render_html_report(
-                    &data.summary,
-                    &data.stories,
-                    &|id| ready.contains(id),
-                    &|id| blocked.contains(id),
-                )))
+                // Data only: the client renders the document in its own zone
+                // (SH-679, `Response::HtmlReport`).
+                query(ctx, |service| service.report_data())
+                    .map(|data| Response::HtmlReport(Box::new(data)))
             } else {
                 query(ctx, |service| service.report_summary())
                     .map(|summary| Response::Summary(Box::new(summary)))

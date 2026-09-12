@@ -7,6 +7,7 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
+use crate::local_time;
 use crate::service::CleanupReport;
 use crate::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, EngineScope, PrLink,
@@ -888,6 +889,14 @@ pub enum Response {
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
     Summary(Box<SummaryView>),
+    /// `story report --html`: the report's data, rendered into an HTML
+    /// document by the client (SH-679). The daemon used to compose the HTML
+    /// itself and ship it as a [`Message`](Self::Message), which put the
+    /// "Generated …" timestamp and the Updated column in the daemon's zone;
+    /// rendering is the client's job (`src/api/rpc.rs`), and the client's zone
+    /// is the one the reader is in. The `--json` form is unchanged: the same
+    /// document escaped into the envelope's `message`.
+    HtmlReport(Box<ReportData>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
     PhaseList(Vec<PhaseView>),
@@ -1066,6 +1075,9 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::HtmlReport(data) => {
+            return render_json(&Response::Message(render_html_report_data(data)));
+        }
         Response::Message(message) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1349,6 +1361,7 @@ fn render_json(response: &Response) -> String {
 
 fn render_human(response: &Response) -> String {
     match response {
+        Response::HtmlReport(data) => format!("{}\n", render_html_report_data(data)),
         Response::Message(message) => format!("{message}\n"),
         Response::MessageWithWarnings(message, warnings) => {
             let mut body = format!("{message}\n");
@@ -1611,7 +1624,10 @@ fn render_engine_run(run: &EngineRunView) -> String {
         body.push_str(&format!("stop reason: {reason}\n"));
         body.push_str(&format!(
             "acknowledged: {}\n",
-            run.acknowledged_at.as_deref().unwrap_or("no")
+            run.acknowledged_at
+                .as_deref()
+                .map(local_time::stamp)
+                .unwrap_or_else(|| "no".to_string())
         ));
     }
     body.push_str("\nlane  state        story       elapsed     quiet\n");
@@ -1863,7 +1879,7 @@ fn render_story_log(id: &str, title: &str, entries: &[LogEntry]) -> String {
         let detail = entry.detail.as_deref().unwrap_or(&entry.kind);
         out.push_str(&format!(
             "{}  {:width$}  {}\n",
-            entry.at,
+            local_time::stamp(&entry.at),
             by,
             detail,
             width = width
@@ -2002,7 +2018,7 @@ fn render_story(view: &StoryView) -> String {
     }
 
     if let Some(closed_at) = &story.closed_at {
-        body.push_str(&format!("closed_at: {closed_at}\n"));
+        body.push_str(&format!("closed_at: {}\n", local_time::stamp(closed_at)));
     }
 
     // "archived", not "hidden": the internal fact is named `hidden` to stay
@@ -2010,7 +2026,7 @@ fn render_story(view: &StoryView) -> String {
     // (`closed_at`-is-set), but the word a user reads for this feature is
     // "Archive" everywhere — see `StoryEvent::StoryHidden`'s doc comment.
     if let Some(hidden_at) = &story.hidden_at {
-        body.push_str(&format!("archived: {hidden_at}\n"));
+        body.push_str(&format!("archived: {}\n", local_time::stamp(hidden_at)));
     }
 
     if view.flagged_reasons.is_empty() {
@@ -2047,7 +2063,11 @@ fn render_story(view: &StoryView) -> String {
     if !story.comments.is_empty() {
         body.push_str("comments:\n");
         for comment in &story.comments {
-            body.push_str(&format!("- {} {}\n", comment.at, comment.text));
+            body.push_str(&format!(
+                "- {} {}\n",
+                local_time::stamp(&comment.at),
+                comment.text
+            ));
         }
     }
 
@@ -2069,20 +2089,24 @@ fn render_story(view: &StoryView) -> String {
         for commit in &view.referenced_by.commits {
             body.push_str(&format!(
                 "- {} {}\n",
-                commit.at,
+                local_time::stamp(&commit.at),
                 crate::domain::git_link_comment(&commit.sha, &commit.subject)
             ));
         }
         for pr in &view.referenced_by.prs {
             body.push_str(&format!(
                 "- {} [pr] {} ({})\n",
-                pr.linked_at, pr.url, pr.status
+                local_time::stamp(&pr.linked_at),
+                pr.url,
+                pr.status
             ));
         }
         for mention in &view.referenced_by.comment_mentions {
             body.push_str(&format!(
                 "- {} [comment] {}: {}\n",
-                mention.at, mention.other_id, mention.snippet
+                local_time::stamp(&mention.at),
+                mention.other_id,
+                mention.snippet
             ));
         }
     }
@@ -2226,6 +2250,21 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
+/// [`render_html_report`] over a [`ReportData`], the shape that crosses the
+/// daemon wire inside [`Response::HtmlReport`].
+pub fn render_html_report_data(data: &ReportData) -> String {
+    let ready: std::collections::BTreeSet<&str> =
+        data.ready_ids.iter().map(String::as_str).collect();
+    let blocked: std::collections::BTreeSet<&str> =
+        data.blocked_ids.iter().map(String::as_str).collect();
+    render_html_report(
+        &data.summary,
+        &data.stories,
+        &|id| ready.contains(id),
+        &|id| blocked.contains(id),
+    )
+}
+
 pub fn render_html_report(
     summary: &SummaryView,
     stories: &[StoryView],
@@ -2367,7 +2406,7 @@ tbody tr:hover {{ background:var(--table-hover); }}
 </body>
 </html>
 "##,
-        generated_at = html_escape(&chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string()),
+        generated_at = html_escape(&local_time::now_stamp()),
         total = total,
         open = summary.total_open,
         closed = summary.total_closed,
@@ -2501,12 +2540,7 @@ fn build_table_rows(
             .map(html_escape)
             .unwrap_or_else(|| String::from("<span class=\"muted\">-</span>"));
 
-        let updated = &s.updated_at;
-        let updated_display = if updated.len() >= 10 {
-            html_escape(&updated[..10])
-        } else {
-            html_escape(updated)
-        };
+        let updated_display = html_escape(&local_time::day(&s.updated_at));
 
         html.push_str(&format!(
             "<tr{row_class}><td class=\"col-id\">{}</td><td>{}</td><td>{}</td><td><span class=\"priority-badge {priority_cls}\">{}</span></td><td>{labels_html}</td><td>{assignee}</td><td class=\"col-date\">{updated_display}</td></tr>\n",
