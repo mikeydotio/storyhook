@@ -839,6 +839,61 @@ as owned; a halt in one leaves the other draining and is acknowledged only
 through its own route; a conflict hold in one does not hold the other; queue
 position counts one project; the supervisor follows the catalog).
 
+### SH-692 — a hand completion is an override, and a killed gate is never a verdict
+
+PR #791 was merged by hand while its gate ran (leg 226/4058); its story was
+dragged to Done on the dashboard eleven seconds later; the SH-686 observer
+cancelled the gate and recorded nothing. The gate's log already showed a red
+that then reached `dev`. Full timeline and evidence:
+[SH-692 RCA](../rca/sh-692-hand-merge-under-a-running-gate.md). The rules
+since, each with its own regression test:
+
+- **Completing a `verifying` story by hand requires a reason.** `set_state`
+  refuses a bare move from `verifying` to `done` naming both ways out; with a
+  comment it records `CENTRAL VERIFICATION OVERRIDDEN — <reason>` in the same
+  transaction as the move. `story move <id> done "<why>"` is the CLI form; the
+  dashboard's Done drop and the drawer's state select open a required-reason
+  prompt; the TUI shows the refusal. A backstop in `append_and_fold`, the one
+  write path every service uses, refuses any other producer of that
+  transition (`story set --state`, REST PATCH, epic materialisation, catalog
+  migration) unless the batch carries GREEN or OVERRIDDEN, or a GREEN was
+  posted for the current stay in `verifying`.
+  (`tests/verification_override.rs`, `tests/web_test.rs`,
+  `e2e/specs/verify-override-drop.spec.ts`)
+- **The verifier records every withdrawal.** Authority loss — the story left
+  `verifying`, was resubmitted, or was blocked — writes
+  `CENTRAL VERIFICATION WITHDRAWN —` naming the pull request, the generation,
+  the leg and test counts from the attempt's own progress journal, the elapsed
+  time and the reason, retracting the stale PROGRESS "running" comment. An
+  operator stop or daemon shutdown rewrites PROGRESS as INTERRUPTED; the story
+  stays `verifying` and re-runs. (`tests/verification_queue.rs`,
+  `tests/verification_withdrawal.rs`)
+- **A signalled gate is infrastructure, retryable, named by signal.**
+  `merge-watch.sh` publishes its completion record only for a child that
+  exited (status < 128); `verify-pr.sh` classifies any gate status ≥ 128 as
+  infrastructure-failure/retryable before consulting the record, and traps
+  TERM/INT/HUP to remove its record and emit one JSON verdict naming the
+  phase (written to a saved copy of stdout — bash runs the deferred trap
+  while fd 1 is still the attempt log). The daemon classifies a verifier
+  killed by a signal before answering the same way, from the exit status it
+  already held, instead of "invalid JSON", permanent. (`tests/merge_gate.rs`)
+- **The poller never completes a `verifying` story.** A close-on-merge pull
+  request merged outside central verification is recorded as
+  `StoryPrMerged` plus `CENTRAL VERIFICATION UNCERTIFIED MERGE —`; the story
+  stays `verifying` for the verifier's own entry path (`recover_merged`:
+  receipt, or a named halt) or an operator's override.
+  (`tests/service_pr_check.rs`)
+- **An overridden story is reaped once its pull request is recorded merged**,
+  and not before: a reap deletes the branch and worktree, and an unmerged
+  override may be the only copy of the work.
+
+Direction (b) of the story — the merge must require a receipt for the exact
+tree — was already true: `land-pr.sh --certified-run` execs the merge only
+after `merge-preflight.sh` certifies it, and `recover_merged` refuses a merged
+pull request whose tree carries no receipt. GitHub-side prevention of a hand
+merge (a ruleset requiring a status check) is an operator decision outside
+this repository.
+
 ## Manual verifier controls — SH-668
 
 Each project stores admission permission separately from failure incidents.
@@ -877,9 +932,10 @@ return confirmed state; the UI refreshes after failures or ambiguous transport.
 
 An operator may move a story out of `verifying` while its gate runs. That
 withdraws the exact generation's authority: the verifier cancels its subprocess,
-finishes owned cleanup, discards its outcome and proceeds to current queued work.
-A rapid departure and resubmission also invalidates the old generation. Ordinary
-comments, priority changes and another project's changes do not withdraw it.
+finishes owned cleanup, discards its outcome, records the withdrawal on the
+story (SH-692, below) and proceeds to current queued work. A rapid departure and
+resubmission also invalidates the old generation. Ordinary comments, priority
+changes and another project's changes do not withdraw it.
 
 Monitoring belongs only around the blocking verification attempt. Subscribe
 before checking authority; recheck on project/catalog/resync notifications and

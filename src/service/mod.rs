@@ -103,8 +103,10 @@ pub use story::{FieldEdits, NewStoryInput, StoryService, default_unclaim_comment
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 pub use verification::{
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
-    VERIFYING_STATE, VerificationCandidate, VerificationProblem, VerificationQueue,
+    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
+    VERIFICATION_OVERRIDDEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
+    VERIFICATION_UNCERTIFIED_MERGE_PREFIX, VERIFICATION_WITHDRAWN_PREFIX, VERIFYING_STATE,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
     acknowledge_verification_incident,
 };
 
@@ -500,6 +502,11 @@ pub(crate) fn append_and_fold(
     for event in events {
         crate::domain::validate_event_for_append(event)?;
     }
+    // The same backstop for a transition (SH-692): a `verifying` story is
+    // completed only with a verdict or a recorded override, whichever door
+    // asked. `set_state` refuses earlier with the same words; this catches
+    // every other producer of a completion, present and future.
+    verification::refuse_uncertified_completion(&*tx, project, story, events)?;
     let head = tx.append_events(project, story, expected, events, provenance)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);
