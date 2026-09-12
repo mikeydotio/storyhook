@@ -340,6 +340,13 @@ resume re-dispatch, `in-progress` — but without the hold: a red story
 re-enters the queue on resubmission and waits its turn (step 4a;
 `a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue`).
 
+The detail excerpt lists every failing case the log holds, and since SH-697 a
+Rust battery runs to completion after its first red test binary
+(`cargo test --no-fail-fast` in `scripts/run-tests.sh`), so one RED carries
+every failure of the leg that went red rather than the first binary's; the
+legs after it are still not reached (`test-tiers.md`, "a battery finishes
+after its first red binary").
+
 ### Green: merge, done, reap
 
 `Merged` means `land-pr.sh` ran under `machine-lock.sh merge`, re-read the
