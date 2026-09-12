@@ -366,7 +366,7 @@ while True:
                 status = owner.wait(timeout=15)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
-                self.assertEqual(result.read_text(), str(signum))
+                self.assertEqual(result.read_text(), str(int(signum)))
                 record_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
                 record = json.loads(record_path.read_text())
                 self.assertFalse(record["gate_started"])
