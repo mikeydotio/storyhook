@@ -432,8 +432,9 @@ WRAPPER
   # until something reads it as a repository), but dispatch's worktree
   # creation does -- confirmed the hard way when AA-1's checkout wasn't one
   # and story.sh refused with exactly that message. No origin is configured;
-  # story.sh's own base-resolution tolerates that (falls back to HEAD), so
-  # this is the minimum dispatch actually needs.
+  # story.sh's own base-resolution tolerates that (its `none` tier bases the
+  # work on HEAD and says so — SH-691), so this is the minimum dispatch
+  # actually needs.
   init_git_repo() {
     storyhook_fixture_git init -q -b main
     storyhook_fixture_git config user.email "e2e@storyhook.test"

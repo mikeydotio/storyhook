@@ -22,6 +22,19 @@
 # base used to build the predicted merge. The reported head remains an exact
 # guard because `gh pr merge --match-head-commit` supports that same invariant.
 #
+# WHY THE BASE IS CHECKED, NOT ONLY ITS STABILITY (SH-691). Until SH-691 the
+# only question asked of a PR's base was whether it CHANGED between two reads,
+# never whether it was right: five story PRs opened against `main` (a stale
+# local origin/HEAD cache, and a literal fallback) were certified, merged and
+# closed as green here. The base a PR must land on is origin's own default
+# branch (`origin-default-branch.sh`, asked of the remote under the merge
+# lock, independently of whoever opened the PR), unless the caller STATES a
+# different intent with `--base <branch>` — `release.sh`'s stable merge lands
+# on `main` deliberately. A mismatch exits 3, before any fetch, so
+# `verify-pr.sh` can classify it as an invalid submission rather than a
+# retryable landing refusal. A PR that is already MERGED into the wrong base
+# is not this script's to prevent; nothing here recovers one.
+#
 # WHY THE LANDED TREE IS CHECKED. GitHub offers no expected-base merge guard;
 # SH-474 tracks that platform-level race separately. Fetching the reported
 # merge commit and comparing its tree with STORYHOOK_CERTIFIED_MERGE_TREE makes
@@ -32,6 +45,7 @@
 #   0   the PR merged, the landed tree matched, and the remote branch is gone
 #   1   validation, certification, merge, verification, or cleanup failed
 #   2   merge-preflight found a textual conflict
+#   3   the pull request targets a branch other than the one it must land on
 
 set -uo pipefail
 
@@ -44,7 +58,7 @@ note() {
     printf 'land-pr: %s\n' "$1" >&2
 }
 
-readonly USAGE="usage: land-pr.sh <pr>"
+readonly USAGE="usage: land-pr.sh [--base <branch>] <pr>"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"
@@ -129,6 +143,49 @@ branch_tip_on_origin() {
     [ -n "$tip" ] || die "origin listed refs/heads/$tip_branch for PR #$tip_number without an oid"
     printf '%s\n' "$tip"
 }
+
+# Resolves the branch a PR must land on: the caller's stated intent when
+# given, else origin's default branch asked of origin itself (SH-691).
+#
+#   expected_base <stated-or-empty>
+expected_base() {
+    if [ -n "$1" ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    resolved="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
+        || die "could not establish the branch this pull request must land on — origin's default branch is unknown ($resolved); pass --base <branch> only when landing on a non-default branch is the intent"
+    printf '%s\n' "$resolved"
+}
+
+# Refuses a PR whose base is not the branch it must land on. Exit 3 is this
+# refusal's own code so a caller can tell it from a landing failure.
+#
+#   validate_base <number> <expected-base> <metadata>
+validate_base() {
+    number="$1"
+    expected="$2"
+    actual="$(printf '%s\n' "$3" | jq -er '.baseRefName')" \
+        || die "PR #$number returned no base branch"
+    if [ "$actual" != "$expected" ]; then
+        printf 'land-pr: PR #%s targets `%s`, but the branch it must land on is `%s` (origin'"'"'s default branch); nothing was merged. --base states a different intended base.\n' \
+            "$number" "$actual" "$expected" >&2
+        exit 3
+    fi
+}
+
+# Pure base seam (SH-691): the stated intent (or '' to ask origin) and
+# GitHub's wire shape; prints the resolved base. Real git answers for origin.
+if [ "${1:-}" = "--validate-base" ]; then
+    [ "$#" -eq 3 ] \
+        || die "private usage: land-pr.sh --validate-base <stated-base-or-empty> <metadata>"
+    number="$(printf '%s\n' "$3" | jq -er '.number')" \
+        || die "the pull request metadata carries no number"
+    expected="$(expected_base "$2")" || exit 1
+    validate_base "$number" "$expected" "$3"
+    printf '%s\n' "$expected"
+    exit 0
+fi
 
 # Pure metadata/ref seam. Tests supply GitHub's wire shape and real commit IDs
 # directly; they do not imitate the GitHub service or a merge mutation.
@@ -225,8 +282,15 @@ fi
 # disagreement is refused because GitHub can enforce that same head at merge.
 if [ "${1:-}" = "--locked" ]; then
     require_merge_lock
-    [ "$#" -eq 2 ] || die "$USAGE"
-    pr="$2"
+    shift
+    stated_base=""
+    if [ "${1:-}" = "--base" ]; then
+        [ "$#" -eq 3 ] && [ -n "$2" ] || die "$USAGE"
+        stated_base="$2"
+        shift 2
+    fi
+    [ "$#" -eq 1 ] || die "$USAGE"
+    pr="$1"
 
     command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
     command -v jq >/dev/null 2>&1 || die "jq is required and was not found"
@@ -239,6 +303,9 @@ if [ "${1:-}" = "--locked" ]; then
         || die "PR #$number returned no base branch"
     initial_head_ref="$(printf '%s\n' "$initial" | jq -er '.headRefName')" \
         || die "PR #$number returned no head branch"
+    # Before any fetch: the branch this PR must land on, and whether it does.
+    expected="$(expected_base "$stated_base")" || exit 1
+    validate_base "$number" "$expected" "$initial"
 
     base_remote_ref="refs/remotes/origin/$base_ref"
     head_remote_ref="refs/remotes/origin/pr/$number"
@@ -267,10 +334,21 @@ if [ "${1:-}" = "--locked" ]; then
         bash "$script" --merge "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
 fi
 
+stated_base=""
+if [ "${1:-}" = "--base" ]; then
+    [ "$#" -ge 2 ] && [ -n "$2" ] || die "$USAGE"
+    stated_base="$2"
+    shift 2
+fi
 [ "$#" -eq 1 ] || die "$USAGE"
 pr="$1"
 case "$pr" in
 ('' | -*) die "$USAGE" ;;
 esac
 
+# `--base` is forwarded only when stated: the locked phase asks origin
+# otherwise, and an empty positional would read as a stated empty intent.
+if [ -n "$stated_base" ]; then
+    exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked --base "$stated_base" "$pr"
+fi
 exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked "$pr"
