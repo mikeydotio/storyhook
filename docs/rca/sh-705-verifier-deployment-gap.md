@@ -7,7 +7,9 @@ predated the verifier fixes in SH-691, SH-692, SH-695, and SH-697. By this
 investigation, the installed binary matched a source tree containing all four
 fixes and the daemon had restarted after the story was filed. This session
 did not perform that installation or restart. SH-695's stranded worktree
-remained, so this report does not establish completion of SH-705.
+initially remained. After the operator lifted the cleanup hold, a fresh
+inspection confirmed its removal; the branch still preserves its commit.
+The deployment and worktree findings are ready for central verification.
 
 The incident chronology below is attributed to SH-705's opening comment,
 read with `story show SH-705 --json`. Its original PR timeline, event journal,
@@ -36,8 +38,9 @@ the survivor-cleanup fix whose PR carried the formatting error.
 
 ## Independently checked state
 
-These observations were rechecked during implementation of the approved
-plan, after that plan was posted verbatim on SH-705.
+These observations were checked during the initial implementation of the
+approved plan, after that plan was posted verbatim on SH-705. The later
+worktree removal is recorded under Resolution below.
 
 | Check | Result |
 |---|---|
@@ -46,7 +49,7 @@ plan, after that plan was posted verbatim on SH-705.
 | `story daemon status` | v2.4.2, PID 46830, no binary-mismatch warning; login agent runs `/Users/mikey/.local/bin/story`. |
 | Daemon metadata | `started_at=2026-09-12T23:22:35Z`; executable path matches the login agent. |
 | Executable identity | Recorded `exe_mtime=1789255326` equals the installed executable's modification time. |
-| SH-695 worktree | `.claude/worktrees/SH-695` remains registered on `worktree-SH-695` at `31777a64cb500aa538ba7a47adbcb14214f0a111`; `git status --short` is empty. |
+| SH-695 worktree, before the hold | `.claude/worktrees/SH-695` was registered on `worktree-SH-695` at `31777a64cb500aa538ba7a47adbcb14214f0a111`; `git status --short` was empty. |
 | Formatting equivalence | Both `31777a64c` and `909fc30a9`, restricted to `tests/merge_gate.rs`, have stable patch ID `93ff0a3993cb00f5ad44bc5b908fa98593a32590`. |
 
 The build stamp identifies tracked source content, not a commit ID or a gate
@@ -85,17 +88,45 @@ compared with SH-705:
 | SH-703 | Visibility and control of halted verification queues. |
 | SH-707 | Provider-compatible output from external hooks. |
 
-None establishes that SH-695's remaining cleanup is complete. Patch
+None supplied evidence of SH-695's cleanup. Patch
 equivalence establishes that its formatting correction landed; it does not
 make the stranded commit an ancestor or authorize deleting its branch.
 
-The approved decision is to preserve the deployment and both worktrees, make
-no runtime change, and retain SH-705 as open and blocked for the required
-SH-695 cleanup outside this lane. The session expressly prohibits worktree
+The initial approved decision was to preserve the deployment and both
+worktrees, make no runtime change, and retain SH-705 as open and blocked for
+the required SH-695 cleanup outside this lane. The session prohibits worktree
 cleanup and release/deployment operations; the central verifier owns normal
-lane cleanup. This stranded, unmerged-commit case needs an authorized
-cleanup owner to resolve it without losing work. No separate story is filed,
-and this report alone is not submitted as completed implementation.
+lane cleanup. The report was committed as `970765898`, then SH-705 was
+blocked pending external cleanup. No separate story was filed.
+
+## Resolution after the hold was lifted
+
+At 23:49:21, StoryHook recorded resume delivery after the hold was cleared.
+The user instructed this session to reread the story and adjust to the
+changed environment. The repeated obviation review still returned the same
+five candidates; their new discussion addressed different requirements.
+
+| Fresh check | Result |
+|---|---|
+| SH-695 filesystem path | `/Volumes/Code/mikeyward/storyhook/.claude/worktrees/SH-695` does not exist and is not a symlink. |
+| Git worktree registration | `git worktree list --porcelain` has no SH-695 entry. |
+| Preserved branch | `refs/heads/worktree-SH-695` still points to `31777a64cb500aa538ba7a47adbcb14214f0a111`. |
+| Remote integration branch | `git ls-remote --symref origin HEAD refs/heads/dev` reports `dev`, still at `db827a0224a02e2f666fa0c095b4c29f20f0a304`. |
+| Deployment | Installed build `b0e0f32f1305` and daemon PID 46830 are unchanged; status still has no mismatch warning. |
+
+The removal happened outside this session; its actor, exact time, and method
+are not established by these checks. The original stranded-worktree blocker
+is resolved. The remaining branch is retained as evidence, not treated as
+an occupied lane or as proof that its commit was merged. Git documents
+[worktree removal](https://git-scm.com/docs/git-worktree) and
+[branch deletion](https://git-scm.com/docs/git-branch) as separate operations.
+Keeping the ref preserves the exact repair commit without another deletion.
+
+This decision supersedes the earlier blocking disposition and is recorded
+on SH-705 with its context and rationale. The report is updated in a new
+commit; the unchanged integration base needs no reset or rebase. The central
+verifier owns submission, the full suite, merge, completion, and this lane's
+cleanup. No cleanup or deployment operation was performed by this session.
 
 No receipt, GREEN verdict, or override reason is created retroactively.
 Optional GitHub ruleset changes remain outside the approved scope. Validation
