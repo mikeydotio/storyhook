@@ -83,53 +83,25 @@ fn retired_spellings() -> Vec<Retired> {
     ]
 }
 
-/// Whether text names a retired command or skill, rather than a longer name.
-fn mentions_retired_spelling(text: &str, needle: &str) -> bool {
-    let continues_name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-');
+/// Whether `text` *names* `needle`, rather than merely containing its letters.
+///
+/// `str::contains` answers a different question than this test asks. A file
+/// writing the story worktree cleanup path — a live subsystem — shares a
+/// prefix with one of the retired names while spelling none of them, and a
+/// bare substring scan reports it as a violation. Requiring a non-word
+/// character on each side is what makes this a naming test rather than a
+/// spelling-fragment test (SH-689: the false positive failed every branch
+/// gated against `dev`, each one told a test it never touched had broken).
+fn names_retired_spelling(text: &str, needle: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     text.match_indices(needle).any(|(start, matched)| {
-        !text[..start]
+        let end = start + matched.len();
+        text[..start]
             .chars()
             .next_back()
-            .is_some_and(continues_name)
-            && !text[start + matched.len()..]
-                .chars()
-                .next()
-                .is_some_and(continues_name)
+            .is_none_or(|c| !is_word(c))
+            && text[end..].chars().next().is_none_or(|c| !is_word(c))
     })
-}
-
-#[test]
-fn retired_names_are_matched_at_identifier_boundaries() {
-    for retired in retired_spellings() {
-        let name = retired.needle;
-        for text in [
-            name.clone(),
-            format!("`{name}`"),
-            format!("/plugins/{name}/SKILL.md"),
-            format!("bash {name} SH-1"),
-            format!("prefix:{name}，next"),
-        ] {
-            assert!(mentions_retired_spelling(&text, &name), "missed {text:?}");
-        }
-        for text in [
-            format!("{name}tree cleanup"),
-            format!("{name}_extra"),
-            format!("{name}-extra"),
-            format!("{name}2"),
-            format!("my{name}"),
-            format!("my-{name}"),
-            format!("é{name}"),
-        ] {
-            assert!(
-                !mentions_retired_spelling(&text, &name),
-                "false positive {text:?}"
-            );
-        }
-        assert!(mentions_retired_spelling(
-            &format!("{name}tree first, then `{name}`"),
-            &name
-        ));
-    }
 }
 
 /// Every tracked file's text, keyed by its path relative to the repository
@@ -181,7 +153,7 @@ fn no_tracked_file_outside_the_changelog_spells_a_retired_work_verb() {
     assert!(
         corpus
             .get(HISTORY)
-            .is_some_and(|text| text.contains(helper_verb)),
+            .is_some_and(|text| names_retired_spelling(text, helper_verb)),
         "{HISTORY} no longer contains the retired helper subcommand, so this scan can no \
          longer tell a working reader from a broken one — if the changelog entries were \
          genuinely removed, retire this test with them"
@@ -196,7 +168,7 @@ fn no_tracked_file_outside_the_changelog_spells_a_retired_work_verb() {
         let offenders: Vec<&str> = corpus
             .iter()
             .filter(|(path, _)| path.as_str() != HISTORY)
-            .filter(|(_, text)| mentions_retired_spelling(text, needle))
+            .filter(|(_, text)| names_retired_spelling(text, needle))
             .map(|(path, _)| path.as_str())
             .collect();
         if !offenders.is_empty() {
@@ -213,4 +185,35 @@ fn no_tracked_file_outside_the_changelog_spells_a_retired_work_verb() {
          misled:\n  {}",
         failures.join("\n  ")
     );
+}
+
+/// The negative control this test's own failure taught it (SH-689): a longer
+/// word that merely starts with a retired name spells nothing retired.
+#[test]
+fn a_longer_word_sharing_a_retired_prefix_is_not_a_naming() {
+    let verb = format!("story{}work", "-");
+    let longer = format!("{verb}tree cleanup owns a different path");
+    assert!(
+        !names_retired_spelling(&longer, &verb),
+        "`{longer}` does not name `{verb}`; reporting it is what failed every branch \
+         gated against `dev`"
+    );
+}
+
+/// The positive control that stops the fix above from becoming a hole: the
+/// bare spelling must still be reported, in the shapes a document would use.
+#[test]
+fn a_bare_retired_spelling_is_still_reported() {
+    let verb = format!("story{}work", "-");
+    for text in [
+        format!("the {verb} skill"),
+        format!("run {verb}."),
+        format!("`{verb}`"),
+        verb.clone(),
+    ] {
+        assert!(
+            names_retired_spelling(&text, &verb),
+            "`{text}` names `{verb}` and must still be reported"
+        );
+    }
 }

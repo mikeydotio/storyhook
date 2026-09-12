@@ -89,17 +89,16 @@ const ALLOWED: &[(&str, &str)] = &[
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
     ),
     (
-        "src/daemon/engine/wait_tests.rs",
-        "the test fixture writes a checkout for its explicitly created project so engine startup \
-         has a working directory; it never resolves project identity from that path",
-    ),
-    (
         "src/service/cleanup.rs",
         "manual cleanup chooses a working directory only after resolving the selected project",
     ),
     (
         "src/daemon/cleanup.rs",
         "scheduled cleanup chooses a working directory only after enumerating the store project by id",
+    ),
+    (
+        "src/daemon/engine/wait_tests.rs",
+        "a wait fixture writes the column to give its temporary project a directory; it never reads it to resolve one",
     ),
 ];
 

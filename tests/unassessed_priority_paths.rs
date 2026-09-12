@@ -50,7 +50,7 @@ fn story_created_sites(files: &[(String, String)], allowed: &[(&str, &str)]) -> 
 
 /// Store code is separately exempt because conformance and migration fixtures
 /// must construct legacy histories deliberately.
-const ALLOWED: [(&str, &str); 5] = [
+const ALLOWED: [(&str, &str); 6] = [
     (
         "src/domain.rs",
         "the enum, fold and domain fixtures; not a production creation door",
@@ -70,6 +70,11 @@ const ALLOWED: [(&str, &str); 5] = [
     (
         "src/daemon/watch.rs",
         "test-only ChangeWatcher fixtures, not a production creation door",
+    ),
+    (
+        "src/service/query/obviation.rs",
+        "the obviation review reads StoryCreated to date a story; a struct pattern is \
+         lexically the marker but constructs nothing",
     ),
 ];
 

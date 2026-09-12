@@ -5,15 +5,18 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// A read-only cancellation handle; only the owning worker can signal it.
 #[derive(Clone, Default)]
-pub(crate) struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation(Arc<AtomicBool>);
 
 impl Cancellation {
     pub(crate) fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
+    /// Whether the owner has irreversibly requested cancellation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }
