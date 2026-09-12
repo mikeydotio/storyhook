@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::UnclaimComment;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, VERIFYING_STATE_SLUG,
-    active_state, is_epic, normalize_labels, undefined_state_error,
+    COMPLETION_STATE_SLUG, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState,
+    VERIFYING_STATE_SLUG, active_state, is_epic, normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
@@ -28,6 +28,9 @@ use crate::store::{
     WriteOps,
 };
 
+use super::verification::{
+    VERIFICATION_OVERRIDDEN_PREFIX, certified_for_current_stay, override_refusal,
+};
 use super::{
     Ctx, Intent, ReadyQueueFilters, append_and_fold, project_prefix, resolve_open_story,
     resolve_story,
@@ -564,6 +567,29 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 )
                 .into());
             }
+            // Completing a story the central verifier owns is an override
+            // (SH-692): allowed, but only with the operator's reason, which is
+            // recorded as the marked comment the verifier's own GREEN would
+            // have been. A bare move is refused naming both ways out.
+            // A story already certified for this stay — the verifier's own
+            // GREEN is on it — is not being overridden, and completes as any
+            // other story does.
+            let overriding = row.state == VERIFYING_STATE_SLUG
+                && target.slug == COMPLETION_STATE_SLUG
+                && !certified_for_current_stay(&*tx, project, story_no, &row)?;
+            let comment: Option<String> = if overriding {
+                match comment.map(str::trim).filter(|reason| !reason.is_empty()) {
+                    Some(reason) => Some(format!("{VERIFICATION_OVERRIDDEN_PREFIX} {reason}")),
+                    None => {
+                        return Err(AppError::Validation(override_refusal(
+                            &story_no.to_id(&prefix),
+                        ))
+                        .into());
+                    }
+                }
+            } else {
+                comment.map(str::to_string)
+            };
             let mut extra = Vec::new();
             if let Some(lease) = cleanup_lease.clone() {
                 extra.push(StoryEvent::StoryCleanupLeaseRecorded {
@@ -573,7 +599,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }
             extra.extend(comment.map(|text| StoryEvent::StoryCommentAdded {
                     at: now.clone(),
-                    text: text.to_string(),
+                    text,
                 })
                 .into_iter()
                 .chain(awaiting.clone().map(|reason| StoryEvent::StoryAwaitingSet {

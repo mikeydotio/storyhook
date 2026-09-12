@@ -267,7 +267,14 @@ if [ "${1:-}" = "--speculative-run" ]; then
     cleanup \
         || die "the gate command finished, but the poller worktree could not be restored; recovery evidence was preserved"
     trap - EXIT HUP INT TERM
-    if [ -n "${STORYHOOK_GATE_RESULT_FILE:-}" ]; then
+    # The completion record means "the gate command ran to its own exit and the
+    # poller was restored". A child that died by signal (status 128+n, the
+    # supervisor's encoding of a signal death) did not complete: it judged
+    # nothing, so it earns no record and the caller's missing-record branch
+    # classifies it as infrastructure. Publishing 143 here is how SH-692's
+    # terminated gate could have been read as a red — 143 agreed with 143 —
+    # and it is the one line a cancellation can turn into a verdict.
+    if [ -n "${STORYHOOK_GATE_RESULT_FILE:-}" ] && [ "$command_status" -lt 128 ]; then
         printf '%s\n' "$command_status" > "$STORYHOOK_GATE_RESULT_FILE" \
             || die "could not publish the completed gate command status"
     fi

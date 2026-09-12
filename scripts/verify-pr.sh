@@ -13,19 +13,29 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=activity-log.sh
 . "$script_dir/activity-log.sh"
 
+# Every verdict is exactly one JSON document on stdout. A verdict already on
+# its way out disarms the signal trap installed below first, so a signal that
+# lands while jq is printing cannot append a second document after it.
+disarm_verification_signal_trap() {
+    trap - TERM INT HUP
+}
+
 die_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" \
         '{result:"infrastructure-failure", disposition:"permanent", detail:$detail}'
     exit 0
 }
 
 retry_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" \
         '{result:"infrastructure-failure", disposition:"retryable", detail:$detail}'
     exit 0
 }
 
 invalid_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" '{result:"invalid-submission", detail:$detail}'
     exit 0
 }
@@ -75,6 +85,42 @@ if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common
         python3 "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
         bash "$script_dir/verify-pr.sh" "$@"
 fi
+
+# A signal is the one exit that is neither green nor red (SH-692). Without a
+# trap, bash's default action on TERM ends this script between merge-watch's
+# return and the `rm -f "$gate_result"` in run_verification_gate: the
+# completion record survives as forensic noise and the daemon receives no
+# verdict at all — exactly the shape PR #791 left behind. Bash defers a trap
+# until the foreground command returns, so by the time this runs the gate has
+# already been terminated and the poller restored by merge-watch's own trap;
+# this only reports. Exit 0 with a JSON verdict is the wire contract every
+# refusal above already honours: the daemon reads stdout, never the status.
+# `verification_phase` names where the attempt was when the signal arrived.
+#
+# The verdict is written to fd 9, a copy of this script's own stdout taken
+# here, not to fd 1: bash runs the pending trap while still inside the
+# `activity_run … >"$log" 2>&1` call the gate ran under, so fd 1 at that
+# moment is the attempt log, and a verdict written there is a verdict the
+# daemon never sees. (A fixed descriptor because macOS ships bash 3.2, which
+# has no `{fd}>&1` allocation.)
+exec 9>&1
+verification_phase="starting"
+on_verification_signal() {
+    signal="$1"
+    trap - TERM INT HUP
+    if [ -n "${gate_result:-}" ]; then
+        rm -f "$gate_result" 2>/dev/null || true
+    fi
+    signal_pr="${gate_pr:-${pr:-}}"
+    signal_tree="${gate_tree:-${tree:-}}"
+    signal_log="${log:-}"
+    jq -n --arg detail "Verification attempt terminated by SIG$signal during $verification_phase${signal_pr:+ (PR #$signal_pr)}${signal_tree:+, merge tree $signal_tree}. The gate judged nothing: this is not a test failure and no receipt was written for the tree. The verifier retries on its own cadence.${signal_log:+ Gate log of the terminated attempt: $signal_log}" \
+        '{result:"infrastructure-failure", disposition:"retryable", detail:$detail}' >&9
+    exit 0
+}
+trap 'on_verification_signal TERM' TERM
+trap 'on_verification_signal INT' INT
+trap 'on_verification_signal HUP' HUP
 
 ensure_verifier_worktree() {
     fallback="$1"
@@ -219,7 +265,14 @@ verification_infrastructure_detail() {
     infrastructure_log="$3"
 
     printf 'Verification infrastructure failure\n'
-    printf 'Gate process exit status: %s.\n' "$infrastructure_status"
+    if [ "$infrastructure_status" -ge 128 ] 2>/dev/null; then
+        signal_number=$((infrastructure_status - 128))
+        signal_name="$(kill -l "$signal_number" 2>/dev/null || true)"
+        printf 'Gate process exit status: %s (terminated by signal %s%s) — the gate was killed before it completed and judged nothing.\n' \
+            "$infrastructure_status" "$signal_number" "${signal_name:+, SIG$signal_name}"
+    else
+        printf 'Gate process exit status: %s.\n' "$infrastructure_status"
+    fi
     if [ -z "$infrastructure_completed_status" ]; then
         printf 'Completion record: missing.\n'
     else
@@ -247,6 +300,7 @@ run_verification_gate() {
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
     verifier_window_tail "$log"
+    verification_phase="release gate"
     STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
         STORYHOOK_GATE_RESULT_FILE="$gate_result" \
         activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
@@ -254,9 +308,24 @@ run_verification_gate() {
     gate_status=$?
     completed_status="$(cat "$gate_result")" || completed_status=""
     rm -f "$gate_result" || die_json "could not remove gate completion record $gate_result"
+    # A gate that died by signal (128+n) judged nothing, whatever the record
+    # says (SH-692): not red, not green. RETRYABLE, because the tree is simply
+    # unjudged and the daemon's bounded cadence re-runs it; the preparation
+    # and restoration failures below stay PERMANENT because rerunning cannot
+    # change them. merge-watch.sh no longer publishes a record for a
+    # signalled child, so this branch is the belt to that suspender.
+    if [ "$gate_status" -ge 128 ]; then
+        disarm_verification_signal_trap
+        detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
+            '{result:"infrastructure-failure", disposition:"retryable", tree:$tree, log:$log, detail:$detail}'
+        exit 0
+    fi
     # Only a completed gate with successful restoration can blame tests.
-    # Preparation failures, signals and cleanup failures leave no record.
+    # Preparation and cleanup failures leave no record; a signalled gate
+    # leaves none either, and is caught above before agreement is even asked.
     if [ "$completed_status" != "$gate_status" ]; then
+        disarm_verification_signal_trap
         detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
         jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
             '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
@@ -301,6 +370,7 @@ require_certified_by_gate() {
 # failed. The wire shape is exactly the one it used to emit itself; only the
 # moment moved, to after the caller's head confirmation.
 emit_tests_failed() {
+    disarm_verification_signal_trap
     detail="$(verification_failure_detail "$gate_status" "$log")"
     jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
         '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
@@ -314,6 +384,7 @@ classify_land() {
     landed_tree="$4"
     landed_base="$5"
     landed_head="$6"
+    disarm_verification_signal_trap
     case "$land_status" in
     (0)
         jq -n --arg tree "$landed_tree" --arg detail "$land_output" \
@@ -361,6 +432,7 @@ recover_merged() {
     if [ "$recovery_context" = "after landing refusal" ]; then
         gate_progress_emit_item "land pull request" passed
     fi
+    disarm_verification_signal_trap
     jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
         '{result:"merged", tree:$tree, detail:$detail}'
     exit 0
@@ -570,6 +642,7 @@ if [ "${1:-}" = --run-gate ]; then
     gate_args=("$1" "$2" "$3" "$4" "$5")
     shift 6
     run_verification_gate "${gate_args[@]}" "$@" || emit_tests_failed
+    disarm_verification_signal_trap
     jq -n '{result:"gate-passed"}'
     exit 0
 fi
@@ -645,6 +718,7 @@ gate_command=("$@")
 gate_display="$*"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
+verification_phase="pull request metadata"
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
@@ -677,6 +751,7 @@ expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
     || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
 [ "$base" = "$expected_base" ] \
     || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
+verification_phase="pull request refs"
 gate_progress_emit_item "pull request refs" running
 _refs_start=$(date +%s)
 # Every exit inside the refresh is a JSON verdict at exit 0, so a row left
@@ -700,6 +775,7 @@ base_commit="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" \
 head_commit="$(git rev-parse --verify "$head_ref^{commit}" 2>/dev/null)" \
     || die_json "could not resolve $head_ref to a commit after refreshing PR #$pr"
 
+verification_phase="merge preflight"
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
@@ -733,6 +809,7 @@ case "$preflight_status" in
     ;;
 esac
 
+verification_phase="landing"
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running
 _land_start=$(date +%s)
