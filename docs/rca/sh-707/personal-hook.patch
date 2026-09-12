@@ -1,0 +1,27 @@
+--- a/git-readonly-allow.py
++++ b/git-readonly-allow.py
+@@ -636,8 +636,10 @@
+ # Hook entry-point
+ # ===========================================================================
+
+-def _emit_decision(decision, reason):
+-    """Print the JSON that tells Claude Code to allow or deny a tool call."""
++def _emit_decision(decision, reason, codex=False):
++    """Print a provider-compatible decision, deferring Codex approvals."""
++    if codex and decision == "allow":
++        return
+     json.dump(
+         {
+             "hookSpecificOutput": {
+@@ -681,9 +683,9 @@
+     verdict = classify_command(command, cwd or None)
+
+     if verdict == "deny":
+-        _emit_decision("deny", "Branch switching is not permitted")
++        _emit_decision("deny", "Branch switching is not permitted", codex=("turn_id" in data))
+     elif verdict == "allow":
+-        _emit_decision("allow", "Read-only operation")
++        _emit_decision("allow", "Read-only operation", codex=("turn_id" in data))
+     # else: passthrough — no output, exit 0
+
+     sys.exit(0)
