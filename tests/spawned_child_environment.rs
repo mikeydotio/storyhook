@@ -45,6 +45,7 @@ fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate
         created_at: FIXTURE_NOW.into(),
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
+        blocking_revision: None,
         checkout: checkout.to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),

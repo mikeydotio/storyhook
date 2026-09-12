@@ -138,7 +138,9 @@ set -euo pipefail
 # helper accepts the argv that daemon requires. Protocol 3 advances helper and
 # daemon together for the versioned cleanup-lease environment and receipt: an
 # older helper must never be mistaken for one that proves exact postconditions.
-DISPATCH_PROTOCOL=4
+# Protocol 5 requires native notify --interrupt and session-bound resume argv.
+# An older helper would paste --interrupt as prompt text, so it must be refused.
+DISPATCH_PROTOCOL=5
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -3327,9 +3329,11 @@ cmd_capture() {
 # without classifying it there fails the build rather than falling through to
 # whichever default happens to be safe.
 cmd_notify() {
-  local id="${1:-}" message="${2:-}"
-  [ -n "$id" ] && [ -n "$message" ] && [ "$#" -eq 2 ] \
-    || fail "usage: story.sh notify <story-id> <message>"
+  local id="${1:-}" message="${2:-}" expected="${4:-}" target="" diagnostic
+  if ! { [ -n "$id" ] && [ -n "$message" ] && \
+    { [ "$#" -eq 2 ] || { [ "$#" -eq 4 ] && [ "${3:-}" = --expected-target ] && [ -n "$expected" ] && [ "$message" != --interrupt ]; }; }; }; then
+    fail "usage: story.sh notify <story-id> <message> [--expected-target <target>] | <story-id> --interrupt"
+  fi
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
@@ -3358,6 +3362,20 @@ cmd_notify() {
     || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
   pane_runs "$pane" \
     || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
+
+  if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
+    target=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" target "$pane" "$provider" 2>&1) \
+      || refuse "target-changed" "could not bind the dispatched session: $target"
+    [ -z "$expected" ] || [ "$expected" = "$target" ] \
+      || refuse "target-changed" "the interrupted session was replaced; no prompt sent to $id."
+  fi
+  if [ "$message" = --interrupt ]; then
+    diagnostic=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" interrupt "$pane" "$provider" "$target" 2>&1) \
+      || refuse "interruption-failed" "native interruption/owned gate cleanup was not acknowledged for $id: $diagnostic"
+    jq -n --arg id "$id" --arg target "$target" \
+      '{ok:true,id:$id,target:$target,display:("[story] native interrupt sent to " + $id + "; captured gate children are stopped; session and worktree preserved.")}'
+    return 0
+  fi
 
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \

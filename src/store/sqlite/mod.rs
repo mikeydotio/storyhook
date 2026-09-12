@@ -30,6 +30,7 @@
 //! `:memory:` has no write-ahead log, no reopen, and no crash, which are the
 //! three things every guarantee in this module is about.
 
+mod block_delivery;
 pub(crate) mod read;
 pub(crate) mod write;
 
@@ -807,6 +808,13 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn block_deliveries(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::BlockDelivery>, StoreError> {
+                block_delivery::list(&self.conn, project)
+            }
+
             fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError> {
                 read::project(&self.conn, project)
             }
@@ -1022,6 +1030,22 @@ impl_read_ops!(SqliteReadTx);
 impl_read_ops!(SqliteWriteTx);
 
 impl WriteOps for SqliteWriteTx<'_> {
+    fn enqueue_block_delivery(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        action: crate::store::BlockAction,
+    ) -> Result<(), StoreError> {
+        block_delivery::enqueue(&self.conn, project, story, action)
+    }
+    fn update_block_delivery(
+        &mut self,
+        delivery: &crate::store::BlockDelivery,
+        expected: crate::store::DeliveryStatus,
+    ) -> Result<bool, StoreError> {
+        block_delivery::update(&self.conn, delivery, expected)
+    }
+
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError> {
         write::create_project(&self.conn, project)
     }

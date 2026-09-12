@@ -130,7 +130,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
 
         let mut touched: Vec<String> = Vec::new();
 
-        self.ctx.store().write(|tx| {
+        self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (a_no, a_row) = resolve_open_story(&*tx, project, &prefix, id)?;
 
@@ -273,7 +273,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
         let now = self.ctx.now();
         let project = self.ctx.project();
 
-        let outcome = self.ctx.store().write(|tx| {
+        let outcome = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             // Existence is checked before the self-relation rule, in this
             // order, because that is the order the errors have always come in:

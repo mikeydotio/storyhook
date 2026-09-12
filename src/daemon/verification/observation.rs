@@ -22,7 +22,10 @@ fn current(store: &impl Store, candidate: &VerificationCandidate) -> Result<bool
     VerificationQueue::new(store)
         .current_for(candidate)
         .map(|current| {
-            current.is_some_and(|c| c.verifying_generation == candidate.verifying_generation)
+            current.is_some_and(|c| {
+                c.verifying_generation == candidate.verifying_generation
+                    && c.blocking_revision == candidate.blocking_revision
+            })
         })
         .map_err(|error| {
             error.with_context(&format!(

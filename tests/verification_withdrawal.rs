@@ -272,3 +272,48 @@ fn nonterminal_withdrawal_preserves_admission_and_operator_state() {
         );
     });
 }
+
+#[test]
+fn prose_block_interrupts_verification_without_changing_state() {
+    run_with_gate(|f, bus, _, first, second| {
+        StoryService::new(&f.ctx())
+            .set_awaiting(&first.story_id, "Environment repair")
+            .unwrap();
+        bus.publish(Change::Project(first.project_slug.clone()));
+        wait_for("blocked gate was not terminated", || {
+            marker(f, first, "terminated").exists()
+        });
+        wait_for("queue did not advance past blocked story", || {
+            marker(f, second, "started").exists()
+        });
+        assert!(
+            VerificationQueue::new(f.store())
+                .ordered_for(f.project())
+                .unwrap()
+                .iter()
+                .all(|c| c.story_id != first.story_id)
+        );
+    });
+}
+
+#[test]
+fn relationship_block_interrupts_verification_and_advances_queue() {
+    run_with_gate(|f, bus, _, first, second| {
+        let blocker = StoryService::new(&f.ctx())
+            .create(&NewStoryInput {
+                title: "Environment repair".into(),
+                ..NewStoryInput::default()
+            })
+            .unwrap();
+        storyhook::service::RelationService::new(&f.ctx())
+            .block_on(&first.story_id, &[blocker.id], None)
+            .unwrap();
+        bus.publish(Change::Project(first.project_slug.clone()));
+        wait_for("relationship-blocked gate was not terminated", || {
+            marker(f, first, "terminated").exists()
+        });
+        wait_for("queue did not advance past relationship block", || {
+            marker(f, second, "started").exists()
+        });
+    });
+}
