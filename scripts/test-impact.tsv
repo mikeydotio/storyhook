@@ -4,6 +4,7 @@
 activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 backup_restore	:(glob)**/*
+battery_completion	:(glob)scripts/*
 binary_lease	scripts/binary-lease.sh
 block_delivery_paths	:(glob)src/service/*.rs
 block_interrupt	:(glob)plugins/story/lib/*

@@ -2043,6 +2043,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
+<div class="backdrop" id="verify-override-backdrop" data-overlay="verify-override-modal" hidden></div>
+<div class="modal" id="verify-override-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="verify-override-header">
+  <div class="modal-header" id="verify-override-header">Override verification?</div>
+  <div class="modal-body">
+    <div id="verify-override-summary"></div>
+    <div class="field"><label for="verify-override-reason">Reason</label>
+      <input type="text" id="verify-override-reason" placeholder="Why is this story done without the verifier's verdict?" autocomplete="off"></div>
+    <div class="modal-error" id="verify-override-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="verify-override-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="verify-override-submit">Override and complete</button>
+  </div>
+</div>
+
 <div class="backdrop" id="delete-modal-backdrop" data-overlay="delete-modal" hidden></div>
 <div class="modal" id="delete-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="delete-modal-header">
   <div class="modal-header" id="delete-modal-header">Delete story</div>
@@ -9651,6 +9666,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         openDropBlockedReasonModal(id);
         return;
       }
+      // SH-692: a `verifying` card belongs to the central verifier. Dropping
+      // it on Done is an override, which needs the operator's reason — the
+      // service refuses the bare move — so the drop defers to a prompt that,
+      // unlike Blocked's, is NOT skippable: no reason, no move.
+      if (currentSlug === "verifying" && targetSlug === "done") {
+        openVerifyOverrideModal(id);
+        return;
+      }
       moveStory(id, targetSlug, isClosed);
     });
   }
@@ -9726,7 +9749,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `reason` (SH-205) is optional and only meaningful alongside a move into
    * an OPEN state — the server refuses it combined with a close, so it is
    * never sent on the `targetIsClosed` path. */
-  function moveStory(id, targetSlug, targetIsClosed, reason) {
+  function moveStory(id, targetSlug, targetIsClosed, reason, comment) {
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
@@ -9736,9 +9759,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var body = { state: targetSlug };
     if (reason) body.reason = reason;
+    // `comment` (SH-692) is the override reason a Verifying -> Done move
+    // carries; it rides the closed path only, as `story move <id> done
+    // "<why>"` does, and is absent from every other drop.
+    var closedBody = { state: targetSlug };
+    if (comment) closedBody.comment = comment;
 
     var request = targetIsClosed
-      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
+      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", closedBody)
       : (stateSuperstate(originSlug) === "CLOSED"
           ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
           : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", body));
@@ -11803,6 +11831,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return o;
     }));
     stateSelect.addEventListener("change", function() {
+      // SH-692: the same override prompt the board drop uses; the select
+      // shows `verifying` again until the reason is submitted.
+      if (st.state === "verifying" && stateSelect.value === "done") {
+        stateSelect.value = st.state;
+        openVerifyOverrideModal(st.id);
+        return;
+      }
       var closed = stateSuperstate(stateSelect.value) === "CLOSED";
       var wasClosed = stateSuperstate(st.state) === "CLOSED";
       var path = wasClosed && !closed ? "reopen" : "move";
@@ -15174,6 +15209,72 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       });
   }
 
+  /** The story id the verification-override prompt (SH-692) is open for, or
+   * `null`. Opened by a Verifying -> Done drop on the board and by the
+   * drawer's state select; both are the same override, so both read the
+   * same reason and send the same `/move` with `comment`. */
+  var verifyOverrideStoryId = null;
+  var verifyOverrideInFlight = false;
+  var verifyOverrideOpenFrame = null;
+
+  function setVerifyOverrideInFlight(value) {
+    verifyOverrideInFlight = value;
+    $("verify-override-submit").disabled = value;
+    $("verify-override-cancel").disabled = value;
+  }
+
+  function openVerifyOverrideModal(id) {
+    var story = findStory(id);
+    verifyOverrideStoryId = id;
+    setVerifyOverrideInFlight(false);
+    $("verify-override-summary").textContent =
+      id + (story ? " — " + story.story.title : "") +
+      " is under central verification. Completing it by hand overrides the verifier: " +
+      "its running attempt is cancelled and your reason is recorded on the story.";
+    $("verify-override-reason").value = "";
+    $("verify-override-error").textContent = "";
+    showBackdrop("verify-override-backdrop");
+    activateOverlay("verify-override-modal", "verify-override-reason");
+    verifyOverrideOpenFrame = requestAnimationFrame(function() {
+      verifyOverrideOpenFrame = null;
+      // Same guard as the close modal: a rapid Escape/Cancel between the
+      // synchronous activation and this frame must not reopen the surface.
+      if (overlayStack[overlayStack.length - 1] !== "verify-override-modal") return;
+      $("verify-override-modal").classList.add("open");
+      $("verify-override-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeVerifyOverrideModal() {
+    if (verifyOverrideInFlight) return;
+    if (verifyOverrideOpenFrame !== null) {
+      cancelAnimationFrame(verifyOverrideOpenFrame);
+      verifyOverrideOpenFrame = null;
+    }
+    verifyOverrideStoryId = null;
+    hideBackdrop("verify-override-backdrop");
+    $("verify-override-modal").classList.remove("open");
+    $("verify-override-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("verify-override-modal");
+  }
+
+  /** The one door out that moves the card: a non-empty reason. Cancel,
+   * backdrop and Escape leave the story exactly where it was, in
+   * `verifying` — the prompt gates the move, unlike Blocked's. */
+  function submitVerifyOverride() {
+    if (verifyOverrideInFlight) return;
+    var id = verifyOverrideStoryId;
+    if (!id) return;
+    var reason = $("verify-override-reason").value.trim();
+    if (!reason) {
+      $("verify-override-error").textContent = "A reason for overriding verification is required.";
+      return;
+    }
+    verifyOverrideStoryId = null;
+    closeVerifyOverrideModal();
+    moveStory(id, "done", true, undefined, reason);
+  }
+
   /** The story id the delete modal (SH-197) is currently open for, or
    * `null`. Compared against `state.drawerId` in `submitDeleteStory` so the
    * drawer only closes when the deleted story is the one it's showing --
@@ -15471,6 +15572,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("close-modal-backdrop").addEventListener("click", closeCloseModal);
     $("close-modal-submit").addEventListener("click", submitCloseStory);
     bindEnterSubmit($("close-reason"), submitCloseStory);
+    $("verify-override-cancel").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-backdrop").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-submit").addEventListener("click", submitVerifyOverride);
+    bindEnterSubmit($("verify-override-reason"), submitVerifyOverride);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-close-instead").addEventListener("click", closeInsteadOfDelete);
@@ -15543,6 +15648,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // is in flight `closeCloseModal()` deliberately keeps it open.
         if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
+          return;
+        }
+        // The override prompt (SH-692) has the same standing as Close: it may
+        // sit over the drawer, and Escape dismisses only it, leaving the card
+        // in Verifying.
+        if (overlayStack[overlayStack.length - 1] === "verify-override-modal") {
+          closeVerifyOverrideModal();
           return;
         }
         // Read BEFORE the closers run, not after (SH-324). An open editor

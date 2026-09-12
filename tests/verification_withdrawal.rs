@@ -7,14 +7,16 @@ use std::time::{Duration, Instant};
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{InFlight, read_owned_processes};
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, VerificationActivity, journal_path, poll_verification_with,
+    ShellVerificationActuator, VerificationActivity, VerificationActuator,
+    VerificationCancellation, VerificationOutcome, journal_path, poll_verification_with,
 };
 use storyhook::domain::Priority;
 use storyhook::service::verification_control::VerificationAction;
 use storyhook::service::{
-    NewStoryInput, PrLinkService, StoryService, VerificationCandidate, VerificationQueue,
+    NewStoryInput, PrLinkService, StoryService, VERIFICATION_WITHDRAWN_PREFIX,
+    VerificationCandidate, VerificationQueue,
 };
-use storyhook::store::{ReadOps, Store, WriteOps};
+use storyhook::store::{ReadOps, Store, StoryNo, VerificationFailureDisposition, WriteOps};
 use storyhook_test_support::ServiceFixture;
 
 fn submitted(f: &ServiceFixture, title: &str, number: u64) -> VerificationCandidate {
@@ -171,8 +173,16 @@ while :; do sleep 30; done
 #[test]
 fn leaving_verifying_interrupts_the_gate_and_advances_the_queue() {
     run_with_gate(|f, bus, activity, first, second| {
+        // SH-692: completing a verifying story by hand is an override and
+        // carries its reason; the bare move is refused (tests/verification_override.rs).
         StoryService::new(&f.ctx())
-            .set_state(&first.story_id, "done", None, Some("verifying"), None)
+            .set_state(
+                &first.story_id,
+                "done",
+                Some("merged by hand"),
+                Some("verifying"),
+                None,
+            )
             .unwrap();
         bus.publish(Change::Project(first.project_slug.clone()));
         wait_for("withdrawn gate was not terminated", || {
@@ -181,6 +191,29 @@ fn leaving_verifying_interrupts_the_gate_and_advances_the_queue() {
         wait_for("the next queued gate did not start", || {
             marker(f, second, "started").exists()
         });
+        // The override and the withdrawal are both on the story (SH-692).
+        wait_for(
+            "the withdrawal was never recorded on the overridden story",
+            || {
+                withdrawal_records(f, &first.story_id)
+                    .iter()
+                    .any(|text| text.contains("left `verifying` (now `done`)"))
+            },
+        );
+        let number = StoryNo::parse_id("SH", &first.story_id).unwrap();
+        let comments = f
+            .store()
+            .read(|tx| tx.story(f.project(), number))
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .comments;
+        assert!(
+            comments
+                .iter()
+                .any(|comment| comment.text == "CENTRAL VERIFICATION OVERRIDDEN — merged by hand"),
+            "{comments:?}"
+        );
         assert_eq!(
             activity.active_for(f.project()).unwrap().story_id,
             second.story_id
@@ -270,7 +303,113 @@ fn nonterminal_withdrawal_preserves_admission_and_operator_state() {
                 .read(|tx| tx.verification_enabled(f.project()))
                 .unwrap()
         );
+        // SH-692: the withdrawn attempt is recorded on the story, through the
+        // real gate kill, naming the state the operator chose.
+        wait_for("the withdrawal was never recorded on the story", || {
+            withdrawal_records(f, &first.story_id)
+                .iter()
+                .any(|text| text.contains("left `verifying` (now `in-progress`)"))
+        });
+        let records = withdrawal_records(f, &first.story_id);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(records[0].contains("judged nothing"), "{}", records[0]);
+        assert!(
+            records[0].contains("acme/widgets/pull/1"),
+            "names the pull request: {}",
+            records[0]
+        );
     });
+}
+
+/// Every `CENTRAL VERIFICATION WITHDRAWN —` comment on `id`.
+fn withdrawal_records(f: &ServiceFixture, id: &str) -> Vec<String> {
+    let number = StoryNo::parse_id("SH", id).unwrap();
+    f.store()
+        .read(|tx| tx.story(f.project(), number))
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(VERIFICATION_WITHDRAWN_PREFIX))
+        .map(|comment| comment.text.clone())
+        .collect()
+}
+
+/// SH-692: a verifier killed by a signal before it can answer used to be
+/// reported as "returned invalid JSON", permanent — a halt of the whole queue
+/// over an interruption that says nothing about the tree. The daemon reads
+/// the exit status it was already handed: a signal death is infrastructure,
+/// retryable, and named by its signal.
+#[test]
+fn a_verifier_killed_by_signal_before_answering_is_retryable_and_named_by_signal() {
+    let f = ServiceFixture::new();
+    f.link_origin("https://github.com/acme/widgets");
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "config",
+            "remote.origin.url",
+            "https://github.com/acme/widgets",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(f.cwd())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::create_dir_all(f.env().daemon_state_dir()).unwrap();
+    let candidate = submitted(&f, "killed before it could answer", 1);
+    let script = f.cwd().join("kill-self.sh");
+    // No trap: bash's default action on its own TERM is a signal death with
+    // nothing on stdout, the raw shape an external kill leaves behind.
+    std::fs::write(&script, "kill -TERM $$\nsleep 30\n").unwrap();
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
+        f.env().clone(),
+        Path::new("/unused-helper").into(),
+        Path::new("/unused-story").into(),
+        Duration::from_secs(20),
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+    )
+    .with_verifier_script(script);
+    let pull_request = match &candidate.pull_request {
+        Ok(link) => link.clone(),
+        Err(_) => panic!("the fixture links a pull request"),
+    };
+
+    let outcome = actuator.verify_cancellable(
+        &candidate,
+        &pull_request,
+        &VerificationCancellation::default(),
+    );
+
+    match outcome {
+        VerificationOutcome::InfrastructureFailure {
+            detail,
+            disposition,
+        } => {
+            assert_eq!(
+                disposition,
+                VerificationFailureDisposition::Retryable,
+                "{detail}"
+            );
+            assert!(
+                detail.contains("terminated by signal 15 (SIGTERM)"),
+                "{detail}"
+            );
+            assert!(detail.contains("judged nothing"), "{detail}");
+            assert!(!detail.contains("invalid JSON"), "{detail}");
+        }
+        other => panic!("a signal death is infrastructure, got {other:?}"),
+    }
 }
 
 #[test]
