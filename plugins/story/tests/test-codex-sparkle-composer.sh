@@ -95,7 +95,8 @@ out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" true "a sparkled composer no longer defeats the submission check"
+assert_eq "$(jqf "$out" .ok)" true \
+  "a sparkled composer no longer defeats the submission check (wait_ready_reason=$(jqf "$out" .wait_ready_reason) bootstrap_phase=$(jqf "$out" .bootstrap_phase))"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 2 "one initialization turn and one charter"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$id" "the charter reached the pane"
 frames=$(cat "$FAKE_TMUX_STATE/sparkle_frame" 2>/dev/null || printf 0)
