@@ -166,6 +166,13 @@
 #                                paste_text's own `|| return 1` is reachable.
 #                                Exercises only the TYPED form (doctor) — the
 #                                EXEC form never calls send-keys for its launch.
+#   $FAKE_TMUX_CODEX_SPARKLE=1   A Codex occupant renders its idle placeholder
+#                                the way Codex 0.154.0 does for an Astra model:
+#                                Braille dots before AND after the text, a
+#                                different frame every capture (SH-694). The
+#                                field failure: input_state read that row as
+#                                text, so a confirmed submission was reported
+#                                as bootstrap-submit-unconfirmed.
 #
 # THE PANE'S PID AND DISPATCH SENTINEL (SH-231). `wait_ready_sentinel` — the
 # readiness gate `cmd_dispatch` now polls instead of `wait_ready`'s screen
@@ -427,7 +434,7 @@ case "${1:-}" in
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
           "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" "$STATE/pid_reads" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
-          "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
+          "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" "$STATE/sparkle_frame" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
@@ -946,7 +953,25 @@ case "${1:-}" in
     fi
     pane_agent="$(cat "$STATE/pane_command" 2>/dev/null || printf '')"
     if [ "$pane_agent" = codex ]; then
-      printf '\342\200\272 Ask Codex to do anything\n'
+      if [ "${FAKE_TMUX_CODEX_SPARKLE:-}" = 1 ]; then
+        # SH-694: Codex 0.154.0's Astra "sparkle" — Braille dots before AND after
+        # the idle placeholder, redrawn every 150ms. Rotated per capture from a
+        # counter so no two consecutive frames are byte-identical, exactly as the
+        # recorded field pane was; frame 1 carries the block's last code point
+        # (U+28FF) and frame 2 its first (U+2800, blank), so the reader's byte
+        # range is exercised at both ends. Only the EMPTY composer is decorated:
+        # the real one hides the placeholder once text is in the box.
+        sparkle_frame="$(cat "$STATE/sparkle_frame" 2>/dev/null || printf '0')"
+        case "$sparkle_frame" in *[!0-9]*|'') sparkle_frame=0 ;; esac
+        printf '%s' "$((sparkle_frame + 1))" > "$STATE/sparkle_frame" 2>/dev/null || true
+        case "$((sparkle_frame % 3))" in
+          0) printf '\342\200\272\342\240\201Ask Codex to do anything   \342\240\210       \342\240\202  \342\240\201     \342\240\204    \342\240\202         \342\240\220\n' ;;
+          1) printf '\342\200\272\342\240\202Ask Codex to do anything \342\240\204   \342\240\220     \342\240\240  \342\241\200   \342\242\200 \342\243\277\n' ;;
+          2) printf '\342\200\272 Ask Codex to do anything\342\240\200        \342\240\210\n' ;;
+        esac
+      else
+        printf '\342\200\272 Ask Codex to do anything\n'
+      fi
       if [ -f "$STATE/codex_loading" ]; then
         loading_polls="$(cat "$STATE/codex_loading" 2>/dev/null || printf '0')"
         case "$loading_polls" in *[!0-9]*|'') loading_polls=0 ;; esac
