@@ -202,7 +202,8 @@ the adapter's host default, so `story.sh dispatch SH-123 --agent=codex` can laun
 from either host. The legacy `STORY_AGENT=claude-code` value remains a warned
 compatibility alias. Claude keeps its existing
 `.claude/worktrees/` and launch contract. Codex uses `.codex/worktrees/`, launches
-`codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
+`codex --no-alt-screen` with the update chooser and TUI animations switched off for that
+one managed process, confirms the interactive screen, enters Plan mode with
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
 
