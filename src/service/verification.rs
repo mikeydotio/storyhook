@@ -18,6 +18,7 @@ use crate::store::{
     StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
+use super::gate_progress::GATE_PROGRESS_PREFIX;
 use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
@@ -69,6 +70,95 @@ pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATIO
 /// and opened or adopted its pull request (SH-647). One marked comment per
 /// generation: a resubmission that moves the branch replaces it.
 pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
+/// The marker every withdrawal record starts with (SH-692): an attempt the
+/// verifier cancelled because its generation lost authority — the story left
+/// `verifying`, was resubmitted, or was blocked — judged nothing, and the
+/// story says so instead of ending on a PROGRESS comment that reads
+/// "running" for ever.
+pub const VERIFICATION_WITHDRAWN_PREFIX: &str = "CENTRAL VERIFICATION WITHDRAWN —";
+
+/// The marker a hand completion of a `verifying` story carries (SH-692): the
+/// operator's stated reason for overriding central verification, recorded in
+/// the same transaction as the move to `done`. Its presence is what lets the
+/// completion through [`refuse_uncertified_completion`] and what makes the
+/// story reap-eligible once its pull request is recorded merged.
+pub const VERIFICATION_OVERRIDDEN_PREFIX: &str = "CENTRAL VERIFICATION OVERRIDDEN —";
+
+/// The marker the GitHub poller leaves on a `verifying` story whose pull
+/// request merged outside central verification (SH-692). The poller records
+/// the fact and never completes the story: nothing certified the merge tree.
+pub const VERIFICATION_UNCERTIFIED_MERGE_PREFIX: &str = "CENTRAL VERIFICATION UNCERTIFIED MERGE —";
+
+/// What a caller is told when it tries to complete a `verifying` story with
+/// no verdict and no stated reason (SH-692). Names both ways out.
+pub(crate) fn override_refusal(id: &str) -> String {
+    format!(
+        "story `{id}` is under central verification; completing it by hand overrides the verifier and requires a reason: `story move {id} done \"<why>\"` records it as `{VERIFICATION_OVERRIDDEN_PREFIX} <why>` and the verifier withdraws its running attempt. To hand the story back without completing it, `story move {id} in-progress`."
+    )
+}
+
+/// The one rule every door shares (SH-692): a story leaves `verifying` for
+/// the completion state only with a verdict — the verifier's own GREEN,
+/// written in the same batch, or one posted for this generation — or with an
+/// operator's OVERRIDDEN reason in the batch. Called from
+/// [`super::append_and_fold`], the write path every service funnels through,
+/// so `story move`, `story set --state`, the dashboard's move and PATCH, epic
+/// materialisation and state-catalog migration cannot disagree about it.
+/// Costs one row read, and one events read only on the transitions it judges.
+pub(crate) fn refuse_uncertified_completion(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    events: &[StoryEvent],
+) -> Result<(), AppError> {
+    let completes = events.iter().any(|event| {
+        matches!(event, StoryEvent::StoryStateChanged { state, .. } if state == COMPLETION_STATE_SLUG)
+    });
+    if !completes {
+        return Ok(());
+    }
+    let Some(row) = tx.story(project, story)? else {
+        return Ok(());
+    };
+    if row.state != VERIFYING_STATE {
+        return Ok(());
+    }
+    let carries_verdict = |text: &str| {
+        text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX)
+    };
+    if events.iter().any(|event| {
+        matches!(event, StoryEvent::StoryCommentAdded { text, .. } if carries_verdict(text))
+    }) {
+        return Ok(());
+    }
+    if certified_for_current_stay(tx, project, story, &row)? {
+        return Ok(());
+    }
+    Err(AppError::Validation(override_refusal(&row.snapshot.id)))
+}
+
+/// Whether `row` carries a GREEN verdict for its current stay in
+/// `verifying` (SH-692). A GREEN from an earlier generation certified an
+/// earlier tree, not the one a completion now would record as landed, so
+/// only a verdict at or after the latest entry into `verifying` counts.
+/// Shared by [`refuse_uncertified_completion`] and `set_state`, so the door
+/// and the backstop cannot disagree about what needs no override.
+pub(crate) fn certified_for_current_stay(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    row: &StoryRow,
+) -> Result<bool, StoreError> {
+    let entered_at = verifying_entry(tx, project, story)?.map(|(at, _)| at);
+    Ok(row.snapshot.comments.iter().any(|comment| {
+        comment.text.starts_with(VERIFICATION_GREEN_PREFIX)
+            && entered_at
+                .as_deref()
+                .is_none_or(|entered| comment.at.as_str() >= entered)
+    }))
+}
 
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -578,6 +668,66 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
+    /// Records that `candidate`'s attempt was withdrawn (SH-692): retracts the
+    /// generation's last PROGRESS comment, whose "running" would otherwise be
+    /// the story's final word, and appends `body`. Deliberately NOT
+    /// generation-guarded — a withdrawal is by definition written after the
+    /// generation lost authority — and written to the story in whatever state
+    /// it is now in, closed included, the way `story comment` is (SH-261): the
+    /// record is an observation about the attempt, not a change to the story.
+    /// Idempotent on an identical body. Returns whether anything was written.
+    pub(crate) fn record_generation_withdrawn(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        body: &str,
+    ) -> Result<bool, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(ctx.write_stories(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text == body)
+            {
+                return Ok(false);
+            }
+            let mut events = Vec::new();
+            if let Some(progress) = row
+                .snapshot
+                .comments
+                .iter()
+                .rev()
+                .find(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+            {
+                events.push(StoryEvent::StoryCommentRetracted {
+                    at: now.clone(),
+                    comment_at: progress.at.clone(),
+                    text: progress.text.clone(),
+                });
+            }
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: body.to_string(),
+            });
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            Ok(true)
+        })?)
+    }
+
     /// Rewrites a marked comment only while `candidate` remains current.
     pub(crate) fn upsert_generation_comment(
         &self,
@@ -644,9 +794,15 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 }
 
-/// One project's `done` stories that passed central verification and have
-/// not yet been reaped (SH-648: the cleanup pass is per project, like the
-/// queue it follows).
+/// One project's `done` stories that passed central verification — or were
+/// completed over it by an operator's recorded override AND whose pull request
+/// is recorded merged (SH-692) — and have not yet been reaped (SH-648: the
+/// cleanup pass is per project, like the queue it follows).
+///
+/// The override alone is not enough: a reap deletes the branch and the
+/// worktree, and an overridden story whose pull request never merged may
+/// still be the only place that work lives. The merged link is the evidence
+/// that it landed, the same evidence the GREEN path carries implicitly.
 fn cleanup_candidates_for(
     tx: &impl ReadOps,
     project: ProjectId,
@@ -662,14 +818,16 @@ fn cleanup_candidates_for(
                 .comments
                 .iter()
                 .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
+            let overridden = row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX));
             let reaped = row.snapshot.comments.iter().any(|comment| {
                 comment
                     .text
                     .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
             });
-            if !passed || reaped {
-                continue;
-            }
             let pull_request = links
                 .iter()
                 .find(|(story_no, link)| {
@@ -677,6 +835,10 @@ fn cleanup_candidates_for(
                 })
                 .map(|(_, link)| link.clone())
                 .ok_or(VerificationProblem::MissingPullRequest);
+            let landed_by_override = overridden && pull_request.is_ok();
+            if !(passed || landed_by_override) || reaped {
+                continue;
+            }
             candidates.push(VerificationCandidate {
                 project: project.id,
                 project_slug: project.slug.clone(),
@@ -869,7 +1031,7 @@ fn marked_comment_events(row: &StoryRow, marker: &str, body: &str, now: &str) ->
 /// unlikely case no such event survives (SH-372: absence states nothing —
 /// this is not asserted as an invariant, since a caller degrading to "wait
 /// unknown" is safer than a queue read that can fail for one odd story).
-fn verifying_entry(
+pub(crate) fn verifying_entry(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
