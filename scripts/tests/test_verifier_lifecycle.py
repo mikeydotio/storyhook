@@ -671,5 +671,169 @@ while True:
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
 
+    def cancel_gate(self, resistant=False, damage=False, descendant=False, delay=0):
+        """Interrupt the production outer group and check owned restoration."""
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "16000" if delay else "08000"
+        result = self.ensure()
+        self.assertEqual(result["result"], "verifier-worktree-ready", result)
+        ready = self.root / "gate-ready"
+        terminated = self.root / "gate-terminated"
+        gate = self.root / "gate.py"
+        gate.write_text(
+            "import os, signal, time, subprocess\nfrom pathlib import Path\n"
+            + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if resistant else
+               "def term(sig, frame):\n    time.sleep(" + str(delay) + ")\n    Path(" + repr(str(terminated)) + ").touch()\n    raise SystemExit(143)\n"
+               "signal.signal(signal.SIGTERM, term)\n")
+            + ("subprocess.Popen(['python3', '-c', " + repr(
+                "import os,signal,time; from pathlib import Path; os.setpgrp(); "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(" + repr(str(ready) + ".child")
+                + ").write_text(str(os.getpid())); time.sleep(60)") + "])\n"
+                "while not Path(" + repr(str(ready) + ".child") + ").exists(): time.sleep(.01)\n" if descendant else "")
+            + ("Path('f').write_text('gate evidence')\n" if damage else "")
+            + "Path(" + repr(str(ready)) + ").write_text(str(os.getpid()))\n"
+            + "while True: time.sleep(.01)\n")
+        tree = self.git("merge-tree", "--write-tree", self.base, self.head)
+        log = tempfile.TemporaryFile()
+        self.addCleanup(log.close)
+        child = subprocess.Popen(
+            ["bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree,
+             self.base, self.head, str(self.wt), "--", "python3", str(gate)],
+            cwd=self.repo, env=self.env, stdout=log, stderr=log, start_new_session=True)
+        owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
+
+        def cleanup():
+            owner = json.loads(owner_path.read_text())
+            for sid in {child.pid, owner.get("session"), owner.get("gate_session")} - {None}:
+                # Only these fixture-created sessions are eligible for cleanup.
+                result = subprocess.run(["ps", "-axo", "pid="], capture_output=True, text=True, check=True)
+                for raw in result.stdout.split():
+                    pid = int(raw)
+                    try:
+                        if os.getsid(pid) == sid:
+                            os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            child.wait(timeout=10)
+        self.addCleanup(cleanup)
+        self.wait_path(ready)
+        os.killpg(child.pid, signal.SIGTERM)
+        try:
+            child.wait(timeout=8)
+            deadline = time.monotonic() + 8
+            while True:
+                try:
+                    os.kill(int(ready.read_text()), 0)
+                except ProcessLookupError:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail("gate session survived cancellation of the verifier's owned group")
+                time.sleep(.01)
+        except subprocess.TimeoutExpired:
+            self.fail("verifier did not finish bounded cancellation cleanup")
+        if not resistant:
+            self.assertTrue(terminated.exists(), "TERM never reached the supervised gate")
+        owner = json.loads(owner_path.read_text())
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner["gate_session"], owner)
+        if descendant:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(Path(str(ready) + ".child").read_text()), 0)
+        if damage:
+            # Tracked evidence must survive even when restoration cannot succeed.
+            retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(), "gate evidence")
+            self.assertTrue((retained[0].parent.parent / "lease").is_dir())
+        else:
+            self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base)
+            self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
+            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_outer_cancellation_reaches_cooperative_gate_and_restores(self):
+        """The same process-group signal Rust sends reaches nested sessions."""
+        self.cancel_gate()
+
+    def test_outer_cancellation_kills_resistant_gate_before_releasing_owner(self):
+        """A TERM-resistant gate cannot keep writing after cancellation returns."""
+        self.cancel_gate(resistant=True)
+
+    def test_cancellation_preserves_tracked_gate_damage(self):
+        """An interrupted gate's tracked writes remain recoverable evidence."""
+        self.cancel_gate(damage=True)
+
+    def test_cancellation_settles_resistant_subgroup_after_gate_leader_exits(self):
+        """Session ownership includes children outside the leader's process group."""
+        self.cancel_gate(descendant=True)
+
+    def test_outer_lock_allows_the_gate_its_nested_cleanup_budget(self):
+        """A cooperative gate can finish beyond the lock wrapper's old two seconds."""
+        self.cancel_gate(delay=2.5)
+
+    def test_invalid_termination_grace_cannot_launch_a_command(self):
+        """Malformed cleanup policy must be refused before lock admission."""
+        marker = self.root / "must-not-start"
+        for value in ("0", "00", "-1", "", "wat", "1.5", "999999999999999999999"):
+            result = self.command("bash", str(SCRIPTS / "machine-lock.sh"),
+                                  "--termination-grace", value, "gate", "--",
+                                  "touch", str(marker), check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("termination-grace", result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_invalid_cleanup_budget_cannot_launch_a_session(self):
+        """The internal owner also refuses bad policy before arbitrary execution."""
+        marker = self.root / "must-not-start"
+        for value in ("0", "-1", "", "wat", "1.5", "999999999999999999999"):
+            self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = value
+            result = self.command("python3", str(SCRIPTS / "verifier-owner.py"),
+                                  "run-json", str(self.common), str(self.wt),
+                                  "--", "touch", str(marker))
+            self.assertEqual(json.loads(result.stdout)["result"], "infrastructure-failure")
+            self.assertIn("cleanup budget", result.stdout)
+            self.assertFalse(marker.exists())
+
+    def test_cancellation_at_handshake_release_is_not_lost(self):
+        """Deliver a real TERM at the former release-before-handler boundary."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        ready = self.root / "handshake-ready"
+        terminated = self.root / "handshake-terminated"
+        gate = self.root / "handshake-gate.py"
+        gate.write_text(
+            "import os,signal,time\nfrom pathlib import Path\n"
+            "def term(sig, frame):\n    Path(" + repr(str(terminated)) + ").touch()\n    raise SystemExit(143)\n"
+            "signal.signal(signal.SIGTERM,term)\n"
+            "Path(" + repr(str(ready)) + ").write_text(str(os.getpid()))\n"
+            "while True: time.sleep(.01)\n")
+        bootstrap = self.root / "handshake-bootstrap.py"
+        bootstrap.write_text(
+            "import importlib.util,os,signal,sys,time\nfrom pathlib import Path\n"
+            "sys.dont_write_bytecode=True\nsys.path.insert(0," + repr(str(SCRIPTS)) + ")\n"
+            "spec=importlib.util.spec_from_file_location('owner'," + repr(str(SCRIPTS / "verifier-owner.py")) + ")\n"
+            "owner=importlib.util.module_from_spec(spec)\nspec.loader.exec_module(owner)\n"
+            "write=os.write\n"
+            "def release(fd, data):\n"
+            "    result=write(fd,data)\n"
+            "    if data==b'1':\n"
+            "        deadline=time.monotonic()+10\n"
+            "        while not Path(" + repr(str(ready)) + ").exists():\n"
+            "            if time.monotonic()>deadline: raise RuntimeError('gate never ready')\n"
+            "            time.sleep(.01)\n"
+            "        os.kill(os.getpid(),signal.SIGTERM)\n"
+            "    return result\n"
+            "owner.os.write=release\n"
+            "sys.argv=" + repr(["verifier-owner.py", "run", str(self.common), str(self.wt), "--", "python3", str(gate)]) + "\n"
+            "sys.exit(owner.main())\n")
+        child, log = self.spawn("python3", str(bootstrap))
+        self.wait_path(ready)
+        self.addCleanup(lambda: self.stop_pid(int(ready.read_text())))
+        child.wait(timeout=15)
+        log.seek(0)
+        self.assertTrue(terminated.exists(), log.read().decode())
+        owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
+        owner = json.loads(owner_path.read_text())
+        self.assertTrue(owner["completed"], owner)
+        self.assertIsNone(owner["session"], owner)
+
+
 if __name__ == "__main__":
     unittest.main()
