@@ -247,6 +247,72 @@ exit 101
     );
 }
 
+/// SH-695: a red rust-suite leg tore the gate down while a test's deliberate
+/// `sleep 300 &` orphan (`tests/event_hooks.rs`, `tests/hook_bounds.rs`) was
+/// still alive in the gate session. `verifier-owner.py` refused quiescence
+/// the instant the leader exited, the refusal skipped the bookkeeping that
+/// clears `gate_started`, and the outer supervisor's census found the same
+/// orphan and replaced the RED with a permanent infrastructure halt — which
+/// then recurred on every acknowledgement until the record was hand-edited.
+/// The orphan is a leak, not a writer with authority: the gate is red, the
+/// orphan is reaped, and the same poller takes the next gate on this boot.
+/// The orphan's stdio goes to the attempt log (`verify-pr.sh` redirects the
+/// whole gate), not to this test's pipes, so `.output()` cannot hang on it.
+#[test]
+fn a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let pid_file = repo.path().join("orphan-pid");
+    let outcome = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "sleep 300 & printf '%s' $! > \"$1\"; exit 7",
+            "orphan-probe",
+            &pid_file.display().to_string(),
+        ],
+    );
+    assert_ok(&outcome, "a red gate with a lingering orphan is still classified");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap_or_else(|error| {
+        panic!(
+            "one JSON verdict on stdout, got {error}: {}\nstderr: {}",
+            String::from_utf8_lossy(&outcome.stdout),
+            stderr(&outcome)
+        )
+    });
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().expect("a detail");
+    assert!(
+        !detail.contains("live writers"),
+        "the orphan must not be reported as an ambiguous writer: {detail}"
+    );
+    let orphan = fs::read_to_string(&pid_file).expect("the gate published its orphan's pid");
+    let state = stdout(&run(repo.path(), "ps", &["-o", "stat=", "-p", orphan.trim()]));
+    assert!(
+        state.is_empty() || state.starts_with('Z'),
+        "the orphan must be reaped with its gate, found state {state:?}"
+    );
+    let log = fs::read_to_string(payload["log"].as_str().expect("a log path")).expect("read the log");
+    assert!(
+        log.contains("leaving survivors"),
+        "the reap must be visible in the attempt log:\n{log}"
+    );
+
+    // The same poller, same boot: the record did not poison later admission.
+    let again = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", "exit 7"]);
+    assert_ok(&again, "the next gate on the same poller is admitted");
+    let payload: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+}
+
 #[test]
 fn verifier_does_not_promote_test_output_to_compiler_diagnostics() {
     let repo = MergeRepo::new();

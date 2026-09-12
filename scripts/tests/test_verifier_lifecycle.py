@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
-"""Real Git regressions for shared verifier ownership and recovery (SH-683)."""
+"""Real Git regressions for shared verifier ownership and recovery (SH-683).
+
+Mutation-checked for SH-695 (SH-295: a pin that cannot fail is not a pin),
+each run by hand against scripts/verifier-owner.py before commit:
+- the immediate refusal on exit-with-survivors restored -> 3 of 3 red
+  (orphan reaped, TERM-resistant orphan, json result waits) and the
+  merge_gate orphan regression red;
+- admission ignoring the recorded leader exit -> the quiet-session
+  admission case red; admission ignoring the census -> the live-session
+  refusal case red;
+- the outer never signalling a dead supervisor's gate session -> the outer
+  reap case red (no TERM reached the member).
+"""
 
 import json
 import os
+import shlex
 import signal
 import sys
 import time
@@ -137,7 +150,13 @@ class VerifierLifecycle(unittest.TestCase):
                 self.assertEqual(json.loads(record_path.read_text()), malformed)
 
     def test_json_result_waits_for_supervision_to_finish(self):
-        """A child result cannot precede a contradictory supervisor verdict."""
+        """A child result is published only once its survivors are settled.
+
+        Before SH-695 the surviving fork made the supervisor refuse and the
+        child's own verdict was discarded; now the survivor of an exited
+        leader is reaped on the cancellation ladder and the verdict that
+        reaches stdout is the child's, after the reap, never before it.
+        """
         ready = self.root / "survivor-pid"
         code = "import os,time; pid=os.fork(); "
         code += "\nif pid==0: time.sleep(30); os._exit(0)"
@@ -149,13 +168,14 @@ class VerifierLifecycle(unittest.TestCase):
         self.wait_path(ready)
         self.addCleanup(lambda: self.stop_pid(int(ready.read_text())))
         self.assertEqual(child.wait(timeout=15), 0)
+        self.assertGone(int(ready.read_text()))
         log.seek(0)
         output = log.read().decode()
         json_lines = [line for line in output.splitlines() if line.startswith("{")]
         self.assertEqual(len(json_lines), 1, output)
         verdict = json.loads(json_lines[0])
-        self.assertEqual(verdict["result"], "infrastructure-failure")
-        self.assertIn("live writers", verdict["detail"])
+        self.assertEqual(verdict["result"], "ready", output)
+        self.assertIn("leaving survivors", output)
 
     def test_unfinished_lease_allocation_is_recovered_on_restart(self):
         """A crash during private preparation cannot leak an unrecorded lease."""
@@ -487,6 +507,19 @@ while True:
         self.assertIn("ambiguous ownership", result["detail"])
         self.assertEqual((self.wt / ".git").read_bytes(), pointer)
         self.assertEqual(json.loads(owner_path.read_text()), owner)
+        # A recorded leader exit is evidence only in the pairing the gate
+        # supervisor writes: with a started gate and its integer session.
+        for fields in ({"gate_started": True, "gate_session": None, "gate_leader_exit": 3},
+                       {"gate_started": True, "gate_session": 1, "gate_leader_exit": "3"},
+                       {"gate_started": True, "gate_session": 1, "gate_leader_exit": -1},
+                       {"gate_started": False, "gate_session": None, "gate_leader_exit": 3}):
+            with self.subTest(fields=fields):
+                malformed = dict(owner, **fields)
+                owner_path.write_text(json.dumps(malformed))
+                result = self.ensure()
+                self.assertEqual(result["result"], "infrastructure-failure", result)
+                self.assertIn("incomplete owner identity", result["detail"])
+                self.assertEqual(json.loads(owner_path.read_text()), malformed)
 
     def test_symlink_and_backlink_corruption_never_authorize_rebuild(self):
         """Invalid mappings must fail before altering the checkout or target."""
@@ -833,6 +866,139 @@ while True:
         owner = json.loads(owner_path.read_text())
         self.assertTrue(owner["completed"], owner)
         self.assertIsNone(owner["session"], owner)
+
+    # -- SH-695: an exited leader's survivors are reaped, never a halt --------
+
+    def process_state(self, pid):
+        """Report a pid's scheduler state, empty once the kernel has forgotten it."""
+        result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def assertGone(self, pid):
+        """A reaped survivor is either gone or a zombie awaiting launchd."""
+        state = self.process_state(pid)
+        self.assertTrue(state == "" or state.startswith("Z"), f"pid {pid} is alive: {state!r}")
+
+    def owner_record(self):
+        """Locate the one owner record this fixture's lifecycle wrote."""
+        owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
+        return owner_path, json.loads(owner_path.read_text())
+
+    def gate_verdict(self, script, budget_ms=None):
+        """Run one production gate through verify-pr.sh and return its verdict."""
+        if budget_ms is not None:
+            self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = budget_ms
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        tree = self.git("merge-tree", "--write-tree", self.base, self.head)
+        result = self.command("bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree,
+                              self.base, self.head, str(self.wt), "--", "bash", "-c", script)
+        return json.loads(result.stdout)
+
+    def attempt_log(self):
+        """The per-attempt gate log verify-pr.sh wrote for pull request 1."""
+        logs = self.common / "storyhook/verification-logs"
+        return next(p for p in logs.glob("pr-1-*-attempt.*") if not p.name.endswith(".jsonl"))
+
+    def test_exited_gate_with_orphan_returns_the_gate_status_and_reaps_it(self):
+        """A red gate that leaves a test orphan is red, and the orphan dies with it."""
+        orphan = self.root / "orphan-pid"
+        verdict = self.gate_verdict(f"sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 3")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(verdict["result"], "tests-failed", verdict)
+        self.assertNotIn("live writers", verdict["detail"])
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner["gate_session"], owner)
+        self.assertIsNone(owner["gate_leader_exit"], owner)
+        log = self.attempt_log().read_text()
+        self.assertIn("verifier-owner: gate_session", log)
+        self.assertIn(f"leaving survivors [{pid}]", log)
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_exited_gate_survivor_ignoring_term_is_killed_within_the_budget(self):
+        """A TERM-resistant orphan is killed at the gate's grace, not refused."""
+        orphan = self.root / "orphan-pid"
+        verdict = self.gate_verdict(
+            f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 5",
+            budget_ms="8000")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(verdict["result"], "tests-failed", verdict)
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner["gate_leader_exit"], owner)
+
+    def recorded_leader_exit(self, alive):
+        """Rewrite the record as a gate supervisor that died mid-reap leaves it."""
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        sleeper = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(lambda: self.stop_pid(sleeper.pid))
+        if not alive:
+            sleeper.kill()
+            sleeper.wait()
+        owner_path, owner = self.owner_record()
+        owner.update(gate_started=True, gate_session=sleeper.pid, gate_leader_exit=3)
+        owner_path.write_text(json.dumps(owner))
+        return owner_path, owner, self.ensure()
+
+    def test_recorded_leader_exit_is_admitted_once_its_session_is_quiet(self):
+        """A recorded leader exit plus an empty census is a finished gate session."""
+        owner_path, _, result = self.recorded_leader_exit(alive=False)
+        self.assertEqual(result["result"], "verifier-worktree-ready", result)
+        owner = json.loads(owner_path.read_text())
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner.get("gate_leader_exit"), owner)
+
+    def test_recorded_leader_exit_with_live_session_is_still_refused(self):
+        """The census, not the recorded exit, decides; live writers still refuse."""
+        owner_path, owner, result = self.recorded_leader_exit(alive=True)
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("has writers", result["detail"])
+        self.assertEqual(json.loads(owner_path.read_text()), owner)
+
+    def test_outer_reaps_the_gate_session_when_the_inner_supervisor_is_gone(self):
+        """A dead gate supervisor's session is the outer's to settle, not to refuse."""
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = "8000"
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        terminated = self.root / "gate-terminated"
+        member = self.root / "gate-member.sh"
+        member.write_text("trap 'touch " + shlex.quote(str(terminated)) + "; exit 0' TERM\n"
+                          "while :; do sleep 0.05; done\n")
+        member_pid = self.root / "gate-member-pid"
+        leader = self.root / "leader.py"
+        leader.write_text(
+            "import os, subprocess, sys\nfrom pathlib import Path\n"
+            "sys.dont_write_bytecode = True\nsys.path.insert(0, " + repr(str(SCRIPTS)) + ")\n"
+            "from verifier_state import read, save\n"
+            "member = subprocess.Popen(['bash', " + repr(str(member)) + "], start_new_session=True,\n"
+            "                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "Path(" + repr(str(member_pid)) + ").write_text(str(member.pid))\n"
+            "gone = subprocess.Popen(['true'])\n"
+            "gone.wait()\n"
+            "path = " + repr(str(self.common / "storyhook/verifier-lifecycle")) + "\n"
+            "record = next(Path(path).glob('*.owner'))\n"
+            "owner = read(record)\n"
+            "owner.update(gate_started=True, gate_session=member.pid, gate_supervisor=gone.pid)\n"
+            "save(record, owner)\n")
+        result = self.owner("python3", str(leader))
+        pid = int(member_pid.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertGone(pid)
+        self.assertTrue(terminated.exists(), "the outer never sent TERM into the gate session")
+        self.assertIn("leaving survivors", result.stderr)
+        _, owner = self.owner_record()
+        self.assertTrue(owner["completed"], owner)
+        self.assertTrue(owner["gate_started"], owner)
+        # No supervisor recorded that leader's exit: the gate stays interrupted.
+        result = self.ensure()
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("ambiguous ownership", result["detail"])
 
 
 if __name__ == "__main__":
