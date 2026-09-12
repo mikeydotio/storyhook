@@ -1754,6 +1754,29 @@ cmd_dispatch() {
   enter_checkout
   local dir="$PROJECT_ROOT"
 
+  # Origin's default branch, resolved ONCE for every mode (SH-691): the
+  # resume inventory below asks whether the expected branch is protected,
+  # and Step 8 bases the worktree on it. Three sources, stated in the
+  # receipt as `base_source`: `origin` (asked of the remote — default_branch,
+  # one round trip every mode now pays, --resume and dry-run included),
+  # `cache` (origin did not answer; the local origin/HEAD cache, stale by
+  # construction, said so in the warning), `none` (no cache either — Step 8
+  # bases the work on the local checkout). Never a literal: the old `main`
+  # fallback is how five stories' pull requests reached the wrong branch.
+  # Resolved before the claim, so an unanswerable origin needs no rollback.
+  local default="" default_source="" default_reason=""
+  if default=$(default_branch 2>&1); then
+    default_source=origin
+  else
+    default_reason=$(printf '%s' "$default" | tr '\n' ' ')
+    if default=$(cached_default_branch); then
+      default_source=cache
+    else
+      default=""
+      default_source=none
+    fi
+  fi
+
   # The provider, and everything composed from it. SH-650: a resume relaunches
   # the provider the abandoned dispatch recorded, unless the caller named one
   # explicitly. Precedence is the explicit flag, then the surviving record
@@ -1822,7 +1845,7 @@ cmd_dispatch() {
       artifacts_exist=true
       branch_status="present"
       branch_reused=true
-      is_protected_branch "$worktree_branch" && refuse "resume-unsafe" \
+      is_protected_branch "$worktree_branch" "$default" && refuse "resume-unsafe" \
         "story $id's expected branch \`$worktree_branch\` is protected by repository policy; refusing to use it as a disposable story branch."
     elif [ "$registered_worktree" = true ]; then
       refuse "resume-unsafe" \
@@ -2279,20 +2302,22 @@ cmd_dispatch() {
   fi
 
   # Step 8: fetch origin/<default> (best-effort, quiet) and resolve the
-  # commit the new worktree will be based on. THREE tiers: FRESH (fetch ok +
-  # ref resolves), CACHED (fetch failed but a prior origin/<default> ref
-  # exists), HEAD-FALLBACK (origin/<default> has never resolved at all —
-  # offline and never fetched). Deliberately NOT routed through
-  # freshen_base_ref: that helper's documented contract is "any fetch
-  # failure is swallowed" (it exists for branch_is_merged, which only needs
-  # SOME usable ref, never freshness metadata) — inlining the fetch here and
-  # capturing its OWN exit code is what lets base_fresh distinguish
-  # "resolves" from "was just refreshed". Either way dispatch never blocks
-  # on network. On any hard failure from here on, the claim above is rolled
+  # commit the new worktree will be based on. <default> is the branch
+  # resolved above (origin's own answer, or the local cache when origin did
+  # not answer, or nothing). THREE tiers: FRESH (fetch ok + ref resolves),
+  # CACHED (fetch failed but a prior origin/<default> ref exists),
+  # HEAD-FALLBACK (origin/<default> has never resolved at all, or no default
+  # branch could be established — offline and never fetched). Deliberately
+  # NOT routed through freshen_base_ref: that helper's documented contract
+  # is "any fetch failure is swallowed" (it exists for branch_is_merged,
+  # which only needs SOME usable ref, never freshness metadata) — inlining
+  # the fetch here and capturing its OWN exit code is what lets base_fresh
+  # distinguish "resolves" from "was just refreshed". Either way dispatch
+  # never blocks on network, and every fallback is stated in the warning
+  # (SH-691). On any hard failure from here on, the claim above is rolled
   # back via claim_rollback_note so a failed dispatch never strands the
   # story in the claimed state.
-  local default fetch_rc=0
-  default=$(default_branch)
+  local fetch_rc=0
   local base_oid="" base_fresh=false base_note=""
   if [ "$worktree_reused" = true ]; then
     base_oid=$(git -C "$worktree_path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
@@ -2303,9 +2328,14 @@ cmd_dispatch() {
       || fail "cannot resolve the surviving branch \`$worktree_branch\` to a commit.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     base_note="reattached surviving branch $worktree_branch at ${base_oid:0:8}; no base refresh or reset was attempted"
   else
-    git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
-      >/dev/null 2>&1 || fetch_rc=$?
-    if base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
+    if [ -n "$default" ]; then
+      git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
+        >/dev/null 2>&1 || fetch_rc=$?
+    else
+      fetch_rc=1
+    fi
+    if [ -n "$default" ] \
+       && base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
        && [ -n "$base_oid" ]; then
       if [ "$fetch_rc" -eq 0 ]; then
         base_fresh=true
@@ -2313,13 +2343,20 @@ cmd_dispatch() {
         base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
       fi
     elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
-      base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+      if [ -n "$default" ]; then
+        base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+      else
+        base_note="no default branch could be established ($default_reason; no local origin/HEAD cache either); new work is based on the local checkout, NOT an origin tip"
+      fi
       if [ -n "$REQUIRE_FRESH_BASE" ]; then
-        fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+        fail "could not determine a fresh origin/${default:-<default>} and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
       fi
     else
-      fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      fail "cannot resolve a base commit for the new worktree (no origin/${default:-<default>} and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
+  fi
+  if [ "$default_source" = cache ]; then
+    base_note="${base_note:+$base_note; }default branch \`$default\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
   fi
 
   # Step 9: preserve a valid existing worktree, reattach a branch-only find,
@@ -2662,7 +2699,8 @@ cmd_dispatch() {
     --argjson window_reused "$window_reused" --argjson worktree_created "$worktree_created" \
     --argjson branch_created "$branch_created" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
-    --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
+    --arg default "$default" --arg default_source "$default_source" \
+    --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
@@ -2682,7 +2720,9 @@ cmd_dispatch() {
       readiness_confirmed: $ready, plan_mode_confirmed: $plan,
       prompt_confirmed: $pconf, prompt_accepted: $paccept,
       claimed: true, gitignore: $gitignore,
-      base_branch: $default, base_ref: ("origin/" + $default),
+      base_branch: (if $default == "" then null else $default end),
+      base_ref: (if $default == "" then null else "origin/" + $default end),
+      base_source: $default_source,
       base_oid: $base_oid, base_fresh: $base_fresh,
       worktree_branch: $wtbranch, worktree_path: $wtpath,
       cleanup_lease: $cleanup_lease
@@ -3739,7 +3779,23 @@ _complete_prepare() {
 
   local wt_container wname
   wname=$(resolve_wname "$id")
-  CMP_DEFAULT=$(default_branch)
+  # Origin's default branch (SH-691): asked of origin; when origin does not
+  # answer, the local origin/HEAD cache is used and SAID to be used
+  # (CMP_DEFAULT_SOURCE, plus a note in every receipt that reports the
+  # default). A stale default can only PRESERVE a branch here — branch_is_merged
+  # answers "not merged" against the wrong ref, and a `worktree-*` name never
+  # collides with a default — so the read-only plan and the guarded execute
+  # keep working offline. Neither source → fail; never a literal.
+  CMP_DEFAULT_SOURCE=origin
+  CMP_DEFAULT_NOTE=""
+  if ! CMP_DEFAULT=$(default_branch 2>&1); then
+    local default_reason
+    default_reason=$(printf '%s' "$CMP_DEFAULT" | tr '\n' ' ')
+    CMP_DEFAULT=$(cached_default_branch) \
+      || fail "cannot establish origin's default branch, and this checkout has no origin/HEAD cache to fall back on: $default_reason"
+    CMP_DEFAULT_SOURCE=cache
+    CMP_DEFAULT_NOTE="default branch \`$CMP_DEFAULT\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
+  fi
   freshen_base_ref "$CMP_DEFAULT"
 
   wt_container="${WORKTREE_IGNORE_PATH%/}"
@@ -3780,7 +3836,7 @@ _complete_prepare() {
   # <default> exists), so it is preserved rather than deleted.
   if ! local_branch_exists "$CMP_WT_BRANCH"; then
     CMP_BR_STATUS="missing"
-  elif is_protected_branch "$CMP_WT_BRANCH"; then
+  elif is_protected_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
     CMP_BR_STATUS="protected"
   elif branch_is_merged "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
     CMP_BR_STATUS="deletable"
@@ -3854,7 +3910,8 @@ cmd_complete_plan() {
   jq -n \
     --arg id "$id" --arg title "$CMP_TITLE" --arg state "$CMP_STATE" \
     --arg super "$CMP_SUPER" --arg done_state "$CMP_DONE_STATE" \
-    --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
+    --arg default "$CMP_DEFAULT" --arg default_source "$CMP_DEFAULT_SOURCE" \
+    --arg default_note "$CMP_DEFAULT_NOTE" --arg wtpath "$CMP_WT_PATH" \
     --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
     --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
     --arg wname "$CMP_WNAME" --arg wstatus "$CMP_WINDOW_STATUS" \
@@ -3862,7 +3919,7 @@ cmd_complete_plan() {
     --arg note "$CMP_NOTE" '
     {
       ok: true, id: $id, title: $title, state: $state, superstate: $super,
-      default_branch: $default,
+      default_branch: $default, default_branch_source: $default_source,
       plan: {
         close: (if $close then { to: $done_state } else null end),
         worktree: { path: $wtpath, status: $wtstatus },
@@ -3890,6 +3947,7 @@ cmd_complete_plan() {
              elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
              else " -> PRESERVED (" + $brstatus + ")" end)
         + (if $note == "" then "" else "\n " + $note end)
+        + (if $default_note == "" then "" else "\n  warning:  " + $default_note end)
       )
     }'
 }
@@ -4327,7 +4385,10 @@ cmd_reap_leased() {
     || refuse "not-completion-state" "story.sh reap: $canonical_id is in CLOSED state \`$state\`, not completion state \`$done_state\`."
 
   local default wt_status branch_status
-  default=$(default_branch)
+  # Asked of origin (SH-691): a reap deletes, so an unknown default is a
+  # refusal by name, never a cached or literal guess.
+  default=$(default_branch 2>&1) \
+    || refuse "default-branch-unknown" "story.sh reap: origin's default branch could not be established for $canonical_id, so nothing can be classed merged: $(printf '%s' "$default" | tr '\n' ' ')"
   freshen_base_ref "$default"
   wt_status=$(_story_worktree_status "$leased_worktree" "")
   case "$wt_status" in
@@ -4336,7 +4397,7 @@ cmd_reap_leased() {
   esac
   if ! local_branch_exists "$leased_branch"; then
     branch_status=missing
-  elif is_protected_branch "$leased_branch"; then
+  elif is_protected_branch "$leased_branch" "$default"; then
     branch_status=protected
   elif branch_is_merged "$leased_branch" "$default"; then
     branch_status=deletable
@@ -4441,8 +4502,14 @@ leased_submit_receipt() {
 # verifying, linked PR or not — after a RED return the agent only commits, so
 # this is the one place the fix reaches the remote.
 #
-# The base is `default_branch()` (origin/HEAD), the same fact dispatch based
-# the worktree on; a PR against anything else is not this lane's. There is no
+# The base is `default_branch()` — origin's own advertised default, asked of
+# the remote at submission time (SH-691: the local origin/HEAD cache went
+# stale when this repository's default moved, and a literal fallback answered
+# `main` where the cache was absent, so five pull requests landed on the
+# wrong branch and were certified there) — the same fact dispatch based the
+# worktree on; a PR against anything else is not this lane's. A submission
+# that cannot establish its base stops as the verifier's own retryable
+# incident; it never guesses one. There is no
 # --force: a rewritten branch is refused as `push-rejected` and returned to
 # the agent, whose charter forbids rewriting published history.
 #
@@ -4458,7 +4525,10 @@ cmd_submit_leased() {
     || submit_refuse repair "not-verifying" "story.sh submit: $canonical_id is in state \`$LEASE_STATE\`, not \`verifying\`; only a story submitted for verification is pushed."
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
-  ! is_protected_branch "$branch" \
+  local default
+  default=$(default_branch 2>&1) \
+    || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: origin's default branch could not be established, so there is no base to open $canonical_id's pull request against: $(printf '%s' "$default" | tr '\n' ' ')"
+  ! is_protected_branch "$branch" "$default" \
     || submit_refuse repair "protected-branch" "story.sh submit: leased branch \`$branch\` is protected; a story lane never submits the default branch itself."
 
   local dirty dirty_json
@@ -4471,8 +4541,7 @@ cmd_submit_leased() {
       "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
   fi
 
-  local default head_oid
-  default=$(default_branch)
+  local head_oid
   freshen_base_ref "$default"
   head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
@@ -4504,14 +4573,27 @@ cmd_submit_leased() {
 
   # Adopt-or-create is a 0-or-1 decision: GitHub permits one open pull request
   # per (head, base), and a fork's PR for the same head name is not ours
-  # (verify-pr.sh refuses cross-repository PRs for the same reason).
+  # (verify-pr.sh refuses cross-repository PRs for the same reason). Listed
+  # by HEAD alone (SH-691): a pull request already open for this head against
+  # any OTHER base is the misdirected shape that put five stories on `main`,
+  # and a listing by (head, base) cannot see it — `gh pr create` would then
+  # open a second one beside it and leave the wrong one for a person to
+  # merge. It is refused by name instead, with the remedy, the way
+  # `multiple-pull-requests` already is.
   local fields=number,url,baseRefName,headRefOid,isCrossRepository
-  local listed open count pr adopted title body url view_out
-  listed=$(cd "$worktree" && gh pr list --head "$branch" --base "$default" --state open \
+  local listed open wrong_base count pr adopted title body url view_out
+  listed=$(cd "$worktree" && gh pr list --head "$branch" --state open \
     --json "$fields" --limit 20 2>&1) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
   open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr list returned something other than JSON: $listed"
+  wrong_base=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName != $b)]')
+  if [ "$(printf '%s' "$wrong_base" | jq 'length')" -ne 0 ]; then
+    submit_refuse repair "wrong-base-pull-request" \
+      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
+      "$(jq -n --argjson p "$wrong_base" '{wrong_base_pull_requests: $p}')"
+  fi
+  open=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName == $b)]')
   count=$(printf '%s' "$open" | jq 'length')
   case "$count" in
     0)

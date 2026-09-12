@@ -24,8 +24,10 @@ A leased workspace is eligible only when all of these facts can be proved:
 2. No window with the exact story ID exists on the leased tmux socket.
 3. The canonical worktree is clean, unlocked, registered, and checked out on
    the leased branch.
-4. After fetching `origin/HEAD`, every existing worktree, local-branch, and
-   origin-branch tip is an ancestor of that default branch.
+4. After asking origin for its default branch (`git ls-remote --symref
+   origin HEAD` — never the local `origin/HEAD` cache, which no fetch
+   refreshes; SH-691) and fetching it, every existing worktree, local-branch,
+   and origin-branch tip is an ancestor of that default branch.
 5. The leased branch is not `main`, `master`, or the repository default.
 
 An unavailable dependency is a refusal, not permission to delete. A missing

@@ -60,6 +60,7 @@ impl LandRepo {
             "gate-receipt.sh",
             "tree-receipt.sh",
             "tracked-tree.sh",
+            "origin-default-branch.sh",
         ] {
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(name),
@@ -115,6 +116,57 @@ impl LandRepo {
 
     fn rev_parse(&self, rev: &str) -> String {
         stdout(&self.git(&["rev-parse", rev]))
+    }
+
+    /// A real bare origin whose advertised HEAD is `default`, with `main`
+    /// pushed (and `default` pushed at the same commit when it differs), and
+    /// this checkout's local origin/HEAD cache deliberately left saying
+    /// `main` — the stale-cache shape that misdirected five pull requests
+    /// (SH-691). Returns the bare repository's path.
+    fn with_origin(&self, default: &str) -> PathBuf {
+        let bare = self.path().join("origin.git");
+        let bare_arg = bare.display().to_string();
+        let init = command(
+            self.path(),
+            "git",
+            &["init", "-q", "--bare", "-b", "main", &bare_arg],
+        )
+        .output()
+        .expect("creating the bare origin");
+        assert_ok(&init, "git init --bare");
+        self.git(&["remote", "add", "origin", &bare_arg]);
+        self.git(&["push", "-q", "origin", "main"]);
+        if default != "main" {
+            self.git(&[
+                "push",
+                "-q",
+                "origin",
+                &format!("main:refs/heads/{default}"),
+            ]);
+        }
+        self.git(&["remote", "set-head", "origin", "main"]);
+        self.origin_git(
+            &bare,
+            &["symbolic-ref", "HEAD", &format!("refs/heads/{default}")],
+        );
+        assert_eq!(
+            stdout(&self.git(&["symbolic-ref", "refs/remotes/origin/HEAD"])),
+            "refs/remotes/origin/main",
+            "fixture: the local cache must still say main"
+        );
+        bare
+    }
+
+    /// Runs git against the bare origin itself.
+    fn origin_git(&self, bare: &Path, args: &[&str]) -> Output {
+        let bare_arg = bare.display().to_string();
+        let mut all = vec!["--git-dir", bare_arg.as_str()];
+        all.extend_from_slice(args);
+        let out = command(self.path(), "git", &all)
+            .output()
+            .expect("running git against the origin");
+        assert_ok(&out, &format!("origin git {}", args.join(" ")));
+        out
     }
 
     fn branch(&self, name: &str, from: &str, file: &str, body: &str) -> String {
@@ -275,6 +327,29 @@ fn refresh_metadata(head: &str) -> String {
     )
 }
 
+/// GitHub's wire shape for the first read `--locked` makes, as the
+/// `--validate-base` seam takes it.
+fn base_metadata(number: u64, base: &str) -> String {
+    format!(r#"{{"number":{number},"baseRefName":"{base}","headRefName":"feature"}}"#,)
+}
+
+/// Runs the pure base seam: `stated` is the caller's `--base` intent, empty
+/// to ask origin.
+fn validate_base(repo: &LandRepo, stated: &str, metadata: &str) -> Output {
+    command(
+        repo.path(),
+        "bash",
+        &[
+            &repo.script("land-pr.sh"),
+            "--validate-base",
+            stated,
+            metadata,
+        ],
+    )
+    .output()
+    .expect("validating the base")
+}
+
 fn wait_for(path: &Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
@@ -294,7 +369,91 @@ fn the_public_command_refuses_a_missing_pr() {
         .expect("running land-pr without a PR");
 
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("usage: land-pr.sh <pr>"));
+    assert!(stderr(&out).contains("usage: land-pr.sh [--base <branch>] <pr>"));
+
+    let dangling = command(repo.path(), "bash", &[&repo.script("land-pr.sh"), "--base"])
+        .output()
+        .expect("running land-pr with a dangling --base");
+    assert!(!dangling.status.success());
+    assert!(stderr(&dangling).contains("usage: land-pr.sh [--base <branch>] <pr>"));
+}
+
+// --- SH-691: the base is checked, not only its stability ---------------------
+//
+// Five pull requests opened against `main` by a stale local origin/HEAD cache
+// were certified and merged here because the only question asked of a base
+// was whether it changed between two reads. The seam below is the first read
+// plus the question that was missing: is this the branch the PR must land on?
+
+#[test]
+fn the_base_is_asked_of_origin_not_read_from_the_local_cache() {
+    let repo = LandRepo::new();
+    repo.with_origin("dev");
+
+    let out = validate_base(&repo, "", &base_metadata(621, "dev"));
+    assert_ok(&out, "a PR against origin's advertised default");
+    assert_eq!(stdout(&out), "dev");
+}
+
+#[test]
+fn a_pull_request_on_another_branch_is_refused_with_its_own_exit_code() {
+    let repo = LandRepo::new();
+    repo.with_origin("dev");
+
+    let out = validate_base(&repo, "", &base_metadata(621, "main"));
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("PR #621 targets `main`"), "{err}");
+    assert!(err.contains("must land on is `dev`"), "{err}");
+    assert!(err.contains("nothing was merged"), "{err}");
+    assert!(
+        err.contains("--base states a different intended base"),
+        "{err}"
+    );
+    assert!(stdout(&out).is_empty(), "a refusal resolves nothing");
+}
+
+#[test]
+fn a_stated_base_is_the_callers_intent_and_is_still_checked() {
+    let repo = LandRepo::new();
+    repo.with_origin("dev");
+
+    // release.sh's stable merge: `main` is not origin's default, and is meant.
+    let stated = validate_base(&repo, "main", &base_metadata(7, "main"));
+    assert_ok(&stated, "a stated base the PR matches");
+    assert_eq!(stdout(&stated), "main");
+
+    let mismatch = validate_base(&repo, "main", &base_metadata(7, "dev"));
+    assert_eq!(
+        mismatch.status.code(),
+        Some(3),
+        "stderr: {}",
+        stderr(&mismatch)
+    );
+    let err = stderr(&mismatch);
+    assert!(err.contains("PR #7 targets `dev`"), "{err}");
+    assert!(err.contains("must land on is `main`"), "{err}");
+}
+
+#[test]
+fn an_origin_without_a_default_refuses_to_guess_one() {
+    let repo = LandRepo::new();
+    let bare = repo.with_origin("dev");
+    // A detached remote HEAD advertises no default branch at all.
+    let tip = repo.rev_parse("main");
+    repo.origin_git(&bare, &["update-ref", "--no-deref", "HEAD", &tip]);
+
+    let out = validate_base(&repo, "", &base_metadata(9, "main"));
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("origin's default branch is unknown"), "{err}");
+    assert!(err.contains("no symbolic HEAD"), "{err}");
+    assert!(err.contains("--base <branch>"), "{err}");
+    assert!(
+        !err.contains("targets"),
+        "an unknown default is never compared against: {err}"
+    );
+    assert!(stdout(&out).is_empty());
 }
 
 #[test]

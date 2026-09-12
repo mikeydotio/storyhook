@@ -374,17 +374,9 @@ fn clean_candidate(
     }
 
     ensure_window_absent(lease).map_err(|detail| refuse("tmux-window-open", detail))?;
-    let default = git_text(
-        repository,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    )
-    .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
-    let default_branch = default.strip_prefix("origin/").unwrap_or(&default);
+    let default_branch = origin_default_branch(repository)
+        .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
+    let default_branch = default_branch.as_str();
     if matches!(lease.branch.as_str(), "main" | "master") || lease.branch == default_branch {
         return Err(refuse("protected-branch", lease.branch.clone()));
     }
@@ -586,6 +578,30 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
         return Err(stderr(&output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The name of origin's default branch, asked of origin itself (`git
+/// ls-remote --symref origin HEAD`) — never the local `refs/remotes/origin/HEAD`
+/// cache, which git writes at clone time and no fetch refreshes, so it kept
+/// answering `main` after this repository's default moved to `dev` (SH-691);
+/// and never a literal. An origin that does not answer, or that advertises no
+/// symbolic HEAD (unborn or detached: `ls-remote` then prints no `ref:` line
+/// at exit 0), is an error naming why — absence is not an answer (SH-372).
+/// The plugin's `default_branch` and the verifier bundle's
+/// `origin-default-branch.sh` are this derivation's shell copies.
+fn origin_default_branch(repository: &Path) -> Result<String, String> {
+    let advertised = git_text(repository, &["ls-remote", "--symref", "origin", "HEAD"])
+        .map_err(|detail| format!("origin did not answer: {detail}"))?;
+    advertised
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(target, name)| *name == "HEAD" && target.starts_with("ref: "))
+        .and_then(|(target, _)| target.strip_prefix("ref: refs/heads/"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "origin advertises no symbolic HEAD (its default branch is unborn or detached)"
+                .to_string()
+        })
 }
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
     let output = git(cwd, args)?;
@@ -866,6 +882,47 @@ mod tests {
         protected.branch = "dev".into();
         let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
+    }
+
+    /// SH-691: the default branch is origin's own answer, not the local
+    /// `refs/remotes/origin/HEAD` cache — here the cache is made to say `main`,
+    /// a branch origin does not even have, and origin's `dev` stays protected.
+    #[test]
+    fn the_default_branch_is_asked_of_origin_not_the_local_cache() {
+        let repo = Repo::new(true);
+        run_git(
+            &repo.checkout,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )
+        .unwrap();
+        let mut protected = repo.lease.clone();
+        protected.worktree_path = repo._root.path().join("already-absent");
+        protected.branch = "dev".into();
+        let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
+        assert_eq!(refusal.reason, "protected-branch");
+    }
+
+    /// SH-691: an origin whose HEAD is detached advertises no default branch;
+    /// that is unverifiable, never a guess of `main`.
+    #[test]
+    fn an_origin_without_a_default_branch_is_unverifiable_never_guessed() {
+        let repo = Repo::new(true);
+        let origin = repo._root.path().join("origin.git");
+        let tip = git_text(&origin, &["rev-parse", "refs/heads/dev"]).unwrap();
+        run_git(&origin, &["update-ref", "--no-deref", "HEAD", &tip]).unwrap();
+        let mut lease = repo.lease.clone();
+        lease.worktree_path = repo._root.path().join("already-absent");
+        let refusal = clean_candidate(&repo.checkout, &lease, false).unwrap_err();
+        assert_eq!(refusal.reason, "default-branch-unverifiable");
+        assert!(
+            refusal.detail.contains("no symbolic HEAD"),
+            "{}",
+            refusal.detail
+        );
     }
 
     #[test]
