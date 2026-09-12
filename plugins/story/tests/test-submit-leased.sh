@@ -187,6 +187,65 @@ out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" PATH="$F
   bash "$SCRIPT" --project "$slug" submit "$other" 2>&1)
 assert_eq "$(jqf "$out" .reason)" "cleanup-lease-story-mismatch" "a lease for another story is refused"
 
+# --- SH-691: the base is origin's ADVERTISED default, never the local cache -----------
+# The fixture's cache (refs/remotes/origin/HEAD) says `main`; origin itself is
+# moved to `dev`. Five real pull requests reached `main` this way.
+printf '[]\n' >"$FAKE_GH_STATE/prs.json"
+git -C "$repo" push -q origin main:refs/heads/dev
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
+assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/main" \
+  "fixture: the local origin/HEAD cache still says main"
+before=$(create_count)
+out=$(submit); status=$?
+assert_eq "$status" "0" "a stale cache does not stop submission: $out"
+assert_eq "$(jqf "$out" .pull_request.base)" "dev" "the pull request targets origin's advertised default, not the cached one"
+assert_eq "$(create_count)" "$((before + 1))" "one pull request was opened"
+assert_contains "$(grep $'^pr\tcreate\t' "$FAKE_GH_STATE/argv.log" | tail -n 1)" $'--base\tdev' \
+  "create names origin's default as the base"
+assert_contains "$(jqf "$out" .display)" "against dev" "the display names the base"
+
+# --- SH-691: an ABSENT cache is not evidence of `main` ---------------------------------
+# The mutation check for the retired literal fallback: with `printf 'main'`
+# restored in lib/session.sh, this case opens the pull request against main.
+printf '[]\n' >"$FAKE_GH_STATE/prs.json"
+git -C "$repo" remote set-head origin --delete
+if git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+  fail_test "fixture: the local origin/HEAD cache should be gone"
+fi
+before=$(create_count)
+out=$(submit); status=$?
+assert_eq "$status" "0" "no cache does not stop submission: $out"
+assert_eq "$(jqf "$out" .pull_request.base)" "dev" "with no cache the base is still asked of origin"
+assert_contains "$(grep $'^pr\tcreate\t' "$FAKE_GH_STATE/argv.log" | tail -n 1)" $'--base\tdev' \
+  "create asked origin; it did not assume main"
+assert_eq "$(create_count)" "$((before + 1))" "one pull request was opened"
+
+# --- SH-691: an origin that advertises no default is refused, nothing pushed -----------
+printf 'unknown\n' >>"$worktree/work.txt"
+git -C "$worktree" -c user.name=t -c user.email=t@e commit -q -am "fix: unknown default"
+unpushed=$(git -C "$worktree" rev-parse HEAD)
+git --git-dir="$origin" update-ref --no-deref HEAD "$(git --git-dir="$origin" rev-parse refs/heads/dev)"
+before=$(create_count)
+out=$(submit); status=$?
+assert_eq "$status" "1" "a detached origin HEAD refuses the submission"
+assert_eq "$(jqf "$out" .reason)" "default-branch-unknown" "…by name"
+assert_eq "$(jqf "$out" .class)" "infrastructure" "…as the verifier's incident, not the agent's"
+assert_contains "$(jqf "$out" .display)" "no symbolic HEAD" "…saying what origin advertised"
+[ "$(remote_tip)" != "$unpushed" ] || fail_test "an unknown default must not push"
+assert_eq "$(create_count)" "$before" "an unknown default opens nothing"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
+
+# --- SH-691: an unreachable origin is refused by name, before any push -----------------
+git -C "$repo" remote set-url origin /nonexistent/storyhook-origin.git
+out=$(submit); status=$?
+assert_eq "$status" "1" "an unreachable origin refuses the submission"
+assert_eq "$(jqf "$out" .reason)" "default-branch-unknown" "…by name"
+assert_eq "$(jqf "$out" .class)" "infrastructure" "…as infrastructure"
+assert_contains "$(jqf "$out" .display)" "did not answer" "…carrying git's own words"
+git -C "$repo" remote set-url origin "$origin"
+[ "$(remote_tip)" != "$unpushed" ] || fail_test "an unreachable origin cannot have been pushed to"
+assert_eq "$(create_count)" "$before" "nothing was opened while origin was unreachable"
+
 # --- the verb is a router verb the agent-facing docs and usage name --------------------
 assert_contains "$(router_verbs "$SCRIPT")" "submit" "submit is a router verb"
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)

@@ -47,6 +47,12 @@
 # divergence originally shipped alongside, once no `<repo-prefix>-*`
 # worktree remained anywhere using this plugin.)
 #
+# A third deliberate divergence, SH-691: default_branch asks origin itself
+# (`git ls-remote --symref origin HEAD`) instead of reading the local
+# origin/HEAD cache, and never falls back to a literal; is_protected_branch
+# takes the resolved default as an argument; cached_default_branch is new.
+# Each function's own comment carries the reasons.
+#
 # Sourced, not executed: this file sets no shell options of its own (no
 # `set -euo pipefail`) — it inherits whatever the sourcing caller already
 # set. bin/story.sh sources this file immediately after its own `set -euo
@@ -164,20 +170,72 @@ resolve_wname() {
 }
 
 # ---- git-safety helpers ------------------------------------------------------
-# default_branch — the repo's default branch NAME (no "origin/"), from
-# origin/HEAD, falling back to "main". NEVER a valid delete target.
+# default_branch — the NAME of origin's default branch (no "origin/"), asked
+# of origin itself: `git ls-remote --symref origin HEAD` advertises the
+# remote's own HEAD — one read-only round trip, no `gh`, any git host. On
+# success prints the name and nothing else.
+#
+# Never the local refs/remotes/origin/HEAD cache alone, and never a literal
+# (SH-691). Git writes that cache at clone time and no fetch refreshes it, so
+# when this repository's default moved to `dev`, every checkout whose cache
+# still said `main` — and every checkout with no cache, which the old
+# fallback answered `main` for — submitted its pull request to the wrong
+# branch, five stories over, and nothing downstream noticed. The cache is a
+# copy of a fact that has an authority (SH-136); a literal turns "I do not
+# know" into a confident wrong answer (SH-394).
+#
+# When origin cannot say — unreachable, no such remote, or a HEAD that is
+# unborn or detached (ls-remote then prints no `ref:` line at exit 0) — this
+# prints nothing and returns 1 with the reason on stderr. Absence is not an
+# answer (SH-372); each caller decides what an unknown default means for its
+# own verb. Git's own stderr is captured here and never reaches stdout, so a
+# caller may take `$(default_branch 2>&1)` as the name on success and as the
+# diagnostic on failure.
 default_branch() {
-  local ref
-  ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || ref=""
-  if [ -n "$ref" ]; then printf '%s' "${ref##*/}"; else printf 'main'; fi
+  local out name
+  if ! out=$(git ls-remote --symref origin HEAD 2>&1); then
+    printf 'default_branch: origin did not answer: %s\n' "$out" >&2
+    return 1
+  fi
+  name=$(printf '%s\n' "$out" \
+    | awk -F'\t' '$2 == "HEAD" && index($1, "ref: refs/heads/") == 1 { print substr($1, 17); exit }')
+  if [ -z "$name" ]; then
+    printf 'default_branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); set one on the remote, e.g. `gh repo edit --default-branch <name>`\n' >&2
+    return 1
+  fi
+  printf '%s' "$name"
 }
 
-# is_protected_branch <branch> — true for the default branch, main/master, or any
-# glob in STORY_PROTECTED_BRANCHES (space-separated). These are never deleted.
+# cached_default_branch — the LOCAL refs/remotes/origin/HEAD cache, name only,
+# or return 1 when there is none. Stale by construction (see default_branch):
+# for the callers allowed to keep working when origin does not answer
+# (dispatch's documented offline tiers; complete's read-only plan), which
+# must SAY they used the cache and name `git remote set-head origin -a` as
+# the remedy. Strips the whole remote prefix, never `##*/`: a default named
+# `release/1.0` is not `1.0`.
+cached_default_branch() {
+  local ref
+  ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || return 1
+  printf '%s' "${ref#refs/remotes/origin/}"
+}
+
+# is_protected_branch <branch> <default> — true for <default> (origin's default
+# branch as the caller resolved it; empty when none could be established, in
+# which case only the names below protect), for main/master, or for any glob
+# in STORY_PROTECTED_BRANCHES (space-separated). These are never deleted.
+# The default is an ARGUMENT (SH-691): a predicate must not do network I/O,
+# and a lookup failure inside it could only surface as the wrong refusal, so
+# every caller resolves the default once and classifies its own failure. A
+# call that omits the argument is a programming error and answers
+# "protected" — the direction in which a guard on deletion fails safe.
 is_protected_branch() {
-  local b="$1" d extra g
-  d=$(default_branch)
-  case "$b" in "$d"|main|master) return 0 ;; esac
+  local b="$1" d="${2-}" g
+  if [ "$#" -lt 2 ]; then
+    printf 'is_protected_branch: the resolved default branch is required (pass an empty string when none was established)\n' >&2
+    return 0
+  fi
+  if [ -n "$d" ] && [ "$b" = "$d" ]; then return 0; fi
+  case "$b" in main|master) return 0 ;; esac
   for g in ${STORY_PROTECTED_BRANCHES:-}; do
     case "$b" in $g) return 0 ;; esac
   done
