@@ -1075,6 +1075,22 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="close-reason""#));
     assert!(body.contains(r#"id="close-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-close-instead""#));
+    // SH-692: a Verifying -> Done move is an override and needs the operator's
+    // reason. One required-reason prompt, reached from the board drop and the
+    // drawer's state select; the service refuses the bare move, so the page
+    // never sends one.
+    assert!(body.contains(r#"id="verify-override-modal""#));
+    assert!(body.contains(r#"id="verify-override-reason""#));
+    assert!(body.contains(r#"id="verify-override-submit""#));
+    assert!(body.contains(r#"id="verify-override-error""#));
+    assert!(body.contains(r#"currentSlug === "verifying" && targetSlug === "done""#));
+    assert!(body.contains(r#"st.state === "verifying" && stateSelect.value === "done""#));
+    assert!(body.contains("A reason for overriding verification is required."));
+    assert!(body.contains("function submitVerifyOverride"));
+    assert!(
+        !body.contains(r#"id="verify-override-skip""#),
+        "the override prompt gates the move: there is no Skip"
+    );
     assert!(
         !body.contains("renderDeleteConfirm"),
         "the inline confirmation footer form was replaced by the shared delete modal"
