@@ -30,6 +30,7 @@
 //! Neither hazard is hypothetical: the first is why the hand-armed daemon case
 //! failed when the whole suite was first run with no local transport at all.
 
+use std::net::TcpStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
@@ -39,9 +40,7 @@ use storyhook::daemon::lifecycle::{self, SERVED_DEADLINE, SPAWN_LOCK_DEADLINE};
 use storyhook::store::{DELIVERY_BACKSTOP, FaultPoint};
 
 use crate::env::TestEnv;
-use crate::server::{
-    ChildGuard, PORTFILE_DEADLINE, REAP_POLL, port_of, run_bounded, wait_for_server,
-};
+use crate::server::{ACCEPT_DEADLINE, ChildGuard, PORTFILE_DEADLINE, REAP_POLL, run_bounded};
 
 // ---------------------------------------------------------------------------
 // The three deadlines, and what each one disproves (SH-528)
@@ -103,7 +102,7 @@ const ARMED_DEATH_DEADLINE: Duration =
 /// binds listeners and publishes its portfile — so time-to-reach-the-point is
 /// bounded above by time-to-publish, and [`PORTFILE_DEADLINE`] is the bound
 /// this crate already stakes on exactly that phase three functions away, in
-/// [`port_of`]. Then [`DELIVERY_BACKSTOP`] for the death itself. A hand-spawned
+/// [`port_of`](crate::server::port_of). Then [`DELIVERY_BACKSTOP`] for the death itself. A hand-spawned
 /// `daemon --serve` takes no spawn lock (only `lifecycle::ensure` does), so
 /// [`SPAWN_LOCK_DEADLINE`] deliberately does not appear here — importing it
 /// would assert a relationship that does not exist (SH-140).
@@ -173,7 +172,7 @@ impl Crash {
 /// likely cause.
 pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&str]) -> Crash {
     let mut armed = arm_a_daemon(env, cwd, point);
-    wait_for_server(port_of(env, armed.pid()));
+    wait_until_serving(env, &mut armed, point);
 
     let armed_pid = armed.pid();
     let armed_identity = lifecycle::read_daemon_identity(&env.environment())
@@ -232,6 +231,105 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
     }
 }
 
+/// Waits for the daemon this test armed to publish its portfile and accept a
+/// connection — or reports that it died first, which is the finding the two
+/// waits this replaces could not make.
+///
+/// [`port_of`](crate::server::port_of) and
+/// [`wait_for_server`](crate::server::wait_for_server) used to run here in
+/// sequence, and neither looks at the child while it waits. An armed daemon
+/// that died on the way up was therefore reported as a portfile that never
+/// appeared, or as a port that "never began accepting connections" — a
+/// message naming `target/debug/deps` and FSEvents as the usual causes — or,
+/// once the client had auto-started a successor over the corpse, as "a
+/// different daemon identity claimed the lock". All three point away from the
+/// daemon. SH-693 was diagnosed through exactly that misdirection: the
+/// block-delivery worker's first pass committed an empty transaction a few
+/// milliseconds after the portfile was published, `before_commit` fired, and
+/// eight crash cases blamed the machine.
+///
+/// The bound is the two it replaces, summed — [`PORTFILE_DEADLINE`] for
+/// publication plus [`ACCEPT_DEADLINE`] for the accept loop — derived rather
+/// than picked (SH-394); which phase was reached is still said on the way out.
+fn wait_until_serving(env: &TestEnv, armed: &mut ChildGuard, point: FaultPoint) {
+    let pid = armed.pid();
+    let bound = PORTFILE_DEADLINE + ACCEPT_DEADLINE;
+    let give_up_at = Instant::now() + bound;
+    loop {
+        if let Some(status) = armed.try_wait() {
+            panic!("{}", died_before_serving(env, point, status));
+        }
+        let portfile = env.daemon();
+        let published = portfile.as_ref().filter(|info| info.pid == pid);
+        if let Some(info) = published
+            && TcpStream::connect(("127.0.0.1", info.port)).is_ok()
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < give_up_at,
+            "the daemon this test armed (pid {pid}) is alive but not serving after {bound:?}: \
+             {}. This is a 'never', not a 'slow' — `port_of` and `wait_for_addr` document \
+             the two bounds this is the sum of, and what has ever tripped them.\narmed daemon \
+             stderr (last {STDERR_TAIL_LINES} lines):\n{}",
+            match published {
+                Some(info) => format!(
+                    "it published port {} but never began accepting connections there",
+                    info.port
+                ),
+                None => format!(
+                    "it never published a portfile naming itself; the portfile names {:?}",
+                    portfile.as_ref().map(|info| info.pid)
+                ),
+            },
+            armed_daemon_stderr(env),
+        );
+        std::thread::sleep(REAP_POLL);
+    }
+}
+
+/// What an armed daemon dying before it served means, with the evidence.
+///
+/// The reading comes first, because the first hypothesis a reader forms about
+/// a crash test whose daemon vanished is the wrong one (SH-528 and SH-693 were
+/// both filed on it): the daemon did not fail to start, and the machine is not
+/// slow. Something the daemon does for itself reached `point` before the
+/// command this test was about to send.
+fn died_before_serving(env: &TestEnv, point: FaultPoint, status: ExitStatus) -> String {
+    let reading = match status.signal() {
+        Some(libc::SIGKILL) => {
+            "It died of the fault's own SIGKILL, so the point was reached — just not by the \
+             command."
+        }
+        Some(libc::SIGABRT) => {
+            "SIGABRT means the fault fired and then lost the race with the instruction after \
+             it — see `process_env_fault` in src/store/fault.rs."
+        }
+        _ => {
+            "That is not the fault's SIGKILL, so this daemon failed on the way up for a reason \
+             of its own; its stderr below is the evidence."
+        }
+    };
+    format!(
+        "the daemon armed at {point} died ({status:?}) before it accepted a connection, so \
+         the command this test was about to send never had a daemon to go to. {reading}\n\n\
+         Two paths reach {point} without a client. A start-up path can reach it on the way \
+         up — the migration points fire inside `open_store` whenever the planted store is \
+         old, and `crash_a_starting_daemon` is the fixture for those. Or housekeeping the \
+         daemon does for itself opened a write transaction with nothing to write: every \
+         store fault point fires inside every commit, an empty transaction included, which \
+         is how SH-690's block-delivery worker turned eight crash cases red at once \
+         (SH-693; `tests/fault_injection.rs` pins the idle daemon).\n\n\
+         store held now: {held}\n\
+         portfile names: {portfile:?}\n\
+         armed daemon stderr (last {STDERR_TAIL_LINES} lines):\n{daemon_stderr}",
+        point = point.as_str(),
+        held = env.daemon_is_live(),
+        portfile = env.daemon().map(|info| info.pid),
+        daemon_stderr = armed_daemon_stderr(env),
+    )
+}
+
 /// Kills a daemon at a point it reaches while *opening* the store, before it has
 /// bound anything.
 ///
@@ -262,7 +360,7 @@ pub fn crash_a_starting_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> 
 /// "finished" means for each.
 ///
 /// `--port 0`, not a `reserve_port()`-picked number (SH-195): every caller here
-/// learns the daemon's *real* port from its portfile ([`port_of`]) rather
+/// learns the daemon's *real* port from its portfile ([`port_of`](crate::server::port_of)) rather
 /// than trusting the one it asked for, because `bind_preferred` treats a
 /// requested port as a preference and falls back to a kernel-assigned one the
 /// moment it is taken. A pre-picked port bought nothing these callers needed
@@ -446,7 +544,7 @@ fn diagnose(signal: Option<i32>) -> &'static str {
 /// Everything after it is the evidence the unbounded wait used to destroy: the
 /// client's own answer, which is where a command that failed before ever
 /// reaching a write transaction says so; whether anything is still holding the
-/// store; which pid the portfile names *now*, since [`port_of`] already
+/// store; which pid the portfile names *now*, since [`port_of`](crate::server::port_of) already
 /// checked it once before the command was sent and a different answer here
 /// means the client's work went somewhere else; and the armed daemon's own
 /// stderr.
@@ -718,6 +816,67 @@ mod tests {
             "after the bound fired — a failure that leaks the very daemon it is about is the \
              other half of what SH-528 cost (SH-493)",
         );
+    }
+
+    /// **The regression test for SH-693's misdirection**: an armed daemon that
+    /// dies before it serves is reported as exactly that, at once.
+    ///
+    /// Provoked with the one point that fires with no client and no fix to
+    /// revert: `mid_migration` over the committed v1 store, sent through
+    /// [`crash_the_daemon`] rather than the fixture built for it. The daemon
+    /// dies inside `open_store`, before it publishes anything — the same "died
+    /// on the way up" class as the housekeeping write SH-693 removed, which
+    /// fired a few milliseconds *after* the portfile. Before this, the wait
+    /// sat out [`PORTFILE_DEADLINE`] and blamed the portfile; the SH-693 shape
+    /// sat out [`ACCEPT_DEADLINE`] and blamed the machine.
+    #[test]
+    fn an_armed_daemon_that_dies_before_serving_is_reported_as_such() {
+        let env = TestEnv::isolated();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/schema/v1.db");
+        std::fs::create_dir_all(env.data_dir()).expect("creating the data directory");
+        std::fs::copy(&fixture, env.store_path()).expect("planting the v1 fixture");
+        let cwd = crate::scratch_dir();
+
+        let started = Instant::now();
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crash_the_daemon(
+                &env,
+                cwd.path(),
+                FaultPoint::MidMigration,
+                &["new", "never sent"],
+            )
+        }));
+
+        let Err(payload) = outcome else {
+            panic!(
+                "a daemon armed at mid_migration over a v1 store dies before it serves; this \
+                 fixture must report that rather than send a command"
+            )
+        };
+        let message = panic_message(payload.as_ref());
+        assert!(
+            message.contains("before it accepted a connection"),
+            "the failure must name the early death rather than a slow port or a missing \
+             portfile:\n{message}"
+        );
+        assert!(
+            message.contains("the point was reached"),
+            "and read the SIGKILL as the fault firing on the way up, not as a failed \
+             start:\n{message}"
+        );
+        assert!(
+            message.contains("SH-693"),
+            "and name the housekeeping-write class, which is the cause a reader will not \
+             think of:\n{message}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < PORTFILE_DEADLINE,
+            "reported, not waited out: took {elapsed:?} against the {PORTFILE_DEADLINE:?} the \
+             old wait sat through before saying anything"
+        );
+        assert_no_daemon(&env, "after the early death");
     }
 
     /// The `PRAGMA user_version` of this environment's store.
