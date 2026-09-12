@@ -2875,6 +2875,68 @@ fn verifier_preserves_the_landing_scripts_terminal_classifications() {
     let payload: serde_json::Value = serde_json::from_slice(&merged.stdout).unwrap();
     assert_eq!(payload["result"], "merged");
     assert_eq!(payload["tree"], "deadbeef");
+
+    // SH-691: land-pr.sh's wrong-base refusal is its own status, 3, and is
+    // the submission's fault — never a retryable landing refusal to reconcile.
+    let misdirected = run(
+        repo.path(),
+        "bash",
+        &[
+            &script,
+            "--classify-land",
+            "3",
+            "land-pr: PR #42 targets `main`, but the branch it must land on is `dev` (origin's default branch); nothing was merged.",
+            "42",
+            "deadbeef",
+        ],
+    );
+    assert_ok(&misdirected, "classifying a wrong-base refusal");
+    let payload: serde_json::Value = serde_json::from_slice(&misdirected.stdout).unwrap();
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("must not land on"), "{detail}");
+    assert!(detail.contains("targets `main`"), "{detail}");
+    assert!(detail.contains("must land on is `dev`"), "{detail}");
+}
+
+/// SH-691: the base a pull request names must be the repository's
+/// integration branch — origin's own default, asked of origin — and that is
+/// checked before any gate runs. Until SH-691 only the base's STABILITY was
+/// checked, and five pull requests opened against `main` by a stale local
+/// cache were certified and merged. Here GitHub says `other` while origin
+/// (this fixture, HEAD on `main`) advertises `main`.
+#[test]
+fn a_pull_request_on_the_wrong_base_is_an_invalid_submission_before_any_gate_runs() {
+    let repo = MergeRepo::new();
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    converge_public_head(&repo, &head);
+    repo.fake_gh_answers(
+        &open_pr_metadata(42, &head)
+            .replace("\"baseRefName\":\"main\"", "\"baseRefName\":\"other\""),
+    );
+    let witness = repo.path().join("gate-ran");
+    repo.fake_gate("gate", &format!("touch '{}'", witness.display()));
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate"]));
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("PR #42 targets `other`"), "{detail}");
+    assert!(
+        detail.contains("integration branch (origin's default) is `main`"),
+        "{detail}"
+    );
+    assert!(
+        !witness.exists(),
+        "the gate must not run for a pull request on the wrong base"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        1,
+        "one entry read; a wrong shape earns no verdict recheck"
+    );
 }
 
 /// Missing arguments are refused with a message naming correct usage, in
