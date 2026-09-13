@@ -386,9 +386,60 @@ def shell_only_reads_managed_paths(command):
     return found_managed_path
 
 
+def literal_report_preserves_artifacts(command):
+    """Admit one quoted heredoc to an ordinary non-managed output file."""
+    lines = command.split("\n")
+    header = lines[0]
+    # This is a bounded shell production, not body stripping followed by a
+    # guess at the residual program. Quoted delimiters suppress ALL expansion
+    # in the body; header expressions and trailing commands remain refused.
+    if len(lines) < 3 or any(char in header for char in "\r$`\\"):
+        return False
+    literal = r"(?:\x27[^\x27\n\r]*\x27|\"[^\"\n\r]*\"|[A-Za-z0-9_./-]+)"
+    output = r">>?[ \t]*(?P<output>" + literal + r")"
+    heredoc = r"<<[ \t]*(?P<quote>[\x27\"])(?P<end>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+    match = None
+    for tail in (output + r"[ \t]*" + heredoc, heredoc + r"[ \t]*" + output):
+        match = re.fullmatch(r"[ \t]*(?:cat|/bin/cat|/usr/bin/cat)[ \t]*" + tail + r"[ \t]*", header)
+        if match:
+            break
+    if match is None:
+        return False
+    try:
+        end = lines.index(match["end"], 1)
+    except ValueError:
+        return False
+    # Bash blanks are space/tab, not Python Unicode whitespace.
+    if any(line.strip(" \t") for line in lines[end + 1:]):
+        return False
+    cwd = payload.get("cwd", "")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        return False
+    target = shlex.split(match["output"])[0]
+    if not target:
+        return False
+    if not os.path.isabs(target):
+        target = os.path.join(cwd, target)
+    try:
+        # A FIFO/device is not a report destination. Missing ordinary files
+        # are fine; the shared checker resolves their existing ancestry.
+        try:
+            if not stat.S_ISREG(os.stat(target).st_mode):
+                return False
+        except FileNotFoundError:
+            pass
+        import runpy
+        checker = runpy.run_path(os.path.join(os.environ["STORYHOOK_HOOK_PLUGIN_ROOT"], "lib/artifact-resources.py"))
+        checker["check_resources"](manifest, [target], target)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return True
+
+
 if tool == "Bash":
     command = str(supplied.get("command", ""))
-    if launcher_preserves_artifacts(command) or shell_only_reads_managed_paths(command):
+    if (launcher_preserves_artifacts(command) or shell_only_reads_managed_paths(command)
+            or literal_report_preserves_artifacts(command)):
         sys.stdout.write("{}")
         raise SystemExit(0)
     haystacks = [command]
