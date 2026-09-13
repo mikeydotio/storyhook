@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn output_growth_is_separate_from_creation_and_touches() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let path = dir.path().join("log");
         write_at(&path, b"", START);
         let reference = reference(path.clone());
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn replacement_truncation_and_binding_loss_cannot_rebase_an_attempt() {
         for damage in ["replace", "truncate", "missing", "symlink", "binding"] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = storyhook_test_support::scratch_dir();
             let path = dir.path().join("log");
             write_at(&path, b"ordinary output", START);
             let reference = reference(path.clone());
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn initial_observation_requires_current_identity_and_valid_times() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let path = dir.path().join("log");
         write_at(&path, b"output", "2026-09-13T04:09:59Z");
         let mut reference = reference(path.clone());
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn subsecond_initial_output_is_not_future_and_clock_reversal_is_unavailable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let path = dir.path().join("log");
         write_at(&path, b"output", "2026-09-13T04:10:00.999Z");
         let reference = reference(path);
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn startup_absence_and_first_sample_uncertainty_can_retry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let path = dir.path().join("log");
         write_at(&path, b"", START);
         let reference = reference(path.clone());
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn clock_rollback_above_last_output_does_not_shorten_silence() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let path = dir.path().join("log");
         write_at(&path, b"output", START);
         let reference = reference(path);

@@ -130,3 +130,24 @@ SH713-D10/D11 record explicit native continuation, the competing hypotheses,
 independent challenge and this separately committed repair. The operational
 workaround still retires only after a containing release is installed and its
 stale-metadata regression is validated.
+
+## Central-verifier return: library-test lint coverage
+
+PR808's proposed merge failed Clippy on six output-observer fixture constructors
+using `tempfile::tempdir()`. Earlier targeted Clippy invocations checked the
+library without its test configuration, so their success did not cover these
+unit tests. The same six errors reproduced locally before correction.
+
+Those fixtures now use the repository's `storyhook_test_support::scratch_dir()`
+constructor. The existing disallowed-method lint remains the regression guard;
+test assertions and runtime behavior are unchanged. Setting `TMPDIR` at test
+invocation is not a substitute for using the required constructor in source.
+
+For focused library-unit linting, use
+`cargo clippy --offline --lib --profile test -- -D warnings`. Cargo's
+[test-profile check mode](https://doc.rust-lang.org/cargo/commands/cargo-check.html)
+enables the test configuration while retaining library-only target selection.
+The local failing run verified that this command reaches all six violations.
+After correction it passes with warnings denied, and all seven output-observer
+unit regressions pass. Formatting and diff checks pass; no full suite was run
+in the repair worktree.
