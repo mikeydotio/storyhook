@@ -1,0 +1,59 @@
+{
+  "story_id": "SH-707",
+  "status": "independent preparation complete; live Greenlight delivery pending",
+  "tooling_commit": "567ef40e9",
+  "source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
+  "checks": [
+    {
+      "name": "identity regressions",
+      "passed": 10,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_packaging_evidence.py"
+    },
+    {
+      "name": "Greenlight directly impacted source suite",
+      "passed": 127,
+      "workdir": "/Volumes/Code/mikeyward/agentics/.codex/worktrees/AGE-103",
+      "command": "TMPDIR=/tmp bash tests/with-isolated-store.sh bash '/tmp/sh707-install-rehearsal-01/candidate marketplace/plugins/greenlight/tests/run-tests.sh'"
+    },
+    {
+      "name": "installed personal hook",
+      "passed": 5,
+      "command": "PYTHONDONTWRITEBYTECODE=1 PERSONAL_HOOK=/Users/mikey/.codex/hooks/git-readonly-allow.py python3 docs/rca/sh-707/test_personal_hook.py"
+    },
+    {
+      "name": "real installer and rollback",
+      "baseline_controls": 12,
+      "candidate_controls": 20,
+      "rollback_controls": 12,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/smoke_install.py --agentics-repo /Volumes/Code/mikeyward/agentics/.codex/worktrees/AGE-103 --output-directory /tmp/sh707-install-rehearsal-verified"
+    },
+    {
+      "name": "active installation preservation",
+      "result": "all Greenlight files/modes equal tagged baseline; registration, enabled state and native trust unchanged"
+    },
+    {
+      "name": "static checks",
+      "result": "Python syntax with warnings-as-errors, JSON parse, local document links, staged and unstaged whitespace passed"
+    }
+  ],
+  "selector": {
+    "baseline": "7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247",
+    "selected": "ALL",
+    "reason": "missing coverage map",
+    "full_suite_run": false
+  },
+  "red_evidence": [
+    "Initial seven identity tests failed against stubs (NotImplementedError).",
+    "A real Git blob-replacement fixture exported wrong bytes before --no-replace-objects; the repaired exporter returns the original bytes.",
+    "First disposable source transition failed: marketplace 'sh707-install' is already added from a different source; remove it before adding this source. Supported remove/add resolves the fixture transition.",
+    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields."
+  ],
+  "limits": {
+    "active_host_validated": false,
+    "release_certified": false,
+    "live_greenlight_installed": false,
+    "no_source_version_changes": true,
+    "full_suites_verifier_owned": true
+  },
+  "remaining_prerequisite": "Owner-delivered validated containing release, or operator-authorized distinct development artifact with supported registration preserving other plugins; native Codex thread activation/trust and installed validation."
+}
