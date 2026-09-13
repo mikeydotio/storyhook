@@ -608,6 +608,9 @@ fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let command = r#"
 printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
 printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
+printf 'leg rust-suite: FAILED — exit 101\n'
+printf 'leg rust-contracts: FAILED — exit 7\n'
+printf 'leg plugin: SKIPPED — dependency build failed\n'
 printf '     Running tests/diagnostics.rs (target/debug/deps/diagnostics-fixture)\n'
 i=1
 while [ "$i" -le 25 ]; do
@@ -668,6 +671,16 @@ exit 101
     );
     assert!(
         summary.contains("2 additional compiler/build diagnostics omitted"),
+        "{detail}"
+    );
+    assert!(summary.contains("Failed legs:"), "{detail}");
+    assert!(
+        summary.contains("rust-suite: FAILED") && summary.contains("rust-contracts: FAILED"),
+        "{detail}"
+    );
+    assert!(summary.contains("Dependency skips:"), "{detail}");
+    assert!(
+        summary.contains("plugin: SKIPPED — dependency build failed"),
         "{detail}"
     );
     assert!(detail.contains("Reused/cached legs (2)"), "{detail}");
