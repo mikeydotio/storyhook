@@ -1,5 +1,10 @@
 # SH-707: reviewed development delivery candidate
 
+> **Historical delivery record.** The original candidate is superseded.
+> Use [the AGE-54 refresh handoff](REFRESH-AGE54.md) for the current identity,
+> evidence, installation, native review, and retirement. Do not activate the
+> original `greenlight@personal` candidate from this historical procedure.
+
 **Installed and disabled; native activation pending.** The supervisor completed
 source staging at 2026-09-13 02:33 UTC and installation at 02:36 UTC after reviewing
 the exact artifact and commands. `greenlight@personal` is disabled;
@@ -114,42 +119,12 @@ unchanged from
 The supervisor's installer/toggle results and raw private config backups stay in
 that private directory. No raw backup is copied into these docs.
 
-## Remaining native action — owned by Mikey and the root supervisor
+## Native action superseded
 
-Keep the candidate disabled and the original enabled until the deliberate native
-activation sequence. The root supervisor will ask Mikey for this action; this
-lane must not activate either producer, rerun staging/install, or fabricate trust.
-
-1. During the root-coordinated native review, inspect the personal Greenlight
-   **PreToolUse** handler against the installed path and exact development
-   identity above. Its command is
-   `bash "${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/greenlight.sh"`.
-   Use native candidate-specific trust review, not a trust-all action or config
-   write. Record the identity/hash reported by the native UI. The supervisor
-   owns the native sequence for exposing a disabled plugin's handler; the
-   rehearsal does not prove it appears in the startup review while disabled.
-
-2. Once Mikey accepts candidate trust, use supported native plugin enablement to
-   enable `greenlight@personal` and then deselect `greenlight@agentics`, leaving
-   exactly one enabled producer. The terminal `/plugins` UI offers **Space** on
-   the selected installed plugin row. Retain the original producer until the
-   candidate is trusted and deliberately selected. Coordinate any intermediate
-   duplicate-enabled state without agent tool execution. Do not use hook-level
-   enablement switches, uninstall either plugin, or modify existing sessions.
-
-3. In a fresh native thread, confirm the intended candidate handler actually
-   runs without the unsupported-output diagnostic. Record native activation
-   separately from the already-passing installed controls. Preserve both
-   complete caches, all unrelated plugin settings, Agentics registration and
-   existing trust records. Safe read-only listings for the supervisor are:
-
-   ```sh
-   codex plugin list --marketplace personal --json
-   codex plugin list --marketplace agentics --json
-   ```
-
-Native-host validation and release certification remain false. The installed
-receipt establishes packaging and subprocess behavior, not host activation.
+The original candidate was never accepted in the native host. Its activation
+procedure is superseded by [REFRESH-AGE54.md](REFRESH-AGE54.md), which includes the
+subsequently verified explorer policy repairs. The original installed candidate
+remains disabled and retained as historical evidence.
 
 ## Rollback and retirement
 

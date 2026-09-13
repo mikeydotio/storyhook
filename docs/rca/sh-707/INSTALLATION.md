@@ -1,5 +1,10 @@
 # SH-707 installation and rollback preparation
 
+> **Historical delivery record.** The original candidate is superseded.
+> Use [the AGE-54 refresh handoff](REFRESH-AGE54.md) for the current identity,
+> evidence, installation, native review, and retirement. Do not activate the
+> original `greenlight@personal` candidate from this historical procedure.
+
 ## Status and ownership
 
 **Supervisor staging and installation are complete.** The repaired development
