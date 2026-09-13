@@ -3,8 +3,9 @@
 resource_test_tmux=$(command -v tmux)
 source "$(dirname "$0")/lib.sh"
 mkdir -p "$HOME/bin" "$HOME/private-tmux"
-ln -s "$resource_test_tmux" "$HOME/bin/tmux"
-export PATH="$HOME/bin:$PATH" TMUX_TMPDIR="$HOME/private-tmux"
+resource_bin=$(cd "$HOME/bin" && pwd) || exit 1
+ln -s "$resource_test_tmux" "$resource_bin/tmux"
+export PATH="$resource_bin:$PATH" TMUX_TMPDIR="$HOME/private-tmux"
 repo=$(mk_story_repo)
 slug=$(slug_for "$repo")
 # The same server-local pane ID/name can exist on the caller and owner servers.
