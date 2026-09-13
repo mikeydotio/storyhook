@@ -33,10 +33,22 @@ impl<R: ReadOps> QueryService<'_, R> {
     pub fn context_for_story(&self, id: &str, json: bool) -> Result<String, AppError> {
         let review = self.obviation_review(id)?;
         let mut context = self.context(json)?;
+        let continuations: Vec<_> = self
+            .tx
+            .continuations(self.project)?
+            .into_iter()
+            .filter(|r| r.story_id == id)
+            .collect();
         if json {
             let mut document: serde_json::Value = serde_json::from_str(&context)?;
             document["obviation_review"] = serde_json::to_value(review)?;
+            document["continuations"] = serde_json::to_value(&continuations)?;
             return Ok(serde_json::to_string_pretty(&document)?);
+        }
+        if !continuations.is_empty() {
+            context.push_str("\n## Continuation evidence\n\n");
+            context.push_str(&serde_json::to_string_pretty(&continuations)?);
+            context.push_str("\nRead current comments and relationships, inspect Git status/history/diff and tests, repeat obviation review, then acknowledge the exact current story sequence and HEAD. Existing approved scope and commits remain valid.\n");
         }
         context.push_str("\n## Obviation review\n\n");
         context.push_str(review.procedure);

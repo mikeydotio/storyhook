@@ -10,6 +10,8 @@ pub const UNBLOCK_PROMPT: &str = "Your story experienced a temporary block, whic
 struct State {
     blocked: bool,
     active: bool,
+    verifying: bool,
+    sequence: i64,
 }
 
 fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, State>, StoreError> {
@@ -22,6 +24,14 @@ fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, S
                 StoryNo::parse_id(&prefix, id)?,
                 State {
                     blocked: is_blocked(story, &stories),
+                    verifying: story.state == crate::domain::VERIFYING_STATE_SLUG,
+                    sequence: tx
+                        .story(project, StoryNo::parse_id(&prefix, id)?)?
+                        .ok_or_else(|| {
+                            StoreError::Corrupt("story disappeared during mutation snapshot".into())
+                        })?
+                        .head_global_seq
+                        .get(),
                     active: story.superstate == SuperState::Open && story.state == "in-progress",
                 },
             ))
@@ -36,6 +46,13 @@ impl<S: Store> Ctx<'_, S> {
         &self,
         f: impl FnOnce(&mut S::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
+        let has_continuations = self
+            .store()
+            .read(|tx| Ok(!tx.continuations(self.project())?.is_empty()))?;
+        // Read external Git evidence before acquiring the write transaction. A
+        // failure matters only if this mutation actually submits managed work.
+        let submission_head =
+            has_continuations.then(|| super::continuation::current_submission(self.cwd()));
         self.store().write(|tx| {
             let before = snapshot(tx, self.project())?;
             let result = f(tx)?;
@@ -45,6 +62,15 @@ impl<S: Store> Ctx<'_, S> {
                 let Some(previous) = before.get(&story) else {
                     continue;
                 };
+                if !previous.verifying && next.verifying {
+                    super::continuation::check_submission(
+                        tx,
+                        self.project(),
+                        story,
+                        previous.sequence,
+                        submission_head.as_ref(),
+                    )?;
+                }
                 let action = if !previous.blocked && next.blocked {
                     Some(BlockAction::Interrupt)
                 } else if previous.blocked && !next.blocked && next.active {

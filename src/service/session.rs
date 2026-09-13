@@ -22,9 +22,8 @@ use super::Ctx;
 
 /// The dispatch sentinel's own schema version.
 ///
-/// Bumped whenever a field is added, renamed or removed — a reader that
-/// understands an older version can then tell "absent" from "renamed" instead
-/// of guessing.
+/// Bumped for incompatible field changes. Optional diagnostic additions retain
+/// the protocol so existing readiness readers keep accepting the sentinel.
 const SENTINEL_PROTOCOL_VERSION: u32 = 2;
 
 /// The dispatch sentinel written on every `SessionStart`, at
@@ -56,6 +55,10 @@ struct DispatchSentinel {
     /// stdin was empty, unparseable, or the field was missing. Diagnostic
     /// only: nothing on the readiness path matches against it.
     session_id: Option<String>,
+    /// Exact native transcript named by SessionStart; ownership still requires
+    /// the dispatcher process incarnation and native transcript metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcript_path: Option<String>,
     /// Canonical root of the Storyhook plugin package whose SessionStart
     /// hook produced this sentinel. Autonomous Codex dispatch compares this
     /// with its helper package before delivering any prompt. Absent for a
@@ -198,6 +201,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         let sentinel = DispatchSentinel {
             protocol_version: SENTINEL_PROTOCOL_VERSION,
             session_id: payload.session_id,
+            transcript_path: payload.transcript_path,
             plugin_root: payload.storyhook_plugin_root,
             story_id: story_id_from_cwd(self.ctx.cwd()),
             written_at: self.ctx.now(),
@@ -226,6 +230,7 @@ fn sentinel_write_failure_warning(cwd: &std::path::Path, error: &AppError) -> St
 #[derive(Default, serde::Deserialize)]
 struct HookPayload {
     session_id: Option<String>,
+    transcript_path: Option<String>,
     storyhook_plugin_root: Option<String>,
 }
 
@@ -235,6 +240,9 @@ struct HookPayload {
 fn hook_payload(raw: &str) -> HookPayload {
     let mut payload = serde_json::from_str::<HookPayload>(raw).unwrap_or_default();
     payload.session_id = payload.session_id.filter(|value| !value.is_empty());
+    payload.transcript_path = payload
+        .transcript_path
+        .filter(|value| !value.is_empty() && std::path::Path::new(value).is_absolute());
     payload.storyhook_plugin_root = payload
         .storyhook_plugin_root
         .filter(|value| !value.is_empty());

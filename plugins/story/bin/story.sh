@@ -1160,6 +1160,10 @@ registered_worktree_branch() {
 # targets, even when a later provider handoff fails.
 cleanup_dispatch_git() {
   local path="$1" branch="$2" worktree_created="$3" branch_created="$4"
+  if [ -n "${require_absent:-}" ] && [ "$worktree_created" = false ] && [ "$branch_created" = false ]; then
+    DISPATCH_CLEANUP_NOTE="the guarded continuation retained its original worktree, branch, and cleanup lease"
+    return 0
+  fi
   # A failed handoff must not leave a marker that a later manual transition
   # could mistake for a successful dispatch. This is safe for a resumed
   # worktree too: the current attempt replaced the marker with its own exact
@@ -1605,6 +1609,16 @@ surviving_dispatch_provider() {
 }
 
 # ---- subcommand: dispatch ---------------------------------------------------
+CONTINUATION_PROMPT_CLAUSE='Context capacity alone is not a story blocker. Unknown capacity alone must not defer already assigned work. If context pressure prevents reliable continuation, or the adoption rubric requires deferring additional work, preserve the story and worktree and end with exactly one JSON object whose type is storyhook.session-handoff, version is integer 1, story_id is <n>, kind is context, and evidence contains nonempty context and outstanding_work strings plus approved scope and test evidence when available. StoryHook records this handoff and continues through the provider native context mechanism. Previously adopted work is assigned work in the continuing session. Never block solely for context, erase queued corrections, or type /compact. In Plan mode continue planning and defer continuation acknowledgement until ordinary plan approval switches to Default mode, then review and acknowledge before implementation. For likely-obviated work in Plan mode use the same envelope with kind obviation-review and evidence containing context, original_state and all unique candidate story IDs in candidates. This records a pending human review hold and grants no implementation permission.'
+# Revalidate the persisted dead-pane ownership before guarded recovery effects.
+continuation_preflight() {
+  local answer
+  answer=$(printf '%s' "$continuation_record" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" resume-preflight) \
+    || refuse "continuation-unsafe" "continuation ownership preflight could not run; retained work was preserved."
+  [ "$(printf '%s' "$answer" | jq -r '.ok // false')" = true ] \
+    || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
+}
+
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
@@ -1618,6 +1632,7 @@ cmd_dispatch() {
   local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
   local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
+  local require_absent="" continuation_file="" continuation_record=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto)
@@ -1632,6 +1647,14 @@ cmd_dispatch() {
       --resume)
         [ -z "$resume" ] || fail "--resume may be specified only once — usage: $usage"
         resume=1; shift ;;
+      --require-absent)
+        [ -z "$require_absent" ] || fail "--require-absent may be specified only once"
+        require_absent=1; shift ;;
+      --continuation-file=*)
+        [ -z "$continuation_file" ] || fail "--continuation-file may be specified only once"
+        continuation_file="${1#--continuation-file=}"
+        [ -n "$continuation_file" ] || fail "--continuation-file requires a file path"
+        shift ;;
       --over-budget)
         [ -z "$over_budget" ] || fail "--over-budget may be specified only once — usage: $usage"
         over_budget=1
@@ -1674,6 +1697,10 @@ cmd_dispatch() {
     esac
   done
   [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: $usage"
+  [ -z "$require_absent" ] || { [ -n "$resume" ] && [ -n "$continuation_file" ]; } \
+    || fail "--require-absent requires --resume and --continuation-file"
+  [ -z "$continuation_file" ] || [ -n "$require_absent" ] \
+    || fail "--continuation-file requires --require-absent"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$want_next" ] || [ -z "$resume" ] \
@@ -1710,6 +1737,26 @@ cmd_dispatch() {
     id=$(canonical_story_id "$show_json" "$id")
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+
+    if [ -n "$require_absent" ]; then
+      [ -f "$continuation_file" ] && [ ! -L "$continuation_file" ] \
+        || refuse "continuation-unsafe" "continuation record is not an ordinary retained file."
+      continuation_record=$(cat "$continuation_file") \
+        || refuse "continuation-unsafe" "cannot read the retained continuation record."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.story_id // ""')" = "$id" ] \
+        || refuse "continuation-unsafe" "continuation record belongs to another story."
+      continuation_preflight
+      local continuation_socket="${TMUX:-}"
+      [ "${continuation_socket%%,*}" = "$(printf '%s' "$continuation_record" | jq -r '.capture.socket')" ] \
+        || refuse "continuation-unsafe" "dispatcher socket differs from the captured continuation."
+      TARGET_SESSION=$(tmux display-message -p -t "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" '#{session_name}') \
+        || refuse "continuation-unsafe" "cannot resolve the retained pane session."
+      [ -n "$TARGET_SESSION" ] || refuse "continuation-unsafe" "retained pane has no session."
+      [ "$(story_cli --deadline 2 continuation capabilities --json | jq -r '.continuation_protocol // 0')" = 1 ] \
+        || refuse "continuation-unavailable" "guarded resume requires the installed continuation protocol."
+      [ "$(story_cli session-eligibility "$id" --json | jq -r '.session_eligibility.eligible // false')" = true ] \
+        || refuse "continuation-ineligible" "the retained story is not eligible to continue."
+    fi
 
 
     # SH-499: epic identity is the explicit type, never the mere presence of
@@ -1824,6 +1871,24 @@ cmd_dispatch() {
     worktree_path="$dir/$wt_container/$wname"
     worktree_branch="worktree-$wname"
 
+    if [ -n "$require_absent" ]; then
+      worktree_path=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.worktree_path')
+      worktree_branch=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.branch')
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.lease.repository_path')" = "$dir" ] \
+        || refuse "continuation-unsafe" "continuation lease names another repository."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.provider')" = "$AGENT" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.model')" = "$effective_model" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.effort')" = "$resolved_effort" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.speed')" = "$resolved_speed" ] \
+        || refuse "continuation-unsafe" "provider or launch selectors differ from the captured continuation."
+      local expected_autonomy=auto
+      [ -z "$full_auto" ] || expected_autonomy="full-auto"
+      [ -n "$auto" ] && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.autonomy_mode')" = "$expected_autonomy" ] \
+        || refuse "continuation-unsafe" "autonomy mode differs from the captured continuation."
+      [ "$launch_overridden" = false ] \
+        || refuse "continuation-unsafe" "guarded recovery cannot preserve captured settings through a wholesale launcher override."
+    fi
+
     if registered_branch=$(registered_worktree_branch "$worktree_path"); then
       registered_worktree=true
       resources_exist=true
@@ -1853,6 +1918,13 @@ cmd_dispatch() {
     fi
 
     existing_pane=$(pane_for_window "$wname") || existing_pane=""
+    if [ -n "$require_absent" ]; then
+      [ "$registered_worktree" = true ] && [ "$branch_reused" = true ] \
+        || refuse "continuation-unsafe" "guarded continuation requires the original worktree and branch."
+      [ -n "$existing_pane" ] && [ "$existing_pane" = "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" ] \
+        || refuse "continuation-unsafe" "the exact retained pane is missing; automatic recreation is unavailable."
+      continuation_preflight
+    fi
     if [ -n "$existing_pane" ]; then
       resources_exist=true
       artifacts_exist=true
@@ -1887,7 +1959,7 @@ cmd_dispatch() {
         "$recovery_display" \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
-    if [ -n "$resume" ] && [ -n "$existing_pane" ] \
+    if [ -n "$resume" ] && [ -z "$require_absent" ] && [ -n "$existing_pane" ] \
        && [ "$existing_pane" = "${TMUX_PANE:-}" ]; then
       refuse_with "resume-unsafe" \
         "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
@@ -2114,6 +2186,10 @@ cmd_dispatch() {
       [ -z "${STORY_AUTO_PROMPT_SOLO:-}" ] && prompt_builtin="true"
     fi
   fi
+  if [ -n "$require_absent" ]; then
+    [ "$prompt_builtin" = true ] && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ] \
+      || refuse "continuation-unavailable" "guarded recovery requires the supported builtin continuation charter and runtime."
+  fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
     if [ -n "$auto" ]; then
       prompt_tpl="$prompt_tpl $CODEX_AUTO_PLAN_CLAUSE"
@@ -2230,6 +2306,7 @@ cmd_dispatch() {
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
       --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
+      --argjson require_absent "$([ -n "$require_absent" ] && echo true || echo false)" \
       --argjson resumed "$resumed" --argjson resources "$resources_json" \
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
@@ -2251,8 +2328,8 @@ cmd_dispatch() {
           + (if $worktree_reused then []
              elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
              else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
-          + [(if $window_reused then
-               ("tmux respawn-pane -k -c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+          + [(if $window_reused or $require_absent then
+               ("tmux respawn-pane " + (if $require_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
              else
                ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
                 + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -2297,7 +2374,7 @@ cmd_dispatch() {
   # Step 7: idempotently gitignore the per-story worktree CONTAINER dir,
   # BEFORE the worktree materializes. Best-effort — never flips ok to false.
   local gitignore_result="already-ignored"
-  if [ "$ignore_status" = "not-ignored" ]; then
+  if [ "$ignore_status" = "not-ignored" ] && [ -z "$require_absent" ]; then
     gitignore_result=$(append_worktree_ignore "$dir")
   fi
 
@@ -2460,14 +2537,22 @@ cmd_dispatch() {
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
   if [ -n "$existing_pane" ]; then
     pane="$existing_pane"
-    # This file is a generated SessionStart witness, not project work. A
-    # replacement process must publish its own witness before handoff.
-    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    local respawn_flag=-k respawn_command="$launch_cmd"
+    if [ -n "$require_absent" ]; then
+      continuation_preflight
+      respawn_flag=""
+      # This runs only after tmux atomically accepts the dead pane. Removing
+      # the witness earlier can erase a replacement session's evidence even
+      # when the subsequent no-k respawn correctly refuses that live owner.
+      respawn_command="rm -f -- $(posix_quote_word "$worktree_path/.claude/dispatch-sentinel.json") && exec $launch_cmd"
+    else
+      rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    fi
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
-    if ! tmux respawn-pane -k -c "$worktree_path" \
+    if ! tmux respawn-pane ${respawn_flag:+"$respawn_flag"} -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
          -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
-         -t "$pane" "$launch_cmd" 2>/dev/null; then
+         -t "$pane" "$respawn_command" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
@@ -2585,6 +2670,39 @@ cmd_dispatch() {
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
+  if [ -n "$auto" ] && [ "$prompt_builtin" = true ] \
+     && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ]; then
+    local continuation_capabilities
+    continuation_capabilities=$(story_cli --deadline 2 continuation capabilities --json 2>/dev/null) || continuation_capabilities='{}'
+    if [ "$(printf '%s' "$continuation_capabilities" | jq -r '.continuation_protocol // 0')" = 1 ]; then
+      local registration registration_input autonomy_mode=auto
+      [ -z "$full_auto" ] || autonomy_mode="full-auto"
+      registration_input=$(jq -n --arg id "$id" --arg cwd "$worktree_path" \
+        --arg socket "$(printf '%s' "$DISPATCH_CLEANUP_LEASE" | jq -r '.tmux.socket_path')" \
+        --arg pane "$pane" --arg provider "$AGENT" --arg model "$effective_model" \
+        --arg effort "$resolved_effort" --arg speed "$resolved_speed" --arg autonomy "$autonomy_mode" \
+        '{story_id:$id,cwd:$cwd,socket:$socket,pane:$pane,provider:$provider,model:$model,
+          effort:$effort,speed:$speed,autonomy_mode:$autonomy}')
+      registration=$(printf '%s' "$registration_input" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" register) || registration='{}'
+      if [ "$(printf '%s' "$registration" | jq -r '.ok // false')" != true ]; then
+        if [ -n "$require_absent" ]; then
+          rollback_dispatch_attempt
+          refuse "continuation-unavailable" "native continuation ownership registration failed: $(printf '%s' "$registration" | jq -r '.detail // "no diagnostic"'). No story charter was delivered."
+        fi
+        auto_note="$auto_note Native context continuation unavailable: $(printf '%s' "$registration" | jq -r '.detail // "ownership registration failed"')."
+      else
+        prompt="$prompt $(render_template "$CONTINUATION_PROMPT_CLAUSE" "$id" "$wname" "$dir")"
+      fi
+    elif [ -n "$require_absent" ]; then
+      rollback_dispatch_attempt
+      refuse "continuation-unavailable" "native continuation capability disappeared before ownership registration. No story charter was delivered."
+    else
+      auto_note="$auto_note Native context continuation unavailable: the installed service does not advertise continuation protocol 1."
+    fi
+  elif [ -n "$auto" ] && [ "$prompt_builtin" = true ]; then
+    auto_note="$auto_note Native context continuation unavailable: the runtime adapter is not installed."
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
