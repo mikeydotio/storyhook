@@ -1210,20 +1210,59 @@ fn two_different_names_do_not_serialize() {
     let fixture = Fixture::new();
     let trace = fixture.path().join("trace");
     let trace_arg = trace.display().to_string();
+    let ready = fixture.path().join("ready");
 
     let slow = fixture.helper(
         "slow.sh",
-        "#!/bin/sh\nprintf 'A-in\\n' >> \"$1\"\nsleep 2\nprintf 'A-out\\n' >> \"$1\"\n",
+        "#!/bin/sh\n\
+         IFS= read -r start || exit 1\n\
+         printf 'A-in\\n' >> \"$1\"\n\
+         touch \"$2\"\n\
+         IFS= read -r release || exit 1\n\
+         printf 'A-out\\n' >> \"$1\"\n",
     );
     let quick = fixture.helper(
         "quick.sh",
         "#!/bin/sh\nprintf 'B-in\\n' >> \"$1\"\nprintf 'B-out\\n' >> \"$1\"\n",
     );
 
-    let mut first = fixture.spawn(&["gate", "--", &slow.display().to_string(), &trace_arg]);
+    let mut command = fixture.command(&[
+        "gate",
+        "--",
+        &slow.display().to_string(),
+        &trace_arg,
+        &ready.display().to_string(),
+    ]);
+    command.stdin(Stdio::piped());
+    let mut first =
+        ChildGuard::spawn_with_output(&mut command).expect("spawning the paused holder");
+    // Construct the startup gap from SH-705: the wrapper owns the lock before
+    // its child has entered. Only the child's marker establishes readiness.
     wait_for(&fixture.lock("gate").join("pid"));
+    assert!(!trace.exists(), "the holder must wait for its start signal");
+    first
+        .stdin()
+        .expect("the holder's stdin was piped")
+        .write_all(b"start\n")
+        .expect("starting the holder");
+    wait_for(&ready);
 
-    let second = fixture.run(&["merge", "--", &quick.display().to_string(), &trace_arg]);
+    // A remains inside until explicitly released, irrespective of load. A
+    // lock-name collision must fail immediately rather than deadlock the test.
+    let mut command = fixture.command(&[
+        "--max-wait",
+        NO_WAIT,
+        "merge",
+        "--",
+        &quick.display().to_string(),
+        &trace_arg,
+    ]);
+    command.stdin(Stdio::null());
+    let mut second =
+        ChildGuard::spawn_with_output(&mut command).expect("spawning the other-name command");
+    let second = second.wait_with_output_within(poll_ceiling(), || {
+        "the other-name command never exited while `gate` was held".to_string()
+    });
     assert_eq!(code(&second), 0, "the other name must not wait: {second:?}");
 
     let seen = std::fs::read_to_string(&trace).expect("reading the trace");
@@ -1231,9 +1270,24 @@ fn two_different_names_do_not_serialize() {
         seen, "A-in\nB-in\nB-out\n",
         "`merge` must run while `gate` is held -- it ran either before A entered or after A left, so the names are not independent"
     );
-    first.wait_within(poll_ceiling(), || {
+    first
+        .stdin()
+        .expect("the holder's stdin was piped")
+        .write_all(b"release\n")
+        .expect("releasing the holder");
+    let first = first.wait_with_output_within(poll_ceiling(), || {
         "the `gate` holder (slow.sh) never exited".to_string()
     });
+    assert_eq!(
+        code(&first),
+        0,
+        "the released holder must succeed: {first:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&trace).expect("reading the final trace"),
+        "A-in\nB-in\nB-out\nA-out\n",
+        "the first holder must leave only after the other name completed"
+    );
 }
 
 /// SH-306: a gate that goes quiet reads as an all-clear. A waiter must say
