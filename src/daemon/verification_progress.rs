@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
+use crate::service::gate_output::OutputObservation;
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
 use crate::service::verification::GenerationWrite;
 use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
@@ -144,6 +145,32 @@ pub(crate) fn matching_progress(
     (progress.run.as_ref()?.generation == generation).then_some(progress)
 }
 
+/// New journals identify the process attempt as well as the generation.
+/// Legacy generation-only journals remain readable but cannot bind raw logs.
+pub(crate) fn matching_active_progress(
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    active: &ActiveVerification,
+) -> Option<gate_progress::GateProgress> {
+    let progress = matching_progress(env, candidate)?;
+    identifies_active_attempt(&progress, active).then_some(progress)
+}
+
+/// Match an already-read journal without reopening it between identity and
+/// metadata checks. Legacy journals may omit UUID, but a present UUID is binding.
+pub(crate) fn identifies_active_attempt(
+    progress: &gate_progress::GateProgress,
+    active: &ActiveVerification,
+) -> bool {
+    progress.run.as_ref().is_some_and(|run| {
+        Some(run.generation) == active.generation.map(|generation| generation.get())
+            && run
+                .attempt_id
+                .as_ref()
+                .is_none_or(|id| id == &active.attempt_id)
+    })
+}
+
 /// Builds the exact dashboard status for one consistent ordered queue
 /// snapshot plus one process-local ownership snapshot.
 #[must_use]
@@ -189,7 +216,7 @@ pub fn status_snapshot_with_incident(
                     halted: incident.halted,
                 }
             } else if let Some(held) = active.filter(|held| owns(candidate, held)) {
-                let progress = matching_progress(env, candidate);
+                let progress = matching_active_progress(env, candidate, held);
                 let (current_step, tests) = progress
                     .as_ref()
                     .and_then(gate_progress::GateProgress::current_step)
@@ -337,7 +364,7 @@ fn ahead_counts(ordered: &[VerificationCandidate], index: usize) -> (usize, usiz
 /// `case` lines that intentionally carry no embedded timestamp (SH-549).
 fn seconds_since_journal_activity(path: &std::path::Path, now: &str) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let modified = chrono::DateTime::<chrono::Utc>::from(modified);
+    let modified = crate::service::gate_output::metadata_time(modified).ok()?;
     let now = chrono::DateTime::parse_from_rfc3339(now)
         .ok()?
         .with_timezone(&chrono::Utc);
@@ -403,17 +430,41 @@ fn publish_project(
             )
         } else if matches!(&status, VerificationStatus::Running { .. }) {
             let journal = journal_path(env, candidate);
-            let progress = matching_progress(env, candidate).unwrap_or_default();
+            let held = active
+                .as_ref()
+                .expect("running status requires an active owner");
+            let progress = matching_active_progress(env, candidate, held).unwrap_or_default();
             let elapsed_seconds = active
                 .as_ref()
                 .filter(|held| owns(candidate, held))
                 .and_then(|held| elapsed_secs(&held.started_at, now));
-            let seconds_since_last_event = seconds_since_journal_activity(&journal, now);
+            let seconds_since_structured_progress = progress
+                .run
+                .as_ref()
+                .and_then(|_| seconds_since_journal_activity(&journal, now));
+            let authenticated = progress
+                .run
+                .as_ref()
+                .and_then(|run| run.attempt_id.as_deref())
+                == Some(held.attempt_id.as_str());
+            let reference = authenticated.then_some(progress.output.as_ref()).flatten();
+            let mut output = activity.observe_output(held, reference, now);
+            if let Some(error) = &progress.output_error {
+                output = OutputObservation::Unavailable(error.clone());
+            }
+            if progress
+                .items
+                .iter()
+                .any(|item| item.label == "release gate" && item.effective_status().is_terminal())
+            {
+                output = OutputObservation::NotCapturing;
+            }
             gate_progress::render(
                 &VerificationProgressView::Running {
                     progress: &progress,
                     elapsed_seconds,
-                    seconds_since_last_event,
+                    seconds_since_structured_progress,
+                    output: &output,
                 },
                 now,
             )
@@ -466,8 +517,16 @@ fn publish_project(
             }
             rendered
         };
-        if let GenerationWrite::Applied(wrote) = VerificationQueue::new(store)
-            .upsert_generation_comment(&ctx, candidate, GATE_PROGRESS_PREFIX, &body)?
+        if let Some(GenerationWrite::Applied(wrote)) = activity
+            .if_current(project, active.as_ref(), || {
+                VerificationQueue::new(store).upsert_generation_comment(
+                    &ctx,
+                    candidate,
+                    GATE_PROGRESS_PREFIX,
+                    &body,
+                )
+            })
+            .transpose()?
         {
             moved |= wrote;
         }

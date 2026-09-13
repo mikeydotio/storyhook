@@ -16,7 +16,10 @@ fn running_comment(journal: &str, structured_age: Option<u64>) -> String {
         &VerificationProgressView::Running {
             progress: &progress,
             elapsed_seconds: Some(240),
-            seconds_since_last_event: structured_age,
+            seconds_since_structured_progress: structured_age,
+            output: &storyhook::service::gate_output::OutputObservation::Unavailable(
+                "no authenticated reference".into(),
+            ),
         },
         "2026-09-12T12:04:00Z",
     )

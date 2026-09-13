@@ -1,0 +1,106 @@
+# SH-713: Foreign-gate execution and output reporting
+
+## Failure and evidence
+
+In v2.4.2, AGE-93 / PR190's ordinary gate log grew while the progress comment
+reported `NO GATE OUTPUT` and three completed preflight rows. No false receipt
+or automatic kill was observed in the reported specimen. Last known good is
+unknown; the historical live attempt was not restarted or modified.
+
+Two independent regressions reproduce the display defects with fresh inputs:
+
+- Completed preflight rows remove `running` from an owned attempt's header.
+- A journal-only age claims absent process output without observing that output.
+
+A real verifier-script regression also captures the journal from inside an
+ordinary stdout/stderr gate: the baseline has no release-gate running item.
+The absence of a structured foreign producer exposes an unowned lifecycle
+contract, not a test failure. A stale-generation explanation alone cannot
+explain these fresh-input reproductions.
+
+## Corrected contract
+
+| Evidence | Owner | Meaning |
+|---|---|---|
+| Attempt UUID and generation | Daemon registry | Which process attempt owns this story |
+| Release-gate item | Verifier script | Command running or validated command completion |
+| Structured items/cases | Gate instrumentation | Declared legs and test counts, when available |
+| Output reference and file growth | Verifier capture and read-only observer | Ordinary stdout/stderr activity |
+| Receipt and verdict | Existing exact-tree verification | Certification and disposition |
+
+An owned attempt remains running regardless of how many checklist rows have
+finished. The verifier explicitly starts and finishes its gate item, including
+validated completion recovered during signal cleanup. An explicit parent stays
+running while children finish. Missing certification is a separate receipt
+failure; it does not overwrite a known successful command exit.
+
+A bare running gate has unavailable detailed counts and no aggregate completion
+fraction. Instrumented child counts retain their existing meaning. Unknown
+dashboard test counts remain absent; the public dashboard JSON shape is unchanged.
+
+## Output identity and observation
+
+The daemon initializes the journal with the current attempt UUID. The verifier
+registers the exact unique log path, device, inode, capture time and UUID before
+execution. New UUID-bearing journals must match the current attempt. Legacy
+journals remain readable but cannot establish current raw-output activity.
+
+The observer belongs to the active slot and is discarded on transfer/release.
+It checks regular-file identity and monotonically observed length. It never
+reads log contents, scans for the newest log, writes heartbeats, or changes a
+deadline. Replacement, truncation, binding loss and clock reversal after a valid
+baseline leave observation unavailable for the remainder of that attempt.
+
+Before the first valid sample, missing or uncertain evidence is unavailable and
+retryable. An initial nonempty log uses its modification time, normalized to the
+daemon clock's whole-second precision and checked against capture/current time.
+This is an inference: no prior length sample exists. Subsequent growth records
+observation time; a timestamp-only touch cannot renew activity. An empty log uses
+capture start for an observation interval without asserting that bytes arrived.
+
+Publication holds the registry through the generation-checked store upsert after
+comparing the expected active snapshot. This follows the existing registry-then-
+store lock order and prevents an old queued/running comment from overwriting a
+same-generation replacement. Structured inactivity and raw-output silence are
+reported separately. Neither establishes semantic progress or successful tests.
+
+## Validation and operating limit
+
+Focused tests cover renderer behavior, real green/red/default/configured gate
+execution, signal cleanup, missing receipts, observer identity/clock failures,
+same-generation retries, supersession, publication guards, and unchanged idle
+timeout/withdrawal behavior. Tests use isolated repositories/stores and owned
+processes, with deterministic times and barriers rather than long sleeps.
+
+Final focused validation passed 200 tests:
+
+| Direct selection | Passed |
+|---|---:|
+| Library gate service, verifier control, publisher units | 36 |
+| Foreign/output rendering, queue, control, timeout, withdrawal, bundle and foreign checkout integrations | 136 |
+| `merge_gate foreign_gate_` real-script regressions | 3 |
+| `selective_gate` impact-manifest and selection contracts | 25 |
+
+Targeted Clippy with `-D warnings`, formatting, shell syntax, and diff whitespace
+checks passed. The actual-tree selector returned `ALL` because baseline
+`183fcd0f26c34b8da6b0ad7e4b4489f7c85a30c9` has no coverage map; only the new and
+directly impacted tests above ran. Earlier lifecycle checks also covered signal
+interruption and missing-receipt handling.
+
+The central verifier owns full-suite validation. Source tests do not certify the
+installed release. Keep the operator's exact-log/process inspection bridge until
+a containing release is installed and the foreign-gate regression passes there.
+
+## Adopted work remaining on SH-713
+
+The 2026-09-13T05:33:27 story comment separately adopts stale submission-head
+reporting. `submit-leased` verifies the pushed branch HEAD, but its receipt can
+copy lagging PR API metadata and the central comment then calls that value the
+origin head. The foreign-gate repairs above do not fix that boundary.
+
+Keep SH-713 open for a separate fix and regression commit. Preserve authoritative
+pushed branch identity separately from observed PR metadata; API lag must not
+become a new submission block. Cover fast-forward adoption, unchanged adoption,
+creation, and the emitted central comment. The complete specimen and source
+locations are in the story discussion. Decision SH713-D9 defers this work under
+the user's context-budget rule; it is not an external or human-input blocker.

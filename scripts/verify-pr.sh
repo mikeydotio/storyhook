@@ -314,6 +314,8 @@ run_verification_gate() {
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
         || die_json "could not create per-attempt verification log"
+    gate_progress_emit_output "$log" \
+        || die_json "could not register current-attempt output log $log"
     : >"$log.compiler.jsonl" \
         || die_json "could not create compiler diagnostic artifact for $log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \

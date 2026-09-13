@@ -69,6 +69,32 @@ gate_progress_journal() {
     printf '%s' "${STORYHOOK_GATE_PROGRESS:-}"
 }
 
+# Registers the verifier's exact empty capture file once, before execution.
+# Raw output never appends heartbeats here: journal growth renews supervision.
+# Standalone script calls without an owned attempt retain legacy reporting.
+gate_progress_emit_output() {
+    local journal
+    journal="$(gate_progress_journal)"
+    [ -n "$journal" ] && [ -n "${STORYHOOK_VERIFICATION_ATTEMPT:-}" ] || return 0
+    python3 - "$1" "$STORYHOOK_VERIFICATION_ATTEMPT" <<'PY' >>"$journal"
+import datetime
+import json
+import os
+import stat
+import sys
+
+path, attempt = sys.argv[1:]
+metadata = os.lstat(path)
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != 0:
+    raise SystemExit(f"output capture must be a newly created empty regular file: {path}")
+print(json.dumps({
+    "kind": "output", "attempt_id": attempt, "path": path,
+    "dev": metadata.st_dev, "ino": metadata.st_ino,
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+}))
+PY
+}
+
 # Appends one "item" line. Extra key=value pairs after `status` are appended
 # as additional JSON fields verbatim (the caller is trusted to pass valid
 # JSON fragments, e.g. `seconds=12` or `total=1451 estimated=true`) -- kept
