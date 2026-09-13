@@ -64,3 +64,46 @@ is changed by this repair.
 The actual-tree selector returned `ALL` because certified baseline tree
 `777296317b7c548d5ce34f7bbd2e54d49ed8ee60` had no coverage map. Directly impacted
 tests run locally; the centralized verifier owns full-suite certification.
+
+## Literal report sibling
+
+The hook also treated paths in document content as file operands. An automated
+quoted-heredoc report reproduced the same refusal before the second fix.
+
+The new recognizer accepts one `cat` (including `/bin/cat` and `/usr/bin/cat`),
+one `>` or `>>` literal destination, and one fully quoted identifier delimiter,
+in either redirection order. The first exact terminator must end the program,
+apart from blank lines. The body can contain arbitrary report text, including
+apparent substitutions, because Bash does not expand quoted-delimiter bodies.
+[Bash heredoc semantics](https://www.gnu.org/s/bash/manual/html_node/Redirections.html)
+
+Output identity uses the same resource checker as cleanup; relative destinations
+require an absolute payload `cwd`. Managed paths, symlink aliases, special-file
+destinations and invalid path evidence are refused. Header expansions, extra
+redirections, pipelines, executable suffixes, unquoted delimiters and `<<-`
+remain outside this bounded grammar. A body is never stripped out of an
+arbitrary shell command to manufacture a safe-looking remainder.
+
+Regression tests cover both normalized host payloads, quoting and redirection
+orders, real literal report writes, installed-hook packaging, managed output
+aliases, and shell compositions. Real execution proves body substitutions stay
+literal and installed artifact inventories remain unchanged.
+
+The suffix uses Bash blanks (ASCII space/tab), not Python Unicode whitespace.
+A nonbreaking-space suffix regression failed against the initial recognizer;
+it and a carriage-return suffix are now denied.
+
+## Focused validation
+
+| Check | Result |
+|---|---|
+| Combined installer suite | 60 passed, including installed report execution. |
+| Hook suite | 10 passed; rerun after the suffix correction. |
+| Resource filesystem cases | 11 passed, including unreadable and special registries. |
+| Existing reset/unclaim/completion/reap scripts | 9 passed. |
+| Rust formatting, shell syntax, diff whitespace, targeted Clippy | Passed; warnings treated as errors. |
+
+The original launcher denial, quoted-report denial, stub resource checks and
+nonbreaking-space suffix each supplied failing regression evidence before their
+corresponding corrections. The full suite and delivery remain the verifier's
+responsibility.

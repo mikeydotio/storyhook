@@ -185,3 +185,34 @@ fn resource_guard_contract() {
     );
     assert!(output.status.success(), "{}", combined(&output));
 }
+
+#[test]
+fn installed_hook_admits_literal_reports_without_changing_installations() {
+    let harness = fixture();
+    let cache = install_checkout_helpers(&harness);
+    let hook = cache.join("hooks/protect-install.sh");
+    let artifacts = regular_files(&harness.home.join(".codex"));
+    let report = harness.root.join("report.md");
+    let body = format!(
+        "Installed launcher: {}\nHelper: {}\n",
+        harness.codex_launcher().display(),
+        cache.join("bin/story.sh").display()
+    );
+    let text = format!("cat > {} <<'REPORT'\n{body}REPORT\n", quoted(&report));
+    for codex in [false, true] {
+        assert_eq!(
+            ask_hook(&harness, &hook, &text, codex),
+            serde_json::json!({})
+        );
+    }
+    let mut command = shell(&harness);
+    command.args(["-c", &text]);
+    let output = run_bounded(
+        command,
+        "installed-hook literal report",
+        STORY_COMMAND_DEADLINE,
+    );
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(fs::read_to_string(report).unwrap(), body);
+    assert_eq!(regular_files(&harness.home.join(".codex")), artifacts);
+}
