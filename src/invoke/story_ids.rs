@@ -195,6 +195,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Continuation { id, .. }
         | Invocation::SessionEligibility { id }
         | Invocation::Show { id }
+        | Invocation::Resources { id, .. }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }
         | Invocation::Assign { id, .. }
