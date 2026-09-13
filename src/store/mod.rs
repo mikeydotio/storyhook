@@ -61,6 +61,8 @@
 pub mod block_delivery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub mod conformance;
+mod engine_reset;
+pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
 pub mod ids;
@@ -313,6 +315,13 @@ pub trait ReadOps {
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
 
+    /// Pending explicit reset, if this story is reserved for cleanup.
+    fn engine_reset(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<EngineReset>, StoreError>;
+
     /// Every lane belonging to a run, ordered by lane index.
     fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
 
@@ -550,6 +559,12 @@ pub trait WriteOps: ReadOps {
     /// A missing id is an error rather than an implicit insert, keeping run
     /// creation on the constraint-arbitrated path above.
     fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
+
+    /// Reserves a reset or updates diagnostics without replacing its owner.
+    fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError>;
+
+    /// Removes exactly the reset whose receipt was accepted.
+    fn remove_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError>;
 
     /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;

@@ -490,9 +490,13 @@ WRAPPER
   (
     cd "$seed_dir/engine"
     init_git_repo
+    # SH-706: destructive reset resolves protected branches from a real
+    # origin. Keep that contract offline with a run-owned bare repository.
+    storyhook_fixture_git clone -q --bare . "$seed_dir/engine-origin.git"
+    storyhook_fixture_git remote add origin "$seed_dir/engine-origin.git"
     "$story_bin" project new --prefix EE --name "Engine Project" --no-agents-md >/dev/null
     # SH-473's one real Full Auto lane. A dedicated project prevents the
-    # engine's claim/unclaim cycle from changing Alpha's exact board shape or
+    # engine's claim/reset cycle from changing Alpha's exact board shape or
     # consuming Delta's ordinary Auto target.
     "$story_bin" new "Exercise Full Auto end to end" --json | jq -r '.story.story.id' >"$data_root/engine-story-id"
   )

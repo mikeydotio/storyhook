@@ -16,8 +16,7 @@ use store_support::{create_story, new_store, raw, seed_project};
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
-    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW,
-    StartRequest,
+    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, StartRequest,
 };
 use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
 use storyhook::store::ids::StoryNo;
@@ -662,14 +661,6 @@ fn configure_request(lanes: u32) -> ConfigureRequest {
     }
 }
 
-fn ok_unclaim() -> DispatchOutcome {
-    DispatchOutcome::from_payload(serde_json::json!({
-        "ok": true,
-        "closed_window": true,
-        "worktree_status": "dirty"
-    }))
-}
-
 fn cleanup_lease(story: &str, worktree: &Path) -> StoryCleanupLease {
     StoryCleanupLease {
         version: CLEANUP_LEASE_VERSION,
@@ -1257,88 +1248,119 @@ fn status_and_controls_are_project_isolated_and_enforce_the_state_machine() {
     ));
 }
 
+fn active_reset_story(fixture: &ServiceFixture, title: &str) -> String {
+    StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: title.into(),
+            state: Some("in-progress".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id
+}
+
 #[test]
-fn immediate_stop_is_helper_backed_preserves_work_and_retries_partial_failure() {
+fn immediate_stop_retries_only_failed_targets_and_retains_reservation_identity() {
     let fixture = ServiceFixture::new();
-    let preserved = scratch_dir();
-    let first_worktree = preserved.path().join("first");
-    let second_worktree = preserved.path().join("second");
-    std::fs::create_dir_all(&first_worktree).unwrap();
-    std::fs::create_dir_all(&second_worktree).unwrap();
-    std::fs::write(first_worktree.join("dirty.txt"), "keep me").unwrap();
-    std::fs::write(second_worktree.join("dirty.txt"), "keep me too").unwrap();
-    let refused = DispatchOutcome::from_payload(serde_json::json!({
-        "ok": false,
-        "reason": "unclaim-conflict",
-        "display": "story is no longer claimed"
-    }));
+    let first = active_reset_story(&fixture, "first");
+    let second = active_reset_story(&fixture, "second");
     let fake = FakeDispatcher::new([
-        DispatcherStep::Unclaim(ok_unclaim()),
-        DispatcherStep::Unclaim(refused),
-        DispatcherStep::Unclaim(ok_unclaim()),
+        DispatcherStep::ResetFailure("window refused".into()),
+        DispatcherStep::Reset,
+        DispatcherStep::Reset,
     ]);
     let ctx = fixture.ctx();
-    let service = EngineService::new(&ctx, &fake);
-    let run = service.start(start_request(2)).unwrap();
-    occupy(
-        &fixture,
-        &run.id,
-        0,
-        "SH-10",
-        first_worktree.to_str().unwrap(),
-    );
-    occupy(
-        &fixture,
-        &run.id,
-        1,
-        "SH-11",
-        second_worktree.to_str().unwrap(),
-    );
-
-    let error = service.stop(&run.id, true).unwrap_err().to_string();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    occupy(&fixture, &run.id, 0, &first, "/owned/first");
+    occupy(&fixture, &run.id, 1, &second, "/owned/second");
     assert!(
-        error.contains("lane 1 story `SH-11`: story is no longer claimed"),
-        "{error}"
+        engine
+            .stop(&run.id, true)
+            .unwrap_err()
+            .to_string()
+            .contains("window refused")
     );
-    let partial = service.status(Some(&run.id)).unwrap().pop().unwrap();
+    let partial = engine.status(Some(&run.id)).unwrap().remove(0);
     assert_eq!(partial.run.state, EngineRunState::Draining);
-    assert_eq!(
-        partial.run.stop_reason.as_deref(),
-        Some(OPERATOR_STOPPED_NOW)
-    );
-    assert_eq!(partial.lanes[0].state, EngineLaneState::Idle);
-    assert_eq!(partial.lanes[1].state, EngineLaneState::Working);
-    assert!(first_worktree.join("dirty.txt").exists());
-    assert!(second_worktree.join("dirty.txt").exists());
-
-    let finished = service.stop(&run.id, true).unwrap();
-    assert_eq!(finished.run.state, EngineRunState::Finished);
+    assert_eq!(partial.lanes[0].state, EngineLaneState::Working);
+    assert_eq!(partial.lanes[1].state, EngineLaneState::Idle);
+    let reserved = fixture
+        .store()
+        .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
     assert!(
-        finished
-            .lanes
-            .iter()
-            .all(|lane| lane.state == EngineLaneState::Idle)
+        reserved
+            .failure
+            .as_deref()
+            .unwrap()
+            .contains("window refused")
     );
     assert_eq!(
-        fake.calls(),
-        vec![
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-10".into(),
-                cleanup_lease: cleanup_lease("SH-10", &first_worktree),
-            }),
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-11".into(),
-                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
-            }),
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-11".into(),
-                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
-            }),
-        ]
+        engine.reset_target(&run.id, &reserved.token).unwrap(),
+        reserved
     );
+    let stories = StoryService::new(&ctx);
+    for state in ["verifying", "todo", "done", "in-progress"] {
+        assert!(
+            stories
+                .set_state(&first, state, None, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("reset in progress")
+        );
+    }
+    assert!(
+        stories
+            .delete(&first)
+            .unwrap_err()
+            .to_string()
+            .contains("reset in progress")
+    );
+    assert!(
+        stories
+            .set_awaiting(&first, "cancelled")
+            .unwrap_err()
+            .to_string()
+            .contains("reset in progress")
+    );
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.awaiting, None);
+    assert_eq!(before.state, "in-progress");
+    assert_eq!(
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_none()
+    );
+    let calls = fake.calls();
+    let targets: Vec<_> = calls
+        .iter()
+        .map(|call| match call {
+            DispatcherCall::Reset(reset) => reset,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(targets.len(), 3);
+    assert_eq!(targets[0].token, targets[2].token);
+    assert_eq!(targets[0].lease, targets[2].lease);
+    assert_eq!(targets[1].lease.story_id, second);
+    assert!(engine.reset_target(&run.id, &reserved.token).is_err());
+    assert_eq!(
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert_eq!(fake.calls().len(), 3);
 }
 
 #[test]
@@ -1348,7 +1370,8 @@ fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
     let run = service.start(start_request(1)).unwrap();
-    occupy(&fixture, &run.id, 0, "SH-13", "/preserved/SH-13");
+    let story = active_reset_story(&fixture, "legacy");
+    occupy(&fixture, &run.id, 0, &story, "/preserved/SH-13");
     let mut lane = fixture
         .store()
         .read(|tx| tx.engine_lanes(&run.id))
@@ -1371,35 +1394,115 @@ fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
 }
 
 #[test]
-fn immediate_stop_clears_a_quarantined_lane_without_unclaiming_it() {
+fn immediate_stop_detaches_verification_without_calling_a_cleanup_helper() {
     let fixture = ServiceFixture::new();
-    let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
-    let service = EngineService::new(&ctx, &fake);
-    let run = service.start(start_request(1)).unwrap();
-    occupy(&fixture, &run.id, 0, "SH-12", "/preserved/SH-12");
-    let mut lane = fixture
-        .store()
-        .read(|tx| tx.engine_lanes(&run.id))
-        .unwrap()
-        .pop()
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Verifier owns this work".into(),
+            state: Some("verifying".into()),
+            ..NewStoryInput::default()
+        })
         .unwrap();
-    lane.state = EngineLaneState::Quarantined;
-    lane.outcome = Some("agent-blocked".into());
-    lane.outcome_detail = Some("needs a person".into());
+    let fake = FakeDispatcher::default();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/verifier/owned");
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap();
+    let stopped = engine.stop(&run.id, true).unwrap();
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert!(fake.calls().is_empty());
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn immediate_stop_resets_a_retained_quarantined_story() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Reset this interrupted attempt".into(),
+            state: Some("in-progress".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    stories
+        .set_awaiting(&story.id, "Full Auto: window-gone")
+        .unwrap();
+    let fake = FakeDispatcher::new([DispatcherStep::Reset]);
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/interrupted/owned");
     fixture
         .store()
-        .write(|tx| tx.put_engine_lane(&lane))
+        .write(|tx| {
+            let mut lane = tx.engine_lanes(&run.id)?.remove(0);
+            lane.state = EngineLaneState::Quarantined;
+            tx.put_engine_lane(&lane)
+        })
         .unwrap();
+    engine.stop(&run.id, true).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "todo");
+    assert_eq!(row.awaiting, None);
+}
 
-    let finished = service.stop(&run.id, true).unwrap();
-
-    assert_eq!(finished.run.state, EngineRunState::Finished);
-    assert_eq!(finished.lanes[0].state, EngineLaneState::Idle);
-    assert_eq!(finished.lanes[0].outcome.as_deref(), Some("agent-blocked"));
+#[test]
+fn immediate_stop_preserves_a_quarantined_verifying_story_and_its_diagnosis() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Verifier incident".into(),
+            state: Some("verifying".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    stories
+        .set_awaiting(&story.id, "verifier owns recovery")
+        .unwrap();
+    let fake = FakeDispatcher::default();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/verifier/owned");
+    fixture
+        .store()
+        .write(|tx| {
+            let mut lane = tx.engine_lanes(&run.id)?.remove(0);
+            lane.state = EngineLaneState::Quarantined;
+            tx.put_engine_lane(&lane)
+        })
+        .unwrap();
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap();
     assert_eq!(
-        finished.lanes[0].outcome_detail.as_deref(),
-        Some("needs a person")
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap(),
+        before
     );
     assert!(fake.calls().is_empty());
 }

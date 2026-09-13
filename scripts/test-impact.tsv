@@ -62,6 +62,12 @@ e2e_provider_doubles	scripts/run-e2e.sh
 e2e_selection	:(glob)**/*
 e2e_text_assertion_door	:(glob)e2e/**/*.ts
 engine_reconcile	:(glob)**/*
+engine_reset	src/service/engine.rs
+engine_reset	src/service/engine/reset.rs
+engine_reset	src/service/mod.rs
+engine_reset	src/store/engine_reset.rs
+engine_reset	src/store/schema/0040_engine_resets.sql
+engine_reset	src/store/sqlite/engine_reset.rs
 epic_is_a_type	:(glob)**/*
 event_kind_vocabulary	:(glob)**/*
 fault_injection_guard	:(glob)**/*

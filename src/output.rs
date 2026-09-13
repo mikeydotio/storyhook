@@ -898,6 +898,8 @@ pub enum Response {
     },
     /// One Full Auto engine run after a start, read, or control mutation.
     EngineRun(Box<EngineRunView>),
+    /// Internal cleanup authorization; reading it performs no mutation.
+    EngineReset(Box<crate::store::EngineReset>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
     Summary(Box<SummaryView>),
@@ -1246,6 +1248,9 @@ fn render_json(response: &Response) -> String {
             warnings,
             flagged_reasons: &[],
         }),
+        Response::EngineReset(reset) => {
+            serde_json::to_string_pretty(&serde_json::json!({ "result": "ok", "reset": reset }))
+        }
         Response::EngineRun(run) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "run": run,
@@ -1557,6 +1562,10 @@ fn render_human(response: &Response) -> String {
             }
             body
         }
+        Response::EngineReset(reset) => format!(
+            "Reset {}: run {} lane {} story {}",
+            reset.token, reset.run_id, reset.lane_index, reset.lease.story_id
+        ),
         Response::EngineRun(run) => render_engine_run(run),
         Response::Cleanup(report) => {
             let action = if report.dry_run {

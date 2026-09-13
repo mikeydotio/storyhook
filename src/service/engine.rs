@@ -5,6 +5,8 @@
 //! keeps the store-pool deadlock rule in the caller while giving reconcile
 //! tests a seam that never needs a worktree, tmux server, or agent process.
 
+pub mod reset;
+
 use std::ffi::OsString;
 #[cfg(test)]
 use std::fs::File;
@@ -553,6 +555,12 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
+    /// Deletes only resources owned by an explicit durable reset reservation.
+    fn reset(&self, _request: crate::store::EngineReset) -> Result<DispatchOutcome, AppError> {
+        Err(AppError::Storage(
+            "this dispatcher does not support leased reset".into(),
+        ))
+    }
     fn probe_window(&self, window: &str) -> WindowProbe;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
@@ -658,6 +666,10 @@ impl Dispatcher for ShellDispatcher {
             cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
         }
         Ok(outcome)
+    }
+
+    fn reset(&self, request: crate::store::EngineReset) -> Result<DispatchOutcome, AppError> {
+        reset::run_shell_reset(&self.story_sh_path, &request, &self.env)
     }
 
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
@@ -1140,6 +1152,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
         if self.halt_if_scope_unavailable(run_id)? {
             let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
+
+        if self.ctx.store().read(|tx| reset::stopping(tx, run_id))? {
+            let view = if pass == ReconcilePass::Steady {
+                self.reset_now(run_id)?
+            } else {
+                self.one_view(run_id)?
+            };
             report.run_state = view.run.state;
             report.stop_reason = view.run.stop_reason;
             return Ok(report);
@@ -1989,97 +2012,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
-        let project = self.ctx.project();
-        let transition_at = self.ctx.now();
-        let slug = self.ctx.store().write(|tx| {
-            let slug = project_slug(tx, project)?;
-            let mut run = run_for_project(tx, &slug, run_id)?;
-            require_state(
-                &run,
-                "stop --now",
-                &[
-                    EngineRunState::Running,
-                    EngineRunState::Paused,
-                    EngineRunState::Draining,
-                    EngineRunState::Halted,
-                ],
-            )?;
-            run.state = EngineRunState::Draining;
-            if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
-                run.stop_reason = Some(OPERATOR_STOPPED_NOW.to_string());
-                run.acknowledged_at = None;
-            }
-            run.updated_at = transition_at.clone();
-            tx.update_engine_run(&run)?;
-            Ok(slug)
-        })?;
-
-        let dispatch_deadline = Instant::now() + DISPATCH_TIMEOUT;
-        loop {
-            let lanes = self.stop_lanes_after_dispatch(run_id, dispatch_deadline)?;
-            for lane in lanes
-                .into_iter()
-                .filter(|lane| lane.state != EngineLaneState::Idle)
-            {
-                if lane.state == EngineLaneState::Quarantined {
-                    self.clear_quarantined_lane(&lane)?;
-                    continue;
-                }
-                let story = lane.story_id.clone().expect("filtered occupied lane");
-                let cleanup_lease = lane.cleanup_lease.clone().ok_or_else(|| {
-                    AppError::Storage(format!(
-                        "engine run `{run_id}` cannot immediately stop lane {} story `{story}`: no cleanup lease was recorded for this legacy lane",
-                        lane.lane_index
-                    ))
-                })?;
-                let outcome = self
-                    .dispatcher
-                    .unclaim(UnclaimRequest {
-                        project: slug.clone(),
-                        story: story.clone(),
-                        cleanup_lease,
-                    })
-                    .map_err(|error| {
-                        error.with_context(&format!(
-                            "engine run `{run_id}` could not immediately stop lane {} story `{story}`",
-                            lane.lane_index
-                        ))
-                    })?;
-                if outcome.state == DispatchOutcomeState::Refused {
-                    return Err(AppError::Validation(format!(
-                        "engine run `{run_id}` could not immediately stop lane {} story `{story}`: {}",
-                        lane.lane_index,
-                        helper_diagnosis(&outcome.payload)
-                    )));
-                }
-                self.release_lane(&lane, &outcome.payload)?;
-            }
-
-            let all_idle = self.ctx.store().read(|tx| {
-                Ok(tx
-                    .engine_lanes(run_id)?
-                    .iter()
-                    .all(|lane| lane.state == EngineLaneState::Idle))
-            })?;
-            if all_idle {
-                break;
-            }
-        }
-
-        let finished_at = self.ctx.now();
-        self.ctx.store().write(|tx| {
-            let mut run = run_for_project(tx, &slug, run_id)?;
-            let lanes = tx.engine_lanes(run_id)?;
-            if lanes.iter().any(|lane| lane.state != EngineLaneState::Idle) {
-                return Err(StoreError::from(AppError::Validation(format!(
-                    "engine run `{run_id}` still has occupied lanes after immediate stop"
-                ))));
-            }
-            run.state = EngineRunState::Finished;
-            run.updated_at = finished_at;
-            tx.update_engine_run(&run)
-        })?;
-        self.one_view(run_id)
+        self.reset_now(run_id)
     }
 
     fn stop_lanes_after_dispatch(
@@ -2106,33 +2039,31 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         }
     }
 
-    fn release_lane(
-        &self,
-        lane: &EngineLaneRecord,
-        payload: &serde_json::Value,
-    ) -> Result<(), AppError> {
-        let observed_at = self.ctx.now();
-        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
-        idle.outcome = Some(OPERATOR_STOPPED_NOW.to_string());
-        idle.outcome_detail = Some(payload.to_string());
-        self.ctx
-            .store()
-            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
-        Ok(())
-    }
-
     fn clear_quarantined_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = lane.outcome.clone();
         idle.outcome_detail = lane.outcome_detail.clone();
-        self.ctx
-            .store()
-            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
+        self.ctx.store().write(|tx| {
+            if reset::stopping(tx, &lane.run_id)? {
+                return Ok(());
+            }
+            if !tx
+                .engine_lanes(&lane.run_id)?
+                .iter()
+                .any(|current| current == lane)
+            {
+                return Ok(());
+            }
+            put_or_retire_idle_lane(tx, &idle)
+        })?;
         Ok(())
     }
 
     fn clear_quarantined_lanes(&self, run_id: &RunId) -> Result<(), AppError> {
+        if self.ctx.store().read(|tx| reset::stopping(tx, run_id))? {
+            return Ok(());
+        }
         let lanes = self.ctx.store().read(|tx| tx.engine_lanes(run_id))?;
         for lane in lanes
             .iter()
@@ -2409,6 +2340,9 @@ fn observation_is_current(
     lane: &EngineLaneRecord,
     head_global_seq: Option<i64>,
 ) -> Result<bool, StoreError> {
+    if reset::stopping(tx, &lane.run_id)? {
+        return Ok(false);
+    }
     if !tx
         .engine_lanes(&lane.run_id)?
         .iter()
