@@ -551,7 +551,7 @@ fn real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue() {
     let activity = VerificationActivity::new();
     let inflight = InFlight::new(fixture.env().clone());
     let script = fixture.cwd().join("verification-probe.sh");
-    std::fs::write(&script, "trap 'printf done > \"$STORYHOOK_GATE_PROGRESS.terminated\"; exit 0' TERM\nprintf ready > \"$STORYHOOK_GATE_PROGRESS.started\"\nwhile :; do sleep 30; done\n").unwrap();
+    std::fs::write(&script, "trap 'printf done > \"$STORYHOOK_GATE_PROGRESS.terminated\"; exit 0' TERM\nprintf ready > \"$STORYHOOK_GATE_PROGRESS.started\"\nwhile :; do sleep 30 & wait; done\n").unwrap();
     let journal = journal_path(fixture.env(), &candidate);
     let started = std::path::PathBuf::from(format!("{}.started", journal.display()));
     let terminated = std::path::PathBuf::from(format!("{}.terminated", journal.display()));

@@ -10,7 +10,10 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+mod cleanup;
 mod control;
+pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
+
 mod observation;
 pub mod status;
 use crate::process::Cancellation;
@@ -274,6 +277,13 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// Execution answered, but its owner cannot yet be reused safely.
+    CleanupFailed {
+        /// The completed result, independent of cleanup.
+        verdict: CompletedVerification,
+        /// The retained resources and reason for halting.
+        cleanup: VerificationCleanupFailure,
+    },
     /// The operator cancelled the owned attempt; queued work remains recoverable.
     Cancelled,
     /// The exact merge tree passed and the guarded merge landed.
@@ -1011,7 +1021,7 @@ impl VerificationActuator for ShellVerificationActuator {
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal);
         let request_id = verification_request_id(candidate);
-        let captured = match run_captured_with_progress_and_registration(
+        let capture = run_captured_with_progress_and_registration(
             command,
             self.verification_idle_timeout,
             TerminationPolicy::TerminateThenKill {
@@ -1024,7 +1034,21 @@ impl VerificationActuator for ShellVerificationActuator {
                     .register("verifier", pid, Some(&request_id))
                     .map_err(|error| error.to_string())
             },
-        ) {
+        );
+        if let Err(failure) = &capture {
+            // Termination may itself finish the shell's result publication.
+            // Accept only independently validated completion, never a signal
+            // status or partial JSON as a test verdict.
+            if let Some(outcome) = cleanup::interrupted_outcome(
+                &failure.stdout,
+                &gate,
+                &failure.error.detail(),
+                &candidate.checkout,
+            ) {
+                return outcome;
+            }
+        }
+        let captured = match capture.map_err(|failure| failure.error) {
             Ok(captured) => captured,
             Err(CaptureError::Cancelled) => return VerificationOutcome::Cancelled,
             Err(CaptureError::Stage(error)) => {
@@ -1237,6 +1261,7 @@ enum WireOutcome {
     Merged {
         tree: String,
         detail: String,
+        cleanup_failure: Option<VerificationCleanupFailure>,
     },
     Conflict {
         detail: String,
@@ -1245,6 +1270,13 @@ enum WireOutcome {
         tree: String,
         log: String,
         detail: String,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
+    GatePassed {
+        tree: String,
+        log: String,
+        detail: String,
+        cleanup_failure: VerificationCleanupFailure,
     },
     InfrastructureFailure {
         detail: String,
@@ -1261,18 +1293,62 @@ impl WireOutcome {
     /// source, and the script only ever ran what it was handed.
     fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
         match self {
-            WireOutcome::Merged { tree, detail } => VerificationOutcome::Merged {
+            WireOutcome::Merged {
                 tree,
                 detail,
-                gate: gate.display(),
+                cleanup_failure,
+            } => match cleanup_failure {
+                Some(cleanup) => cleanup::outcome(
+                    CompletedVerification::Merged {
+                        tree,
+                        detail,
+                        gate: gate.display(),
+                    },
+                    cleanup,
+                ),
+                None => VerificationOutcome::Merged {
+                    tree,
+                    detail,
+                    gate: gate.display(),
+                },
             },
             WireOutcome::Conflict { detail } => VerificationOutcome::Conflict { detail },
-            WireOutcome::TestsFailed { tree, log, detail } => VerificationOutcome::TestsFailed {
+            WireOutcome::TestsFailed {
                 tree,
                 log,
                 detail,
-                gate: gate.display(),
+                cleanup_failure,
+            } => match cleanup_failure {
+                Some(cleanup) => cleanup::outcome(
+                    CompletedVerification::TestsFailed {
+                        tree,
+                        log,
+                        detail,
+                        gate: gate.display(),
+                    },
+                    cleanup,
+                ),
+                None => VerificationOutcome::TestsFailed {
+                    tree,
+                    log,
+                    detail,
+                    gate: gate.display(),
+                },
             },
+            WireOutcome::GatePassed {
+                tree,
+                log,
+                detail,
+                cleanup_failure,
+            } => cleanup::outcome(
+                CompletedVerification::GatePassed {
+                    tree,
+                    log,
+                    detail,
+                    gate: gate.display(),
+                },
+                cleanup_failure,
+            ),
             WireOutcome::InfrastructureFailure {
                 detail,
                 disposition,
@@ -1411,6 +1487,9 @@ where
             .cloned()
     });
     if let Some(incident) = incident.as_ref() {
+        if incident.halted && cleanup::retains_merged_incident(store, incident)? {
+            return Ok(TickResult::Halted);
+        }
         if incident_candidate.is_none() {
             let cleared =
                 store.write(|tx| tx.clear_verification_incident(&incident.incident_id))?;
@@ -1574,7 +1653,12 @@ where
             )?;
             continue;
         };
-        if active.is_cancelled() && !matches!(outcome, VerificationOutcome::Merged { .. }) {
+        if active.is_cancelled()
+            && !matches!(
+                outcome,
+                VerificationOutcome::Merged { .. } | VerificationOutcome::CleanupFailed { .. }
+            )
+        {
             record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
             return Ok(TickResult::Stopped);
         }
@@ -1597,6 +1681,19 @@ where
         }
 
         match outcome {
+            VerificationOutcome::CleanupFailed { verdict, cleanup } => {
+                match cleanup::record(
+                    &queue,
+                    &ctx,
+                    &candidate,
+                    &pull_request.url,
+                    verdict,
+                    cleanup,
+                )? {
+                    GenerationWrite::Applied(result) => return Ok(result),
+                    GenerationWrite::Superseded => {}
+                }
+            }
             VerificationOutcome::Cancelled => {
                 record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
                 return Ok(TickResult::Stopped);
@@ -1607,11 +1704,12 @@ where
                     pull_request.url
                 );
                 if matches!(
-                    queue.record_generation_merged(
+                    queue.record_generation_completed(
                         &ctx,
                         &candidate,
-                        &pull_request.url,
+                        Some(&pull_request.url),
                         &green_comment,
+                        None,
                     )?,
                     GenerationWrite::Superseded
                 ) {
@@ -1971,32 +2069,46 @@ fn record_infrastructure_failure<S: Store>(
         GenerationWrite::Superseded => return Ok(GenerationWrite::Superseded),
     };
     if incident.halted {
-        Ctx::new(
-            ctx.store(),
-            ctx.project(),
-            ctx.cwd().to_path_buf(),
-            ctx.env().clone(),
-        )
-        .fire_hook(
-            crate::event_hooks::HookEventType::VerificationHalted,
-            &serde_json::json!({
-                "event_type": "verification_halted",
-                "incident_id": incident.incident_id,
-                "project": candidate.project_slug,
-                "story_id": candidate.story_id,
-                "attempts": incident.attempts,
-                "first_failed_at": incident.first_failed_at,
-                "last_failed_at": incident.last_failed_at,
-                "detail": incident.detail,
-                "held_stories": queue.ordered_for(candidate.project)?.iter().map(|c| c.story_id.clone()).collect::<Vec<_>>(),
-                "remedy": format!("story verifier ack {}", incident.incident_id),
-                "diagnostics": "story verifier status; story daemon logs",
-            }),
-        );
+        fire_verification_halted(ctx, candidate, &incident)?;
         Ok(GenerationWrite::Applied(TickResult::Halted))
     } else {
         Ok(GenerationWrite::Applied(TickResult::RetryLater))
     }
+}
+
+fn fire_verification_halted(
+    ctx: &Ctx<'_, impl Store>,
+    candidate: &VerificationCandidate,
+    incident: &crate::store::VerificationIncident,
+) -> Result<(), AppError> {
+    let held_stories: Vec<_> = VerificationQueue::new(ctx.store())
+        .ordered_for(candidate.project)?
+        .into_iter()
+        .map(|candidate| candidate.story_id)
+        .collect();
+    Ctx::new(
+        ctx.store(),
+        ctx.project(),
+        ctx.cwd().to_path_buf(),
+        ctx.env().clone(),
+    )
+    .fire_hook(
+        crate::event_hooks::HookEventType::VerificationHalted,
+        &serde_json::json!({
+            "event_type": "verification_halted",
+            "incident_id": incident.incident_id,
+            "project": candidate.project_slug,
+            "story_id": candidate.story_id,
+            "attempts": incident.attempts,
+            "first_failed_at": incident.first_failed_at,
+            "last_failed_at": incident.last_failed_at,
+            "detail": incident.detail,
+            "held_stories": held_stories,
+            "remedy": format!("story verifier ack {}", incident.incident_id),
+            "diagnostics": "story verifier status; story daemon logs",
+        }),
+    );
+    Ok(())
 }
 
 fn record_cleanup_complete(
