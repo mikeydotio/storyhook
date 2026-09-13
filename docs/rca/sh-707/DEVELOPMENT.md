@@ -1,9 +1,9 @@
 # SH-707: reviewed development delivery candidate
 
 > **Historical delivery record.** The original candidate is superseded.
-> Use [the AGE-54 refresh handoff](REFRESH-AGE54.md) for the current identity,
-> evidence, installation, native review, and retirement. Do not activate the
-> original `greenlight@personal` candidate from this historical procedure.
+> Use [the installed 3.9.2 release handoff](RELEASE-3.9.2.md) for current evidence
+> and native review. Do not install or activate either personal candidate from
+> this historical procedure.
 
 **Installed and disabled; native activation pending.** The supervisor completed
 source staging at 2026-09-13 02:33 UTC and installation at 02:36 UTC after reviewing

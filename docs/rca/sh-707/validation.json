@@ -1,9 +1,43 @@
 {
   "story_id": "SH-707",
-  "status": "supervisor live staging and installation complete; candidate disabled, original enabled; native trust and final selection pending",
+  "status": "released Agentics 3.9.2 installed and enabled; native modified-hook review and fresh-host acceptance pending",
   "tooling_commit": "567ef40e9",
-  "source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
-  "checks": [
+  "selector": {
+    "baseline": "7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247",
+    "selected": "ALL",
+    "reason": "missing coverage map",
+    "full_suite_run": false
+  },
+  "red_evidence": [
+    "Initial seven identity tests failed against stubs (NotImplementedError).",
+    "A real Git blob-replacement fixture exported wrong bytes before --no-replace-objects; the repaired exporter returns the original bytes.",
+    "First disposable source transition failed: marketplace 'sh707-install' is already added from a different source; remove it before adding this source. Supported remove/add resolves the fixture transition.",
+    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields.",
+    "Four metadata tests initially failed against unimplemented stubs.",
+    "Altered metadata sidecar reached the scaffold before the new staging preflight comparison; the regression now refuses it before writes."
+  ],
+  "limits": {
+    "active_host_validated": false,
+    "release_certified": false,
+    "live_greenlight_installed": true,
+    "no_source_version_changes": true,
+    "full_suites_verifier_owned": true,
+    "candidate_enabled": false,
+    "official_release_enabled": true,
+    "native_review_required": true
+  },
+  "remaining_prerequisite": "Only native review of the changed official greenlight@agentics 3.9.2 handler and fresh-host invocation evidence. Both personal activation instructions are superseded; no further installation or plugin selection is required.",
+  "development_tooling_commit": "98e543fe3",
+  "development_artifact": {
+    "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
+    "archive_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
+    "version": "3.9.1+codex.20260913021137",
+    "only_source_delta": ".codex-plugin/plugin.json added",
+    "status": "historical; retained and disabled; do not activate"
+  },
+  "historical_source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
+  "source_commit": "da6db5643ef1a36f985078217e36174b17b2478c",
+  "historical_checks": [
     {
       "name": "identity regressions",
       "passed": 10,
@@ -65,42 +99,42 @@
       "rerun_during_documentation_reconciliation": false
     }
   ],
-  "selector": {
-    "baseline": "7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247",
-    "selected": "ALL",
-    "reason": "missing coverage map",
-    "full_suite_run": false
-  },
-  "red_evidence": [
-    "Initial seven identity tests failed against stubs (NotImplementedError).",
-    "A real Git blob-replacement fixture exported wrong bytes before --no-replace-objects; the repaired exporter returns the original bytes.",
-    "First disposable source transition failed: marketplace 'sh707-install' is already added from a different source; remove it before adding this source. Supported remove/add resolves the fixture transition.",
-    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields.",
-    "Four metadata tests initially failed against unimplemented stubs.",
-    "Altered metadata sidecar reached the scaffold before the new staging preflight comparison; the regression now refuses it before writes."
+  "checks": [
+    {
+      "name": "installed released Greenlight identity",
+      "files": 21,
+      "result": "complete file-set, Git blob and executable mode equality with v3.9.2",
+      "receipt": "release-3.9.2-receipt.json"
+    },
+    {
+      "name": "installed released Greenlight suite",
+      "passed": 164,
+      "failed": 0,
+      "skipped": 0,
+      "log": "release-3.9.2-bats.log"
+    },
+    {
+      "name": "installed released manifest controls",
+      "passed": 20,
+      "receipt": "release-3.9.2-receipt.json"
+    },
+    {
+      "name": "native discovery",
+      "result": "greenlight@agentics 3.9.2 enabled, trustStatus modified; no native execution certification",
+      "receipt": "release-3.9.2-receipt.json"
+    }
   ],
-  "limits": {
-    "active_host_validated": false,
-    "release_certified": false,
-    "live_greenlight_installed": true,
-    "no_source_version_changes": true,
-    "full_suites_verifier_owned": true,
-    "candidate_enabled": false,
-    "original_enabled": true
-  },
-  "remaining_prerequisite": "Only Mikey native candidate trust and final selection, coordinated by the root supervisor, followed by native-host activation evidence. Supervisor review, staging, installation and installed controls are complete.",
-  "development_tooling_commit": "98e543fe3",
-  "development_artifact": {
-    "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
-    "archive_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
-    "version": "3.9.1+codex.20260913021137",
-    "only_source_delta": ".codex-plugin/plugin.json added"
-  },
-  "live_installation": {
+  "historical_live_installation": {
     "receipt": "installed-disabled-receipt.json",
     "observed_at": "2026-09-13T02:36:34.115512+00:00",
     "actor": "root supervisor",
     "native_host_validated": false,
     "release_certified": false
+  },
+  "live_installation": {
+    "receipt": "release-3.9.2-receipt.json",
+    "actor": "Mikey deployed normal Agentics 3.9.2 release; this lane performed read-only verification",
+    "native_host_validated": false,
+    "installed_identity_verified": true
   }
 }
