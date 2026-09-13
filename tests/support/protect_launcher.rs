@@ -105,8 +105,9 @@ pub(super) const INTERPRETER_PREFIXES: [&str; 4] = ["", "bash ", "/bin/bash ", "
 /// The project selector forms the helper accepts ahead of its verb.
 pub(super) const PROJECT_SELECTORS: [&str; 3] = ["", "--project test ", "--project=test "];
 
-/// Reader verbs: nothing after them touches a story, a worktree, or a file.
-pub(super) const ADMITTED_READER_ARGS: [&str; 16] = [
+/// Reader verbs preserve story state, worktrees, and installed artifacts.
+/// Some helpers create and remove temporary diagnostic files.
+pub(super) const ADMITTED_READER_ARGS: [&str; 23] = [
     "context",
     "context --full",
     "context --story TST-1",
@@ -123,6 +124,22 @@ pub(super) const ADMITTED_READER_ARGS: [&str; 16] = [
     "capabilities --agent=claude",
     "capabilities --agent=codex",
     "ensure-cli",
+    "handoff",
+    "handoff --since 0m",
+    "handoff --since 1m",
+    "handoff --since 2h",
+    "handoff --since 1d",
+    "handoff --since 1w",
+    "triage",
+];
+
+/// Every newly admitted reader family must still pass the installed identity gate.
+pub(super) const IDENTITY_READER_ARGS: [&str; 5] = [
+    "context",
+    "context --story TST-1 --full",
+    "handoff",
+    "handoff --since 1d",
+    "triage",
 ];
 
 /// Terminal verbs the argv contract admits (SH-632): `capture` reads a pane
@@ -147,12 +164,26 @@ pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 9] = [
 
 /// Argument lists no entry point may be admitted with: mutating verbs, unknown
 /// verbs, and malformed selectors or reader options.
-pub(super) const REJECTED_ARGS: [&str; 53] = [
+pub(super) const REJECTED_ARGS: [&str; 67] = [
     "",
     "create --title x",
     "sync",
-    "handoff",
-    "triage",
+    "handoff --since",
+    "handoff --since ''",
+    "handoff --since=1d",
+    "handoff --since 1d --since 2h",
+    "handoff --since -1d",
+    "handoff --since +1d",
+    "handoff --since ' 1d'",
+    "handoff --since 1.5h",
+    "handoff --since 1s",
+    "handoff --since 1D",
+    "handoff --since ../1d",
+    "handoff --since 1d extra",
+    "handoff --unknown",
+    "handoff extra",
+    "triage --full",
+    "triage extra",
     "doctor extra",
     "doctor --fix",
     "doctor TST-1",
@@ -263,6 +294,8 @@ pub(super) fn rejected_compositions(entry: &Path) -> Vec<String> {
         [
             text.clone(),
             text.replace(" context", " context --story TST-1"),
+            text.replace(" context", " handoff --since 1d"),
+            text.replace(" context", " triage"),
         ]
     })
     .chain([
@@ -270,6 +303,9 @@ pub(super) fn rejected_compositions(entry: &Path) -> Vec<String> {
         format!("bash {e} --project {e} context --story TST-1"),
         format!("bash {e} context --story '$(touch /tmp/unwanted)'"),
         format!("bash {e} ensure-cli; cat {e}"),
+        format!("bash {e} handoff --since {e}"),
+        format!("bash {e} --project {e} handoff"),
+        format!("bash {e} triage {e}"),
     ])
     .collect()
 }
@@ -290,6 +326,29 @@ pub(super) fn rejected_dispatch_compositions(entry: &Path) -> Vec<String> {
         format!("bash -c {e} dispatch TST-1"),
         format!("STORY_LAUNCH_CMD=bad bash {e} dispatch TST-1"),
     ]
+}
+
+#[test]
+fn standalone_audit_readers_are_admitted_through_both_installed_entries() {
+    let harness = fixture();
+    let cache = install_checkout_helpers(&harness);
+    let mut denied = Vec::new();
+    for (entry, hook) in [
+        (harness.codex_launcher(), tracked_hook()),
+        (
+            cache.join("bin/story.sh"),
+            cache.join("hooks/protect-install.sh"),
+        ),
+    ] {
+        for args in ["handoff", "handoff --since 1d", "triage"] {
+            let text = format!("bash {} {args}", quoted(&entry));
+            let response = ask_hook(&harness, &hook, &text, true);
+            if response != serde_json::json!({}) {
+                denied.push((text, response));
+            }
+        }
+    }
+    assert!(denied.is_empty(), "standalone readers refused: {denied:#?}");
 }
 
 #[test]
@@ -380,35 +439,37 @@ fn dispatch_exception_preserves_argument_shell_and_identity_guards() {
 
 #[test]
 fn launcher_identity_requires_the_installer_bytes_and_no_symlink() {
-    let harness = fixture();
-    let path = harness.codex_launcher();
-    let text = format!("bash {} context --story TST-1 --full", quoted(&path));
-    let original = fs::read(&path).unwrap();
-    fs::write(
-        &path,
-        b"# storyhook-managed: codex-launcher-v1\ntouch /tmp/unwanted\n",
-    )
-    .unwrap();
-    assert_denied(&harness, &text);
-    fs::remove_file(&path).unwrap();
-    assert_denied(&harness, &text);
-    let other = harness.home.join("other.sh");
-    fs::write(&other, original).unwrap();
-    std::os::unix::fs::symlink(&other, &path).unwrap();
-    assert_denied(&harness, &text);
-    fs::remove_file(&path).unwrap();
-    let mut fifo = shell(&harness);
-    fifo.arg("-c").arg(format!("mkfifo {}", quoted(&path)));
-    let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
-    assert!(output.status.success(), "{}", combined(&output));
-    assert_denied(&harness, &text);
-    fs::remove_file(&path).unwrap();
-    fs::copy(&other, &path).unwrap();
-    let managed = path.parent().unwrap();
-    let moved = harness.home.join("redirected-managed-directory");
-    fs::rename(managed, &moved).unwrap();
-    std::os::unix::fs::symlink(&moved, managed).unwrap();
-    assert_denied(&harness, &text);
+    for args in IDENTITY_READER_ARGS {
+        let harness = fixture();
+        let path = harness.codex_launcher();
+        let text = format!("bash {} {args}", quoted(&path));
+        let original = fs::read(&path).unwrap();
+        fs::write(
+            &path,
+            b"# storyhook-managed: codex-launcher-v1\ntouch /tmp/unwanted\n",
+        )
+        .unwrap();
+        assert_denied(&harness, &text);
+        fs::remove_file(&path).unwrap();
+        assert_denied(&harness, &text);
+        let other = harness.home.join("other.sh");
+        fs::write(&other, original).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert_denied(&harness, &text);
+        fs::remove_file(&path).unwrap();
+        let mut fifo = shell(&harness);
+        fifo.arg("-c").arg(format!("mkfifo {}", quoted(&path)));
+        let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
+        assert!(output.status.success(), "{}", combined(&output));
+        assert_denied(&harness, &text);
+        fs::remove_file(&path).unwrap();
+        fs::copy(&other, &path).unwrap();
+        let managed = path.parent().unwrap();
+        let moved = harness.home.join("redirected-managed-directory");
+        fs::rename(managed, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, managed).unwrap();
+        assert_denied(&harness, &text);
+    }
 }
 
 #[test]
@@ -507,6 +568,12 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
             "capabilities --agent=claude",
             "capabilities --agent=codex",
             "ensure-cli",
+            "handoff",
+            "handoff --since 1m",
+            "handoff --since 2h",
+            "handoff --since 1d",
+            "handoff --since 1w",
+            "triage",
         ]
         .into_iter()
         .enumerate()
@@ -539,6 +606,26 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
                 assert!(value["models"].as_array().unwrap().len() > 1);
             } else if args == "ensure-cli" {
                 assert_eq!(value["installed"], true);
+            } else if args == "triage" {
+                assert!(
+                    value["findings"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|finding| finding["id"] == "TST-1"),
+                    "{value}"
+                );
+            } else if args.starts_with("handoff") {
+                // Events can age out of a short window while other readers run.
+                // The summary and snapshots prove the real read without a clock race.
+                assert!(
+                    value["display"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Session Handoff"),
+                    "{value}"
+                );
+                assert_eq!(value["summary"]["summary"]["total_open"], 2, "{value}");
             } else {
                 assert!(
                     value["display"]
