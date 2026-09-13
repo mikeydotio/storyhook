@@ -267,7 +267,8 @@ where
     // its own reason, so a write that landed before this daemon started is
     // history, never news.
     let watcher = crate::daemon::watch::ChangeWatcher::new(store);
-    let verification_activity = crate::daemon::verification::VerificationActivity::new();
+    let verification_activity =
+        crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
     let serving = Serving {
         store,
         env: env.clone(),
@@ -1476,6 +1477,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let entry = serving.inflight.enter();
     let surface = rpc::Surface {
         store: serving.store,
+        verification_activity: &serving.verification_activity,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,

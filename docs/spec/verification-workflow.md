@@ -1038,3 +1038,13 @@ The Python lifecycle owner must install signal handling before releasing its
 child handshake, settle its recorded lifecycle and gate sessions before the
 outer termination deadline, and retain ownership until cleanup is established.
 The design council's complete decision is recorded on SH-686.
+
+
+## SH-703 — queue visibility and explicit recovery
+
+Verifier status and CLI controls share the dashboard's ownership registry and
+atomic admission controls. Acknowledgement enables admission by default;
+`--leave-stopped` states the alternative. Durable recovery receipts distinguish
+scheduled requests from actual attempts and retain acknowledgement evidence.
+See [Verifier observability](verifier-observability.md) for the shared snapshot,
+notification payloads, progress warnings, validation, and adopted remaining scope.

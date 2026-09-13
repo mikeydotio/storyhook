@@ -612,3 +612,139 @@ fn real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue() {
             .is_none()
     );
 }
+
+#[test]
+fn acknowledgement_wakes_worker_and_names_the_attempt_without_another_event() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use storyhook::daemon::bus::{Change, ChangeBus};
+    use storyhook::daemon::verification::poll_verification_with;
+    use storyhook::service::verification_control::VerificationAcknowledgement;
+    let fixture = ServiceFixture::new();
+    let failure = halted(&fixture);
+    fixture.link_origin("https://github.com/acme/widgets");
+    PrLinkService::new(&fixture.ctx())
+        .link("SH-1", "https://github.com/acme/widgets/pull/1", true)
+        .unwrap();
+    let bus = ChangeBus::new();
+    let activity = VerificationActivity::new().with_bus(bus.clone());
+    activity
+        .control(fixture.store(), fixture.project(), VerificationAction::Stop)
+        .unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let stop = AtomicBool::new(false);
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = Mutex::new(Some(Gate {
+        entered,
+        release: Mutex::new(released),
+        outcome: VerificationOutcome::Cancelled,
+    }));
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            poll_verification_with(
+                fixture.store(),
+                fixture.env(),
+                &bus,
+                &stop,
+                &activity,
+                &inflight,
+                |_| gate.lock().unwrap().take().unwrap(),
+            )
+        });
+        activity
+            .acknowledge(
+                &fixture.ctx(),
+                &failure.incident_id,
+                Some(VerificationAcknowledgement::Retry),
+            )
+            .unwrap();
+        let arrived = observed.recv_timeout(Duration::from_secs(10));
+        // Always release the fixture worker before asserting, including on failure.
+        stop.store(true, Ordering::Relaxed);
+        if arrived.is_ok() {
+            let status = activity.status(&fixture.ctx()).unwrap();
+            let admission = status.recovery.request.unwrap().admission.unwrap();
+            assert_eq!(admission.attempt_id, status.active.unwrap().attempt_id);
+            assert_eq!(admission.story_id, "SH-1");
+        }
+        let _ = release.send(());
+        bus.publish(Change::Resync);
+        assert!(
+            arrived.is_ok(),
+            "ack did not cause an immediate admission: {arrived:?}"
+        );
+    });
+    let recovery = fixture
+        .store()
+        .read(|tx| tx.verification_recovery(fixture.project()))
+        .unwrap();
+    assert!(recovery.request.unwrap().admission.is_some());
+}
+
+#[test]
+fn worker_restart_settles_pending_and_preserves_interrupted_admission_evidence() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use storyhook::daemon::bus::{Change, ChangeBus};
+    use storyhook::daemon::verification::poll_verification_with;
+    use storyhook::store::{VerificationAdmission, VerificationRecoveryOutcome};
+    for admitted in [false, true] {
+        let fixture = ServiceFixture::new();
+        fixture
+            .store()
+            .write(|tx| {
+                let mut recovery = tx.verification_recovery(fixture.project())?;
+                recovery.schedule(&fixture.env().now());
+                if admitted {
+                    let request = recovery.request.as_mut().unwrap();
+                    request.outcome = VerificationRecoveryOutcome::Admitted;
+                    request.admission = Some(VerificationAdmission {
+                        attempt_id: "prior-process".into(),
+                        story_id: "SH-99".into(),
+                        generation: None,
+                        started_at: fixture.env().now(),
+                    });
+                }
+                tx.put_verification_recovery(fixture.project(), &recovery)
+            })
+            .unwrap();
+        let bus = ChangeBus::new();
+        let subscription = bus.subscribe();
+        let activity = VerificationActivity::new().with_bus(bus.clone());
+        let stop = AtomicBool::new(false);
+        let inflight = InFlight::new(fixture.env().clone());
+        let (entered, _) = mpsc::channel();
+        let (_, released) = mpsc::channel();
+        let gate = Mutex::new(Some(Gate {
+            entered,
+            release: Mutex::new(released),
+            outcome: VerificationOutcome::Cancelled,
+        }));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                poll_verification_with(
+                    fixture.store(),
+                    fixture.env(),
+                    &bus,
+                    &stop,
+                    &activity,
+                    &inflight,
+                    |_| gate.lock().unwrap().take().unwrap(),
+                )
+            });
+            let signal = subscription.recv(Duration::from_secs(10));
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(Change::Resync);
+            assert!(signal.is_some(), "restart left recovery silent");
+        });
+        let recovery = fixture
+            .store()
+            .read(|tx| tx.verification_recovery(fixture.project()))
+            .unwrap();
+        let request = recovery.request.unwrap();
+        assert!(
+            matches!(request.outcome, VerificationRecoveryOutcome::Settled { ref reason, .. } if reason == if admitted { "interrupted" } else { "empty-queue" })
+        );
+        assert_eq!(request.admission.is_some(), admitted);
+        assert!(activity.active_for(fixture.project()).is_none());
+    }
+}

@@ -3815,6 +3815,17 @@ fn a_halt_fires_one_post_commit_verification_hook() {
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["event_type"], "verification_halted");
     assert_eq!(lines[0]["attempts"], 1);
+    assert_eq!(lines[0]["held_stories"].as_array().unwrap().len(), 1);
+    assert!(
+        lines[0]["remedy"]
+            .as_str()
+            .unwrap()
+            .starts_with("story verifier ack ")
+    );
+    assert_eq!(
+        lines[0]["diagnostics"],
+        "story verifier status; story daemon logs"
+    );
 }
 
 #[test]
@@ -3865,6 +3876,13 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
 fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
+        .unwrap();
+    fixture.write_hooks_toml(
+        "on_verification_resumed = { command = \"cat >> resumed.log; echo >> resumed.log\" }\n",
+    );
     let id = submitted(&fixture, "current generation", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -3903,6 +3921,16 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
             .unwrap()
             .is_none()
     );
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(fixture.cwd().join("resumed.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event_type"], "verification_resumed");
+    assert_eq!(events[0]["reason"], "incident generation retired");
+    assert_eq!(events[0]["enabled"], true);
+    assert_eq!(events[0]["story_id"], id);
 }
 
 /// A fresh lease for `story_id`, rooted under `root`.

@@ -1225,7 +1225,7 @@ Full Auto engine events:
   A Full Auto run (`story engine start`) raises four more events through this
   same mechanism: on_engine_run_started, on_engine_run_halted,
   on_engine_run_drained, on_engine_lane_quarantined, and
-  on_verification_halted. storyhook ships no
+  on_verification_halted, on_verification_resumed. storyhook ships no
   notification stack of its own — bind whichever of these you care about to a
   command (ntfy, terminal-notifier, a curl to Slack) the same way you would
   on_create or on_close. See `docs/spec/full-auto-engine.md`'s
@@ -2825,29 +2825,44 @@ Examples:
 
         m.insert(
             "verifier",
-            r#"story verifier ack <incident-id>
+            r#"story verifier status
+story verifier start | stop | drain
+story verifier ack <incident-id> [--leave-stopped]
 
-Release the centralized verifier after an infrastructure halt.
+Inspect and control this project's centralized verifier.
 
-  The verifier stops its whole queue when it cannot run at all -- its
-  script refused by name, the registered checkout unreadable, a gate that
-  cannot be spawned -- rather than reporting the same failure as a red
-  verdict on every story in turn. The halt is recorded as one incident,
-  named on the story it was first hit on and on every story waiting
-  behind it, with the incident id. No story is at fault for it.
+  status reports admission independently from infrastructure incidents,
+  actual owned attempt, verifying and held stories, failure age and cause,
+  attempts/retries, acknowledgement, and the latest recovery request.
+  --json carries these facts under verifier; timestamps remain UTC.
 
-  ack names that exact incident and clears it, so the verifier's next
-  tick attempts the queue again. Acknowledging changes nothing about the
-  cause: fix what the halt comment names first, or the same incident
-  returns on the next attempt. A stale id (an older comment, a newer
-  incident) is refused rather than clearing whichever incident is
-  current; an incident still retrying on its own is refused too.
+  start enables admission without clearing a halt. drain prevents new
+  admission while owned work finishes. stop also cancels owned work.
+  Starting while stopped work still owns an attempt is refused.
 
-  The dashboard's "Acknowledge and retry" button performs the same
-  acknowledgement.
+  ack validates the exact halted incident and enables admission atomically.
+  --leave-stopped clears the incident but disables admission; start resumes it.
+  Fix the reported infrastructure cause before retrying. A stale id, an
+  incident still retrying, or an owned attempt prevents explicit retry.
+
+  Acknowledgement answers with its own correlated recovery request, initially
+  scheduled. It does not claim a gate started. The worker records the actual
+  admitted attempt or a concrete reason no admission occurred. Read status
+  and story daemon logs for that evidence. The dashboard uses the same controls.
+
+  load-context, next, summary, engine status and lane-budget expose unhealthy
+  verifier warnings. No progress evidence beyond the publisher interval is
+  overdue; waiting behind a progressing owner is ordinary queueing.
+
+  Hooks: on_verification_halted and on_verification_resumed. A resumed event
+  explicitly states whether admission was left stopped. Bind notifications
+  through the ordinary [hooks] configuration.
 
 Examples:
+  story verifier status --json
   story verifier ack 2:28821
+  story verifier ack 2:28821 --leave-stopped
+  story verifier start
 "#,
         );
 
