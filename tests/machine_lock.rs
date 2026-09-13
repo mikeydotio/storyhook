@@ -529,37 +529,49 @@ impl ProgressFeeder {
         let flag = Arc::clone(&stop);
         let journal = journal.to_path_buf();
         let pause = std::time::Duration::from_millis(lock_poll_secs() * 1000 / FEEDS_PER_POLL);
-        let thread = std::thread::spawn(move || {
-            let give_up_at = std::time::Instant::now() + poll_ceiling();
-            loop {
-                if flag.load(Ordering::SeqCst) {
-                    return FeederStop::RunEnded;
-                }
-                if sentinel() {
-                    return FeederStop::SentinelReached;
-                }
-                if std::time::Instant::now() >= give_up_at {
-                    return FeederStop::Patience;
-                }
-                match std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(false)
-                    .open(&journal)
-                {
-                    Ok(mut file) => file
-                        .write_all(FEEDER_LINE.as_bytes())
-                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}")),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return FeederStop::JournalGone;
-                    }
-                    Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
-                }
-                std::thread::sleep(pause);
-            }
-        });
+        let thread = std::thread::spawn(move || Self::feed(&journal, sentinel, &flag, pause));
         Self {
             stop,
             thread: Some(thread),
+        }
+    }
+
+    /// Observes the holder state and cancellation in the same loop used by
+    /// the thread. Direct calls can establish both facts before observation.
+    fn feed(
+        journal: &Path,
+        sentinel: impl Fn() -> bool,
+        flag: &AtomicBool,
+        pause: std::time::Duration,
+    ) -> FeederStop {
+        let give_up_at = std::time::Instant::now() + poll_ceiling();
+        loop {
+            if sentinel() {
+                return FeederStop::SentinelReached;
+            }
+            match std::fs::OpenOptions::new()
+                .append(true)
+                .create(false)
+                .open(journal)
+            {
+                Ok(mut file) => {
+                    // Finishing a run cannot erase journal loss or a reached
+                    // sentinel, but it must prevent any further progress writes.
+                    if flag.load(Ordering::SeqCst) {
+                        return FeederStop::RunEnded;
+                    }
+                    if std::time::Instant::now() >= give_up_at {
+                        return FeederStop::Patience;
+                    }
+                    file.write_all(FEEDER_LINE.as_bytes())
+                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}"));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return FeederStop::JournalGone;
+                }
+                Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
+            }
+            std::thread::sleep(pause);
         }
     }
 
@@ -586,6 +598,33 @@ impl Drop for ProgressFeeder {
             let _ = thread.join();
         }
     }
+}
+
+/// Cancellation must not erase a completed subject or append after a run ends.
+#[test]
+fn progress_feeder_preserves_terminal_observations_when_cancellation_is_already_requested() {
+    let root = storyhook_test_support::scratch_dir();
+    let journal = root.path().join("journal");
+    let cancelled = AtomicBool::new(true);
+    let pause = std::time::Duration::ZERO;
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || false, &cancelled, pause),
+        FeederStop::JournalGone
+    );
+    assert!(!journal.exists(), "the feeder recreated a removed journal");
+    std::fs::write(&journal, "existing progress\n").unwrap();
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || false, &cancelled, pause),
+        FeederStop::RunEnded
+    );
+    assert_eq!(
+        std::fs::read_to_string(&journal).unwrap(),
+        "existing progress\n"
+    );
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || true, &cancelled, pause),
+        FeederStop::SentinelReached
+    );
 }
 
 /// A sentinel: `journal` holds a line naming `needle`.
