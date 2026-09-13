@@ -46,6 +46,7 @@ mod store_location;
 /// decides what storyhook itself does.
 pub mod test_environment;
 
+use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -102,6 +103,7 @@ pub struct Environment {
     clock: Clock,
     preferred_port: u16,
     busy_timeout: Duration,
+    verifier_mirror_enabled: bool,
 }
 
 impl Environment {
@@ -123,6 +125,8 @@ impl Environment {
     ///   port would fight the developer's own dashboard for it.
     /// * `busy_timeout` — `$STORYHOOK_BUSY_TIMEOUT_MS`, else
     ///   [`DEFAULT_BUSY_TIMEOUT`].
+    /// * `verifier_mirror_enabled` — false only when
+    ///   `$STORYHOOK_VERIFIER_MIRROR` is exactly `0`; otherwise true.
     ///
     /// `store_flag` is `None` everywhere except `main`, and that is correct
     /// rather than an oversight: `main` publishes the flag it was given into
@@ -172,6 +176,8 @@ impl Environment {
             clock: Clock::System,
             preferred_port,
             busy_timeout,
+            verifier_mirror_enabled: std::env::var_os("STORYHOOK_VERIFIER_MIRROR").as_deref()
+                != Some(OsStr::new("0")),
         })
     }
 
@@ -181,7 +187,9 @@ impl Environment {
     /// the one directory everything else hangs off, so a caller cannot
     /// accidentally isolate three of the four paths. The daemon address is
     /// loopback port 0 — never [`DEFAULT_DAEMON_PORT`], which the developer's
-    /// own dashboard is probably holding.
+    /// own dashboard is probably holding. Terminal mirrors are disabled,
+    /// regardless of ambient settings, so fixtures cannot open persistent
+    /// readers in the developer's tmux session.
     pub fn at(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
         Environment {
@@ -191,6 +199,7 @@ impl Environment {
             clock: Clock::System,
             preferred_port: 0,
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            verifier_mirror_enabled: false,
         }
     }
 
@@ -243,6 +252,14 @@ impl Environment {
         &self.home
     }
 
+    /// Whether this environment may open persistent verifier tmux views.
+    ///
+    /// Resolved once by [`Self::from_process`]; [`Self::at`] always disables
+    /// them so an in-process fixture cannot inherit the operator's policy.
+    pub fn verifier_mirror_enabled(&self) -> bool {
+        self.verifier_mirror_enabled
+    }
+
     /// The variables a child that will run `story` needs in order to resolve
     /// **this** environment rather than its own process's (SH-633).
     ///
@@ -257,6 +274,11 @@ impl Environment {
     /// found nothing, and started a second daemon for the same store there.
     /// One store, one daemon (SH-113) held only as long as parent and child
     /// agreed about both halves of the path.
+    ///
+    /// The resolved terminal-mirror policy travels alongside those paths
+    /// (SH-699). Otherwise an isolated fixture's child can open persistent
+    /// readers in the developer's tmux session. Values are OS strings because
+    /// the contract includes both filesystem paths and a Boolean `0`/`1`.
     ///
     /// `XDG_STATE_HOME` is the parent of [`Self::state_home`] rather than a
     /// stored field because both constructors build the state home as
@@ -275,15 +297,28 @@ impl Environment {
     ///
     /// Pass to `Command::envs` **after** any allowlist has cleared the
     /// child's environment, since `env_clear` discards what preceded it.
-    pub fn child_vars(&self) -> Vec<(&'static str, PathBuf)> {
+    pub fn child_vars(&self) -> Vec<(&'static str, OsString)> {
         let xdg_state_home = self
             .state_home
             .parent()
             .expect("a state home is <XDG_STATE_HOME>/storyhook and always has a parent")
-            .to_path_buf();
+            .as_os_str()
+            .to_owned();
         vec![
-            ("STORYHOOK_STORE_PATH", self.store_path().to_path_buf()),
+            (
+                "STORYHOOK_STORE_PATH",
+                self.store_path().as_os_str().to_owned(),
+            ),
             ("XDG_STATE_HOME", xdg_state_home),
+            (
+                "STORYHOOK_VERIFIER_MIRROR",
+                if self.verifier_mirror_enabled {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            ),
         ]
     }
 
@@ -928,9 +963,9 @@ mod tests {
     ///
     /// Derived in both directions over `test_environment::TEST_ENVIRONMENT`:
     /// every name [`Environment::child_vars`] publishes is a table parameter,
-    /// and for a root-relative one its value is exactly what the table renders
-    /// for the same root — so the in-process constructor and the process-level
-    /// isolation cannot disagree about where a child's store or state home is.
+    /// and its value is exactly what the table renders for the same root —
+    /// whether a root-relative path or a fixed isolation policy. The in-process
+    /// constructor and process-level isolation must agree on both.
     /// The table is the definition of what a storyhook process resolves from;
     /// a name published here that the table does not know is a fact the child
     /// would ignore, and a value that differs is a child resolving somewhere
@@ -953,40 +988,54 @@ mod tests {
                     panic!("child_vars publishes `{name}`, which the test-environment table does not know")
                 });
             assert!(
-                matches!(parameter.disposition, Disposition::Root(_)),
-                "`{name}` is not root-relative in the table, so its value cannot be derived from an environment"
+                matches!(
+                    parameter.disposition,
+                    Disposition::Root(_) | Disposition::Literal(_)
+                ),
+                "`{name}` is neither a root-relative path nor a fixed isolation policy"
             );
             let expected = rendered
                 .iter()
                 .find(|setting| setting.name == *name)
                 .and_then(|setting| setting.value.clone())
-                .expect("a root-relative parameter has a value");
+                .expect("a root-relative or literal parameter has a value");
             assert_eq!(
                 value.as_os_str(),
                 expected.as_os_str(),
-                "`{name}`: child_vars says {} and the table says {}",
-                value.display(),
-                Path::new(&expected).display()
+                "`{name}`: child_vars says {value:?} and the table says {expected:?}"
             );
         }
     }
 
-    /// A child is told the state home its parent resolved, not only the store
-    /// (SH-633) — and nothing else that another mechanism already owns.
+    /// A child receives its parent's store, state home (SH-633), and terminal
+    /// mirror policy (SH-699); no setting owned by another mechanism is added.
     #[test]
-    fn child_vars_name_the_store_and_the_state_home_and_nothing_else() {
+    fn child_vars_name_the_store_state_home_and_mirror_policy() {
         let env = Environment::at("/private/tmp/storyhook-env-test");
         let names: Vec<&str> = env.child_vars().iter().map(|(name, _)| *name).collect();
-        assert_eq!(names, ["STORYHOOK_STORE_PATH", "XDG_STATE_HOME"]);
+        assert_eq!(
+            names,
+            [
+                "STORYHOOK_STORE_PATH",
+                "XDG_STATE_HOME",
+                "STORYHOOK_VERIFIER_MIRROR"
+            ]
+        );
+        assert!(!env.verifier_mirror_enabled());
 
         // The store moves with `with_store`; the state home does not, which is
         // what `with_store`'s own doc promises.
         let other = StoreLocation::for_home(Path::new("/private/tmp/storyhook-env-other"));
         let moved = env.clone().with_store(other.clone());
-        let vars: std::collections::BTreeMap<&str, PathBuf> =
+        let vars: std::collections::BTreeMap<&str, OsString> =
             moved.child_vars().into_iter().collect();
-        assert_eq!(vars["STORYHOOK_STORE_PATH"], other.path());
-        assert_eq!(vars["XDG_STATE_HOME"], env.state_home().parent().unwrap());
+        assert_eq!(vars["STORYHOOK_STORE_PATH"], other.path().as_os_str());
+        assert_eq!(
+            vars["XDG_STATE_HOME"],
+            env.state_home().parent().unwrap().as_os_str()
+        );
+        assert_eq!(vars["STORYHOOK_VERIFIER_MIRROR"], "0");
+        assert!(!moved.verifier_mirror_enabled());
     }
 
     /// Two stores must not be able to name one another's runtime files — which

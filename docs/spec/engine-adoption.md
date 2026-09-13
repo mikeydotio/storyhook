@@ -27,7 +27,7 @@ Git repositories, and test-owned tmux sockets; live runs are not test fixtures.
 
 ## Persistence and operational identity
 
-Schema 39 adds nullable `adopted_identity_json`: provider, original pane PID,
+Schema 40 adds nullable `adopted_identity_json`: provider, original pane PID,
 and window ID. Existing rows remain NULL. Adopted rows must carry their story,
 pane, worktree, and cleanup lease and be working or quarantined. CLI and HTTP
 lane views expose optional `adopted_identity`; existing wire shapes omit it.

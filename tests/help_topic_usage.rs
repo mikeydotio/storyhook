@@ -22,6 +22,38 @@ struct Entry<'a> {
     raw: String,
 }
 
+/// A parsing-only corpus could pass after deleting the offending command.
+/// Keep every verifier control, including both acknowledgement intents, visible.
+#[test]
+fn verifier_usage_covers_every_control() {
+    let body = get_help_topic("verifier").expect("verifier help topic");
+    let mut actual = Vec::new();
+    for entry in usage_entries("verifier", body) {
+        let invocation = entry.raw.strip_prefix("story ").expect("command prefix");
+        match expand_documented_invocation(invocation).expect("valid verifier usage grammar") {
+            DocumentedInvocation::Argvs(argvs) => actual.extend(argvs),
+            DocumentedInvocation::ParsedElsewhere => panic!("verifier controls must be checked"),
+        }
+    }
+    actual.sort();
+    let mut expected: Vec<Vec<String>> = [
+        "verifier status",
+        "verifier start",
+        "verifier stop",
+        "verifier drain",
+        "verifier ack 2:28821",
+        "verifier ack 2:28821 --leave-stopped",
+    ]
+    .into_iter()
+    .map(|command| command.split_whitespace().map(str::to_owned).collect())
+    .collect();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "every verifier control must remain documented"
+    );
+}
+
 fn usage_entries<'a>(topic: &'a str, body: &str) -> Vec<Entry<'a>> {
     let mut entries: Vec<Entry<'a>> = Vec::new();
 

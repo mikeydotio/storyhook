@@ -227,29 +227,38 @@ fn a_log_path_with_a_space_reaches_tail_as_one_untouched_argv_element() {
 #[test]
 fn the_kill_switch_disables_every_tmux_call() {
     let fixture = Fixture::new(true);
+    for args in [
+        vec!["banner", "disabled journal banner"],
+        vec!["tail", "/missing/log"],
+        vec!["logs", "/unused/story", "/missing/store"],
+    ] {
+        let out = Command::new("bash")
+            .arg(checkout().join("scripts/verify-window.sh"))
+            .args(&args)
+            .env("PATH", {
+                let existing = std::env::var_os("PATH").unwrap_or_default();
+                let mut path = std::ffi::OsString::from(fixture.tmux_dir().as_os_str());
+                path.push(":");
+                path.push(&existing);
+                path
+            })
+            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", fixture.root.path())
+            .output()
+            .expect("running scripts/verify-window.sh");
 
-    let out = Command::new("bash")
-        .arg(checkout().join("scripts/verify-window.sh"))
-        .args(["banner", "should never reach tmux"])
-        .env("PATH", {
-            let existing = std::env::var_os("PATH").unwrap_or_default();
-            let mut path = std::ffi::OsString::from(fixture.tmux_dir().as_os_str());
-            path.push(":");
-            path.push(&existing);
-            path
-        })
-        .env("STORYHOOK_VERIFIER_MIRROR", "0")
-        .output()
-        .expect("running scripts/verify-window.sh");
-
-    assert!(
-        !out.status.success(),
-        "a disabled mirror must report failure to its caller (for the caller to ignore)"
-    );
-    assert!(
-        !fixture.calls_exist(),
-        "the kill switch must stop the mirror before any tmux subprocess is even started"
-    );
+        assert!(
+            !out.status.success(),
+            "a disabled mirror must report failure to its caller (for the caller to ignore)"
+        );
+        assert!(
+            !fixture.calls_exist(),
+            "the kill switch must stop the mirror before any tmux subprocess is even started"
+        );
+        if args[0] == "banner" {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("disabled journal banner"));
+        }
+    }
 }
 
 #[test]

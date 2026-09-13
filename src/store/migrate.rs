@@ -398,8 +398,14 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 39,
+        name: "verification_recovery",
+        sql: include_str!("schema/0039_verification_recovery.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 40,
         name: "engine_adoption",
-        sql: include_str!("schema/0039_engine_adoption.sql"),
+        sql: include_str!("schema/0040_engine_adoption.sql"),
         foreign_keys_off: false,
     },
 ];
