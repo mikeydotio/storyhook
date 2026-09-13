@@ -14,6 +14,7 @@ import subprocess
 import tomllib
 
 from development_artifact import validate_overlay
+from fixture_config_api import toggle
 from installed_contract import exercise
 from packaging_evidence import export_source, inventory
 from smoke_install import BASELINE, INSTALL_DEADLINE
@@ -23,7 +24,7 @@ from stage_personal import stage
 UNRELATED = ("council", "freshen", "agents", "rca", "semver", "reconcile-pr", "deployit", "hook-guard")
 
 
-def rehearse(repo, artifact_directory, output):
+def rehearse(repo, artifact_directory, output, preserve_caches=False):
     """Return real installer transitions, file witnesses and trust preservation."""
     receipt = json.loads((artifact_directory / "provenance.json").read_text())
     archive = artifact_directory / "greenlight-sh707-development.tar.gz"
@@ -108,18 +109,36 @@ def rehearse(repo, artifact_directory, output):
         raise ValueError("development installation byte/mode parity failed")
     contracts = exercise(installed, repaired=True)
     observe("personal-added-duplicates-exist", ["greenlight@agentics", "greenlight@personal"])
-    # This is a fixture-only replacement rehearsal, not authorization for live removal.
-    run("codex", "plugin", "remove", "greenlight@agentics", "--json")
+    toggles = []
+    if preserve_caches:
+        toggles.extend(toggle(env, output, "greenlight@agentics", False, reject_stale=True))
+    else:
+        # Historical packaging evidence; removal is unsuitable for running live sessions.
+        run("codex", "plugin", "remove", "greenlight@agentics", "--json")
     observe("development-selected", ["greenlight@personal"])
-    restored = run("codex", "plugin", "add", "greenlight@agentics", "--json")
+    if preserve_caches:
+        if inventory(Path(installs["greenlight"]["installedPath"])) != baseline["files"]:
+            raise ValueError("original cache changed during native-style selection")
+        toggles.extend(toggle(env, output, "greenlight@agentics", True))
+        restored = installs["greenlight"]
+    else:
+        restored = run("codex", "plugin", "add", "greenlight@agentics", "--json")
     if inventory(Path(restored["installedPath"])) != baseline["files"]:
         raise ValueError("rollback baseline identity differs")
     observe("baseline-restored-duplicates-exist", ["greenlight@agentics", "greenlight@personal"])
-    run("codex", "plugin", "remove", "greenlight@personal", "--json")
+    if preserve_caches:
+        toggles.extend(toggle(env, output, "greenlight@personal", False))
+    else:
+        run("codex", "plugin", "remove", "greenlight@personal", "--json")
     observe("rollback-complete", ["greenlight@agentics"])
+    if preserve_caches:
+        if (inventory(installed) != delta["files"]
+                or inventory(Path(restored["installedPath"])) != baseline["files"]):
+            raise ValueError("rollback did not preserve both exact caches")
     report = {"artifact_sha256": receipt["artifact_sha256"], "version": delta["version"],
               "states": states, "contracts": contracts, "native_trust_required": True,
-              "release_certified": False, "live_changes_performed": False}
+              "release_certified": False, "live_changes_performed": False,
+              "both_caches_preserved": preserve_caches, "toggle_rpc_transcript": toggles}
     (output / "receipt.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
@@ -129,5 +148,6 @@ if __name__ == "__main__":
     parser.add_argument("--agentics-repo", type=Path, required=True)
     parser.add_argument("--artifact-directory", type=Path, required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
+    parser.add_argument("--preserve-caches", action="store_true")
     args = parser.parse_args()
-    rehearse(args.agentics_repo, args.artifact_directory, args.output_directory)
+    rehearse(args.agentics_repo, args.artifact_directory, args.output_directory, args.preserve_caches)
