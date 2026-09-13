@@ -76,10 +76,32 @@ pub fn process_one(
         }
         let ctx = Ctx::new(store, record.project_id, env.home(), env.clone()).no_hooks(true);
         if let Err(error) = store.read(|tx| require_eligible(tx, &ctx, &record.story_id)) {
-            record.status = ContinuationStatus::NeedsAttention;
-            record.detail = format!("continuation eligibility changed: {error}; holds preserved");
-            persist(store, env, &mut record)?;
-            changed = true;
+            // Closure and reversible holds have different recovery semantics.
+            // Resolve that distinction in the same transaction as the receipt,
+            // so a concurrent reopen cannot be overwritten by a stale closure.
+            changed |= store.write(|tx| {
+                let eligibility =
+                    crate::service::QueryService::new(tx, record.project_id, &ctx.now())
+                        .session_eligibility(&record.story_id);
+                if eligibility.as_ref().is_ok_and(|current| current.eligible) {
+                    return Ok(false);
+                }
+                if eligibility.as_ref().is_ok_and(|current| {
+                    current.reason == crate::service::query::EligibilityReason::Closed
+                }) {
+                    record.status = ContinuationStatus::Superseded;
+                    record.detail =
+                        "story explicitly closed; continuation superseded without provider input"
+                            .into();
+                } else {
+                    record.status = ContinuationStatus::NeedsAttention;
+                    record.detail = format!(
+                        "continuation eligibility changed: {error}; latest observation: {eligibility:?}; holds preserved"
+                    );
+                }
+                save(tx, &mut record, &ctx.now())?;
+                Ok(true)
+            })?;
             continue;
         }
         let observed = runtime.call("observe", &serde_json::to_value(&record)?);
