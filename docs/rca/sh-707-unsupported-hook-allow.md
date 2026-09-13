@@ -4,6 +4,11 @@
 - **Severity/Impact**: One reported Codex `PreToolUse` failure; two independently reproduced incompatible emitters. Duration and wider impact are unknown.
 - **Status**: **PARTIAL — installation preparation complete**. Personal hook repaired locally; Greenlight source repairs pass 127 tests and isolated installation/rollback passes. Active Greenlight delivery remains open under SH-707, with source delivery tracked by Agentics AGE-103.
 
+The operator-authorized distinct development artifact is now prepared and
+rehearsed. Its immutable identity, metadata-only source exception, preservation
+receipts, live commands and native trust boundary are in
+[DEVELOPMENT.md](sh-707/DEVELOPMENT.md). Live registration has not changed.
+
 ## Summary
 
 Codex reported `unsupported permissionDecision:allow` during StoryHook work.
@@ -23,6 +28,7 @@ No hook-specific live trace attributes the original incident to either producer.
 | 2026-09-12 | Independent challenge upheld the interface defect while retaining uncertainty about the original incident. |
 | 2026-09-12 | Personal repair installed after sandbox approval and passed five direct tests. Greenlight candidate preserved for continuation; AGE-103 records external ownership. |
 | 2026-09-13 | AGE-103 source repairs inspected; 127 Greenlight tests pass again against pinned committed source. Normal Codex installer rehearsal passes baseline, repaired candidate and baseline rollback with exact byte/mode parity. |
+| 2026-09-13 | Operator authorizes a disposable development identity. Official Codex helpers produce `3.9.1+codex.20260913021137`; real personal-marketplace replacement/rollback preserves eight unrelated plugins and trust witnesses through five states, with 20 installed-manifest controls passing. Live changes remain reserved for supervisor review. |
 
 Personal-hook introduction history and a last-known-good Codex interval are unknown. No bisect or first-onset claim is justified.
 
@@ -55,7 +61,9 @@ The precise configuration or host change that exposed the latent defect in the r
 
 The selected correction is **SURGICAL**: adapt output at each producer boundary, retain Claude approvals and denials, and retain optional AI rationale as `additionalContext`.
 Codex detection uses presence of the `turn_id` key, matching StoryHook's existing approach.
-No StoryHook runtime, trust, sandbox, classifier, release, or version change is part of the repair.
+No StoryHook runtime, trust, sandbox, classifier, or release change is part of the
+repair. The separately authorized disposable artifact adds only a distinctly
+versioned Codex manifest; it changes no Agentics source file or release identity.
 
 | Component | State and evidence |
 |---|---|
@@ -77,6 +85,9 @@ Durable continuation artifacts: [personal patch](sh-707/personal-hook.patch), [p
 | Current personal installed regression | 5/5 pass; repaired hash remains exact and both original backup and separate Claude copy retain the original hash. |
 | Installer and rollback | 12 baseline controls, 20 repaired installed-manifest controls, 12 rollback controls pass. Each stage verifies all shipped files/modes, identity, registration and enablement. |
 | Receipt negative controls | 10 tests pass, covering wrong/missing/extra bytes, modes, roots, identities, registration, unsafe links and immutable source export. Git replacement-view regression failed before explicit original-object reads. |
+| Development packaging and staging | Four metadata and five staging tests pass; modified original bytes/modes, release identities, archive/receipt drift, existing destinations and symlinked ancestors are refused. An altered sidecar reached the scaffold before the regression fix; it is now rejected before destination writes. |
+| Development installation and rollback | Five real installer transitions preserve all eight unrelated fixture plugins and trust entries; 20 installed-manifest controls pass. Duplicate-enabled intermediate states and required new native trust are explicit, not hidden. |
+| Running-session cache preservation | Follow-up rehearsal uses the native plugin toggle's supported config API; selection and rollback retain both Greenlight caches exactly, all unrelated plugins and trust. A stale expectedVersion returns configVersionConflict without mutation. Live handoff uses native plugin selection, not cache removal. |
 | Greenlight syntax and patch | `bash -n` and `git apply --reverse --check` on the durable candidate patch pass. |
 | Greenlight static analysis | `shellcheck --severity=warning` fails six SC2221/SC2222 warnings in overlapping `wc`, `terraform state`, and `helm repo` arms. Untouched Agentics HEAD reproduces the same six; no new warnings, but baseline remains unclean for AGE-103. |
 | StoryHook impacted-test selector | Actual staged tree selects `ALL`: baseline `7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247` has no coverage map. Full-suite execution remains with the central verifier; only direct regression checks were run here. Agentics has no impacted-test selector. |
@@ -84,8 +95,8 @@ Durable continuation artifacts: [personal patch](sh-707/personal-hook.patch), [p
 ### Remaining work and exact resume procedure
 
 1. Read SH-707's newest operator comments and repeat the complete obviation review. Preserve all committed preparation and original evidence.
-2. Read AGE-103 and AGE-84 for current combined-source certification. The source-unavailable waiting edge was removed; their owners are integrating and repairing the locale-sensitive checker. Do not duplicate their work or wait on stale relationships.
-3. Follow [INSTALLATION.md](sh-707/INSTALLATION.md). Independent preparation is complete. Live delivery requires a containing validated release, or an explicitly authorized development artifact with truthful distinct identity and supported registration. This lane may not perform version operations. Same-version fixture installation is not authorization to mislabel a live release.
+2. Read AGE-103 and AGE-84 for current combined-source certification. AGE-103 was verifying at `1305100174dbbc3702fc2af1d3b6a5502200eef3` with the prerequisite fixes incorporated; Greenlight still matches the tested pinned candidate. Do not duplicate their work or wait on stale relationships.
+3. Follow [DEVELOPMENT.md](sh-707/DEVELOPMENT.md). The authorized, truthful development artifact is prepared in Enderchest with its checksum. The operator requires supervisor review of its concrete commands before live registration changes, followed by native trust/activation coordination. Do not version the Agentics checkout, patch installed artifacts, or bypass trust. No further source-delivery prerequisite exists for this prepared interim path.
 4. Preserve classifiers, denials, artifact checks and native trust. Verify active bytes, installed manifest entrypoints and activation in a new native host thread. Keep source, packaging, release and active-host receipts distinct.
 5. Record final evidence and commit; only after live acceptance, make `story move SH-707 verifying` the last action. Until that concrete prerequisite is available, keep SH-707 open and record the delivery boundary for the supervisor. A context handoff is not a blocker.
 

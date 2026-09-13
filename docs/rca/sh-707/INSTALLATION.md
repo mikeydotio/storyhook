@@ -3,6 +3,10 @@
 ## Status and ownership
 
 This preparation is complete. **Active Greenlight is still unrepaired.**
+The separately authorized development artifact is now sealed and rehearsed:
+see [DEVELOPMENT.md](DEVELOPMENT.md) for its exact identity, supervisor-reviewed
+live sequence, native trust boundary, and rollback. That newer procedure
+supersedes the earlier missing-artifact prerequisite recorded here.
 The personal Codex hook is repaired and revalidated. StoryHook is v2.4.2.
 AGE-103 owns Greenlight source delivery; AGE-84 owns candidate/release validation.
 Neither a candidate test pass nor an installer receipt certifies a release.
@@ -15,9 +19,10 @@ Neither a candidate test pass nor an installer receipt certifies a release.
 | Both-host root resolution | `2b5e20ce391e3c72174516928ac2ee5bafa17a15` |
 | Provider serialization | `66fe64406f55011ff36cbf368d56f269f5e8c304` |
 
-AGE-103 and AGE-84 were actively integrating/repairing the locale-sensitive index
-classifier at the continuation's last dependency review. The old source-unavailable
-waiting edge had been removed. This run does not certify their combined central gate.
+At the newest dependency read, AGE-103 was verifying at `1305100174dbbc3702fc2af1d3b6a5502200eef3`
+with AGE-84 prerequisite fixes incorporated. Its Greenlight subtree is identical
+to the pinned candidate. No source-unavailable dependency remains; this run does
+not certify their combined central gate.
 
 ## Repeat the independent preparation
 
@@ -73,19 +78,22 @@ Codex 0.154.0 successfully replaced same-version fixture bytes, so an installer
 success and version string alone cannot establish identity.
 
 The [official local update procedure](https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/plugin-creator/references/installing-and-updating.md)
-uses a distinct manifest cache identity before reinstalling. SH-707 is prohibited
-from performing any version operation. It must not install the changed candidate
+uses a distinct manifest cache identity before reinstalling. The operator has
+now authorized a separate disposable development artifact identity, while still
+prohibiting Agentics checkout version operations. SH-707 must not install the changed candidate
 as the unchanged tagged 3.9.1 release, remove a manifest to obtain a misleading
 `local` identity, or patch an installed cache.
 
-The supervisor must provide one of these concrete prerequisites:
+The original delivery choices were:
 
 | Delivery | Required evidence |
 |---|---|
 | Containing release | Approved source commit, truthful version, passed owner release validation, and registered source containing the repairs |
-| Interim development artifact | Explicit authorization for a distinct development identity, owner-prepared immutable artifact and manifest, source/test provenance, and supported registration that preserves other plugins |
+| Interim development artifact | Now prepared with explicit operator authorization; immutable archive, official Codex metadata, source provenance, and unrelated-plugin preservation receipts are in DEVELOPMENT.md |
 
-An interim artifact is not release-certified. Retire it after the containing
+The remaining boundary is supervisor review of the concrete live commands and
+native trust/activation, not unavailable source or unknown context. The interim
+artifact is not release-certified. Retire it after the containing
 release is installed and passes the same byte and manifest checks. AGE-103 owns
 lasting source delivery; SH-707 retains installation and retirement evidence.
 
