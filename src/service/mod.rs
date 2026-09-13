@@ -520,6 +520,20 @@ pub(crate) fn append_and_fold(
     for event in events {
         crate::domain::validate_event_for_append(event)?;
     }
+    // A durable reset owns state transfer until cleanup is proven. Keep
+    // discussion and metadata edits available while guarding every producer.
+    if events.iter().any(|event| {
+        matches!(
+            event,
+            StoryEvent::StoryStateChanged { .. }
+                | StoryEvent::StoryClosedAndArchived { .. }
+                | StoryEvent::StoryDeleted { .. }
+                | StoryEvent::StoryAwaitingSet { .. }
+                | StoryEvent::StoryStateCleared { .. }
+        )
+    }) {
+        engine::reset::refuse_reserved(&*tx, project, story)?;
+    }
     // The same backstop for a transition (SH-692): a `verifying` story is
     // completed only with a verdict or a recorded override, whichever door
     // asked. `set_state` refuses earlier with the same words; this catches

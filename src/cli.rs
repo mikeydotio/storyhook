@@ -134,6 +134,18 @@ pub enum EpicAction {
 /// participates in story-id canonicalization.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineAction {
+    /// Refuse dispatch of a story owned by an unfinished reset.
+    ResetCheck {
+        /// Story whose resource ownership is being checked.
+        story: String,
+    },
+    /// Read one current reset reservation; internal cleanup-helper protocol.
+    ResetTarget {
+        /// Exact run owning the reservation.
+        run: String,
+        /// Exact operation identity, never a request to create a reset.
+        token: String,
+    },
     Start {
         /// Optional epic subtree; absent means the whole project.
         epic: Option<String>,
@@ -1869,6 +1881,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     VerbFlags {
         verb: "engine",
+        subcommand: Some("reset-target"),
+        flags: &[value("run"), value("token")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("reset-check"),
+        flags: &[],
+    },
+    VerbFlags {
+        verb: "engine",
         subcommand: Some("status"),
         flags: &[value("run")],
     },
@@ -3531,6 +3553,25 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
         ));
     };
     let action = match action {
+        "reset-check" => {
+            let usage = "usage: story engine reset-check <story-id>";
+            if args.len() != 3 {
+                return Err(AppError::Usage(usage.into()));
+            }
+            EngineAction::ResetCheck {
+                story: args[2].clone(),
+            }
+        }
+        "reset-target" => {
+            let usage = "usage: story engine reset-target --run <id> --token <token>";
+            if args.len() != 6 || args[2] != "--run" || args[4] != "--token" {
+                return Err(AppError::Usage(usage.into()));
+            }
+            EngineAction::ResetTarget {
+                run: args[3].clone(),
+                token: args[5].clone(),
+            }
+        }
         "start" => parse_engine_start(args)?,
         "status" => EngineAction::Status {
             run: parse_engine_run(args, ENGINE_STATUS_USAGE)?,

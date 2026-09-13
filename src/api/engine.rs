@@ -142,12 +142,10 @@ impl EngineController {
                                     request.run
                                 ))
                             })?;
-                        let needs_helper = current.lanes.iter().any(|lane| {
-                            !matches!(
-                                lane.state,
-                                EngineLaneState::Idle | EngineLaneState::Quarantined
-                            )
-                        });
+                        let needs_helper = current
+                            .lanes
+                            .iter()
+                            .any(|lane| !matches!(lane.state, EngineLaneState::Idle));
                         if !needs_helper {
                             return EngineService::new(&ctx, &NoopDispatcher)
                                 .stop(&request.run, true);

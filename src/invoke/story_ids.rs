@@ -257,8 +257,10 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             | AttachmentAction::Save { id, .. } => vec![id],
         },
         Invocation::Engine { action } => match action {
+            EngineAction::ResetCheck { story } => vec![story],
             EngineAction::Start { epic, .. } => epic.iter_mut().collect(),
-            EngineAction::Status { .. }
+            EngineAction::ResetTarget { .. }
+            | EngineAction::Status { .. }
             | EngineAction::Pause { .. }
             | EngineAction::Resume { .. }
             | EngineAction::Stop { .. }

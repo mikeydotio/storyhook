@@ -142,6 +142,8 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // A descendant therefore has no EOF rendezvous with the caller and no
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
+    // Explicit reset uses the same bounded file-backed capture and child environment.
+    ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
