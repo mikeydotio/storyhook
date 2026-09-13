@@ -1218,6 +1218,103 @@ fn sort_cleanup_candidates(candidates: &mut [VerificationCandidate]) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn real_submission_receipts_report_verified_heads_in_central_comments() {
+        use crate::domain::SubmissionReceipt;
+        use storyhook_test_support::ChildGuard;
+
+        // Run the real helper against isolated Git remotes and endpoint data,
+        // then give its unmodified typed PR receipts to the production writer.
+        let capture = tempfile::NamedTempFile::new_in("/tmp").unwrap();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/story/tests/test-submit-head-reporting.sh");
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg(script)
+            .env_remove("STORYHOOK_TEST_HOME")
+            .env("SH713_RECEIPTS_PATH", capture.path());
+        let output = ChildGuard::spawn_with_output(&mut command)
+            .unwrap()
+            .wait_with_output_within(std::time::Duration::from_secs(120), || {
+                "isolated submission-head helper regression".into()
+            });
+        let captured = std::fs::read_to_string(capture.path()).unwrap();
+        let rows: Vec<serde_json::Value> = captured
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 6, "{output:?}\n{captured}");
+        let mut mismatches = Vec::new();
+        for row in rows {
+            let scenario = row["scenario"].as_str().unwrap();
+            let expected = row["expected_head"].as_str().unwrap();
+            let api_head = row["api_head"].as_str().unwrap();
+            let receipt: SubmissionReceipt =
+                serde_json::from_value(row["receipt"].clone()).unwrap();
+            assert!(receipt.ok);
+            let pull_request = receipt.pull_request.unwrap();
+
+            let fixture = storyhook_test_support::ServiceFixture::new();
+            fixture.link_origin("https://github.com/acme/widgets");
+            let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+            let ctx = Ctx::new(
+                &store,
+                ProjectId::new(fixture.project().get()),
+                fixture.cwd(),
+                crate::env::Environment::at(fixture.cwd()),
+            )
+            .no_hooks(true);
+            let service = crate::service::StoryService::new(&ctx);
+            let id = service
+                .create(&crate::service::NewStoryInput {
+                    title: scenario.into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .id;
+            service
+                .set_state(&id, "verifying", None, None, None)
+                .unwrap();
+            let queue = VerificationQueue::new(&store);
+            let mut candidate = queue.next().unwrap().unwrap();
+            // The helper's project has been cleaned up; this service fixture
+            // owns the comment transaction, with the same submitted branch.
+            let mut lease = receipt.lease.unwrap();
+            lease.project_slug.clone_from(&candidate.project_slug);
+            lease.story_id.clone_from(&candidate.story_id);
+            candidate.cleanup_lease = Some(lease);
+            assert!(matches!(
+                queue
+                    .record_generation_submitted(&ctx, &candidate, &pull_request)
+                    .unwrap(),
+                GenerationWrite::Applied(_)
+            ));
+            let story = store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap();
+            let comment = story
+                .snapshot
+                .comments
+                .iter()
+                .find(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+                .unwrap();
+            if !comment
+                .text
+                .contains(&format!("is on origin at {expected};"))
+                || (expected != api_head && comment.text.contains(api_head))
+            {
+                mismatches.push(format!("{scenario}: {}", comment.text));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "central comments used stale PR metadata:\n{}",
+            mismatches.join("\n")
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
+
     fn candidate(
         priority: Priority,
         verifying_since: Option<&str>,
