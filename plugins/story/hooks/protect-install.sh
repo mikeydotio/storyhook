@@ -256,12 +256,15 @@ def launcher_preserves_artifacts(command):
     # never `--fix`, plus a tmux probe window) — terminal and domain
     # operations, never an installed file, the SH-588 distinction; dispatch.
     valid = args in (
-        ["list"],
+        ["list"], ["handoff"], ["triage"],
         ["capabilities"], ["capabilities", "--agent=claude"],
         ["capabilities", "--agent=codex"], ["ensure-cli"], ["doctor"],
     ) or (
         len(args) == 2 and args[0] in ("view", "capture")
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args[1]) is not None
+    ) or (
+        len(args) == 3 and args[:2] == ["handoff", "--since"]
+        and re.fullmatch(r"[0-9]+[mhdw]", args[2]) is not None
     ) or context_preserves_artifacts(args) or dispatch_preserves_artifacts(args)
     if not valid:
         return False

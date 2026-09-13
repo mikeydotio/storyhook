@@ -17,10 +17,10 @@
 //! the door's whole claim is about the hook's own location.
 
 use super::protect_launcher::{
-    ADMITTED_DISPATCH_ARGS, ADMITTED_READER_ARGS, ADMITTED_TERMINAL_ARGS, INTERPRETER_PREFIXES,
-    PROJECT_SELECTORS, REJECTED_ARGS, REJECTED_DISPATCH_ARGS, ask_hook, assert_denied_by, fixture,
-    install_checkout_helpers_at, quoted, rejected_compositions, rejected_dispatch_compositions,
-    shell, tracked_hook,
+    ADMITTED_DISPATCH_ARGS, ADMITTED_READER_ARGS, ADMITTED_TERMINAL_ARGS, IDENTITY_READER_ARGS,
+    INTERPRETER_PREFIXES, PROJECT_SELECTORS, REJECTED_ARGS, REJECTED_DISPATCH_ARGS, ask_hook,
+    assert_denied_by, fixture, install_checkout_helpers_at, quoted, rejected_compositions,
+    rejected_dispatch_compositions, shell, tracked_hook,
 };
 use super::*;
 use storyhook_test_support::{STORY_COMMAND_DEADLINE, run_bounded};
@@ -95,6 +95,8 @@ fn installed_helper_is_admitted_by_the_hook_of_its_own_plugin() {
                 vec![
                     "context",
                     "context --story TST-1 --full",
+                    "handoff --since 1d",
+                    "triage",
                     "view TST-1",
                     "capture TST-1",
                     "doctor",
@@ -128,31 +130,33 @@ fn installed_helper_is_admitted_by_the_hook_of_its_own_plugin() {
 
 #[test]
 fn installed_helper_is_refused_by_any_other_plugins_hook() {
-    let harness = fixture();
-    let roots = plugin_roots(&harness);
-    for root in &roots {
-        install_checkout_helpers_at(root);
+    for args in IDENTITY_READER_ARGS
+        .iter()
+        .chain(&["dispatch TST-1 --agent=claude"])
+    {
+        let harness = fixture();
+        let roots = plugin_roots(&harness);
+        for root in &roots {
+            install_checkout_helpers_at(root);
+        }
+        let claude = &roots[0];
+        let text = format!("bash {} {args}", quoted(&helper_of(claude)));
+        // The load-bearing case: the tracked hook is a plugin too — the checkout's —
+        // and the installed helper is not its own. Identical bytes do not make it so.
+        assert_denied_by(&harness, &tracked_hook(), &text);
+        for other in &roots[1..] {
+            assert_denied_by(&harness, &hook_of(other), &text);
+        }
+        // A retained older projection beside the loaded one, byte-identical.
+        let stale = claude.parent().unwrap().join("0.0.1");
+        install_checkout_helpers_at(&stale);
+        assert_denied_by(
+            &harness,
+            &hook_of(claude),
+            &format!("bash {} {args}", quoted(&helper_of(&stale))),
+        );
+        assert_denied_by(&harness, &hook_of(&stale), &text);
     }
-    let claude = &roots[0];
-    let text = format!(
-        "bash {} context --full --story TST-1",
-        quoted(&helper_of(claude))
-    );
-    // The load-bearing case: the tracked hook is a plugin too — the checkout's —
-    // and the installed helper is not its own. Identical bytes do not make it so.
-    assert_denied_by(&harness, &tracked_hook(), &text);
-    for other in &roots[1..] {
-        assert_denied_by(&harness, &hook_of(other), &text);
-    }
-    // A retained older projection beside the loaded one, byte-identical.
-    let stale = claude.parent().unwrap().join("0.0.1");
-    install_checkout_helpers_at(&stale);
-    assert_denied_by(
-        &harness,
-        &hook_of(claude),
-        &format!("bash {} context --story TST-1", quoted(&helper_of(&stale))),
-    );
-    assert_denied_by(&harness, &hook_of(&stale), &text);
 }
 
 #[test]
@@ -200,50 +204,52 @@ fn helper_door_preserves_argument_shell_and_identity_guards() {
 
 #[test]
 fn helper_identity_requires_a_regular_file_at_its_own_unredirected_path() {
-    let harness = fixture();
-    let root = claude_root(&harness);
-    install_checkout_helpers_at(&root);
-    let hook = hook_of(&root);
-    let helper = helper_of(&root);
-    let text = format!("bash {} context --story TST-1 --full", quoted(&helper));
-    let original = fs::read(&helper).unwrap();
-    assert_eq!(
-        ask_hook(&harness, &hook, &text, true),
-        serde_json::json!({}),
-        "{text}"
-    );
+    for args in IDENTITY_READER_ARGS {
+        let harness = fixture();
+        let root = claude_root(&harness);
+        install_checkout_helpers_at(&root);
+        let hook = hook_of(&root);
+        let helper = helper_of(&root);
+        let text = format!("bash {} {args}", quoted(&helper));
+        let original = fs::read(&helper).unwrap();
+        assert_eq!(
+            ask_hook(&harness, &hook, &text, true),
+            serde_json::json!({}),
+            "{text}"
+        );
 
-    // A symlink at the helper's path, even to the identical bytes elsewhere.
-    fs::remove_file(&helper).unwrap();
-    let other = harness.home.join("other.sh");
-    fs::write(&other, &original).unwrap();
-    std::os::unix::fs::symlink(&other, &helper).unwrap();
-    assert_denied_by(&harness, &hook, &text);
-    // A missing helper.
-    fs::remove_file(&helper).unwrap();
-    assert_denied_by(&harness, &hook, &text);
-    // A FIFO: classification must never block on a writer.
-    let mut fifo = shell(&harness);
-    fifo.arg("-c").arg(format!("mkfifo {}", quoted(&helper)));
-    let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
-    assert!(output.status.success(), "{}", combined(&output));
-    assert_denied_by(&harness, &hook, &text);
-    fs::remove_file(&helper).unwrap();
-    fs::write(&helper, &original).unwrap();
-    assert_eq!(
-        ask_hook(&harness, &hook, &text, true),
-        serde_json::json!({}),
-        "restored"
-    );
+        // A symlink at the helper's path, even to the identical bytes elsewhere.
+        fs::remove_file(&helper).unwrap();
+        let other = harness.home.join("other.sh");
+        fs::write(&other, &original).unwrap();
+        std::os::unix::fs::symlink(&other, &helper).unwrap();
+        assert_denied_by(&harness, &hook, &text);
+        // A missing helper.
+        fs::remove_file(&helper).unwrap();
+        assert_denied_by(&harness, &hook, &text);
+        // A FIFO: classification must never block on a writer.
+        let mut fifo = shell(&harness);
+        fifo.arg("-c").arg(format!("mkfifo {}", quoted(&helper)));
+        let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
+        assert!(output.status.success(), "{}", combined(&output));
+        assert_denied_by(&harness, &hook, &text);
+        fs::remove_file(&helper).unwrap();
+        fs::write(&helper, &original).unwrap();
+        assert_eq!(
+            ask_hook(&harness, &hook, &text, true),
+            serde_json::json!({}),
+            "restored"
+        );
 
-    // A redirected managed directory: the spelled path and the hook's own root
-    // now both resolve through a symlink below HOME, which the launcher door
-    // already refuses as a different installed identity.
-    let managed = harness.home.join(".claude/plugins/cache/storyhook");
-    let moved = harness.home.join("redirected-managed-directory");
-    fs::rename(&managed, &moved).unwrap();
-    std::os::unix::fs::symlink(&moved, &managed).unwrap();
-    assert_denied_by(&harness, &hook, &text);
+        // A redirected managed directory: the spelled path and the hook's own root
+        // now both resolve through a symlink below HOME, which the launcher door
+        // already refuses as a different installed identity.
+        let managed = harness.home.join(".claude/plugins/cache/storyhook");
+        let moved = harness.home.join("redirected-managed-directory");
+        fs::rename(&managed, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &managed).unwrap();
+        assert_denied_by(&harness, &hook, &text);
+    }
 }
 
 #[test]
