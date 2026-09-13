@@ -106,9 +106,16 @@ pub(super) const INTERPRETER_PREFIXES: [&str; 4] = ["", "bash ", "/bin/bash ", "
 pub(super) const PROJECT_SELECTORS: [&str; 3] = ["", "--project test ", "--project=test "];
 
 /// Reader verbs: nothing after them touches a story, a worktree, or a file.
-pub(super) const ADMITTED_READER_ARGS: [&str; 9] = [
+pub(super) const ADMITTED_READER_ARGS: [&str; 16] = [
     "context",
     "context --full",
+    "context --story TST-1",
+    "context --full --story TST-1",
+    "context --story TST-1 --full",
+    "context --story 1",
+    "context --full --story 1",
+    "context --story 1 --full",
+    "context --story 'a_B-1'",
     "view TST-1",
     "view 1",
     "list",
@@ -140,7 +147,7 @@ pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 9] = [
 
 /// Argument lists no entry point may be admitted with: mutating verbs, unknown
 /// verbs, and malformed selectors or reader options.
-pub(super) const REJECTED_ARGS: [&str; 36] = [
+pub(super) const REJECTED_ARGS: [&str; 53] = [
     "",
     "create --title x",
     "sync",
@@ -164,6 +171,23 @@ pub(super) const REJECTED_ARGS: [&str; 36] = [
     "context --unknown",
     "context --full --full",
     "context extra",
+    "context --story",
+    "context --full --story",
+    "context --story ''",
+    "context --story --full",
+    "context --story --full TST-1",
+    "context --story TST-1 --story TST-2",
+    "context --story=TST-1",
+    "context --story TST-1 extra",
+    "context --story ../TST-1",
+    "context --story /TST-1",
+    "context --story 'TST 1'",
+    "context --story -TST-1",
+    "context --story TST.1",
+    "context --story TST-1 --unknown",
+    "context --full --story TST-1 --full",
+    "context --story TST-1 --full --full",
+    "context --story TST-1 --project other",
     "view",
     "view --help",
     "view TST-1 extra",
@@ -234,6 +258,20 @@ pub(super) fn rejected_compositions(entry: &Path) -> Vec<String> {
         format!("bash {e} --project '~' context"),
         format!("bash '{}.bak' context", entry.display()),
     ]
+    .into_iter()
+    .flat_map(|text| {
+        [
+            text.clone(),
+            text.replace(" context", " context --story TST-1"),
+        ]
+    })
+    .chain([
+        format!("bash {e} context --story {e}"),
+        format!("bash {e} --project {e} context --story TST-1"),
+        format!("bash {e} context --story '$(touch /tmp/unwanted)'"),
+        format!("bash {e} ensure-cli; cat {e}"),
+    ])
+    .collect()
 }
 
 /// The same for a dispatch call: composition, a managed path smuggled in as an
@@ -344,7 +382,7 @@ fn dispatch_exception_preserves_argument_shell_and_identity_guards() {
 fn launcher_identity_requires_the_installer_bytes_and_no_symlink() {
     let harness = fixture();
     let path = harness.codex_launcher();
-    let text = format!("bash {} context", quoted(&path));
+    let text = format!("bash {} context --story TST-1 --full", quoted(&path));
     let original = fs::read(&path).unwrap();
     fs::write(
         &path,
@@ -398,7 +436,7 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
     let harness = fixture();
     // Only the provider installation boundary is simulated. Use the complete
     // shipped helper tree, real launcher, CLI and daemon for every read.
-    install_checkout_helpers(&harness);
+    let cache = install_checkout_helpers(&harness);
     let created = harness.run(&[
         "project",
         "new",
@@ -410,6 +448,10 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
     assert!(created.status.success(), "{}", combined(&created));
     let created = harness.run(&["new", "Guard reader sentinel"]);
     assert!(created.status.success(), "{}", combined(&created));
+    let created = harness.run(&["new", "Guard review candidate"]);
+    assert!(created.status.success(), "{}", combined(&created));
+    let moved = harness.run(&["move", "TST-2", "in-progress"]);
+    assert!(moved.status.success(), "{}", combined(&moved));
     let snapshot = || {
         let result = harness.run(&["show", "TST-1", "--json"]);
         assert!(result.status.success(), "{}", combined(&result));
@@ -438,62 +480,106 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
     let selected: serde_json::Value = serde_json::from_slice(&selected.stdout).unwrap();
     let slug = selected["project"]["slug"].as_str().unwrap();
     let artifacts = regular_files(&harness.home.join(".codex"));
-    let launcher = quoted(&harness.codex_launcher());
     // Linux may provide /usr/bin/bash; macOS provides only /bin/bash.
     // Grammar coverage above still checks every supported spelling.
     let prefixes: Vec<_> = INTERPRETER_PREFIXES
         .into_iter()
         .filter(|prefix| !prefix.starts_with('/') || Path::new(prefix.trim()).is_file())
         .collect();
-    for (index, args) in [
-        "context",
-        "context --full",
-        "view TST-1",
-        "list",
-        "capabilities",
-        "capabilities --agent=claude",
-        "capabilities --agent=codex",
-        "ensure-cli",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let prefix = prefixes[index % prefixes.len()];
-        let selector = match index % 3 {
-            0 => String::new(),
-            1 => format!("--project {slug} "),
-            _ => format!("--project={slug} "),
-        };
-        let text = format!("{prefix}{launcher} {selector}{args}");
-        assert_eq!(ask(&harness, &text, true), serde_json::json!({}), "{text}");
-        let mut command = shell(&harness);
-        command.args(["-c", &text]);
-        let output = run_bounded(command, "real launcher reader", STORY_COMMAND_DEADLINE);
-        assert!(output.status.success(), "{text}: {}", combined(&output));
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["ok"], true, "{text}: {value}");
-        if args.starts_with("capabilities") {
-            assert!(value["models"].as_array().unwrap().len() > 1);
-        } else if args == "ensure-cli" {
-            assert_eq!(value["installed"], true);
-        } else {
-            assert!(
-                value["display"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Guard reader sentinel"),
-                "{value}"
+    for (entry, hook) in [
+        (harness.codex_launcher(), tracked_hook()),
+        (
+            cache.join("bin/story.sh"),
+            cache.join("hooks/protect-install.sh"),
+        ),
+    ] {
+        let launcher = quoted(&entry);
+        for (index, args) in [
+            "context",
+            "context --full",
+            "context --story TST-1",
+            "context --full --story TST-1",
+            "context --story TST-1 --full",
+            "context --story 1",
+            "view TST-1",
+            "list",
+            "capabilities",
+            "capabilities --agent=claude",
+            "capabilities --agent=codex",
+            "ensure-cli",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let prefix = prefixes[index % prefixes.len()];
+            let selector = match index % 3 {
+                0 => String::new(),
+                1 => format!("--project {slug} "),
+                _ => format!("--project={slug} "),
+            };
+            let text = format!("{prefix}{launcher} {selector}{args}");
+            assert_eq!(
+                ask_hook(&harness, &hook, &text, true),
+                serde_json::json!({}),
+                "{text}"
+            );
+            let mut command = shell(&harness);
+            command.args(["-c", &text]);
+            let output = run_bounded(command, "real launcher reader", STORY_COMMAND_DEADLINE);
+            assert!(output.status.success(), "{text}: {}", combined(&output));
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["ok"], true, "{text}: {value}");
+            if args.contains("--story") {
+                let display = value["display"].as_str().unwrap();
+                assert!(display.contains("### Target\n\nTST-1"), "{text}: {display}");
+                assert!(display.contains("### Candidate TST-2"), "{text}: {display}");
+                assert_eq!(value["full"], args.contains("--full"), "{text}: {value}");
+            }
+            if args.starts_with("capabilities") {
+                assert!(value["models"].as_array().unwrap().len() > 1);
+            } else if args == "ensure-cli" {
+                assert_eq!(value["installed"], true);
+            } else {
+                assert!(
+                    value["display"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Guard reader sentinel"),
+                    "{value}"
+                );
+            }
+            assert_eq!(
+                snapshot(),
+                before,
+                "reader changed domain state/events: {text}"
+            );
+            assert_eq!(
+                regular_files(&harness.home.join(".codex")),
+                artifacts,
+                "reader changed installed artifacts: {text}"
             );
         }
+        let text = format!("bash {launcher} context --story TST-999999");
         assert_eq!(
-            snapshot(),
-            before,
-            "reader changed domain state/events: {text}"
+            ask_hook(&harness, &hook, &text, true),
+            serde_json::json!({}),
+            "{text}"
         );
+        let mut command = shell(&harness);
+        command.args(["-c", &text]);
+        let output = run_bounded(command, "missing reader target", STORY_COMMAND_DEADLINE);
+        assert!(!output.status.success(), "{text}: {}", combined(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["ok"], false, "{value}");
+        assert!(
+            value["display"].as_str().unwrap().contains("TST-999999"),
+            "{value}"
+        );
+        assert_eq!(snapshot(), before, "failed reader changed domain state");
         assert_eq!(
             regular_files(&harness.home.join(".codex")),
             artifacts,
-            "reader changed installed artifacts: {text}"
+            "failed reader changed artifacts"
         );
     }
 }
