@@ -12,6 +12,19 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 SCRIPT="$PLUGIN_ROOT/bin/story.sh"
 
+# Return one shipped handler by event, matcher and quoted script path. Tests
+# execute its actual command; array order must never choose another behavior.
+manifest_hook() {
+  jq -ce --arg event "$1" --arg matcher "$2" --arg script "$3" '
+    [(.hooks[$event] // [])[] | select(.matcher == $matcher) | .hooks[]
+      | select(.type == "command")
+      | select(.command | endswith("/hooks/" + $script + "\""))]
+    | if length == 1 then .[0]
+      else error("expected exactly one \($event) / \($matcher) / \($script) handler; found \(length)")
+      end
+  ' "${4:-$PLUGIN_ROOT/hooks/hooks.json}"
+}
+
 # Loaded unconditionally: run-tests.sh has already built the test environment,
 # but every Git this file and its callers run still needs the shared constructor.
 # shellcheck source=../../../scripts/test-env.sh
