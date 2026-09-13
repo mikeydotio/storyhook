@@ -830,6 +830,19 @@ pub struct ConfigureRequest {
     pub speed: Option<EngineSpeed>,
 }
 
+/// Fields supplied by the CLI; omitted settings retain their current values.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConfigurePatch {
+    /// Desired capacity, when supplied.
+    pub lanes: Option<u32>,
+    /// Model for future dispatches, when supplied.
+    pub model: Option<String>,
+    /// Reasoning effort for future dispatches, when supplied.
+    pub effort: Option<String>,
+    /// Speed for future dispatches, when supplied.
+    pub speed: Option<EngineSpeed>,
+}
+
 /// One transactionally consistent run and its ordered lanes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkippedNoAutoStory {
@@ -947,7 +960,34 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         run_id: &RunId,
         request: ConfigureRequest,
     ) -> Result<RunView, AppError> {
-        validate_configuration(request.lanes, &request.model, &request.effort)?;
+        self.configure_with(run_id, |_| request)
+    }
+
+    /// Atomically changes only supplied settings, preserving concurrent updates.
+    pub fn configure_patch(
+        &self,
+        run_id: &RunId,
+        patch: ConfigurePatch,
+    ) -> Result<RunView, AppError> {
+        if patch == ConfigurePatch::default() {
+            return Err(AppError::Validation(
+                "engine configure requires at least one setting".into(),
+            ));
+        }
+        self.configure_with(run_id, |run| ConfigureRequest {
+            lanes: patch.lanes.unwrap_or(run.lanes),
+            agent: run.agent,
+            model: patch.model.or_else(|| run.model.clone()),
+            effort: patch.effort.or_else(|| run.effort.clone()),
+            speed: patch.speed.or(run.speed),
+        })
+    }
+
+    fn configure_with(
+        &self,
+        run_id: &RunId,
+        request: impl FnOnce(&EngineRunRecord) -> ConfigureRequest,
+    ) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let updated_at = self.ctx.now();
         self.ctx.store().write(|tx| {
@@ -959,6 +999,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 &[EngineRunState::Running, EngineRunState::Paused],
             )?;
 
+            let request = request(&run);
+            validate_configuration(request.lanes, &request.model, &request.effort)
+                .map_err(StoreError::from)?;
             let lanes = tx.engine_lanes(run_id)?;
             for lane in lanes.iter().filter(|lane| {
                 lane.lane_index >= request.lanes && lane.state == EngineLaneState::Idle

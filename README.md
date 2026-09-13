@@ -417,6 +417,7 @@ story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
 story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
+story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
 story engine status [--run <run-id>]
 story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
@@ -659,6 +660,9 @@ choices alongside attended Dispatch, and shows the active configuration.
 | `draining` | A stop is in progress; no new claims. This is irreversible. | Wait for lanes to clear, or use `stop --now`. |
 | `halted` | Three consecutive hard stops tripped the breaker. Preserved work needs inspection. | Diagnose each quarantine before cleanup or redispatch. |
 | `finished` | The queue drained or an immediate stop completed. | Review the stop reason, then acknowledge it. |
+
+`story engine configure --lanes 6` changes a live run without restarting it.
+Omitted settings stay unchanged; occupied lanes finish when capacity shrinks.
 
 `story engine status` shows the selected run, its provider configuration,
 state, stop reason, hard-stop streak, and each lane's story and elapsed time.
