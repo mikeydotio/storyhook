@@ -107,3 +107,23 @@ The original launcher denial, quoted-report denial, stub resource checks and
 nonbreaking-space suffix each supplied failing regression evidence before their
 corresponding corrections. The full suite and delivery remain the verifier's
 responsibility.
+
+## Verifier merge reconciliation
+
+PR 806 conflicted with base `5315307b39d04ca369a36c6400ec68890fa60f8b`
+after SH-712 added installed reader grammar. A two-parent merge preserves
+published SH-708 head `36cb3d076367c0caf398b2c59aae663f10b6bbc8` and retains
+both argument classifiers: context/handoff/triage readers and bounded domain
+operations. Literal report handling and resolved-resource checks are unchanged.
+
+The combined negative matrix retains SH-712's malformed reader cases and
+removes only the three valid create/reset/unclaim forms now covered by SH-708's
+positive matrix. Existing real-helper tests exercise both contracts together;
+this reconciliation adds no new command grammar or resource policy.
+
+After reconciliation, `cargo test --offline --test plugin_install --test
+protect_install_hook --test hook_budgets` passed all 77 tests (61/10/6), including
+the resource filesystem contract and real domain/reader/report flows. Targeted
+Clippy with `-D warnings`, Rust formatting, hook shell syntax and diff whitespace
+checks passed. The actual-tree selector again returned `ALL` for the missing
+baseline coverage map; full-suite certification remains with the verifier.

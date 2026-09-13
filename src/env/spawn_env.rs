@@ -48,7 +48,7 @@
 //!
 //! The centralized verifier spawns two more children, and they sit on
 //! opposite sides of that line. `scripts/verify-pr.sh` is orchestration with
-//! GitHub credentials and nothing of `story.sh`'s surface
+//! GitHub credentials, lock configuration, and terminal-mirror policy
 //! ([`apply_verification_allowlist`]). The submission helper
 //! (`story.sh submit`, SH-647) IS `story.sh` — it runs `story` against the
 //! daemon's own store, so it needs everything the dispatch list carries, the
@@ -160,8 +160,9 @@ const GITHUB_CREDENTIAL_MAY_SEE: [&str; 3] = ["GH_CONFIG_DIR", "GH_TOKEN", "GITH
 /// Configuration the centralized verifier needs in addition to the common
 /// executable/user environment and the GitHub credentials. The tokens stop at
 /// its orchestration process; the shell boundary removes them before the
-/// repository test runs.
-const VERIFICATION_EXTRA_MAY_SEE: [&str; 1] = ["STORYHOOK_LOCK_DIR"];
+/// repository test runs. Mirror policy must survive this boundary because
+/// an absent switch enables persistent tmux views (SH-699).
+const VERIFICATION_EXTRA_MAY_SEE: [&str; 2] = ["STORYHOOK_LOCK_DIR", "STORYHOOK_VERIFIER_MIRROR"];
 
 /// True if `name` is one `story.sh`'s dispatch child is allowed to see.
 fn dispatch_permits(name: &str) -> bool {
@@ -225,7 +226,7 @@ pub fn apply_plugin_cli_allowlist(command: &mut Command) {
 }
 
 /// Clears `command`'s environment and restores only execution, GitHub auth,
-/// and machine-lock configuration needed by centralized verification.
+/// machine-lock configuration, and mirror policy needed by centralized verification.
 pub fn apply_verification_allowlist(command: &mut Command) {
     apply_allowlist(command, verification_permits);
 }
@@ -313,6 +314,7 @@ mod tests {
         );
         assert!(verification_permits("GH_TOKEN"));
         assert!(verification_permits("STORYHOOK_LOCK_DIR"));
+        assert!(verification_permits("STORYHOOK_VERIFIER_MIRROR"));
         assert!(!verification_permits("STORYHOOK_STORE_PATH"));
         assert!(!verification_permits("OPENAI_API_KEY"));
     }
