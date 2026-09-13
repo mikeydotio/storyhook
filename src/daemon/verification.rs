@@ -979,6 +979,16 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg("--")
             .args(gate.argv())
             .current_dir(&candidate.checkout)
+            // The resolved fixture policy overrides any ambient value the
+            // allowlist retained; the verifier needs no other store settings.
+            .env(
+                "STORYHOOK_VERIFIER_MIRROR",
+                if self.env.verifier_mirror_enabled() {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             .env(

@@ -185,12 +185,18 @@ pub(crate) fn start(env: &Environment) -> ActivityGuard {
         }
     };
     *DIAGNOSTICS.lock().unwrap_or_else(PoisonError::into_inner) = diagnostics;
-    if std::env::var_os("STORYHOOK_VERIFIER_MIRROR").as_deref() != Some(std::ffi::OsStr::new("0")) {
+    if env.verifier_mirror_enabled() {
+        #[cfg(test)]
+        isolation_tests::WINDOW_STARTS.fetch_add(1, Ordering::SeqCst);
         let env = env.clone();
         std::thread::spawn(move || window::open(&env));
     }
     ActivityGuard
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod isolation_tests;
 
 #[cfg(test)]
 mod tests {
