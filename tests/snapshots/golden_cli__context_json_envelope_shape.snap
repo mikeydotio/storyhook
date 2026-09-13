@@ -13,6 +13,7 @@ source: tests/golden_cli.rs
     "open",
     "ready_count",
     "ready_stories",
-    "total_stories"
+    "total_stories",
+    "verifier"
   ]
 }

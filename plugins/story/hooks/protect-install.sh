@@ -174,8 +174,27 @@ def domain_preserves_artifacts(args):
     )
 
 
-# The helper door is tied to the plugin this hook was loaded from (SH-632).
-# A substring match alone cannot establish that installed identity.
+def context_preserves_artifacts(args):
+    """Recognize the documented context selector without consuming it as shell code."""
+    if args[:1] != ["context"]:
+        return False
+    options = args[1:]
+    # The helper accepts either ordering; the selector and its value stay adjacent.
+    # Removing at most one flag also keeps duplicate options outside the contract.
+    if options[:1] == ["--full"]:
+        options = options[1:]
+    elif options[-1:] == ["--full"]:
+        options = options[:-1]
+    return not options or (
+        len(options) == 2 and options[0] == "--story"
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", options[1]) is not None
+    )
+
+
+# The identity test of the helper door (SH-632). `entry` as spelled must be a proper
+# path beneath a managed prefix — the prefilter only proved a substring — and
+# must resolve to the `bin/story.sh` beside this very hook. Returns the spelled
+# path, or None. Cheap: two realpath calls, no file opened yet.
 def installed_helper_of_this_plugin(entry):
     if not os.path.isabs(entry):
         return None
@@ -275,13 +294,16 @@ def launcher_preserves_artifacts(command):
     # never `--fix`, plus a tmux probe window) — terminal and domain
     # operations, never an installed file, the SH-588 distinction; dispatch.
     valid = args in (
-        ["context"], ["context", "--full"], ["list"],
+        ["list"], ["handoff"], ["triage"],
         ["capabilities"], ["capabilities", "--agent=claude"],
         ["capabilities", "--agent=codex"], ["ensure-cli"], ["doctor"],
     ) or (
         len(args) == 2 and args[0] in ("view", "capture")
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args[1]) is not None
-    ) or dispatch_preserves_artifacts(args) or domain_preserves_artifacts(args)
+    ) or (
+        len(args) == 3 and args[:2] == ["handoff", "--since"]
+        and re.fullmatch(r"[0-9]+[mhdw]", args[2]) is not None
+    ) or context_preserves_artifacts(args) or dispatch_preserves_artifacts(args) or domain_preserves_artifacts(args)
     if not valid:
         return False
 

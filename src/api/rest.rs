@@ -368,7 +368,8 @@ pub fn route_with_activity<S: Store>(
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
                 let ctx = Ctx::new(store, project, root, env.clone())
                     .no_hooks(hookless)
-                    .with_provenance(route_provenance(&route));
+                    .with_provenance(route_provenance(&route))
+                    .with_verification_activity(Some(verification_activity));
                 let reply = route_project(
                     &ctx,
                     verification_activity,
@@ -463,10 +464,10 @@ fn route_project<S: Store>(
                 .map_err(|error| {
                     AppError::Validation(format!("invalid verifier action: {error}"))
                 })?;
-                let state = verification_activity.control(ctx.store(), ctx.project(), action)?;
+                let (state, receipt) = verification_activity.control_with_receipt(ctx.store(), ctx.project(), action, &ctx.now())?;
                 Ok(json_reply(
                     200,
-                    serde_json::json!({"state": state}).to_string(),
+                    serde_json::json!({"state": state, "command_receipt": receipt, "verifier": verification_activity.status(ctx)?}).to_string(),
                 ))
             })()
             .unwrap_or_else(|error| error_reply(&error))
@@ -898,6 +899,7 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
+            let verifier = crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
             let incident = tx.verification_incident(project)?;
             let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
                 &crate::service::verification::ordered_candidates_for(tx, project)?,
@@ -985,6 +987,7 @@ fn project_data_json<S: Store>(
                 "meta": meta_json(tx, project, &data)?,
                 "verification_incident": incident_json,
                 "verification_control": {"state": control},
+                "verifier": verifier,
             });
             to_json(&response)
         })())
@@ -1007,12 +1010,12 @@ fn route_ack_verification<S: Store>(
             .map_err(|error| {
                 AppError::Validation(format!("invalid acknowledgement action: {error}"))
             })?;
-        let acknowledged = activity.acknowledge(ctx, expected, action)?;
+        let (acknowledged, receipt) = activity.acknowledge_with_receipt(ctx, expected, action)?;
         let control =
             activity.read_project(ctx.store(), ctx.project(), |_, _, control| Ok(control))?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control})
+            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control, "command_receipt": receipt, "verifier": activity.status(ctx)?})
                 .to_string(),
         ))
     })()

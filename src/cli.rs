@@ -169,6 +169,19 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Read durable permission, incidents, recovery and live ownership.
+    Status,
+    /// Enable admission without clearing a halt.
+    Start,
+    /// Disable admission and cancel owned work.
+    Stop,
+    /// Disable admission and finish owned work.
+    Drain,
+    /// Clear an exact incident and keep admission disabled.
+    AckLeaveStopped {
+        /// Exact current incident identity.
+        incident_id: String,
+    },
     /// Acknowledge one exact halted infrastructure incident so the verifier
     /// queue may run again. The id is the one the halt comment prints.
     Ack {
@@ -236,7 +249,8 @@ Usage:
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
-  story verifier ack <incident-id>                  (release a halted verifier queue)
+  story verifier status | start | stop | drain
+  story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
   story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
@@ -571,7 +585,7 @@ pub enum Invocation {
     Engine {
         action: EngineAction,
     },
-    /// `story verifier ack <incident-id>` (SH-666).
+    /// Project verifier status and operator controls (SH-703).
     Verifier {
         action: VerifierAction,
     },
@@ -600,8 +614,8 @@ pub enum Invocation {
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
     /// `story lane-budget` — an informational census of live agent
-    /// windows (SH-672). Store-free and daemon-free so the operator reads
-    /// their own tmux server, which the daemon may not share.
+    /// windows (SH-672). Measures the caller's own tmux server and adds verifier
+    /// notices from an existing daemon without starting one or opening a store.
     LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
@@ -1881,7 +1895,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "verifier",
         subcommand: Some("ack"),
-        flags: &[],
+        flags: &[bare("leave-stopped")],
     },
     VerbFlags {
         verb: "cleanup",
@@ -3641,7 +3655,7 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
-const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
+const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--leave-stopped]";
 
 /// `story verifier ack <incident-id>` (SH-666).
 ///
@@ -3652,22 +3666,45 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
 /// complete arm ends in [`expect_no_more`] with its own usage string.
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+        ));
     };
     let action = match action {
+        "status" | "start" | "stop" | "drain" => {
+            expect_no_more(
+                &args[2..],
+                "usage: story verifier <status|start|stop|drain>",
+            )?;
+            match action {
+                "status" => VerifierAction::Status,
+                "start" => VerifierAction::Start,
+                "stop" => VerifierAction::Stop,
+                _ => VerifierAction::Drain,
+            }
+        }
         "ack" => {
             let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
                 return Err(AppError::Usage(format!(
                     "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
                 )));
             };
-            expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
-            VerifierAction::Ack {
-                incident_id: incident_id.clone(),
+            if args.get(3).map(String::as_str) == Some("--leave-stopped") {
+                expect_no_more(&args[4..], VERIFIER_ACK_USAGE)?;
+                VerifierAction::AckLeaveStopped {
+                    incident_id: incident_id.clone(),
+                }
+            } else {
+                expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
+                VerifierAction::Ack {
+                    incident_id: incident_id.clone(),
+                }
             }
         }
         _ => {
-            return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+            return Err(AppError::Usage(
+                "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+            ));
         }
     };
     Ok(Invocation::Verifier { action })

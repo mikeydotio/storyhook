@@ -2781,6 +2781,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
     verificationRequests: Object.create(null),
+    verificationObservations: Object.create(null),
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -5173,7 +5174,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
     var incident = state.data && state.data.verification_incident;
-    var visible = !!(incident && incident.halted);
+    var halted = !!(incident && incident.halted);
+    var verifier = state.data && state.data.verifier;
+    var control = state.data && state.data.verification_control;
+    var mode = control && control.state;
+    var recovery = verifier && verifier.recovery;
+    var request = recovery && recovery.request;
+    var requestState = request && request.outcome && request.outcome.state;
+    var transition = JSON.stringify([mode, verifier && verifier.active && verifier.active.attempt_id, request && request.id, requestState]);
+    var observation = state.verificationObservations[state.repoId] || { halted: false, transition: null, resumed: false };
+    if (observation.halted && !halted) observation.resumed = true;
+    else if (observation.resumed && observation.transition !== transition) observation.resumed = false;
+    observation.halted = halted;
+    observation.transition = transition;
+    state.verificationObservations[state.repoId] = observation;
+    var visible = halted || !!(mode && mode !== "running") || !!(verifier && verifier.warning) || observation.resumed || requestState === "scheduled";
     mount.hidden = !visible;
     if (!visible) {
       delete mount.dataset.fingerprint;
@@ -5181,9 +5196,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     var pending = state.verificationRequests[state.repoId];
-    var fingerprint = JSON.stringify([incident, pending]);
+    var fingerprint = JSON.stringify([incident, pending, verifier, mode, observation.resumed]);
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
+    if (!halted) {
+      var title = mode === "stopped" ? "Central verification stopped" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
+      var children = [el("div", { class: "engine-banner-title" }, [title])];
+      if (verifier && verifier.warning) children.push(el("div", {}, [verifier.warning]));
+      if (request) children.push(el("div", {}, ["Recovery request ", el("code", {}, [request.id]), ": ", requestState]));
+      if (request && request.admission) children.push(el("div", {}, ["Attempt ", el("code", {}, [request.admission.attempt_id]), " on ", request.admission.story_id]));
+      if (recovery && recovery.acknowledgement) children.push(el("div", {}, ["Acknowledged ", recovery.acknowledgement.incident.incident_id, " at ", timeNode(recovery.acknowledgement.at, "second")]));
+      if (mode === "stopped") children.push(el("button", { type: "button", class: "btn", disabled: !!pending, onClick: function() { submitVerificationRequest("control", { action: "start" }); } }, ["Start verifier"]));
+      children.push(el("div", {}, ["Diagnostics: ", el("code", {}, ["story verifier status"]), " · ", el("code", {}, ["story daemon logs"])]));
+      mount.appendChild(el("article", { class: "engine-banner", role: "status" }, children));
+      mount.dataset.fingerprint = fingerprint;
+      measureNoticeBands();
+      return;
+    }
     mount.appendChild(el("article", { class: "engine-banner verification-halted-banner" }, [
       el("div", { class: "engine-banner-head" }, [
         el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
@@ -5225,6 +5254,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       boardFetchFloor = boardFetchTicket;
       if (state.data) {
         if (response.state) state.data.verification_control = { state: response.state };
+        if (response.verifier) state.data.verifier = response.verifier;
         var incident = state.data.verification_incident;
         if (incident && incident.incident_id === response.acknowledged) state.data.verification_incident = null;
       }

@@ -5,11 +5,98 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, scratch_dir};
+
+#[test]
+fn a_private_server_is_owned_before_any_mirror_command() {
+    let mirror = Mirror::new();
+    let out = mirror.tmux(&["show-options", "-s", "-v", "exit-empty"]);
+    assert!(
+        out.status.success(),
+        "fixture must own a server before publishing commands: {out:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "off");
+}
+
+#[test]
+fn fixture_teardown_reaps_banner_and_activity_readers_even_while_unwinding() {
+    use storyhook::daemon::lifecycle::{process_identity_is_live, process_start_time};
+    use storyhook_test_support::STORY_COMMAND_DEADLINE;
+    // A separate private server stands in for another owner's session.
+    let control = Mirror::new();
+    let project = control.project("control");
+    assert!(
+        control
+            .command(&project, &["banner", "CONTROL"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    control.pane_with("CONTROL");
+    for unwind in [false, true] {
+        let mut identities = Vec::new();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mirror = Mirror::new();
+            let project = mirror.project("owned");
+            let store = mirror.root.path().join("store.db");
+            fs::write(&store, "").unwrap();
+            journal(&mirror.root.path().join("home"), &store, "OWNED_READER");
+            let binary = storyhook_test_support::story_binary();
+            for args in [
+                vec!["banner", "OWNED_BANNER"],
+                vec!["logs", binary.to_str().unwrap(), store.to_str().unwrap()],
+            ] {
+                assert!(
+                    mirror
+                        .command(&project, &args)
+                        .output()
+                        .unwrap()
+                        .status
+                        .success()
+                );
+            }
+            mirror.pane_with("OWNED_BANNER");
+            mirror.pane_with("OWNED_READER");
+            let pids = mirror.tmux(&["list-panes", "-a", "-F", "#{pane_pid}"]);
+            assert!(pids.status.success(), "{pids:?}");
+            for pid in String::from_utf8(pids.stdout).unwrap().lines() {
+                let pid: u32 = pid.parse().unwrap();
+                let token = process_start_time(pid).expect("fixture reader has native identity");
+                identities.push((pid, token));
+            }
+            assert_eq!(
+                identities.len(),
+                2,
+                "banner sleeper and real activity reader"
+            );
+            if unwind {
+                panic!("deliberate fixture assertion failure");
+            }
+        }));
+        assert_eq!(outcome.is_err(), unwind);
+        let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
+        while identities
+            .iter()
+            .any(|(pid, token)| process_identity_is_live(*pid, Some(token)))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "fixture readers survived teardown: {identities:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(control.windows().len(), 1);
+        control.pane_with("CONTROL");
+    }
+}
 
 struct Mirror {
+    // Dropped explicitly before root, including when startup or a test panics.
+    server: Mutex<Option<ChildGuard>>,
     root: tempfile::TempDir,
     tmux: PathBuf,
     socket: PathBuf,
@@ -41,11 +128,49 @@ impl Mirror {
         )
         .unwrap();
         fs::set_permissions(wrapper, fs::Permissions::from_mode(0o755)).unwrap();
-        Self { root, tmux, socket }
+        let mut command = Command::new(&tmux);
+        command
+            .args(["-D", "-f", "/dev/null", "-S"])
+            .arg(&socket)
+            .env("HOME", root.path().join("home"))
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .envs(storyhook_test_support::daemon_containment())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        let server = ChildGuard::spawn(&mut command).expect("start owned private tmux server");
+        let mut fixture = Self {
+            server: Mutex::new(Some(server)),
+            root,
+            tmux,
+            socket,
+        };
+        let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
+        while !fixture.socket.exists() {
+            assert!(
+                fixture
+                    .server
+                    .get_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .is_none(),
+                "private tmux exited before publishing its socket"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "private tmux socket was never published"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        fixture
     }
 
-    fn tmux(&self, args: &[&str]) -> Output {
-        Command::new(&self.tmux)
+    fn tmux_result(&self, args: &[&str]) -> Result<Output, String> {
+        let mut command = Command::new(&self.tmux);
+        command
             .arg("-S")
             .arg(&self.socket)
             .args(["-f", "/dev/null"])
@@ -53,20 +178,47 @@ impl Mirror {
             .env("HOME", self.root.path().join("home"))
             .env_remove("XDG_STATE_HOME")
             .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .output()
-            .unwrap()
+            .env_remove("TMUX_PANE");
+        let mut child = ChildGuard::spawn_with_output(&mut command)
+            .map_err(|error| format!("start private tmux {args:?}: {error}"))?;
+        // ChildGuard reports deadline/pipe failures by panicking. Convert only
+        // that bounded wait into a diagnostic so Drop can still reap the server
+        // when an assertion is already unwinding.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+                format!("private tmux {args:?} did not finish")
+            })
+        }))
+        .map_err(|failure| {
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .unwrap_or("non-text panic from bounded child wait");
+            format!("private tmux {args:?}: {message}")
+        })
+    }
+
+    fn tmux(&self, args: &[&str]) -> Output {
+        self.tmux_result(args)
+            .unwrap_or_else(|error| panic!("{error}"))
     }
 
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut path = self.root.path().join("bin").into_os_string();
-        path.push(":");
-        path.push(std::env::var_os("PATH").unwrap_or_default());
         let mut command = Command::new("bash");
         command
             .arg(checkout().join("scripts/verify-window.sh"))
             .args(args)
-            .current_dir(cwd)
+            .current_dir(cwd);
+        self.apply_mirror(&mut command);
+        command
+    }
+
+    fn apply_mirror(&self, command: &mut Command) {
+        let mut path = self.root.path().join("bin").into_os_string();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        command
             .env("PATH", path)
             .env("HOME", self.root.path().join("home"))
             .env("STORYHOOK_VERIFIER_MIRROR", "1")
@@ -74,7 +226,6 @@ impl Mirror {
             .env_remove("STORYHOOK_ACTIVITY_LOG_DIR")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
-        command
     }
 
     fn project(&self, relative: &str) -> PathBuf {
@@ -102,7 +253,7 @@ impl Mirror {
     }
 
     fn pane_with(&self, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
         loop {
             for window in self.windows() {
                 let target = format!("=storyhook-verifier:={window}");
@@ -120,8 +271,72 @@ impl Mirror {
 
 impl Drop for Mirror {
     fn drop(&mut self) {
-        // The socket was created by this fixture; never address the user's server.
-        let _ = self.tmux(&["kill-server"]);
+        use storyhook::daemon::lifecycle::{process_identity_is_live, process_start_time};
+        let mut errors = Vec::new();
+        let mut readers = Vec::new();
+        match self.tmux_result(&["list-panes", "-a", "-F", "#{pane_pid}"]) {
+            Ok(output) if output.status.success() => {
+                for raw in String::from_utf8_lossy(&output.stdout).lines() {
+                    match raw.parse::<u32>() {
+                        Ok(pid) => readers.push((pid, process_start_time(pid))),
+                        Err(error) => {
+                            errors.push(format!("invalid private reader pid {raw:?}: {error}"))
+                        }
+                    }
+                }
+            }
+            Ok(output)
+                if output.status.code() == Some(1)
+                    && output.stdout.is_empty()
+                    && String::from_utf8_lossy(&output.stderr).trim() == "no current target" =>
+            {
+                // An owned -D server with no sessions has no pane target yet.
+            }
+            other => errors.push(format!("could not census private readers: {other:?}")),
+        }
+        match self.tmux_result(&["kill-server"]) {
+            Ok(output) if output.status.success() => {}
+            other => errors.push(format!("could not close private tmux: {other:?}")),
+        }
+        let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
+        let server = self
+            .server
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mut server) = server.take() {
+            while server.try_wait().is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if server.try_wait().is_none() {
+                errors.push("private tmux did not stop within its command deadline".into());
+            }
+            // Also covers a failed control client; ownership never depends on the socket.
+            server.kill_and_reap();
+        }
+        while readers
+            .iter()
+            .any(|(pid, token)| process_identity_is_live(*pid, token.as_deref()))
+        {
+            if Instant::now() >= deadline {
+                errors.push(format!(
+                    "private terminal readers survived shutdown: {readers:?}"
+                ));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !errors.is_empty() {
+            let diagnostic = format!(
+                "tmux fixture {} teardown: {}",
+                self.socket.display(),
+                errors.join("; ")
+            );
+            if std::thread::panicking() {
+                eprintln!("{diagnostic}");
+            } else {
+                panic!("{diagnostic}");
+            }
+        }
     }
 }
 
@@ -256,8 +471,11 @@ fn non_repository_never_falls_back_to_a_shared_project_window() {
         .unwrap();
     assert!(!out.status.success());
     assert!(
-        !mirror.socket.exists(),
-        "failed identity must not even start tmux"
+        !mirror
+            .tmux(&["has-session", "-t", "=storyhook-verifier"])
+            .status
+            .success(),
+        "failed identity must not create a session on the fixture's owned server"
     );
 }
 
