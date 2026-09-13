@@ -5,3 +5,6 @@ set -euo pipefail
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_codex_stop.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_plan_request.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_codex_classifier.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_context_handoff.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_session_handoff.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/test_compact_receipt.py"

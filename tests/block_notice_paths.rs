@@ -10,7 +10,7 @@
 //! arm, so a 65th variant is a compile error here until its author says
 //! whether it sets `awaiting`.
 
-use storyhook::cli::Invocation;
+use storyhook::cli::{ContinuationAction, Invocation};
 
 /// Whether dispatching `invocation` can write `StoryAwaitingSet` with a
 /// caller-supplied reason — the condition under which SH-398's nudge must
@@ -28,6 +28,10 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         Invocation::SetAwaiting { .. }
         | Invocation::SetState { .. }
         | Invocation::SetFields { .. } => true,
+
+        // Obviation administration uses a fixed reason and validated typed
+        // relationships, never a new caller-supplied prose blocking reason.
+        Invocation::Continuation { .. } => false,
 
         Invocation::Help
         | Invocation::Project { .. }
@@ -135,6 +139,13 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
     let s = || "SH-1".to_string();
     vec![
         ("Help", Invocation::Help),
+        (
+            "Continuation",
+            Invocation::Continuation {
+                id: s(),
+                action: ContinuationAction::Request,
+            },
+        ),
         (
             "SetAwaiting",
             Invocation::SetAwaiting {

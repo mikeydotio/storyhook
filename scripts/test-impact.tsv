@@ -25,6 +25,8 @@ checkout_path_readers	:(glob)**/*
 checkout_path_readers	:(glob)src/**/*.rs
 commit_identity	:(glob)**/*
 completion_state_search	:(glob)src/**/*.rs
+continuation_runtime	:(glob)plugins/story/lib/*
+continuation_runtime	plugins/story/tests/test_continuation_runtime.py
 council_citations	:(glob)**/*
 coupled_snapshot	:(glob)**/*
 coupled_snapshot	:(glob)src/**/*.rs
