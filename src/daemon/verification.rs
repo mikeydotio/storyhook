@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 mod cleanup;
 mod control;
+pub(crate) mod evidence;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
@@ -76,6 +77,19 @@ pub struct ActiveVerification {
     pub generation: Option<GlobalSeq>,
     /// When the verifier acquired this generation.
     pub started_at: String,
+    /// Prior failed attempt observed atomically at this retry's admission.
+    /// Absent for first attempts, replacements, and legacy ownership payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_origin: Option<VerificationRetryOrigin>,
+}
+
+/// Immutable failure-budget identity that an admitted retry may supersede on display.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VerificationRetryOrigin {
+    /// Incident being retried, scoped by project and submission generation.
+    pub incident_id: String,
+    /// Failed-attempt count before this owned attempt began.
+    pub attempts: u32,
 }
 
 /// Process-local source of truth for verifier ownership: one slot per
@@ -107,7 +121,10 @@ impl VerificationActivity {
         publish: impl FnOnce() -> T,
     ) -> Option<T> {
         let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        if slots.get(&project).map(|slot| &slot.active) != expected {
+        let slot = slots.get(&project);
+        if slot.map(|slot| &slot.active) != expected
+            || slot.is_some_and(|slot| slot.cancellation.is_cancelled())
+        {
             return None;
         }
         Some(publish())
@@ -184,6 +201,7 @@ impl VerificationActivity {
             candidate,
             started_at,
             uuid::Uuid::new_v4().to_string(),
+            None,
         )
     }
 
@@ -193,6 +211,7 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
         attempt_id: String,
+        retry_origin: Option<VerificationRetryOrigin>,
     ) -> VerificationGuard {
         assert!(
             !slots.contains_key(&candidate.project),
@@ -204,6 +223,7 @@ impl VerificationActivity {
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
             started_at,
+            retry_origin,
         };
         let cancellation = Cancellation::default();
         slots.insert(
@@ -275,6 +295,7 @@ impl VerificationGuard {
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
             started_at,
+            retry_origin: None,
         };
         let mut slots = self
             .registry
@@ -2497,7 +2518,16 @@ fn record_generation_interrupted<S: Store>(
         "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED{}{position}\nThe verifier was stopped (operator stop or daemon shutdown) while this attempt ran. The gate judged nothing; the attempt restarts from the beginning when the verifier resumes.\n",
         if position.is_empty() { "" } else { " " },
     );
-    queue.upsert_generation_comment(ctx, candidate, GATE_PROGRESS_PREFIX, &body)?;
+    let incident = ctx
+        .store()
+        .read(|tx| tx.verification_incident(candidate.project))?;
+    queue.upsert_generation_comment(
+        ctx,
+        candidate,
+        GATE_PROGRESS_PREFIX,
+        &body,
+        incident.as_ref(),
+    )?;
     Ok(())
 }
 
