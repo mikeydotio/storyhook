@@ -23,6 +23,7 @@ use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::store::VerificationIncident;
 use crate::store::{GlobalSeq, ReadOps, Store};
 
+use super::verification::evidence::AttemptEvidence;
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
 /// Dashboard wire shape for a story waiting in the verification queue or
@@ -192,6 +193,28 @@ pub fn status_snapshot_with_incident(
     env: &Environment,
     now: &str,
 ) -> Vec<StoryVerificationStatus> {
+    let evidence = AttemptEvidence::read(ordered, active, env);
+    let incident_is_current = evidence.incident_is_current(ordered, active, incident);
+    status_snapshot_with_evidence(
+        ordered,
+        active,
+        incident,
+        now,
+        &evidence,
+        incident_is_current,
+    )
+}
+
+/// Projects one already-read journal and incident classification for every consumer.
+pub(crate) fn status_snapshot_with_evidence(
+    ordered: &[VerificationCandidate],
+    active: Option<&ActiveVerification>,
+    incident: Option<&VerificationIncident>,
+    now: &str,
+    evidence: &AttemptEvidence,
+    incident_is_current: bool,
+) -> Vec<StoryVerificationStatus> {
+    let incident = incident.filter(|_| incident_is_current);
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
         .filter(|candidate| {
@@ -216,8 +239,8 @@ pub fn status_snapshot_with_incident(
                     halted: incident.halted,
                 }
             } else if let Some(held) = active.filter(|held| owns(candidate, held)) {
-                let progress = matching_active_progress(env, candidate, held);
-                let (current_step, tests) = progress
+                let (current_step, tests) = evidence
+                    .progress
                     .as_ref()
                     .and_then(gate_progress::GateProgress::current_step)
                     .and_then(|step| {
@@ -270,6 +293,9 @@ pub fn status_snapshot_with_incident(
                         .and_then(|since| elapsed_secs(since, now)),
                     position,
                     blocked_by: incident.and_then(|incident| {
+                        if candidate.project != incident.project {
+                            return None;
+                        }
                         let head = ordered.iter().find(|candidate| {
                             candidate.project == incident.project
                                 && candidate.verifying_generation == Some(incident.generation)
@@ -362,6 +388,7 @@ fn ahead_counts(ordered: &[VerificationCandidate], index: usize) -> (usize, usiz
 /// Seconds since any producer last changed the journal. File modification is
 /// the activity signal because every appended event changes it, including
 /// `case` lines that intentionally carry no embedded timestamp (SH-549).
+#[cfg(test)]
 fn seconds_since_journal_activity(path: &std::path::Path, now: &str) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let modified = crate::service::gate_output::metadata_time(modified).ok()?;
@@ -398,11 +425,24 @@ fn publish_project(
     activity: &VerificationActivity,
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
-    let ordered = VerificationQueue::new(store).ordered_for(project)?;
-    let active = activity.active_for(project);
-    let incident = store.read(|tx| tx.verification_incident(project))?;
-    let statuses =
-        status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
+    let (ordered, active, incident) = activity.read_project(store, project, |tx, active, _| {
+        Ok((
+            crate::service::verification::ordered_candidates_for(tx, project)?,
+            active.cloned(),
+            tx.verification_incident(project)?,
+        ))
+    })?;
+    let evidence = AttemptEvidence::read(&ordered, active.as_ref(), env);
+    let incident_is_current =
+        evidence.incident_is_current(&ordered, active.as_ref(), incident.as_ref());
+    let statuses = status_snapshot_with_evidence(
+        &ordered,
+        active.as_ref(),
+        incident.as_ref(),
+        now,
+        &evidence,
+        incident_is_current,
+    );
     let mut moved = false;
     for (candidate, (_, _, status)) in ordered.iter().zip(statuses) {
         let ctx = Ctx::new(
@@ -429,11 +469,10 @@ fn publish_project(
                 }
             )
         } else if matches!(&status, VerificationStatus::Running { .. }) {
-            let journal = journal_path(env, candidate);
             let held = active
                 .as_ref()
                 .expect("running status requires an active owner");
-            let progress = matching_active_progress(env, candidate, held).unwrap_or_default();
+            let progress = evidence.progress.clone().unwrap_or_default();
             let elapsed_seconds = active
                 .as_ref()
                 .filter(|held| owns(candidate, held))
@@ -441,7 +480,8 @@ fn publish_project(
             let seconds_since_structured_progress = progress
                 .run
                 .as_ref()
-                .and_then(|_| seconds_since_journal_activity(&journal, now));
+                .and(evidence.last_evidence_at.as_deref())
+                .and_then(|at| elapsed_secs(at, now));
             let authenticated = progress
                 .run
                 .as_ref()
@@ -524,6 +564,7 @@ fn publish_project(
                     candidate,
                     GATE_PROGRESS_PREFIX,
                     &body,
+                    incident.as_ref(),
                 )
             })
             .transpose()?

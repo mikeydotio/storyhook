@@ -53,6 +53,7 @@ source: tests/golden_cli.rs
         "held_stories": [],
         "incident": null,
         "incident_age_seconds": null,
+        "incident_is_current": false,
         "last_evidence_at": null,
         "project": "[project]",
         "recovery": {
