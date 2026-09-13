@@ -535,7 +535,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30; done",
+            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30 & wait; done",
             "graceful-timeout-probe",
             marker.to_str().unwrap(),
             ready.to_str().unwrap(),
