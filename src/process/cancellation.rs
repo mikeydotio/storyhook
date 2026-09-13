@@ -59,11 +59,20 @@ mod tests {
             let terminated = root.path().join("terminated");
             let token = Cancellation::default();
             let mut command = Command::new("sh");
-            command.args(["-c", if ignore_term {
-                "trap '' TERM; printf ready > \"$1\"; while :; do sleep 30; done"
+            let handler = if ignore_term {
+                "trap '' TERM"
             } else {
-                "trap 'printf terminated > \"$2\"; exit 0' TERM; printf ready > \"$1\"; while :; do sleep 30; done"
-            }, "cancel-probe"]).arg(&ready).arg(&terminated);
+                "trap 'printf terminated > \"$2\"; exit 0' TERM"
+            };
+            // The worker publishes only after ignoring TERM. A foreground
+            // wait would defer the parent's trap until the worker is killed.
+            let script = format!(
+                "{handler}; sh -c 'trap \"\" TERM; printf ready > \"$1\"; exec sleep 30' worker \"$1\" & wait"
+            );
+            command
+                .args(["-c", &script, "cancel-probe"])
+                .arg(&ready)
+                .arg(&terminated);
             let mut leader = 0;
             let result = run_captured_cancellable(
                 command,
@@ -78,7 +87,7 @@ mod tests {
                     while !ready.exists() {
                         assert!(
                             Instant::now() < deadline,
-                            "child never installed its signal handler"
+                            "worker never installed its signal handler"
                         );
                         std::thread::yield_now();
                     }

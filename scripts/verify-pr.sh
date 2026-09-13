@@ -111,6 +111,24 @@ on_verification_signal() {
     if [ -n "${gate_result:-}" ]; then
         rm -f "$gate_result" 2>/dev/null || true
     fi
+    # A signal during restoration does not undo a normal command completion.
+    # The saved descriptor bypasses the gate-log redirection active in this trap.
+    if [ "$verification_phase" = "release gate" ] && [ -n "${execution_file:-}" ]; then
+        execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+            "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
+        if [ "$?" -eq 0 ]; then
+            exec 1>&9
+            gate_status="$execution_status"
+            gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+                "interrupted post-gate cleanup" "Gate exited $gate_status before SIG$signal interrupted cleanup. Retained execution evidence: $execution_file")" \
+                || die_json "could not describe interrupted cleanup after completed gate"
+            if [ -n "${pr:-}" ]; then
+                confirm_judged_head "$pr" "$base" "$head" completed "Gate log of the superseded attempt: $log"
+            fi
+            [ "$gate_status" -eq 0 ] || emit_tests_failed
+            emit_gate_passed
+        fi
+    fi
     signal_pr="${gate_pr:-${pr:-}}"
     signal_tree="${gate_tree:-${tree:-}}"
     signal_log="${log:-}"
@@ -299,38 +317,44 @@ run_verification_gate() {
         || die_json "could not create compiler diagnostic artifact for $log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
+    executions="$common_dir/storyhook/verification-executions"
+    mkdir -p "$executions" || die_json "could not create gate execution evidence directory"
+    execution_file="$executions/${log##*/}.json"
+    python3 "$script_dir/verifier_result.py" init "$execution_file" "$gate_tree" "$gate_base" "$gate_head" \
+        || die_json "could not initialize gate execution evidence $execution_file"
+    gate_cleanup='null'
     verifier_window_tail "$log"
     verification_phase="release gate"
-    STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
+    STORYHOOK_GATE_EXECUTION_FILE="$execution_file" \
+        STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
         STORYHOOK_GATE_RESULT_FILE="$gate_result" \
         activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
     completed_status="$(cat "$gate_result")" || completed_status=""
-    rm -f "$gate_result" || die_json "could not remove gate completion record $gate_result"
-    # A gate that died by signal (128+n) judged nothing, whatever the record
-    # says (SH-692): not red, not green. RETRYABLE, because the tree is simply
-    # unjudged and the daemon's bounded cadence re-runs it; the preparation
-    # and restoration failures below stay PERMANENT because rerunning cannot
-    # change them. merge-watch.sh no longer publishes a record for a
-    # signalled child, so this branch is the belt to that suspender.
-    if [ "$gate_status" -ge 128 ]; then
+    result_removal_error=""
+    rm -f "$gate_result" || result_removal_error="could not remove gate completion record $gate_result"
+    # Execution is observed by the owner before cleanup (SH-702). The old
+    # completion record still proves restoration; disagreement affects cleanup,
+    # never the independently observed command answer.
+    execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+        "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
+    if [ "$?" -ne 0 ]; then
         disarm_verification_signal_trap
         detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-            '{result:"infrastructure-failure", disposition:"retryable", tree:$tree, log:$log, detail:$detail}'
+        disposition=permanent
+        [ "$gate_status" -lt 128 ] || disposition=retryable
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg disposition "$disposition" \
+            '{result:"infrastructure-failure", disposition:$disposition, tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
-    # Only a completed gate with successful restoration can blame tests.
-    # Preparation and cleanup failures leave no record; a signalled gate
-    # leaves none either, and is caught above before agreement is even asked.
-    if [ "$completed_status" != "$gate_status" ]; then
-        disarm_verification_signal_trap
-        detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-            '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
-        exit 0
+    if [ "$completed_status" != "$execution_status" ] || [ "$gate_status" != "$execution_status" ] || [ -n "$result_removal_error" ]; then
+        cleanup_detail="Gate command exited $execution_status; post-gate cleanup/restoration failed (supervisor exit $gate_status, restoration record ${completed_status:-missing}). Execution evidence: $execution_file. $result_removal_error $(bounded_log_context "$log")"
+        gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+            "gate cleanup/restoration" "$cleanup_detail")" \
+            || die_json "could not describe retained gate ownership: $cleanup_detail"
     fi
+    gate_status="$execution_status"
     # A completed red is reported through the return status rather than
     # posted here, so the caller can confirm the head it judged is still the
     # PR's head before anything is written (SH-637): `$gate_status`,
@@ -373,7 +397,18 @@ emit_tests_failed() {
     disarm_verification_signal_trap
     detail="$(verification_failure_detail "$gate_status" "$log")"
     jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
+        --argjson status "$gate_status" --argjson cleanup "$gate_cleanup" \
+        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, exit_status:$status}
+         + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
+    exit 0
+}
+
+emit_gate_passed() {
+    disarm_verification_signal_trap
+    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" \
+        '{result:"gate-passed", tree:$tree, log:$log, exit_status:0,
+          detail:"Gate command completed successfully; no pull request was landed."}
+         + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
 }
 
@@ -642,9 +677,7 @@ if [ "${1:-}" = --run-gate ]; then
     gate_args=("$1" "$2" "$3" "$4" "$5")
     shift 6
     run_verification_gate "${gate_args[@]}" "$@" || emit_tests_failed
-    disarm_verification_signal_trap
-    jq -n '{result:"gate-passed"}'
-    exit 0
+    emit_gate_passed
 fi
 
 # Metadata-validation seam. The production path supplies GitHub's JSON; tests
@@ -801,6 +834,10 @@ case "$preflight_status" in
         confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
         emit_tests_failed
     }
+    if [ "$gate_cleanup" != null ]; then
+        confirm_judged_head "$pr" "$base" "$head" green "Gate log of the superseded attempt: $log"
+        emit_gate_passed
+    fi
     require_certified_by_gate "$tree" "$base_commit" "$head_commit"
     ;;
 (*)

@@ -875,9 +875,18 @@ fn verifier_preserves_tracked_edits_before_and_during_the_gate() {
             assert_ok(&result, "classify tracked edits");
             let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
             assert_eq!(
-                payload["result"], "infrastructure-failure",
+                payload["result"],
+                if during_gate {
+                    "gate-passed"
+                } else {
+                    "infrastructure-failure"
+                },
                 "during_gate={during_gate}, staged={staged}: {payload}"
             );
+            if during_gate {
+                assert_eq!(payload["exit_status"], 0);
+                assert_eq!(payload["cleanup_failure"]["disposition"], "permanent");
+            }
             let evidence = if during_gate {
                 let recovery = fs::read_dir(repo.common_dir().join("storyhook"))
                     .unwrap()
