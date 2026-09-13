@@ -899,15 +899,9 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let verifier = crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
-            let incident = tx.verification_incident(project)?;
-            let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates_for(tx, project)?,
-                active,
-                incident.as_ref(),
-                ctx.env(),
-                &now,
-            );
+            let (verifier, verification) =
+                crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
+            let incident = verifier.incident.as_ref();
 
             // Drafts (SH-175) are excluded from `stories`: the board is a curated
             // "what's actionable" view,

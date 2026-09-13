@@ -103,6 +103,7 @@ $ story context --format json
     "held_stories": [],
     "incident": null,
     "incident_age_seconds": null,
+    "incident_is_current": false,
     "last_evidence_at": null,
     "project": "[project]",
     "recovery": {

@@ -186,11 +186,16 @@ impl VerificationActivity {
     ) -> Result<Option<VerificationGuard>, AppError> {
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        let (allowed, request_id) = store.write(|tx| {
+        let (allowed, request_id, retry_origin) = store.write(|tx| {
+            let incident = tx.verification_incident(candidate.project)?;
             let allowed = tx.verification_enabled(candidate.project)?
-                && !tx
-                    .verification_incident(candidate.project)?
-                    .is_some_and(|incident| incident.halted);
+                && !incident.as_ref().is_some_and(|incident| incident.halted);
+            let retry_origin = incident
+                .filter(|incident| incident_matches(incident, candidate))
+                .map(|incident| VerificationRetryOrigin {
+                    incident_id: incident.incident_id,
+                    attempts: incident.attempts,
+                });
             let mut request_id = None;
             let mut recovery = tx.verification_recovery(candidate.project)?;
             if allowed
@@ -207,10 +212,11 @@ impl VerificationActivity {
                 });
                 tx.put_verification_recovery(candidate.project, &recovery)?;
             }
-            Ok((allowed, request_id))
+            Ok((allowed, request_id, retry_origin))
         })?;
         Ok(allowed.then(|| {
-            let mut guard = self.acquire_locked(&mut slots, candidate, started_at, attempt_id);
+            let mut guard =
+                self.acquire_locked(&mut slots, candidate, started_at, attempt_id, retry_origin);
             guard.recovery_request_id = request_id;
             guard
         }))
@@ -467,6 +473,30 @@ mod tests {
                 store.read(|tx| tx.projects()).unwrap().len()
             }),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn cancelled_ownership_cannot_publish_over_its_interruption() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let candidate = candidate(&store, &env, project);
+        let activity = VerificationActivity::new();
+        let _guard = activity.acquire(&candidate, env.now());
+        let snapshot = activity.active_for(project).unwrap();
+        activity
+            .control(&store, project, VerificationAction::Stop)
+            .unwrap();
+        assert_eq!(
+            activity.active_for(project).as_ref(),
+            Some(&snapshot),
+            "same identity can now be stopping"
+        );
+        assert_eq!(
+            activity.if_current(project, Some(&snapshot), || "stale Running body"),
+            None
         );
     }
 
