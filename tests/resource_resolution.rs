@@ -609,6 +609,7 @@ fn recorded_engine_provider_survives_a_custom_worktree_without_a_pane() {
         updated_at: "2026-09-12T00:00:00Z".into(),
     };
     let lane = EngineLaneRecord {
+        adopted_identity: None,
         run_id: run.id.clone(),
         lane_index: 0,
         state: EngineLaneState::Working,

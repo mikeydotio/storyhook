@@ -119,6 +119,7 @@ on_verification_signal() {
         if [ "$?" -eq 0 ]; then
             exec 1>&9
             gate_status="$execution_status"
+            gate_progress_emit_item "release gate" "$([ "$gate_status" -eq 0 ] && printf passed || printf failed)"
             gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
                 "interrupted post-gate cleanup" "Gate exited $gate_status before SIG$signal interrupted cleanup. Retained execution evidence: $execution_file")" \
                 || die_json "could not describe interrupted cleanup after completed gate"
@@ -313,6 +314,8 @@ run_verification_gate() {
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
         || die_json "could not create per-attempt verification log"
+    gate_progress_emit_output "$log" \
+        || die_json "could not register current-attempt output log $log"
     : >"$log.compiler.jsonl" \
         || die_json "could not create compiler diagnostic artifact for $log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
@@ -325,6 +328,7 @@ run_verification_gate() {
     gate_cleanup='null'
     verifier_window_tail "$log"
     verification_phase="release gate"
+    gate_progress_emit_item "release gate" running
     STORYHOOK_GATE_EXECUTION_FILE="$execution_file" \
         STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
         STORYHOOK_GATE_RESULT_FILE="$gate_result" \
@@ -348,6 +352,7 @@ run_verification_gate() {
             '{result:"infrastructure-failure", disposition:$disposition, tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
+    gate_progress_emit_item "release gate" "$([ "$execution_status" -eq 0 ] && printf passed || printf failed)"
     if [ "$completed_status" != "$execution_status" ] || [ "$gate_status" != "$execution_status" ] || [ -n "$result_removal_error" ]; then
         cleanup_detail="Gate command exited $execution_status; post-gate cleanup/restoration failed (supervisor exit $gate_status, restoration record ${completed_status:-missing}). Execution evidence: $execution_file. $result_removal_error $(bounded_log_context "$log")"
         gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
@@ -386,7 +391,7 @@ require_certified_by_gate() {
     if [ "$recheck_status" -eq 0 ] && [ "$recheck_tree" = "$certified_tree" ]; then
         return 0
     fi
-    gate_progress_emit_item "release gate" failed
+    gate_progress_emit_item "gate certification receipt" failed
     die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
 }
 
