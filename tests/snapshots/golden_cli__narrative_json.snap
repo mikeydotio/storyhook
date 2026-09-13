@@ -6,7 +6,26 @@ source: tests/golden_cli.rs
     "argv": "story context --json",
     "stdout": {
       "message": "# Project Status\n\nStories: 16 (13 open, 3 closed)\n\n## State Distribution\n\n- done: 2\n- dropped: 1\n- in-progress: 2\n- review: 1\n- todo: 10\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 2\n- normal: 8\n- spike: 2\n\n## Ready to Work (8 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
-      "result": "ok"
+      "result": "ok",
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   },
   {
@@ -62,14 +81,52 @@ source: tests/golden_cli.rs
           "title": "Ship the CLI shim"
         }
       ],
-      "total_stories": 16
+      "total_stories": 16,
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   },
   {
     "argv": "story load-context --json",
     "stdout": {
       "message": "# Project Status\n\nStories: 16 (13 open, 3 closed)\n\n## State Distribution\n\n- done: 2\n- dropped: 1\n- in-progress: 2\n- review: 1\n- todo: 10\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 2\n- normal: 8\n- spike: 2\n\n## Ready to Work (8 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
-      "result": "ok"
+      "result": "ok",
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   },
   {

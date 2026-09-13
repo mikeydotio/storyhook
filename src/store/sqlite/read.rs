@@ -1420,3 +1420,29 @@ pub(super) fn verification_enabled(
         "reading verifier admission permission",
     )
 }
+
+/// Reads typed recovery evidence; corrupt receipts fail with project context.
+pub(super) fn verification_recovery(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<crate::store::VerificationRecovery, StoreError> {
+    let receipt: Option<String> = sql(
+        conn.query_row(
+            "SELECT receipt FROM verification_recovery WHERE project_id = ?1",
+            [project.get()],
+            |row| row.get(0),
+        )
+        .optional(),
+        "reading verifier recovery",
+    )?;
+    receipt
+        .map(|body| {
+            serde_json::from_str(&body).map_err(|e| {
+                StoreError::from(crate::error::AppError::Storage(format!(
+                    "project {project} verifier recovery is invalid: {e}"
+                )))
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}

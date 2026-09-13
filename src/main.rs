@@ -357,6 +357,7 @@ fn main() {
     // reaches `open_store`, whose failure took down `story daemon stop`, which
     // is the first step of the remedy a damaged store prints (SH-149).
     if storyhook::invoke::needs_no_store(&invocation) {
+        let lane_budget = matches!(invocation, Invocation::LaneBudget);
         // The same confirmation door the store path has below (SH-638):
         // `story daemon gc` destroys something too, and until it arrived
         // nothing on this path could answer `ConfirmationRequired` — a plan
@@ -374,6 +375,22 @@ fn main() {
         };
         match result {
             Ok(response) => {
+                let response = if lane_budget {
+                    match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
+                        Ok(environment) => storyhook::invoke::lane_budget_with_verifier_notices(
+                            &environment,
+                            &cwd,
+                            response,
+                        ),
+                        Err(error) => Response::WithVerifier {
+                            response: Box::new(response),
+                            verifiers: Vec::new(),
+                            unavailable: Some(format!("verifier status unavailable: {error}")),
+                        },
+                    }
+                } else {
+                    response
+                };
                 let rendered = output::render_response(&response, json, flags.quiet);
                 if !rendered.is_empty() {
                     print!("{rendered}");
