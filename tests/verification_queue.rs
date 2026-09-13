@@ -3293,6 +3293,23 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
         repository.path(),
         &["commit", "--allow-empty", "-qm", "base"],
     );
+    // Reaping asks origin for its authoritative HEAD (SH-691). Keep this
+    // fixture offline while supplying the same contract as a hosted remote.
+    let origin = scratch_dir();
+    git_ok(
+        repository.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repository.path().to_str().unwrap(),
+            origin.path().to_str().unwrap(),
+        ],
+    );
+    git_ok(
+        repository.path(),
+        &["remote", "add", "origin", origin.path().to_str().unwrap()],
+    );
     let worktree = repository.path().join(".codex/worktrees").join(&id);
     std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
     git_ok(
