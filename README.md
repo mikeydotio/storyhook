@@ -423,7 +423,9 @@ story engine resume [--run <run-id>]
 story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
 story verifier status
-story verifier start | stop | drain
+story verifier start
+story verifier stop
+story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
 story cleanup [--dry-run]
 story summary
