@@ -289,7 +289,71 @@ fn context_request_cannot_clear_real_holds_and_status_survives_reopen() {
         .unwrap();
     assert_eq!(row.awaiting.as_deref(), Some("operator trust review"));
 }
-
+#[test]
+fn obviation_administration_is_atomic_symmetric_and_preserves_prior_holds() {
+    use storyhook::store::{ReadOps, Store};
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let candidate = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Other work".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&ctx)
+        .set_awaiting(&id, "existing ownership hold")
+        .unwrap();
+    let mut request = input(&id);
+    request["handoff"]["kind"] = json!("obviation-review");
+    request["handoff"]["evidence"] = json!({"context":"matching change is already delivered","original_state":"in-progress","candidates":[candidate.clone()]});
+    let service = ContinuationService::new(&ctx, &Runtime);
+    let r = service.request(&id, request.clone()).unwrap();
+    let subject = f
+        .store()
+        .read(|tx| tx.story(f.project(), r.story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(subject.state, "blocked");
+    assert!(
+        subject
+            .awaiting
+            .unwrap()
+            .contains("existing ownership hold")
+    );
+    assert!(
+        subject
+            .snapshot
+            .relationships
+            .iter()
+            .any(|r| r.relation == "obviated-by" && r.other_id == candidate)
+    );
+    let target = f
+        .store()
+        .read(|tx| tx.story(f.project(), storyhook::store::StoryNo::new(2)))
+        .unwrap()
+        .unwrap();
+    assert!(
+        target
+            .snapshot
+            .relationships
+            .iter()
+            .any(|r| r.relation == "obviates" && r.other_id == id)
+    );
+    assert_eq!(service.request(&id, request).unwrap().id, r.id);
+}
+#[test]
+fn invalid_obviation_candidate_rolls_back_all_evidence() {
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let service = ContinuationService::new(&ctx, &Runtime);
+    let mut request = input(&id);
+    request["handoff"]["kind"] = json!("obviation-review");
+    request["handoff"]["evidence"] =
+        json!({"context":"possible match","original_state":"in-progress","candidates":["SH-999"]});
+    assert!(service.request(&id, request).is_err());
+    assert!(requests(&f).is_empty());
+}
 #[test]
 fn cli_requires_explicit_receiving_review_evidence() {
     use storyhook::cli::{ContinuationAction, Invocation, parse_invocation};
@@ -666,7 +730,38 @@ fn managed_submission_requires_clean_reviewed_worktree() {
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
 }
-
+#[test]
+fn receiving_plan_can_request_obviation_review_in_the_same_native_turn() {
+    use storyhook::store::{ContinuationStatus, ReadOps, Store};
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let service = ContinuationService::new(&ctx, &Runtime);
+    let context = service.request(&id, input(&id)).unwrap();
+    let candidate = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Landed match".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let mut admin = input(&id);
+    admin["handoff"]["kind"] = json!("obviation-review");
+    admin["handoff"]["evidence"] = json!({"context":"receiving review found matching implementation","original_state":"in-progress","candidates":[candidate]});
+    let (review, feedback) = service.request_with_receipt(&id, admin).unwrap();
+    assert!(!feedback);
+    assert_ne!(context.id, review.id);
+    assert_eq!(requests(&f).len(), 2);
+    let observer = Observer::new("busy");
+    storyhook::daemon::continuation::process_one(f.store(), f.env(), &observer).unwrap();
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), context.story_no))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "blocked");
+    assert!(row.awaiting.unwrap().contains("Human review"));
+    assert_eq!(requests(&f)[0].status, ContinuationStatus::NeedsAttention);
+}
 #[test]
 fn provider_transport_passes_literal_json_on_stdin_and_reports_invalid_replies() {
     use storyhook::service::continuation::PythonRuntime;
