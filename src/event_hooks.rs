@@ -214,7 +214,7 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
     {
         return Some(reason);
     }
-    let slots: [(&str, Option<&HookDef>); 12] = [
+    let slots: [(&str, Option<&HookDef>); 13] = [
         ("on_create", config.on_create.as_ref()),
         ("on_state_change", config.on_state_change.as_ref()),
         ("on_close", config.on_close.as_ref()),
@@ -237,6 +237,10 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
         (
             "on_engine_lane_quarantined",
             config.on_engine_lane_quarantined.as_ref(),
+        ),
+        (
+            "on_verification_halted",
+            config.on_verification_halted.as_ref(),
         ),
         (
             "on_verification_resumed",
@@ -1214,6 +1218,110 @@ mod tests {
             reason.contains(&HOOK_TIMEOUT_CEILING_SECS.to_string()),
             "must name the ceiling itself: {reason}"
         );
+    }
+
+    /// Exercises both production loaders without borrowing the validator's roster.
+    fn assert_all_hook_timeout_boundaries(pointer: bool) {
+        let hooks = [
+            "on_create",
+            "on_state_change",
+            "on_close",
+            "on_comment",
+            "on_priority_change",
+            "on_label_change",
+            "on_relationship_change",
+            "on_engine_run_started",
+            "on_engine_run_halted",
+            "on_engine_run_drained",
+            "on_engine_lane_quarantined",
+            "on_verification_halted",
+            "on_verification_resumed",
+        ];
+        for hook in hooks {
+            for timeout in [None, Some(60), Some(61)] {
+                let dir = scratch();
+                let mut body =
+                    format!("[settings]\ntimeout_seconds = 7\n[{hook}]\ncommand = \"true\"\n");
+                if let Some(seconds) = timeout {
+                    body.push_str(&format!("timeout_seconds = {seconds}\n"));
+                }
+                write_timeout_fixture(dir.path(), &body, pointer);
+                let loaded = load_hooks_config_result(dir.path());
+                if timeout == Some(61) {
+                    let reason = loaded.expect_err(&format!(
+                        "{hook} at 61s must refuse the whole config (pointer={pointer})"
+                    ));
+                    assert!(
+                        reason.contains(&format!("{hook}.timeout_seconds")),
+                        "{reason}"
+                    );
+                    assert!(reason.contains("61s"), "{reason}");
+                    assert!(reason.contains("60s ceiling"), "{reason}");
+                    assert!(max_configured_timeout(dir.path()).is_none());
+                } else {
+                    assert!(loaded.expect("valid timeout").is_some(), "{hook}");
+                    assert_eq!(
+                        max_configured_timeout(dir.path()),
+                        Some(Duration::from_secs(timeout.unwrap_or(7))),
+                        "{hook} must retain its explicit or inherited timeout"
+                    );
+                }
+            }
+        }
+    }
+
+    fn write_timeout_fixture(dir: &Path, body: &str, pointer: bool) {
+        if pointer {
+            let mut config = crate::service::project::ProjectPointer::new(
+                "00000000-0000-0000-0000-000000000703".into(),
+                "SH".into(),
+            );
+            config.hooks = Some(toml::from_str(body).expect("hook table"));
+            std::fs::write(
+                dir.join(".storyhook.toml"),
+                toml::to_string(&config).expect("pointer"),
+            )
+            .expect("writing pointer");
+        } else {
+            write_hooks_toml(dir, body);
+        }
+    }
+
+    #[test]
+    fn every_pointer_hook_obeys_timeout_ceiling_and_inheritance() {
+        assert_all_hook_timeout_boundaries(true);
+    }
+
+    #[test]
+    fn every_legacy_hook_obeys_timeout_ceiling_and_inheritance() {
+        assert_all_hook_timeout_boundaries(false);
+    }
+
+    #[test]
+    fn halted_hook_timeout_ceiling_refusal_reaches_list_and_test() {
+        for pointer in [false, true] {
+            let dir = scratch();
+            write_timeout_fixture(
+                dir.path(),
+                "[on_verification_halted]\ncommand = \"true\"\ntimeout_seconds = 61\n",
+                pointer,
+            );
+            let listed = list_hooks(dir.path());
+            assert!(
+                listed.contains("on_verification_halted.timeout_seconds"),
+                "{listed}"
+            );
+            assert!(listed.contains("60s ceiling"), "{listed}");
+            assert!(!listed.contains("no hooks configured"), "{listed}");
+            let error = test_hook(dir.path(), "verification_halted")
+                .expect_err("an invalid timeout must prevent hook execution")
+                .to_string();
+            assert!(
+                error.contains("on_verification_halted.timeout_seconds"),
+                "{error}"
+            );
+            assert!(error.contains("60s ceiling"), "{error}");
+        }
     }
 
     #[test]
