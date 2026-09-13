@@ -136,10 +136,46 @@ def dispatch_preserves_artifacts(args):
     )
 
 
-# The identity test of the helper door (SH-632). `entry` as spelled must be a proper
-# path beneath a managed prefix — the prefilter only proved a substring — and
-# must resolve to the `bin/story.sh` beside this very hook. Returns the spelled
-# path, or None. Cheap: two realpath calls, no file opened yet.
+def domain_preserves_artifacts(args):
+    """Recognize bounded domain argv; resolved resource safety belongs to the helper."""
+    if not args or args[0] not in {"reset", "unclaim", "create"}:
+        return False
+    verb, target, options = args[0], None, {}
+    index = 1
+    values = {"--title", "--description", "--description-file", "--type", "--priority", "--label"}
+    while index < len(args):
+        arg = args[index]
+        name = "--label" if arg == "--labels" else arg
+        if verb != "create" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", arg):
+            if target is not None:
+                return False
+            target = arg
+        else:
+            if name in options:
+                return False
+            if (verb == "reset" and name == "--force") or (verb != "create" and name == "--no-comment"):
+                options[name] = True
+            elif (verb == "create" and name in values) or (verb != "create" and name == "--comment"):
+                index += 1
+                if index == len(args) or not args[index] or args[index].startswith("--"):
+                    return False
+                options[name] = args[index]
+            else:
+                return False
+        index += 1
+    if verb != "create":
+        return target is not None and not {"--comment", "--no-comment"} <= options.keys()
+    return (
+        "--title" in options
+        and not {"--description", "--description-file"} <= options.keys()
+        and ("--type" not in options or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", options["--type"]))
+        and ("--label" not in options or re.fullmatch(r"[A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*", options["--label"]))
+        and ("--priority" not in options or options["--priority"] in {"none", "low", "medium", "high", "critical"})
+    )
+
+
+# The helper door is tied to the plugin this hook was loaded from (SH-632).
+# A substring match alone cannot establish that installed identity.
 def installed_helper_of_this_plugin(entry):
     if not os.path.isabs(entry):
         return None
@@ -245,7 +281,7 @@ def launcher_preserves_artifacts(command):
     ) or (
         len(args) == 2 and args[0] in ("view", "capture")
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", args[1]) is not None
-    ) or dispatch_preserves_artifacts(args)
+    ) or dispatch_preserves_artifacts(args) or domain_preserves_artifacts(args)
     if not valid:
         return False
 
