@@ -189,26 +189,22 @@ fn run_captured_until<G>(
         &stdout_file,
         &stderr_file,
     );
-    // Registration owns the child's process group for the daemon's shutdown
-    // and identity checks, and it reads that group from the kernel AFTER the
-    // spawn. A child that has already exited by then is a zombie, and macOS
-    // answers `getpgid` on a zombie with ESRCH (measured, SH-650) — so a
-    // helper that refused within a few milliseconds used to be reported as
-    // "could not run" and its answer thrown away. A leader that is gone
-    // before it could be owned has nothing long-lived to register: the
-    // failure is explained by the exit, and the capture proceeds exactly as
-    // it would had the registration guard dropped one instant after the
-    // child's own exit. Any other registration failure is still fatal.
+    // macOS removes an exiting child from process lookup before publishing
+    // its wait status (SH-698). Either exit observation permits the ordinary
+    // bounded wait/capture path; a live unregistered child still fails closed.
     let _registration = match register(pid) {
         Ok(registration) => Some(registration),
-        Err(error) => match child.try_wait() {
-            Ok(Some(_)) => None,
-            _ => {
+        Err(error) => {
+            // Query before try_wait can reap: this PID still belongs to us.
+            let group = child_process_group(pid);
+            if registration_failure_is_exit(child.try_wait(), group) {
+                None
+            } else {
                 kill_process_group(pid);
                 let _ = child.wait();
                 return Err(CaptureError::Track(error));
             }
-        },
+        }
     };
     let status = loop {
         if cancellation.is_some_and(Cancellation::is_cancelled) {
@@ -325,6 +321,40 @@ fn process_group_is_live(pid: u32) -> bool {
     }
 }
 
+// Separate observations keep the macOS teardown window testable without
+// requiring the scheduler to stop between kernel exit milestones.
+fn registration_failure_is_exit(
+    status: std::io::Result<Option<ExitStatus>>,
+    group: std::io::Result<u32>,
+) -> bool {
+    match status {
+        Ok(Some(_)) => true,
+        Ok(None) => group.is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH)),
+        Err(_) => false,
+    }
+}
+
+/// Reads the group of a child we still own without discarding lookup errors.
+fn child_process_group(pid: u32) -> std::io::Result<u32> {
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        // SAFETY: getpgid only observes kernel state and takes no pointers.
+        let group = unsafe { libc::getpgid(pid) };
+        if group == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(group as u32)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
 fn kill_process_group(pid: u32) {
     #[cfg(unix)]
     // SAFETY: this is the process group created for the child immediately
@@ -348,6 +378,48 @@ pub(crate) fn read_capture(mut file: File) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_accepts_only_proven_exit_states() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let absent = || Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+        assert!(registration_failure_is_exit(Ok(None), absent()));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(0))),
+            absent(),
+        ));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(1 << 8))),
+            Ok(123),
+        ));
+        assert!(!registration_failure_is_exit(Ok(None), Ok(123)));
+        assert!(!registration_failure_is_exit(
+            Ok(None),
+            Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+        ));
+        assert!(!registration_failure_is_exit(
+            Err(std::io::Error::from_raw_os_error(libc::ECHILD)),
+            absent(),
+        ));
+    }
+
+    #[test]
+    fn a_live_child_registration_failure_remains_fatal() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 30"]);
+        let result = run_captured_with_registration(
+            command,
+            Duration::from_secs(10),
+            TerminationPolicy::Kill,
+            |_| Err::<(), _>("registry write refused".into()),
+        );
+        match result {
+            Err(CaptureError::Track(error)) => assert_eq!(error, "registry write refused"),
+            Err(error) => panic!("wrong failure: {}", error.detail()),
+            Ok(_) => panic!("a live unregistered child must not be accepted"),
+        }
+    }
 
     /// SH-650: a child that exits before its process group can be read is
     /// captured, not reported as untrackable. The race is CONSTRUCTED (SH-420's
