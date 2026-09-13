@@ -7,6 +7,14 @@ source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
 
+# A caller may reach the same server through a directory alias. Exercise this
+# on every platform, including hosts where /tmp itself is not a symlink.
+physical_tmux_state=$(cd "$FAKE_TMUX_STATE" && pwd -P) || exit 1
+tmux_alias_root=$(mktemp -d /tmp/story-test-tmux-alias.XXXXXX) || exit 1
+_TMP_REPOS+=("$tmux_alias_root")
+ln -s "$physical_tmux_state" "$tmux_alias_root/server" || exit 1
+FAKE_TMUX_STATE="$tmux_alias_root/server"
+
 dispatch_real() {
   local dir="$1" id="$2"
   (
@@ -43,8 +51,8 @@ assert_eq "$(jq -r .project_slug "$lease")" "$(slug_for "$repo")" \
   "happy: cleanup lease project"
 assert_eq "$(jq -r .story_id "$lease")" "$id" "happy: cleanup lease story"
 assert_eq "$(jq -r .branch "$lease")" "worktree-$id" "happy: cleanup lease branch"
-assert_eq "$(jq -r .tmux.socket_path "$lease")" "$FAKE_TMUX_STATE/tmux.sock" \
-  "happy: cleanup lease tmux server"
+assert_eq "$(jq -r .tmux.socket_path "$lease")" "$physical_tmux_state/tmux.sock" \
+  "happy: cleanup lease canonical tmux server"
 assert_eq "$(jq -r '.tmux | keys | join(",")' "$lease")" "socket_path" \
   "happy: cleanup lease carries no single-window identity"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
