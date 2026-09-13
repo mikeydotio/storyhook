@@ -437,6 +437,13 @@ story load-context [--format markdown|json] [--story <id>]   # alias of context
 story session-eligibility <id> --json   # read-only active-session eligibility snapshot
 story handoff [--since <duration>]
 
+story continuation capabilities --json
+story continuation request <id> --stdin --json
+story continuation status <id> --json
+story continuation receipt <id> <request> --stdin --json
+story continuation retry <id> <request> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider codex|claude --session-id <session> --json
+
 story export
 story import [<file>]
 story import-project <file>
