@@ -2780,6 +2780,7 @@ Use `story delete <id> [--force]` for permanent story removal.
         m.insert(
             "engine",
             r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
+story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
 story engine status [--run <id>]
 story engine pause [--run <id>]
 story engine resume [--run <id>]
@@ -2787,6 +2788,12 @@ story engine stop [--run <id>] [--now]
 story engine ack [--run <id>]
 
 Control one Full Auto run for the selected project.
+
+configure
+  Changes only supplied settings on a running or paused run; at least one
+  setting is required. Omitted settings and the agent stay unchanged.
+  Existing work keeps its settings. Lowering capacity preserves occupied
+  lanes and waits for them to drain before claiming more work.
 
 start
   Starts a project-wide run, or narrows it to an epic's descendant

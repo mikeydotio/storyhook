@@ -258,7 +258,8 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         },
         Invocation::Engine { action } => match action {
             EngineAction::Start { epic, .. } => epic.iter_mut().collect(),
-            EngineAction::Status { .. }
+            EngineAction::Configure { .. }
+            | EngineAction::Status { .. }
             | EngineAction::Pause { .. }
             | EngineAction::Resume { .. }
             | EngineAction::Stop { .. }
