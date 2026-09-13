@@ -84,6 +84,7 @@ fn migration_32_adds_nullable_run_configuration_without_inventing_defaults() {
 
 fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
     EngineLaneRecord {
+        adopted_identity: None,
         run_id: run_id.into(),
         lane_index,
         state: EngineLaneState::Idle,
@@ -1402,4 +1403,77 @@ fn immediate_stop_clears_a_quarantined_lane_without_unclaiming_it() {
         Some("needs a person")
     );
     assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn migration_40_preserves_existing_lanes_and_refuses_incomplete_adoption() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..38]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    raw(&store).execute("INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at) VALUES ('legacy','alpha','project',1,'codex','running','2026-01-01','2026-01-01')", []).unwrap();
+    raw(&store).execute("INSERT INTO engine_lanes (run_id,lane_index,state,last_observed_at) VALUES ('legacy',0,'idle','2026-01-01')", []).unwrap();
+    store.migrate().unwrap();
+    let lanes = store.read(|tx| tx.engine_lanes("legacy")).unwrap();
+    assert!(lanes[0].adopted_identity.is_none());
+    assert!(
+        raw(&store)
+            .execute(
+                "UPDATE engine_lanes SET adopted_identity_json='{}' WHERE run_id='legacy'",
+                []
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn migration_40_upgrades_landed_recovery_schema_without_losing_receipts_or_lanes() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..39]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    let receipt = r#"{"incident":"alpha:17","outcome":"recovered"}"#;
+    raw(&store).execute(
+        "INSERT INTO verification_recovery (project_id,receipt) SELECT id,?1 FROM projects WHERE slug='alpha'",
+        [receipt],
+    ).unwrap();
+    raw(&store).execute("INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at) VALUES ('legacy','alpha','project',1,'codex','running','2026-01-01','2026-01-01')", []).unwrap();
+    raw(&store).execute("INSERT INTO engine_lanes (run_id,lane_index,state,last_observed_at) VALUES ('legacy',0,'idle','2026-01-01')", []).unwrap();
+
+    store.migrate().unwrap();
+    let lanes = store.read(|tx| tx.engine_lanes("legacy")).unwrap();
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].state, EngineLaneState::Idle);
+    assert!(lanes[0].adopted_identity.is_none());
+    let retained: String = raw(&store).query_row(
+        "SELECT receipt FROM verification_recovery WHERE project_id=(SELECT id FROM projects WHERE slug='alpha')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(retained, receipt);
+    let history: Vec<(u32, String)> = raw(&store)
+        .prepare(
+            "SELECT version,name FROM schema_migrations WHERE version IN (39,40) ORDER BY version",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        history,
+        vec![
+            (39, "verification_recovery".into()),
+            (40, "engine_adoption".into())
+        ]
+    );
+    assert!(
+        raw(&store)
+            .execute(
+                "UPDATE engine_lanes SET adopted_identity_json='{}' WHERE run_id='legacy'",
+                []
+            )
+            .is_err()
+    );
+    store.migrate().unwrap();
+    assert_eq!(store.read(|tx| tx.engine_lanes("legacy")).unwrap(), lanes);
 }

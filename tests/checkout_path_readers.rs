@@ -85,6 +85,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "engine start refuses repo-side work when the already-selected project has no checkout",
     ),
     (
+        "src/service/engine/adoption.rs",
+        "adoption uses the already-selected project's checkout for Git inspection and revalidates it before binding lanes",
+    ),
+    (
         "src/service/verification.rs",
         "the verifier chooses the registered checkout only after selecting a project from the store",
     ),

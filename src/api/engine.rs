@@ -531,6 +531,8 @@ impl From<EngineScope> for HttpScope {
 
 #[derive(Serialize)]
 struct HttpLaneView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adopted_identity: Option<crate::store::AdoptedIdentity>,
     index: u32,
     state: &'static str,
     story: Option<String>,
@@ -557,6 +559,7 @@ struct HttpLaneView {
 impl From<EngineLaneRecord> for HttpLaneView {
     fn from(value: EngineLaneRecord) -> Self {
         Self {
+            adopted_identity: value.adopted_identity,
             index: value.lane_index,
             state: value.state.as_str(),
             story: value.story_id,
@@ -627,6 +630,7 @@ mod tests {
     #[test]
     fn a_lane_view_carries_its_progress_seed_verbatim() {
         let mut lane = EngineLaneRecord {
+            adopted_identity: None,
             run_id: "run-1".to_string(),
             lane_index: 0,
             state: crate::store::EngineLaneState::Working,

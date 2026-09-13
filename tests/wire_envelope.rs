@@ -392,6 +392,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 created_at: "2026-08-30T20:00:00Z".to_string(),
                 updated_at: "2026-08-30T20:01:00Z".to_string(),
                 lanes: vec![EngineLaneView {
+                    adopted_identity: None,
                     index: 0,
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
