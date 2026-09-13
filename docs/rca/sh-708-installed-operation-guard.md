@@ -127,3 +127,37 @@ the resource filesystem contract and real domain/reader/report flows. Targeted
 Clippy with `-D warnings`, Rust formatting, hook shell syntax and diff whitespace
 checks passed. The actual-tree selector again returned `ALL` for the missing
 baseline coverage map; full-suite certification remains with the verifier.
+
+## Adopted verifier failure: churn measurement validity
+
+The verifier returned tree `faaeb438907b802661a4605cd9505b2858a0303f` with
+`daemon_timeouts::exchange::a_client_behind_a_daemon_that_keeps_finishing_things_keeps_waiting`
+failing at the fixture's `GaveUp` assertion. Its client and timeout fixture are
+identical to this branch. The isolated original test passed on reproduction.
+
+Two explanations remained plausible: a real early transport/client failure,
+or a delayed result from a legitimately timed-out client after fixture starvation.
+The gate discarded the actual result, so its exact interleaving is unknown.
+Inspection found a concrete defect in the second path: a long publishing gap
+reset only the clean-stretch clock. The fixture kept the same client and judged
+its eventual result against just the latest gap, forgetting the earlier silence.
+
+A new regression drove the real HTTP client against a silent peer, injected a
+500 ms publication pause, and withheld the result until two later publications.
+The unchanged fixture falsely returned `GaveUp`. This reproduces the defect
+class without imposing machine load or altering production timeout settings.
+
+The fixture now discards the entire attempt immediately upon a pre- or
+post-publication silence; the existing bounded outer loop starts a fresh client.
+It verifies successful publication, retains early client results in diagnostics,
+and reports exhausted measurement budget separately from observed starvation.
+Controls cover a fresh full stretch, clean early failure with its result intact,
+and budget exhaustion without another publication. The sibling sweep found this
+measurement mechanism only in `tests/daemon_timeouts.rs`.
+
+Validation: all 14 timeout integration tests and 12 timing-policy contracts
+passed, including the new red-to-green regression and original failing case.
+Targeted Clippy with warnings denied, Rust formatting and diff checks passed.
+The selector still requests `ALL` for the missing baseline coverage map; the
+central verifier retains the full-suite run. Production exchange logic and
+timeout bounds are unchanged; the missing original error is not inferred.
