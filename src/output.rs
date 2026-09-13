@@ -130,6 +130,9 @@ pub struct EngineScopeView {
 /// One lane as presented by the engine control surfaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineLaneView {
+    /// Captured identity for an adopted manual lane; absent for engine-created work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_identity: Option<crate::store::AdoptedIdentity>,
     pub index: u32,
     pub state: EngineLaneState,
     pub story: Option<String>,
@@ -206,6 +209,7 @@ impl EngineRunView {
                 let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
                 let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
+                    adopted_identity: lane.adopted_identity,
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,

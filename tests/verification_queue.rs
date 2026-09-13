@@ -3,6 +3,9 @@
 #[path = "verification_queue/completed_capture.rs"]
 mod completed_capture;
 
+#[path = "verification_queue/output_reporting.rs"]
+mod output_reporting;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};

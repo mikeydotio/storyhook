@@ -94,9 +94,44 @@ pub struct VerificationActivity {
 struct VerificationSlot {
     active: ActiveVerification,
     cancellation: Cancellation,
+    output: crate::service::gate_output::OutputObserver,
 }
 
 impl VerificationActivity {
+    /// Publish only while the complete ownership snapshot still holds. Match
+    /// the existing verifier control lock order: registry, then store.
+    pub(crate) fn if_current<T>(
+        &self,
+        project: ProjectId,
+        expected: Option<&ActiveVerification>,
+        publish: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if slots.get(&project).map(|slot| &slot.active) != expected {
+            return None;
+        }
+        Some(publish())
+    }
+
+    /// Observe a current attempt's output without renewing its deadline.
+    pub(crate) fn observe_output(
+        &self,
+        active: &ActiveVerification,
+        reference: Option<&crate::service::gate_output::OutputReference>,
+        now: &str,
+    ) -> crate::service::gate_output::OutputObservation {
+        use crate::service::gate_output::OutputObservation;
+        let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(slot) = slots
+            .get_mut(&active.project)
+            .filter(|slot| &slot.active == active)
+        else {
+            return OutputObservation::Unavailable("verification ownership changed".into());
+        };
+        slot.output
+            .observe(reference, &active.attempt_id, &active.started_at, now)
+    }
+
     /// Creates an empty registry. After daemon restart every surviving
     /// `verifying` story is queued until its project's worker acquires it.
     #[must_use]
@@ -176,6 +211,7 @@ impl VerificationActivity {
             VerificationSlot {
                 active: active.clone(),
                 cancellation: cancellation.clone(),
+                output: crate::service::gate_output::OutputObserver::default(),
             },
         );
         VerificationGuard {
@@ -250,6 +286,7 @@ impl VerificationGuard {
             .expect("owned verification slot");
         assert_eq!(slot.active, self.active);
         slot.active = replacement.clone();
+        slot.output = crate::service::gate_output::OutputObserver::default();
         self.active = replacement;
     }
 }
@@ -980,6 +1017,14 @@ impl VerificationActuator for ShellVerificationActuator {
                 disposition: VerificationFailureDisposition::Permanent,
             };
         }
+        let attempt_id = self
+            .activity
+            .active_for(candidate.project)
+            .filter(|held| {
+                held.story_id == candidate.story_id
+                    && held.generation == candidate.verifying_generation
+            })
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |held| held.attempt_id);
         let initial = candidate
             .verifying_generation
             .map_or_else(String::new, |generation| {
@@ -988,6 +1033,7 @@ impl VerificationActuator for ShellVerificationActuator {
                     serde_json::json!({
                         "kind": "run",
                         "generation": generation.get(),
+                        "attempt_id": attempt_id,
                         "at": self.env.now(),
                     })
                 )
@@ -1029,7 +1075,8 @@ impl VerificationActuator for ShellVerificationActuator {
                 "STORYHOOK_ACTIVITY_CONTEXT",
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
-            .env("STORYHOOK_GATE_PROGRESS", &journal);
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt_id);
         let request_id = verification_request_id(candidate);
         let capture = run_captured_with_progress_and_registration(
             command,
@@ -1659,7 +1706,7 @@ where
                 env,
                 &candidate,
                 &pull_request,
-                active.started_at(),
+                &active.active,
             )?;
             continue;
         };
@@ -1669,7 +1716,7 @@ where
                 VerificationOutcome::Merged { .. } | VerificationOutcome::CleanupFailed { .. }
             )
         {
-            record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
+            record_generation_interrupted(&queue, &ctx, env, &candidate, &active.active)?;
             return Ok(TickResult::Stopped);
         }
         super::activity::emit(
@@ -1705,7 +1752,7 @@ where
                 }
             }
             VerificationOutcome::Cancelled => {
-                record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
+                record_generation_interrupted(&queue, &ctx, env, &candidate, &active.active)?;
                 return Ok(TickResult::Stopped);
             }
             VerificationOutcome::Merged { tree, detail, gate } => {
@@ -2327,20 +2374,21 @@ fn signal_name(signal: i32) -> String {
 fn attempt_position(
     env: &Environment,
     candidate: &VerificationCandidate,
-    started_at: &str,
+    active: &ActiveVerification,
     now: &str,
 ) -> String {
     let mut position = String::new();
-    if let Some(step) = super::verification_progress::matching_progress(env, candidate)
-        .as_ref()
-        .and_then(crate::service::gate_progress::GateProgress::current_step)
+    if let Some(step) =
+        super::verification_progress::matching_active_progress(env, candidate, active)
+            .as_ref()
+            .and_then(crate::service::gate_progress::GateProgress::current_step)
     {
         position.push_str(&format!("during `{}`", step.label));
         if let Some((completed, total)) = step.tests {
             position.push_str(&format!(" ({completed}/{total} tests)"));
         }
     }
-    if let Some(elapsed) = crate::service::engine::elapsed_secs(started_at, now) {
+    if let Some(elapsed) = crate::service::engine::elapsed_secs(&active.started_at, now) {
         if !position.is_empty() {
             position.push(' ');
         }
@@ -2401,11 +2449,11 @@ fn record_generation_withdrawn<S: Store>(
     env: &Environment,
     candidate: &VerificationCandidate,
     pull_request: &PrLink,
-    started_at: &str,
+    active: &ActiveVerification,
 ) -> Result<(), AppError> {
     let now = ctx.now();
     let reason = withdrawal_reason(queue, ctx.store(), candidate)?;
-    let position = attempt_position(env, candidate, started_at, &now);
+    let position = attempt_position(env, candidate, active, &now);
     let generation = candidate
         .verifying_generation
         .map(|generation| generation.get().to_string())
@@ -2438,10 +2486,10 @@ fn record_generation_interrupted<S: Store>(
     ctx: &Ctx<'_, S>,
     env: &Environment,
     candidate: &VerificationCandidate,
-    started_at: &str,
+    active: &ActiveVerification,
 ) -> Result<(), AppError> {
     let now = ctx.now();
-    let position = attempt_position(env, candidate, started_at, &now);
+    let position = attempt_position(env, candidate, active, &now);
     let body = format!(
         "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED{}{position}\nThe verifier was stopped (operator stop or daemon shutdown) while this attempt ran. The gate judged nothing; the attempt restarts from the beginning when the verifier resumes.\n",
         if position.is_empty() { "" } else { " " },
