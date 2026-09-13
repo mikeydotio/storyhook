@@ -79,6 +79,7 @@ use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
 pub use conformance::ConformanceFixture;
+mod verification_recovery;
 pub use error::StoreError;
 pub use fault::{DELIVERY_BACKSTOP, FaultPoint};
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
@@ -97,6 +98,10 @@ pub use types::{
     ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
     StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
     VerificationFailureDisposition, VerificationIncident, partition_known,
+};
+pub use verification_recovery::{
+    VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,
+    VerificationRecovery, VerificationRecoveryOutcome, VerificationRecoveryRequest,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -296,6 +301,10 @@ pub trait ReadOps {
         &self,
         project: ProjectId,
     ) -> Result<Option<VerificationIncident>, StoreError>;
+
+    /// Latest durable recovery evidence for this project.
+    fn verification_recovery(&self, project: ProjectId)
+    -> Result<VerificationRecovery, StoreError>;
 
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
@@ -560,6 +569,13 @@ pub trait WriteOps: ReadOps {
 
     /// Clears the incident only when its identity still matches `incident_id`.
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError>;
+
+    /// Replaces this project's latest recovery receipt within the caller's transaction.
+    fn put_verification_recovery(
+        &mut self,
+        project: ProjectId,
+        recovery: &VerificationRecovery,
+    ) -> Result<(), StoreError>;
 
     /// Persists manual verifier admission permission independently of incidents.
     fn put_verification_enabled(

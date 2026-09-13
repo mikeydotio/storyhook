@@ -1511,3 +1511,17 @@ pub(super) fn put_verification_enabled(
     sql(conn.execute("INSERT INTO verification_control (project_id, enabled) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled", rusqlite::params![project.get(), enabled]), "writing verifier admission permission")?;
     Ok(())
 }
+
+pub(super) fn put_verification_recovery(
+    conn: &Connection,
+    project: ProjectId,
+    recovery: &crate::store::VerificationRecovery,
+) -> Result<(), StoreError> {
+    let receipt = serde_json::to_string(recovery).map_err(|e| {
+        StoreError::from(crate::error::AppError::Storage(format!(
+            "serializing project {project} verifier recovery: {e}"
+        )))
+    })?;
+    sql(conn.execute("INSERT INTO verification_recovery(project_id, receipt) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET receipt=excluded.receipt", params![project.get(), receipt]), "writing verifier recovery")?;
+    Ok(())
+}

@@ -95,6 +95,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // SH-702's Bash cancellation probe retains output in regular files;
     // cancellation terminates/reaps its group before captured bytes are read.
     ("src/process/activity_tests.rs", "\"bash\"", Kind::Waited),
+    // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
+    // recording tools never create persistent terminal readers.
+    (
+        "src/daemon/activity/tests.rs",
+        "std::env::current_exe(",
+        Kind::Reads,
+    ),
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),

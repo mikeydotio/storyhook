@@ -225,7 +225,23 @@ fn summary() -> SummaryView {
 /// the renderers treat those differently (`Stories`, `Issues` and
 /// `PhaseList` all have dedicated "nothing here" branches).
 fn response_corpus() -> Vec<(&'static str, Response)> {
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    let status = storyhook::daemon::verification::VerificationActivity::new()
+        .status(&fixture.ctx())
+        .unwrap();
     vec![
+        (
+            "verifier_status",
+            Response::VerifierStatus(Box::new(status.clone())),
+        ),
+        (
+            "with_verifier",
+            Response::WithVerifier {
+                response: Box::new(Response::Message("no ready stories".into())),
+                verifiers: vec![status],
+                unavailable: None,
+            },
+        ),
         (
             "message",
             Response::Message("initialized story project".to_string()),
@@ -884,6 +900,8 @@ fn a_story_delete_confirmation_is_flat_and_requires_the_story_id() {
 fn the_response_corpus_covers_every_variant() {
     fn variant_of(response: &Response) -> &'static str {
         match response {
+            Response::VerifierStatus(_) => "verifier_status",
+            Response::WithVerifier { .. } => "with_verifier",
             Response::Message(_) => "message",
             Response::MessageWithWarnings(..) => "message_with_warnings",
             Response::Story(_) => "story",
@@ -908,7 +926,9 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 21] = [
+    const EVERY_VARIANT: [&str; 23] = [
+        "verifier_status",
+        "with_verifier",
         "message",
         "message_with_warnings",
         "story",
@@ -981,6 +1001,8 @@ fn engine_run_renders_elapsed_as_human_time_and_json_data() {
 #[test]
 fn response_variants_travel_as_snake_case_keys() {
     let expected = [
+        ("verifier_status", "verifier_status"),
+        ("with_verifier", "with_verifier"),
         ("message", "message"),
         ("message_with_warnings", "message_with_warnings"),
         ("story_minimal", "story"),
@@ -1849,6 +1871,23 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Verifier {
             action: VerifierAction::Ack {
                 incident_id: "2:28821".to_string(),
+            },
+        },
+        Invocation::Verifier {
+            action: VerifierAction::Status,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::Start,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::Stop,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::Drain,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::AckLeaveStopped {
+                incident_id: "2:28821".into(),
             },
         },
         Invocation::Cleanup { dry_run: true },

@@ -64,7 +64,7 @@ e2e_text_assertion_door	:(glob)e2e/**/*.ts
 engine_adoption	docs/spec/engine-adoption.md
 engine_adoption	src/service/engine.rs
 engine_adoption	src/service/engine/adoption.rs
-engine_adoption	src/store/schema/0039_engine_adoption.sql
+engine_adoption	src/store/schema/0040_engine_adoption.sql
 engine_adoption_identity	src/service/cleanup_lease.rs
 engine_adoption_identity	src/service/engine/adoption.rs
 engine_reconcile	:(glob)**/*
@@ -148,6 +148,7 @@ verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
 verifier_bundle	:(glob)scripts/*
 verifier_bundle	build.rs
+verifier_fixture_hygiene	:(glob)**/*
 verifier_foreign_checkout	:(glob)scripts/*
 verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*

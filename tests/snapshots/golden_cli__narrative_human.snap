@@ -94,7 +94,26 @@ $ story context --format json
       "title": "Ship the CLI shim"
     }
   ],
-  "total_stories": 16
+  "total_stories": 16,
+  "verifier": {
+    "active": null,
+    "control": "running",
+    "evidence_error": null,
+    "first_hit_story": null,
+    "held_stories": [],
+    "incident": null,
+    "incident_age_seconds": null,
+    "last_evidence_at": null,
+    "project": "[project]",
+    "recovery": {
+      "acknowledgement": null,
+      "request": null
+    },
+    "retry_count": 0,
+    "silence_seconds": null,
+    "verifying": [],
+    "warning": null
+  }
 }
 
 $ story load-context

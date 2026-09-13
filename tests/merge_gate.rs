@@ -1108,7 +1108,7 @@ impl MergeRepo {
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
-            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .envs(storyhook_test_support::daemon_containment())
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -1169,7 +1169,7 @@ impl MergeRepo {
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
-            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .envs(storyhook_test_support::daemon_containment())
             // Bounds the owner's cancellation grace so a test never waits on
             // the production 30s budget; the gates here die on first TERM.
             .env("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "8000")
@@ -1483,7 +1483,7 @@ jq -e --arg fields "$5" '
             .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
-            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .envs(storyhook_test_support::daemon_containment())
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -1552,6 +1552,7 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .envs(storyhook_test_support::daemon_containment())
         // A hook or script under test must not inherit git's own targeting
         // variables from the test runner's environment — the same scrub
         // `tests/push_gate.rs` applies.
