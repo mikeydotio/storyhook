@@ -53,6 +53,45 @@ fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
     }
 }
 
+#[test]
+fn orchestration_changes_invalidate_every_leg() {
+    let repo = Repo::new();
+    repo.write("scripts/gate-legs.sh", "# initial orchestration contract\n");
+    repo.git(&["add", "scripts/gate-legs.sh"]);
+    repo.git(&["commit", "-qm", "orchestration input"]);
+    for leg in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ] {
+        assert!(repo.run_leg(leg, true).status.success());
+        assert!(repo.run_leg(leg, true).status.success());
+        assert_eq!(repo.executions(leg), 1);
+    }
+    repo.write("scripts/gate-legs.sh", "# changed orchestration contract\n");
+    for leg in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ] {
+        let result = repo.run_leg(leg, true);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            repo.executions(leg),
+            2,
+            "{leg} reused stale orchestration evidence"
+        );
+    }
+}
+
 impl Repo {
     fn new() -> Self {
         let root = storyhook_test_support::scratch_dir();

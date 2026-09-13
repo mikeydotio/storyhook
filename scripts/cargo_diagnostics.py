@@ -17,6 +17,7 @@ import tempfile
 import time
 
 ENV_KEY = "STORYHOOK_COMPILER_DIAGNOSTICS"
+OUTCOME_KEY = "STORYHOOK_GATE_BUILD_OUTCOME"
 CHUNK = 16384
 
 
@@ -54,11 +55,13 @@ def headline(message):
 class Collector:
     """Incrementally separate Cargo diagnostics from arbitrary output."""
 
-    def __init__(self, artifact, output):
+    def __init__(self, artifact, output, outcome=None):
         """Keep per-invocation parsing state and verify the destination up front."""
-        with open_artifact(artifact):
-            pass
-        self.artifact, self.output = artifact, output
+        self.artifacts = [path for path in (artifact, outcome) if path]
+        for path in self.artifacts:
+            with open_artifact(path):
+                pass
+        self.output = output
         self.pending = bytearray()
         self.finished = False
         self.success = None
@@ -87,11 +90,12 @@ class Collector:
         reason = record.get("reason")
         if reason == "compiler-message":
             message = diagnostic(record)
-            with open_artifact(self.artifact) as artifact:
-                fcntl.flock(artifact, fcntl.LOCK_EX)
-                data = memoryview(wire(record))
-                while data:
-                    data = data[artifact.write(data):]
+            for path in self.artifacts:
+                with open_artifact(path) as artifact:
+                    fcntl.flock(artifact, fcntl.LOCK_EX)
+                    data = memoryview(wire(record))
+                    while data:
+                        data = data[artifact.write(data):]
             rendered = message.get("rendered") or headline(message) + "\n"
             self.output.write(rendered.encode("utf-8"))
         elif reason == "build-finished":
@@ -114,16 +118,17 @@ def wire(record):
     return (json.dumps(record, ensure_ascii=True) + "\n").encode()
 
 
-def run_build(command, artifact):
+def run_build(command, artifact, outcome=None):
     """Run a build-only command with stdout diagnostic collection."""
     try:
-        collector = Collector(artifact, sys.stdout.buffer)
+        collector = Collector(artifact, sys.stdout.buffer, outcome)
         out = tempfile.TemporaryFile(dir="/tmp")
     except (OSError, ValueError) as error:
         print(f"compiler diagnostics: cannot prepare collection: {error}", file=sys.stderr)
         return 125
     child_env = os.environ.copy()
     child_env.pop(ENV_KEY, None)
+    child_env.pop(OUTCOME_KEY, None)
     with out:
         try:
             child = subprocess.Popen(command, stdout=out, env=child_env)
@@ -195,8 +200,64 @@ def summarize(path):
         print(line)
 
 
+def production_errors(path):
+    """Read candidate shared errors; unknown target metadata proves no dependency."""
+    sources = {os.path.realpath(p) for p in ("src/lib.rs", "src/main.rs", "build.rs")}
+    errors = set()
+    with open(path, "rb") as source:
+        for raw in source:
+            record = json.loads(raw)
+            if not isinstance(record, dict):
+                raise ValueError("non-object build outcome record")
+            message = diagnostic(record)
+            target = record.get("target")
+            if not isinstance(target, dict):
+                continue
+            name = target.get("src_path")
+            kinds = target.get("kind")
+            if not isinstance(name, str) or not isinstance(kinds, list):
+                continue
+            if (os.path.realpath(name) in sources
+                    and any(kind in ("lib", "bin", "custom-build") for kind in kinds)
+                    and message["level"] == "error"):
+                code = message.get("code")
+                errors.add((os.path.realpath(name), code["code"] if code else None,
+                            message["message"]))
+    return errors
+
+
+def confirm_shared(path):
+    """Return 10 only when a normal production build repeats a preparation error."""
+    artifact = os.environ.pop(ENV_KEY, None)
+    os.environ.pop(OUTCOME_KEY, None)
+    try:
+        candidates = production_errors(path)
+        if not candidates:
+            return 0
+        print("gate: confirming whether Rust preparation failure blocks production", file=sys.stderr)
+        with tempfile.NamedTemporaryFile(prefix="storyhook-build-probe-", dir="/tmp") as probe:
+            status = run_build(["cargo", "build", "--message-format=json"], artifact, probe.name)
+            if status >= 125:
+                return status
+            if status and candidates.intersection(production_errors(probe.name)):
+                return 10
+        return 0
+    except (OSError, ValueError) as error:
+        print(f"gate: invalid build outcome: {error}", file=sys.stderr)
+        return 125
+
+
 def main(args):
     """Adapt explicit Cargo commands; preserve the original execution argv."""
+    if len(args) == 2 and args[0] == "--validate-outcome":
+        try:
+            production_errors(args[1])
+            return 0
+        except (OSError, ValueError) as error:
+            print(f"gate: invalid build outcome: {error}", file=sys.stderr)
+            return 125
+    if len(args) == 2 and args[0] == "--confirm-shared":
+        return confirm_shared(args[1])
     if len(args) == 2 and args[0] == "--summarize":
         try:
             summarize(args[1])
@@ -209,7 +270,8 @@ def main(args):
         return 2
     command = args[1:]
     artifact = os.environ.pop(ENV_KEY, None)
-    if not artifact:
+    outcome = os.environ.pop(OUTCOME_KEY, None)
+    if not artifact and not outcome:
         os.execvp(command[0], command)
     options = command[:command.index("--")] if "--" in command else command[:]
     operation = options[1]
@@ -237,7 +299,7 @@ def main(args):
         build.extend(command[command.index("--"):])
     if operation == "test" and "--no-run" not in build:
         build.append("--no-run")
-    status = run_build(build, artifact)
+    status = run_build(build, artifact, outcome)
     if status or operation != "test" or "--no-run" in options:
         return status
     os.execvp(command[0], command)
