@@ -89,6 +89,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the verifier chooses the registered checkout only after selecting a project from the store",
     ),
     (
+        "src/daemon/verification.rs",
+        "incident retirement uses the already-selected project's checkout for resumed-hook configuration and working directory",
+    ),
+    (
         "src/daemon/engine.rs",
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
     ),
