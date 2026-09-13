@@ -2,11 +2,13 @@
 
 ## Status and ownership
 
-This preparation is complete. **Active Greenlight is still unrepaired.**
-The separately authorized development artifact is now sealed and rehearsed:
-see [DEVELOPMENT.md](DEVELOPMENT.md) for its exact identity, supervisor-reviewed
-live sequence, native trust boundary, and rollback. That newer procedure
-supersedes the earlier missing-artifact prerequisite recorded here.
+**Supervisor staging and installation are complete.** The repaired development
+candidate is installed and disabled; the original Greenlight 3.9.1 producer
+remains enabled. Both caches and existing trust are preserved. See
+[DEVELOPMENT.md](DEVELOPMENT.md) and the
+[safe live receipt](installed-disabled-receipt.json). Only Mikey's native trust
+and final selection remain, coordinated by the root supervisor. Do not rerun
+staging/install. The procedures below describe earlier isolated preparation.
 The personal Codex hook is repaired and revalidated. StoryHook is v2.4.2.
 AGE-103 owns Greenlight source delivery; AGE-84 owns candidate/release validation.
 Neither a candidate test pass nor an installer receipt certifies a release.
@@ -71,7 +73,7 @@ That is the directly affected Greenlight suite, **not** Agentics' full repositor
 suite. The StoryHook selector returned ALL because its certified baseline lacks a
 coverage map; the full suite remains central-verifier owned.
 
-## Production installation boundary
+## Historical production installation boundary
 
 The supported installer is `codex plugin add`, not `codex plugin install`.
 Codex 0.154.0 successfully replaced same-version fixture bytes, so an installer
@@ -89,52 +91,27 @@ The original delivery choices were:
 | Delivery | Required evidence |
 |---|---|
 | Containing release | Approved source commit, truthful version, passed owner release validation, and registered source containing the repairs |
-| Interim development artifact | Now prepared with explicit operator authorization; immutable archive, official Codex metadata, source provenance, and unrelated-plugin preservation receipts are in DEVELOPMENT.md |
+| Interim development artifact | Supervisor reviewed, staged and installed; candidate disabled and original enabled. Current evidence and remaining native action are in DEVELOPMENT.md |
 
-The remaining boundary is supervisor review of the concrete live commands and
-native trust/activation, not unavailable source or unknown context. The interim
+The remaining boundary is Mikey's native trust and final selection. Supervisor
+review, staging, installation and 20 actual installed controls are complete. The interim
 artifact is not release-certified. Retire it after the containing
 release is installed and passes the same byte and manifest checks. AGE-103 owns
 lasting source delivery; SH-707 retains installation and retirement evidence.
 
-Before any live mutation, capture the current source and cache file/mode inventory,
-the agentics registration, enabled plugin states, native hook-trust state and the
-personal-hook backup identity. Keep raw configuration backups private. Compare
-with [active-installation.json](active-installation.json); stop on unexplained drift.
-The recorded personal backup is already preserved at
-`~/.codex/hooks/git-readonly-allow.py.sh707-backup-20260912T234300Z`.
-
-When the owner-provided source is correctly registered and all artifact checks pass:
-
-```sh
-codex plugin add greenlight@agentics --json
-codex plugin list --marketplace agentics --json
-```
-
-Use installedPath from the installer result, compare its complete file/mode
-inventory with the approved source, and call
-`installed_contract.exercise(installed_path, repaired=True)` from this directory.
-Check the listing's version, enabled state and source registration independently.
-No duplicate Greenlight producer may remain enabled. Do not modify unrelated
-marketplace registrations, plugin settings, personal hooks or native trust hashes.
-
-Start a new native Codex thread and complete any required native hook-trust review
-through the operator's supported interface. Confirm the intended hook runs with
-the correct identity and no unsupported-output diagnostic. Direct subprocess
-replay cannot certify host activation. Never bypass hook trust or suppress denials.
+The supervisor completed the recorded identity, inventory, enablement and
+preservation checks. The live installed candidate passed all 20 manifest controls.
+The original producer and cache remain intact; raw private backups are retained
+by the supervisor. The earlier source-staging and plugin-add commands are
+historical, not remaining work.
 
 ## Rollback and completion
 
-The rehearsal proves that normal registration plus plugin add can restore the
-exact baseline bytes and enabled state. It also proves that rollback restores the
-known Codex bare-allow defect; rollback is recovery, not acceptance of SH-707.
-
-Before live installation, the owner must make the recorded rollback source
-available through the supported registration path without disturbing other
-Agentics plugins. Reinstall that source with the same plugin-add command, then
-verify baseline identity, registration, enabled state and native trust. Do not
-copy backup files into caches or restore an entire stale config over concurrent
-operator changes. An unexplained mismatch requires a diagnostic, not cleanup.
+The original one-plugin rehearsal proved reinstall-based rollback. The subsequent
+native-toggle rehearsal in [DEVELOPMENT.md](DEVELOPMENT.md) supersedes that method
+for the live host: retain both caches and select the already-installed original
+through the supported native UI. No cache removal or reinstall is needed.
+Rollback restores the known Codex bare-allow defect and is recovery, not acceptance.
 
 Retained receipts are [installer-receipt.json](installer-receipt.json) and
 [installer-commands.json](installer-commands.json). Their temporary paths describe
