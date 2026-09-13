@@ -360,6 +360,32 @@ Related:
         );
 
         m.insert(
+            "resources",
+            r#"story resources <id> [--lease-json JSON] [--window-name NAME]
+                [--worktree-root <PATH>] [--tmux-socket <PATH>] [--json]
+
+Inspect existing story resources independently of the caller's LLM. The reader
+combines recorded dispatch/cleanup identity, private Git markers and the complete
+Git worktree inventory, including custom paths and both legacy provider roots.
+
+JSON returns resources with status resolved, absent, ambiguous, invalid or
+unavailable; candidate provenance and diagnostics remain visible on refusal.
+This is a read-only observation, not permission to remove dirty or protected work.
+
+--lease-json binds an exact existing cleanup lease. --window-name and
+--worktree-root add discovery hints without excluding other evidence.
+--tmux-socket supplies the legacy server locator; a recorded lease wins over
+it. Otherwise the client carries its current/default socket to the daemon.
+Missing sockets prove absence on that server; failed observations never do.
+
+Conflicting live identities refuse selection, including under a helper's
+--force option. Repair stale registrations explicitly; discovery never prunes.
+Provider selection is required only when launching a session. Deterministic
+reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
+"#,
+        );
+
+        m.insert(
             "cleanup",
             r#"story cleanup [--dry-run]
 

@@ -47,6 +47,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

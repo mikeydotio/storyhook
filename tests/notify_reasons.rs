@@ -101,7 +101,16 @@ fn the_scanner_reads_refusal_slugs_out_of_a_function_body() {
 #[test]
 fn every_notify_refusal_is_classified_by_name_and_nothing_else_is() {
     let script = read("plugins/story/bin/story.sh");
-    let declared = refusal_slugs(function_body(&script, "cmd_notify"));
+    let mut declared = refusal_slugs(function_body(&script, "cmd_notify"));
+    let resources = read("plugins/story/lib/resources.sh");
+    declared.extend(refusal_slugs(function_body(
+        &resources,
+        "load_story_resources",
+    )));
+    declared.extend(refusal_slugs(function_body(
+        &resources,
+        "revalidate_story_resources",
+    )));
     assert!(
         declared.len() >= 4,
         "corpus floor: cmd_notify is expected to refuse in several named ways, found {declared:?}"

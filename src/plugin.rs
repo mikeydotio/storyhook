@@ -559,7 +559,19 @@ pub fn run_helper(target: &str, args: &[String]) -> Result<ExitStatus, AppError>
     // installed-artifact guard admits nor one Codex's argv-prefix rule
     // matches (SH-632). A caller who set the variable deliberately keeps it,
     // and the helper's own `--agent` flag still outranks either.
-    if std::env::var_os("STORY_AGENT").is_none() {
+    let mut operands = args.iter();
+    let verb = loop {
+        match operands.next().map(String::as_str) {
+            Some("--project") => {
+                operands.next();
+            }
+            Some(value) if value.starts_with("--project=") => {}
+            value => break value,
+        }
+    };
+    if matches!(verb, Some("dispatch" | "capabilities" | "doctor"))
+        && std::env::var_os("STORY_AGENT").is_none()
+    {
         command.env("STORY_AGENT", "codex");
     }
     command.status().map_err(|error| {

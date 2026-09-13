@@ -21,7 +21,7 @@ _TMP_REPOS+=("$FAKE_TMUX_STATE")
 
 repo=$(mk_story_repo)
 id=$(new_story "$repo" "Dispatched story")
-w=$(wname_for "$repo" "$id")
+w=$(mk_dispatched "$repo" "$id")
 
 # --- capture: dry run names the window and runs nothing ---
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" capture "$id" 2>&1)
@@ -46,10 +46,9 @@ assert_eq "$(jqf "$out" .pane)" "%7" "capture: resolves the pane of the named wi
 assert_contains "$(jqf "$out" .transcript)" "hello from the session" "capture: returns the transcript"
 assert_contains "$(jqf "$out" .display)" "hello from the session" "capture: display carries it"
 
-# --- capture: preconditions and arg validation ---
-out=$(cd "$repo" && env -u TMUX -u TMUX_PANE bash "$SCRIPT" capture "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "capture: refuses outside tmux"
-assert_contains "$(jqf "$out" .display)" "tmux" "capture: says why"
+# --- capture: plain-terminal access and argument validation ---
+out=$(cd "$repo" && env -u TMUX -u TMUX_PANE FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" bash "$SCRIPT" capture "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" true "capture: works from a plain terminal"
 out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "capture: missing id is ok:false"
 out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture "bad id!" 2>&1)

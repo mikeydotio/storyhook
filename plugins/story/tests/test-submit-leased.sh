@@ -181,7 +181,7 @@ git -C "$worktree" reset -q --hard "$(remote_tip)"
 wrong=$(printf '%s' "$lease" | jq '.branch = "worktree-elsewhere"')
 out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$wrong" PATH="$FAKES_PATH" \
   bash "$SCRIPT" --project "$slug" submit "$id" 2>&1)
-assert_eq "$(jqf "$out" .reason)" "cleanup-lease-worktree-mismatch" "a lease naming another branch is refused"
+assert_eq "$(jqf "$out" .reason)" "resource-identity-unsafe" "a lease naming another branch is refused"
 other=$(new_story "$repo" "Another story")
 out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" PATH="$FAKES_PATH" \
   bash "$SCRIPT" --project "$slug" submit "$other" 2>&1)

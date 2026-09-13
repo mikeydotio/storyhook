@@ -122,29 +122,31 @@ fn real_installed_domain_flows_preserve_artifacts_and_refuse_redirected_reset() 
         let mut command = shell(&harness);
         command.args(["-c", r#"
 source "$2/plugins/story/tests/lib.sh"
+# Native resource queries use the daemon endpoint environment from startup.
+export PATH="$TESTS_DIR/fakes:$PATH" STORY_AGENT=codex
+story daemon stop --force >/dev/null || exit 1
 repo=$(mk_story_repo)
 cd "$repo" || exit 1
-export PATH="$TESTS_DIR/fakes:$PATH" STORY_AGENT=codex
 printf 'A report about installed files\n' > "$repo/report.md"
 out=$(bash "$1" create --title 'Guard fixture' --description-file "$repo/report.md" --type bug --priority medium)
 assert_eq "$(jqf "$out" .ok)" true 'real create'
 id=$(jqf "$out" .id)
 story claim "$id" --no-comment >/dev/null || fail_test claim
 out=$(bash "$1" unclaim "$id" --no-comment)
-assert_eq "$(jqf "$out" .ok)" true 'real unclaim'
+assert_eq "$(jqf "$out" .ok)" true "real unclaim: $out"
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'unclaim persisted'
 wname=$(wname_for "$repo" "$id")
-git worktree add -q --no-track -b "worktree-$wname" ".codex/worktrees/$wname" HEAD || exit 1
+git worktree add -q --no-track -b "worktree-$wname" ".claude/worktrees/$wname" HEAD || exit 1
 story claim "$id" --no-comment >/dev/null || fail_test claim
 manifest="$STORYHOOK_DATA_DIR/managed-paths"
 cp "$manifest" "$repo/manifest.backup"
-printf '%s\n' "$repo/.codex/worktrees/$wname/protected" >> "$manifest"
-mkdir -p "$repo/.codex/worktrees/$wname/protected"
-printf sentinel > "$repo/.codex/worktrees/$wname/protected/file"
+printf '%s\n' "$repo/.claude/worktrees/$wname/protected" >> "$manifest"
+mkdir -p "$repo/.claude/worktrees/$wname/protected"
+printf sentinel > "$repo/.claude/worktrees/$wname/protected/file"
 out=$(bash "$1" reset "$id" --force)
 assert_eq "$(jqf "$out" .reason)" installed-artifact-resource 'ancestor removal refused even with force'
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress 'refusal precedes release'
-assert_eq "$(cat "$repo/.codex/worktrees/$wname/protected/file")" sentinel 'artifact survived'
+assert_eq "$(cat "$repo/.claude/worktrees/$wname/protected/file")" sentinel 'artifact survived'
 cp "$repo/manifest.backup" "$manifest"
 ln -s "$HOME/.codex" "$repo/redirect"
 for container in redirect/storyhook "../$(basename "$repo")/redirect/storyhook"; do
@@ -154,7 +156,7 @@ for container in redirect/storyhook "../$(basename "$repo")/redirect/storyhook";
 done
 out=$(bash "$1" reset "$id" --force --no-comment)
 assert_eq "$(jqf "$out" .ok)" true 'real reset'
-[ ! -d "$repo/.codex/worktrees/$wname" ] || fail_test 'worktree survived reset'
+[ ! -d "$repo/.claude/worktrees/$wname" ] || fail_test 'worktree survived reset'
 git show-ref --verify --quiet "refs/heads/worktree-$wname" && fail_test 'branch survived reset'
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'reset persisted'
 [ "$_FAILED" -eq 0 ]

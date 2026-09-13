@@ -35,7 +35,7 @@ def _contains(parent, child):
 
 
 def check_resources(manifest, writes, removal):
-    """Validate resolved write locations and one recursive removal target."""
+    """Validate write locations and an optional recursive removal target."""
     try:
         # A missing registry is the hook's uninstalled-host contract. An
         # existing but unreadable registry is not evidence of absence.
@@ -51,7 +51,9 @@ def check_resources(manifest, writes, removal):
         if not prefixes:
             raise ValueError(f"managed-path manifest contains no paths: {manifest}")
         protected = [(prefix, _identities(prefix)) for prefix in prefixes]
-        targets = [(path, False) for path in writes] + [(removal, True)]
+        targets = [(path, False) for path in writes]
+        if removal is not None:
+            targets.append((removal, True))
         for target, recursive in targets:
             identities = _identities(target)
             for prefix, boundaries in protected:
@@ -63,7 +65,7 @@ def check_resources(manifest, writes, removal):
 
 
 def main():
-    """Check repository, common Git directory and worktree before mutation."""
+    """Check writes and a worktree; an empty worktree means no removal."""
     if len(sys.argv) != 4:
         raise ValueError("expected repository, common Git directory and worktree")
     data = os.environ.get("STORYHOOK_DATA_DIR")
@@ -75,7 +77,7 @@ def main():
         data = os.path.join(xdg or os.path.join(home, ".local/share"), "storyhook")
     if not os.path.isabs(data):
         raise ValueError(f"managed-path data directory must be absolute: {data}")
-    check_resources(os.path.join(data, "managed-paths"), sys.argv[1:3], sys.argv[3])
+    check_resources(os.path.join(data, "managed-paths"), sys.argv[1:3], sys.argv[3] or None)
 
 
 if __name__ == "__main__":

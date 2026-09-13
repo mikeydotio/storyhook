@@ -38,6 +38,12 @@ class ResourceProtection(unittest.TestCase):
         self.manifest.unlink()
         self.check()
 
+    def test_no_worktree_still_protects_write_locations(self):
+        """Branch-only operations have no removal target but still write Git."""
+        GUARD.check_resources(self.manifest, [self.repo], None)
+        with self.assertRaisesRegex(ValueError, "installed"):
+            GUARD.check_resources(self.manifest, [self.managed], None)
+
     def test_component_boundaries(self):
         """A shared string prefix is not a path containment relationship."""
         self.check(writes=[self.root / "installed-other"], removal=self.root / "installed-other/wt")

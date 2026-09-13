@@ -698,6 +698,11 @@ fn dispatch_inner<S: Store>(
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
         Invocation::Verifier { action } => dispatch_verifier(ctx, action),
+        Invocation::Resources { id, options } => {
+            crate::service::resources::ResourceService::new(ctx)
+                .resolve(&id, &options)
+                .map(|report| Response::Resources(Box::new(report)))
+        }
         Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
             .run(dry_run)
             .map(|report| Response::Cleanup(Box::new(report))),
@@ -2858,6 +2863,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -3068,6 +3074,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Engine { .. } => "engine",
         Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
+        Invocation::Resources { .. } => "resources",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -4206,6 +4213,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

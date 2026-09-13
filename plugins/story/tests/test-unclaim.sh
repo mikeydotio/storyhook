@@ -30,6 +30,7 @@ claim_it() { (cd "$repo" && story claim "$1" --no-comment --json >/dev/null 2>&1
 
 # --- happy path: releases, and closes the window that is NOT the caller's ---
 hp=$(new_story "$repo" "Hand me back")
+mk_dispatched "$repo" "$hp" >/dev/null
 claim_it "$hp"
 out=$(cd "$repo" \
   && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$hp")" \
@@ -42,7 +43,7 @@ assert_eq "$(jqf "$out" .closed_window)" "true" "happy: and it was closed"
 assert_eq "$(state_of "$hp")" "todo" "happy: the REAL story really moved"
 assert_contains "$(comments_of "$hp")" "Unclaimed from" \
   "happy: a direct unclaim records the release by default"
-grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
+grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "happy: tmux kill-window did not target the resolved window"
 
 # --- nothing on disk is touched, and the survivor is REPORTED ---------------
@@ -64,6 +65,7 @@ assert_contains "$(jqf "$out" .display)" "reset" "worktree: display points at th
 
 # --- a story nobody claimed is a REFUSAL, and the window survives it --------
 nc=$(new_story "$repo" "Never claimed")
+mk_dispatched "$repo" "$nc" >/dev/null
 out=$(cd "$repo" \
   && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
      bash "$SCRIPT" --project "$slug" unclaim "$nc" 2>&1)
@@ -80,6 +82,7 @@ assert_eq "$(kill_count)" "$kills_before" \
 
 # --- SELF-TERMINATION: the release happens, the window kill does not --------
 sf=$(new_story "$repo" "Unclaimed from its own window")
+mk_dispatched "$repo" "$sf" >/dev/null
 claim_it "$sf"
 kills_before=$(kill_count)
 out=$(cd "$repo" \
@@ -111,6 +114,7 @@ assert_eq "$(jqf "$out" .closed_window)" "false" "no-window: nothing was closed"
 # what it actually found -- and a caller with no pane of their own structurally
 # cannot be standing in the window being closed.
 ow=$(new_story "$repo" "Window I cannot see")
+mk_dispatched "$repo" "$ow" >/dev/null
 claim_it "$ow"
 kills_before=$(kill_count)
 out=$(cd "$repo" \
@@ -123,6 +127,7 @@ assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually 
 
 # --- a tmux refusal is a failed cleanup, never a successful release report --
 kf=$(new_story "$repo" "Window refuses to close")
+mk_dispatched "$repo" "$kf" >/dev/null
 claim_it "$kf"
 status=0
 out=$(cd "$repo" \
@@ -153,13 +158,10 @@ lease=$(jq -nc --arg project "$slug" --arg story "$lu" --arg socket "$socket" '
 out=$(cd /tmp \
   && STORYHOOK_REAP_LEASE_V1="$lease" \
      bash "$SCRIPT" --project "$slug" unclaim "$lu" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "leased-drift: ok"
-assert_eq "$(jqf "$out" '.cleanup.postconditions.tmux_story_windows_absent')" "true" \
-  "leased-drift: exact absence is proved"
-assert_eq "$(jqf "$out" '.cleanup.lease.repository_path')" \
-  "/provider/checkout/that/no/longer/exists" \
-  "leased-drift: receipt echoes creation-time identity rather than re-deriving it"
-assert_eq "$(state_of "$lu")" "todo" "leased-drift: release used the selected store, not a checkout"
+assert_eq "$(jqf "$out" .ok)" false "invalid lease: unclaim refuses"
+assert_eq "$(jqf "$out" .reason)" resource-query-failed "invalid lease: missing repository is explicit"
+assert_eq "$(state_of "$lu")" in-progress "invalid lease: claim is preserved"
+assert_contains "$(cat "$FAKE_TMUX_STATE/windows")" "$lu" "invalid lease: terminal is preserved"
 
 # --- the comment flags reach the CLI verbatim -------------------------------
 cm=$(new_story "$repo" "With a reason")
@@ -189,6 +191,7 @@ assert_contains "$(jqf "$out" .display)" "no-prior-state" "fallback: and display
 
 # --- dry run: reads for real, writes nothing --------------------------------
 dr=$(new_story "$repo" "Dry run me")
+mk_dispatched "$repo" "$dr" >/dev/null
 claim_it "$dr"
 kills_before=$(kill_count)
 out=$(cd "$repo" \

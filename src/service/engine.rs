@@ -554,6 +554,11 @@ pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn probe_window(&self, window: &str) -> WindowProbe;
+    /// Observes a recorded lane on its creation-time server when one exists.
+    fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
+        let _ = lane;
+        self.probe_window(window)
+    }
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
     /// lanes on — every dispatched session, engine-filled or manual.
@@ -636,42 +641,12 @@ impl ShellDispatcher {
     }
 }
 
-impl Dispatcher for ShellDispatcher {
-    fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
-        let options = DispatchOptions {
-            model: request.model,
-            effort: request.effort,
-            fast: request.speed == Some(EngineSpeed::Fast),
-            resume: false,
-        };
-        let outcome = run_shell_dispatch(
-            &self.story_sh_path,
-            &request.project,
-            &request.story,
-            Some(request.agent),
-            true,
-            true,
-            &options,
-            &self.env,
-        )?;
-        if outcome.state == DispatchOutcomeState::Ok {
-            cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
-        }
-        Ok(outcome)
-    }
-
-    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
-        run_shell_unclaim(
-            &self.story_sh_path,
-            &request.project,
-            &request.story,
-            &request.cleanup_lease,
-            &self.env,
-        )
-    }
-
-    fn probe_window(&self, window: &str) -> WindowProbe {
+impl ShellDispatcher {
+    fn probe_window_at(&self, window: &str, socket: Option<&Path>) -> WindowProbe {
         let mut command = self.tmux();
+        if let Some(socket) = socket {
+            command.arg("-S").arg(socket);
+        }
         command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let captured = match run_captured(command, TMUX_TIMEOUT) {
             Ok(captured) => captured,
@@ -766,6 +741,54 @@ impl Dispatcher for ShellDispatcher {
         WindowProbe::Alive {
             last_output_at: activity.parse::<i64>().ok(),
         }
+    }
+}
+
+impl Dispatcher for ShellDispatcher {
+    fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+        let options = DispatchOptions {
+            model: request.model,
+            effort: request.effort,
+            fast: request.speed == Some(EngineSpeed::Fast),
+            resume: false,
+        };
+        let outcome = run_shell_dispatch(
+            &self.story_sh_path,
+            &request.project,
+            &request.story,
+            Some(request.agent),
+            true,
+            true,
+            &options,
+            &self.env,
+        )?;
+        if outcome.state == DispatchOutcomeState::Ok {
+            cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
+        }
+        Ok(outcome)
+    }
+
+    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+        run_shell_unclaim(
+            &self.story_sh_path,
+            &request.project,
+            &request.story,
+            &request.cleanup_lease,
+            &self.env,
+        )
+    }
+
+    fn probe_window(&self, window: &str) -> WindowProbe {
+        self.probe_window_at(window, None)
+    }
+
+    fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
+        self.probe_window_at(
+            window,
+            lane.cleanup_lease
+                .as_ref()
+                .map(|lease| lease.tmux.socket_path.as_path()),
+        )
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
@@ -1316,7 +1339,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         detail: "the lane records neither a pane id nor a window name to probe"
                             .to_string(),
                     },
-                    |target| self.dispatcher.probe_window(&target),
+                    |target| self.dispatcher.probe_lane(&lane, &target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             // Read only when it can change the verdict: a Gone window on an
@@ -3268,6 +3291,35 @@ mod tests {
         assert!(matches!(
             run_captured(command, Duration::from_millis(20)),
             Err(CaptureError::Timeout(_))
+        ));
+    }
+
+    #[test]
+    fn shell_lane_probe_uses_the_creation_time_socket() {
+        let root = storyhook_test_support::scratch_dir();
+        let endpoint = root.path().join("tmux-socket-check");
+        executable(
+            &endpoint,
+            &format!(
+                "[ \"$1\" = -S ] && [ \"$2\" = /tmp/creation-time.sock ] || exit 42\nprintf '{}\\tcodex\\t0\\t1789066115\\n'",
+                std::process::id()
+            ),
+        );
+        let mut lane = idle_lane("run", 0, "2026-09-12T00:00:00Z");
+        lane.cleanup_lease = Some(crate::domain::StoryCleanupLease {
+            version: crate::domain::CLEANUP_LEASE_VERSION,
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            repository_path: "/repo".into(),
+            worktree_path: "/repo/SH-1".into(),
+            branch: "worktree-SH-1".into(),
+            tmux: crate::domain::TmuxCleanupTarget {
+                socket_path: "/tmp/creation-time.sock".into(),
+            },
+        });
+        assert!(matches!(
+            dispatcher_with_tmux(root.path(), &endpoint).probe_lane(&lane, "@1"),
+            WindowProbe::Alive { .. }
         ));
     }
 

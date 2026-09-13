@@ -251,6 +251,7 @@ Usage:
   story engine stop [--run <id>] [--now]
   story verifier status | start | stop | drain
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
+  story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (remove merged inactive story workspaces)
   story summary
   story report [--html]
@@ -588,6 +589,13 @@ pub enum Invocation {
     /// Project verifier status and operator controls (SH-703).
     Verifier {
         action: VerifierAction,
+    },
+    /// Read-only identity inventory for one story's existing resources.
+    Resources {
+        /// Canonical or abbreviated story identifier.
+        id: String,
+        /// Explicit evidence and additional legacy discovery hints.
+        options: crate::service::resources::ResourceOptions,
     },
     /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
     Cleanup {
@@ -971,6 +979,7 @@ impl Invocation {
             | Self::Engine { .. }
             | Self::Verifier { .. }
             | Self::Cleanup { .. }
+            | Self::Resources { .. }
             | Self::Summary
             | Self::Report { .. }
             | Self::Doctor { .. }
@@ -1898,6 +1907,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[bare("leave-stopped")],
     },
     VerbFlags {
+        verb: "resources",
+        subcommand: None,
+        flags: &[
+            value("lease-json"),
+            value("window-name"),
+            value("worktree-root"),
+            value("tmux-socket"),
+        ],
+    },
+    VerbFlags {
         verb: "cleanup",
         subcommand: None,
         flags: &[bare("dry-run")],
@@ -2381,6 +2400,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "engine" => parse_engine(args),
         "verifier" => parse_verifier(args),
         "cleanup" => parse_cleanup(args),
+        "resources" => parse_resources(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -2471,6 +2491,68 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
             args[0]
         ))),
     }
+}
+
+fn parse_resources(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH]";
+    // The client owns its terminal locator; the daemon must not supply its own.
+    let tmux_socket = match std::env::var("TMUX") {
+        Ok(value) => value
+            .split(',')
+            .next()
+            .filter(|s| std::path::Path::new(s).is_absolute())
+            .map(Into::into),
+        Err(_) => {
+            // SAFETY: geteuid has no preconditions and does not modify process state.
+            let uid = unsafe { libc::geteuid() };
+            Some(
+                std::path::PathBuf::from(
+                    std::env::var_os("TMUX_TMPDIR").unwrap_or_else(|| "/tmp".into()),
+                )
+                .join(format!("tmux-{uid}/default")),
+            )
+        }
+    };
+    let mut options = crate::service::resources::ResourceOptions {
+        tmux_socket,
+        ..Default::default()
+    };
+    let mut socket_seen = false;
+    let mut id = None;
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--lease-json" | "--window-name" | "--worktree-root" | "--tmux-socket" => {
+                let value = iter
+                    .next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| AppError::Usage(usage.into()))?;
+                let duplicate = match arg.as_str() {
+                    "--lease-json" => options.lease_json.replace(value.clone()).is_some(),
+                    "--window-name" => options.window_name.replace(value.clone()).is_some(),
+                    "--worktree-root" => options.worktree_root.replace(value.into()).is_some(),
+                    _ => {
+                        if !std::path::Path::new(value).is_absolute() {
+                            return Err(AppError::Usage(
+                                "tmux socket path must be absolute".into(),
+                            ));
+                        }
+                        options.tmux_socket = Some(value.into());
+                        std::mem::replace(&mut socket_seen, true)
+                    }
+                };
+                if duplicate {
+                    return Err(AppError::Usage(usage.into()));
+                }
+            }
+            value if !value.starts_with('-') && id.is_none() => id = Some(value.to_string()),
+            _ => return Err(AppError::Usage(usage.into())),
+        }
+    }
+    Ok(Invocation::Resources {
+        id: id.ok_or_else(|| AppError::Usage(usage.into()))?,
+        options,
+    })
 }
 
 fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
