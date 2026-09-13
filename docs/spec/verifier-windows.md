@@ -48,3 +48,29 @@ macOS regressions select the system interpreter explicitly so a newer Python
 on the interactive shell's PATH cannot hide a compatibility failure.
 Real tmux runs use private test sockets. Only new and impacted tests run in
 the agent worktree; the central verifier owns the full suite.
+
+## Fixture containment — SH-699
+
+Mirror policy belongs to `Environment`, alongside store and state-home
+selection. `from_process` captures the existing switch: only the exact value
+`0` disables mirrors. `Environment::at` always disables them, independent of
+the invoking shell. `child_vars()` serializes that resolved policy as `0` or
+`1`; verification children apply it after their allowlist, and activity
+startup consults it before dispatching its helper. A disabled mirror does not
+disable the journal.
+
+Standalone verifier-script fixtures apply the table-derived
+`daemon_containment()` settings at their command builder. Tests that explicitly
+enable mirrors own a foreground `tmux -D` process through `ChildGuard` and route
+every client through `-S <private socket>`. Startup and control clients have
+bounded waits. Teardown closes the private server, reaps the owned process,
+and checks pane-reader identities before deleting fixture directories, even
+during assertion unwinding. A second private server proves cleanup does not
+affect another owner.
+
+The verifier fixture hygiene test scans direct script launches and opt-ins at
+function/helper boundaries. This is a conservative textual fence, not arbitrary
+Rust dataflow analysis; behavioral subprocess and real-tmux tests prove the
+actual policy and ownership contracts. Production windows, including the
+legacy `verification` window, retain their persistent lifetime. Fixture cleanup
+never targets the operator's default server or historical processes.

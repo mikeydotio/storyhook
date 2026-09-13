@@ -16,6 +16,7 @@ pub(super) fn open(env: &Environment) {
             .arg(binary)
             .arg(env.store_path())
             .env("HOME", env.home())
+            .envs(env.child_vars())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         // `run_captured` observes this helper as well, including refusals.
