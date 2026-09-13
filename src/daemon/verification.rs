@@ -10,8 +10,12 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+mod cleanup;
 mod control;
+pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
+
 mod observation;
+pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
@@ -60,8 +64,10 @@ pub const INFRASTRUCTURE_RETRY_ATTEMPTS: u32 = super::verification_progress::PUB
 /// One verification generation currently owned by one of this daemon's
 /// per-project verifiers. Queue rank is deliberately absent: priority may
 /// change while an attempt is running, but ownership cannot (SH-549).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveVerification {
+    /// Unique attempt identity, independent of one-second timestamps.
+    pub attempt_id: String,
     /// Store identity of the story's project.
     pub project: ProjectId,
     /// Display id of the story being verified.
@@ -82,6 +88,7 @@ pub struct ActiveVerification {
 #[derive(Clone, Default)]
 pub struct VerificationActivity {
     active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
+    bus: ChangeBus,
 }
 
 struct VerificationSlot {
@@ -95,6 +102,12 @@ impl VerificationActivity {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Connects controls to the daemon's existing wake and dashboard change feed.
+    pub fn with_bus(mut self, bus: ChangeBus) -> Self {
+        self.bus = bus;
+        self
     }
 
     /// Returns the generation `project`'s worker owns at this instant, if any.
@@ -131,7 +144,12 @@ impl VerificationActivity {
         started_at: String,
     ) -> VerificationGuard {
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-        self.acquire_locked(&mut slots, candidate, started_at)
+        self.acquire_locked(
+            &mut slots,
+            candidate,
+            started_at,
+            uuid::Uuid::new_v4().to_string(),
+        )
     }
 
     fn acquire_locked(
@@ -139,12 +157,14 @@ impl VerificationActivity {
         slots: &mut BTreeMap<ProjectId, VerificationSlot>,
         candidate: &VerificationCandidate,
         started_at: String,
+        attempt_id: String,
     ) -> VerificationGuard {
         assert!(
             !slots.contains_key(&candidate.project),
             "the serialized verifier acquired twice"
         );
         let active = ActiveVerification {
+            attempt_id,
             project: candidate.project,
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
@@ -162,6 +182,7 @@ impl VerificationActivity {
             registry: self.clone(),
             active,
             cancellation,
+            recovery_request_id: None,
         }
     }
 }
@@ -173,6 +194,7 @@ pub struct VerificationGuard {
     registry: VerificationActivity,
     active: ActiveVerification,
     cancellation: Cancellation,
+    recovery_request_id: Option<String>,
 }
 
 impl Drop for VerificationGuard {
@@ -212,6 +234,7 @@ impl VerificationGuard {
         assert_eq!(self.active.project, candidate.project);
         assert_eq!(self.active.story_id, candidate.story_id);
         let replacement = ActiveVerification {
+            attempt_id: uuid::Uuid::new_v4().to_string(),
             project: candidate.project,
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
@@ -254,6 +277,13 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// Execution answered, but its owner cannot yet be reused safely.
+    CleanupFailed {
+        /// The completed result, independent of cleanup.
+        verdict: CompletedVerification,
+        /// The retained resources and reason for halting.
+        cleanup: VerificationCleanupFailure,
+    },
     /// The operator cancelled the owned attempt; queued work remains recoverable.
     Cancelled,
     /// The exact merge tree passed and the guarded merge landed.
@@ -1001,7 +1031,7 @@ impl VerificationActuator for ShellVerificationActuator {
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal);
         let request_id = verification_request_id(candidate);
-        let captured = match run_captured_with_progress_and_registration(
+        let capture = run_captured_with_progress_and_registration(
             command,
             self.verification_idle_timeout,
             TerminationPolicy::TerminateThenKill {
@@ -1014,7 +1044,21 @@ impl VerificationActuator for ShellVerificationActuator {
                     .register("verifier", pid, Some(&request_id))
                     .map_err(|error| error.to_string())
             },
-        ) {
+        );
+        if let Err(failure) = &capture {
+            // Termination may itself finish the shell's result publication.
+            // Accept only independently validated completion, never a signal
+            // status or partial JSON as a test verdict.
+            if let Some(outcome) = cleanup::interrupted_outcome(
+                &failure.stdout,
+                &gate,
+                &failure.error.detail(),
+                &candidate.checkout,
+            ) {
+                return outcome;
+            }
+        }
+        let captured = match capture.map_err(|failure| failure.error) {
             Ok(captured) => captured,
             Err(CaptureError::Cancelled) => return VerificationOutcome::Cancelled,
             Err(CaptureError::Stage(error)) => {
@@ -1227,6 +1271,7 @@ enum WireOutcome {
     Merged {
         tree: String,
         detail: String,
+        cleanup_failure: Option<VerificationCleanupFailure>,
     },
     Conflict {
         detail: String,
@@ -1235,6 +1280,13 @@ enum WireOutcome {
         tree: String,
         log: String,
         detail: String,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
+    GatePassed {
+        tree: String,
+        log: String,
+        detail: String,
+        cleanup_failure: VerificationCleanupFailure,
     },
     InfrastructureFailure {
         detail: String,
@@ -1251,18 +1303,62 @@ impl WireOutcome {
     /// source, and the script only ever ran what it was handed.
     fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
         match self {
-            WireOutcome::Merged { tree, detail } => VerificationOutcome::Merged {
+            WireOutcome::Merged {
                 tree,
                 detail,
-                gate: gate.display(),
+                cleanup_failure,
+            } => match cleanup_failure {
+                Some(cleanup) => cleanup::outcome(
+                    CompletedVerification::Merged {
+                        tree,
+                        detail,
+                        gate: gate.display(),
+                    },
+                    cleanup,
+                ),
+                None => VerificationOutcome::Merged {
+                    tree,
+                    detail,
+                    gate: gate.display(),
+                },
             },
             WireOutcome::Conflict { detail } => VerificationOutcome::Conflict { detail },
-            WireOutcome::TestsFailed { tree, log, detail } => VerificationOutcome::TestsFailed {
+            WireOutcome::TestsFailed {
                 tree,
                 log,
                 detail,
-                gate: gate.display(),
+                cleanup_failure,
+            } => match cleanup_failure {
+                Some(cleanup) => cleanup::outcome(
+                    CompletedVerification::TestsFailed {
+                        tree,
+                        log,
+                        detail,
+                        gate: gate.display(),
+                    },
+                    cleanup,
+                ),
+                None => VerificationOutcome::TestsFailed {
+                    tree,
+                    log,
+                    detail,
+                    gate: gate.display(),
+                },
             },
+            WireOutcome::GatePassed {
+                tree,
+                log,
+                detail,
+                cleanup_failure,
+            } => cleanup::outcome(
+                CompletedVerification::GatePassed {
+                    tree,
+                    log,
+                    detail,
+                    gate: gate.display(),
+                },
+                cleanup_failure,
+            ),
             WireOutcome::InfrastructureFailure {
                 detail,
                 disposition,
@@ -1369,6 +1465,7 @@ where
         inflight,
         project,
         &ChangeBus::new(),
+        None,
         wait_for_resubmission,
     )
 }
@@ -1382,6 +1479,7 @@ fn tick_with_bus<S, A, W>(
     inflight: &InFlight,
     project: ProjectId,
     bus: &ChangeBus,
+    mut admitted_request: Option<&mut Option<String>>,
     mut wait_for_resubmission: W,
 ) -> Result<TickResult, AppError>
 where
@@ -1399,11 +1497,20 @@ where
             .cloned()
     });
     if let Some(incident) = incident.as_ref() {
+        if incident.halted && cleanup::retains_merged_incident(store, incident)? {
+            return Ok(TickResult::Halted);
+        }
         if incident_candidate.is_none() {
-            store.write(|tx| {
-                tx.clear_verification_incident(&incident.incident_id)?;
-                Ok(())
-            })?;
+            let cleared =
+                store.write(|tx| tx.clear_verification_incident(&incident.incident_id))?;
+            if cleared && incident.halted {
+                let checkout = store
+                    .read(|tx| tx.checkout_path(project))?
+                    .unwrap_or_else(|| env.home().to_path_buf());
+                let ctx = Ctx::new(store, project, checkout, env.clone());
+                activity.notify_resumed(&ctx, incident, "incident generation retired")?;
+                activity.publish_project(store, project)?;
+            }
         } else if incident.halted {
             return Ok(TickResult::Halted);
         }
@@ -1422,6 +1529,9 @@ where
         let Some(_active) = activity.try_acquire(store, &candidate, env.now())? else {
             return Ok(TickResult::Stopped);
         };
+        if let Some(request) = admitted_request.as_mut() {
+            **request = _active.recovery_request_id.clone();
+        }
         return match actuator.reap(&candidate) {
             Ok(()) => {
                 record_cleanup_complete(&ctx, &candidate)?;
@@ -1439,6 +1549,9 @@ where
     let Some(mut active) = activity.try_acquire(store, &candidate, started_at)? else {
         return Ok(TickResult::Stopped);
     };
+    if let Some(request) = admitted_request.as_mut() {
+        **request = active.recovery_request_id.clone();
+    }
     // The generation this tick has already submitted, so the `continue` after
     // recording a submission re-derives the candidate without pushing twice.
     let mut submitted: Option<Option<GlobalSeq>> = None;
@@ -1550,7 +1663,12 @@ where
             )?;
             continue;
         };
-        if active.is_cancelled() && !matches!(outcome, VerificationOutcome::Merged { .. }) {
+        if active.is_cancelled()
+            && !matches!(
+                outcome,
+                VerificationOutcome::Merged { .. } | VerificationOutcome::CleanupFailed { .. }
+            )
+        {
             record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
             return Ok(TickResult::Stopped);
         }
@@ -1573,6 +1691,19 @@ where
         }
 
         match outcome {
+            VerificationOutcome::CleanupFailed { verdict, cleanup } => {
+                match cleanup::record(
+                    &queue,
+                    &ctx,
+                    &candidate,
+                    &pull_request.url,
+                    verdict,
+                    cleanup,
+                )? {
+                    GenerationWrite::Applied(result) => return Ok(result),
+                    GenerationWrite::Superseded => {}
+                }
+            }
             VerificationOutcome::Cancelled => {
                 record_generation_interrupted(&queue, &ctx, env, &candidate, active.started_at())?;
                 return Ok(TickResult::Stopped);
@@ -1583,11 +1714,12 @@ where
                     pull_request.url
                 );
                 if matches!(
-                    queue.record_generation_merged(
+                    queue.record_generation_completed(
                         &ctx,
                         &candidate,
-                        &pull_request.url,
+                        Some(&pull_request.url),
                         &green_comment,
+                        None,
                     )?,
                     GenerationWrite::Superseded
                 ) {
@@ -1947,29 +2079,46 @@ fn record_infrastructure_failure<S: Store>(
         GenerationWrite::Superseded => return Ok(GenerationWrite::Superseded),
     };
     if incident.halted {
-        Ctx::new(
-            ctx.store(),
-            ctx.project(),
-            ctx.cwd().to_path_buf(),
-            ctx.env().clone(),
-        )
-        .fire_hook(
-            crate::event_hooks::HookEventType::VerificationHalted,
-            &serde_json::json!({
-                "event_type": "verification_halted",
-                "incident_id": incident.incident_id,
-                "project": candidate.project_slug,
-                "story_id": candidate.story_id,
-                "attempts": incident.attempts,
-                "first_failed_at": incident.first_failed_at,
-                "last_failed_at": incident.last_failed_at,
-                "detail": incident.detail,
-            }),
-        );
+        fire_verification_halted(ctx, candidate, &incident)?;
         Ok(GenerationWrite::Applied(TickResult::Halted))
     } else {
         Ok(GenerationWrite::Applied(TickResult::RetryLater))
     }
+}
+
+fn fire_verification_halted(
+    ctx: &Ctx<'_, impl Store>,
+    candidate: &VerificationCandidate,
+    incident: &crate::store::VerificationIncident,
+) -> Result<(), AppError> {
+    let held_stories: Vec<_> = VerificationQueue::new(ctx.store())
+        .ordered_for(candidate.project)?
+        .into_iter()
+        .map(|candidate| candidate.story_id)
+        .collect();
+    Ctx::new(
+        ctx.store(),
+        ctx.project(),
+        ctx.cwd().to_path_buf(),
+        ctx.env().clone(),
+    )
+    .fire_hook(
+        crate::event_hooks::HookEventType::VerificationHalted,
+        &serde_json::json!({
+            "event_type": "verification_halted",
+            "incident_id": incident.incident_id,
+            "project": candidate.project_slug,
+            "story_id": candidate.story_id,
+            "attempts": incident.attempts,
+            "first_failed_at": incident.first_failed_at,
+            "last_failed_at": incident.last_failed_at,
+            "detail": incident.detail,
+            "held_stories": held_stories,
+            "remedy": format!("story verifier ack {}", incident.incident_id),
+            "diagnostics": "story verifier status; story daemon logs",
+        }),
+    );
+    Ok(())
 }
 
 fn record_cleanup_complete(
@@ -2483,8 +2632,36 @@ fn poll_project_verification(
     actuator: &impl VerificationActuator,
 ) {
     let subscription = bus.subscribe();
+    // A process restart cannot retain ownership. Pending intent is still actionable.
+    let restart = store.read(|tx| tx.verification_recovery(project));
+    match restart {
+        Ok(recovery) => {
+            if let Some(request) = recovery.request
+                && request.outcome == crate::store::VerificationRecoveryOutcome::Admitted
+                && let Err(error) = activity.settle_request(
+                    store,
+                    project,
+                    Some(&request.id),
+                    "interrupted",
+                    "Daemon restarted after admission; ownership must be reacquired",
+                )
+            {
+                eprintln!("storyhook: project {project} recovery restart failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("storyhook: project {project} recovery startup read failed: {error}")
+        }
+    }
     while !stop.load(Ordering::Relaxed) {
-        match tick_with_bus(
+        let mut request_id = match store.read(|tx| tx.verification_recovery(project)) {
+            Ok(recovery) => recovery.request.map(|r| r.id),
+            Err(error) => {
+                eprintln!("storyhook: project {project} recovery read failed: {error}");
+                None
+            }
+        };
+        let result = tick_with_bus(
             store,
             env,
             actuator,
@@ -2492,6 +2669,7 @@ fn poll_project_verification(
             inflight,
             project,
             bus,
+            Some(&mut request_id),
             |reserved| {
                 wait_for_reconciled_candidate_cancellable(
                     store,
@@ -2501,7 +2679,30 @@ fn poll_project_verification(
                     &activity.cancellation_for(project),
                 )
             },
-        ) {
+        );
+        let reason = match &result {
+            Ok(TickResult::Idle) => "empty-queue",
+            Ok(TickResult::Stopped) => "stopped",
+            Ok(TickResult::Halted) => "halted",
+            Ok(TickResult::RetryLater) => "retrying",
+            Ok(TickResult::Completed) => "completed",
+            Ok(TickResult::Returned) => "returned",
+            Err(_) => "failure",
+        };
+        let detail = result.as_ref().err().map_or_else(
+            || {
+                format!(
+                    "Verifier tick {reason}; inspect story verifier status and story daemon logs"
+                )
+            },
+            ToString::to_string,
+        );
+        if let Err(error) =
+            activity.settle_request(store, project, request_id.as_deref(), reason, &detail)
+        {
+            eprintln!("storyhook: project {project} recovery settlement failed: {error}");
+        }
+        match result {
             Ok(TickResult::Completed | TickResult::Returned) => continue,
             Ok(TickResult::RetryLater) => {
                 let retry_at = Instant::now() + RECOVERY_WAKE;

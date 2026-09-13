@@ -92,6 +92,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // production file-backed capture and whole-group deadline cleanup.
     ("src/process/activity_tests.rs", "test_binary", Kind::Reads),
     ("src/process/activity_tests.rs", "\"sh\"", Kind::Waited),
+    // SH-702's Bash cancellation probe retains output in regular files;
+    // cancellation terminates/reaps its group before captured bytes are read.
+    ("src/process/activity_tests.rs", "\"bash\"", Kind::Waited),
     // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
     // recording tools never create persistent terminal readers.
     (

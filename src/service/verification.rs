@@ -332,14 +332,16 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
-    /// Atomically records a green result only while `candidate` is current.
-    pub(crate) fn record_generation_merged(
+    /// Records completed execution and optional cleanup incident in one transaction.
+    /// A merge URL is supplied only after the guarded merge has actually landed.
+    pub(crate) fn record_generation_completed(
         &self,
         ctx: &Ctx<'_, S>,
         candidate: &VerificationCandidate,
-        pull_request_url: &str,
-        green_comment: &str,
-    ) -> Result<GenerationWrite<()>, AppError> {
+        pull_request_url: Option<&str>,
+        verdict_comment: &str,
+        cleanup_detail: Option<&str>,
+    ) -> Result<GenerationWrite<Option<VerificationIncident>>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
         Ok(ctx.write_stories(|tx| {
@@ -348,42 +350,62 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             if !candidate_is_current(&*tx, &row, candidate)? {
                 return Ok(GenerationWrite::Superseded);
             }
-            let linked = tx
-                .open_pr_links_for_story(project, story_no)?
-                .into_iter()
-                .any(|link| link.close_on_merge && link.url == pull_request_url);
-            if !linked {
-                return Err(AppError::Validation(format!(
-                    "story `{}` no longer links submitted pull request `{pull_request_url}`",
-                    candidate.story_id
-                ))
-                .into());
+            let mut events = Vec::new();
+            let already_recorded = tx.events_for(project, story_no)?.iter().any(|event| {
+                candidate.verifying_generation.is_none_or(|generation| event.global_seq > generation)
+                    && matches!(event.known(), Some(StoryEvent::StoryCommentAdded { text, .. }) if text == verdict_comment)
+            });
+            if !already_recorded {
+                events.push(StoryEvent::StoryCommentAdded {
+                    at: now.clone(), text: verdict_comment.to_string(),
+                });
             }
-            let done = completion_state_or_refuse(&tx.states(project)?)?;
+            let incident = if let Some(detail) = cleanup_detail {
+                let generation = candidate.verifying_generation.ok_or_else(|| {
+                    StoreError::Corrupt(format!("{} has no verification generation", candidate.story_id))
+                })?;
+                let incident_id = format!("{}:{}", project.get(), generation.get());
+                let previous = tx.verification_incident(project)?
+                    .filter(|incident| incident.incident_id == incident_id);
+                let incident = VerificationIncident {
+                    incident_id, project, story: story_no, generation,
+                    disposition: VerificationFailureDisposition::Permanent, halted: true,
+                    attempts: previous.as_ref().map_or(1, |incident| incident.attempts),
+                    first_failed_at: previous.as_ref().map_or_else(|| now.clone(), |incident| incident.first_failed_at.clone()),
+                    last_failed_at: previous.as_ref().map_or_else(|| now.clone(), |incident| incident.last_failed_at.clone()),
+                    detail: detail.to_string(),
+                };
+                let body = format!(
+                    "{VERIFICATION_INFRASTRUCTURE_PREFIX} HALTED\n\nThe completed verdict above remains valid. Post-gate cleanup failed; this halt stops the verifier's whole queue. {} Establish writer quiescence and repair retained resources before releasing the queue with: story verifier ack {}\n\n{detail}",
+                    if pull_request_url.is_some() { "The PR landed; automatic reaping is suspended." } else { "The story remains verifying; remediation dispatch and landing are suspended." },
+                    incident.incident_id,
+                );
+                events.extend(marked_comment_events(&row, VERIFICATION_INFRASTRUCTURE_PREFIX, &body, &now));
+                Some(incident)
+            } else { None };
             let states = tx.state_map(project)?;
-            clear_candidate_incident(tx, candidate)?;
-            append_state_transition(
-                tx,
-                project,
-                story_no,
-                &row,
-                &prefix,
-                &states,
-                &done,
-                &now,
-                vec![
-                    StoryEvent::StoryCommentAdded {
-                        at: now.clone(),
-                        text: green_comment.to_string(),
-                    },
-                    StoryEvent::StoryPrMerged {
-                        at: now.clone(),
-                        url: pull_request_url.to_string(),
-                    },
-                ],
-                ctx.provenance(),
-            )?;
-            Ok(GenerationWrite::Applied(()))
+            if let Some(url) = pull_request_url {
+                let linked = tx.open_pr_links_for_story(project, story_no)?.into_iter()
+                    .any(|link| link.close_on_merge && link.url == url);
+                if !linked {
+                    return Err(AppError::Validation(format!(
+                        "story `{}` no longer links submitted pull request `{url}`", candidate.story_id,
+                    )).into());
+                }
+                let done = completion_state_or_refuse(&tx.states(project)?)?;
+                events.push(StoryEvent::StoryPrMerged { at: now.clone(), url: url.to_string() });
+                append_state_transition(tx, project, story_no, &row, &prefix, &states,
+                    &done, &now, events, ctx.provenance())?;
+            } else if !events.is_empty() {
+                append_and_fold(tx, project, story_no, &prefix, &states,
+                    ExpectedSeq::Exact(row.head_seq), &events, ctx.provenance())?;
+            }
+            if let Some(incident) = &incident {
+                tx.put_verification_incident(incident)?;
+            } else {
+                clear_candidate_incident(tx, candidate)?;
+            }
+            Ok(GenerationWrite::Applied(incident))
         })?)
     }
 
@@ -1254,6 +1276,113 @@ mod tests {
             queue.record_generation_returned(&ctx, &c, "stale").unwrap(),
             GenerationWrite::Superseded
         ));
+        assert!(matches!(
+            queue
+                .record_generation_completed(
+                    &ctx,
+                    &c,
+                    None,
+                    "CENTRAL VERIFICATION RED — stale",
+                    Some("stale cleanup")
+                )
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(
+            store
+                .read(|tx| tx.verification_incident(ctx.project()))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn completed_verdict_transaction_is_idempotent_and_rolls_back_invalid_merge() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let service = crate::service::StoryService::new(&ctx);
+        let id = service
+            .create(&crate::service::NewStoryInput {
+                title: "atomic completion".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        service
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let candidate = queue.next().unwrap().unwrap();
+        let snapshot = || {
+            store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap()
+        };
+        let before = snapshot();
+        assert!(
+            queue
+                .record_generation_completed(
+                    &ctx,
+                    &candidate,
+                    Some("https://github.com/acme/widgets/pull/999"),
+                    "CENTRAL VERIFICATION GREEN — invalid",
+                    Some("retained cleanup")
+                )
+                .is_err()
+        );
+        assert_eq!(snapshot().head_seq, before.head_seq);
+        assert!(
+            store
+                .read(|tx| tx.verification_incident(ctx.project()))
+                .unwrap()
+                .is_none()
+        );
+        let record = || {
+            queue
+                .record_generation_completed(
+                    &ctx,
+                    &candidate,
+                    None,
+                    "CENTRAL VERIFICATION RED — named failure",
+                    Some("retained cleanup"),
+                )
+                .unwrap()
+        };
+        let first = record();
+        let recorded = snapshot();
+        assert_eq!(record(), first);
+        assert_eq!(snapshot().head_seq, recorded.head_seq);
+        service
+            .set_state(&id, "verifying", None, Some("verifying"), None)
+            .unwrap();
+        assert!(matches!(record(), GenerationWrite::Superseded));
+        let next = queue.next().unwrap().unwrap();
+        queue
+            .record_generation_completed(
+                &ctx,
+                &next,
+                None,
+                "CENTRAL VERIFICATION RED — named failure",
+                Some("retained cleanup"),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot()
+                .snapshot
+                .comments
+                .iter()
+                .filter(|comment| comment.text == "CENTRAL VERIFICATION RED — named failure")
+                .count(),
+            2
+        );
     }
 
     #[test]
