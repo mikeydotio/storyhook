@@ -128,12 +128,18 @@ pub enum EpicAction {
     Add { epic_id: String, story_id: String },
 }
 
-/// The six controls under `story engine` (SH-467).
+/// Controls under `story engine`.
 ///
-/// Run ids are opaque engine identities, not story ids. Only `Start::epic`
-/// participates in story-id canonicalization.
+/// Run ids are opaque engine identities. Epic and adoption selectors are story ids.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineAction {
+    /// Bind manually dispatched stories to existing run capacity.
+    Adopt {
+        /// Current run when omitted.
+        run: Option<String>,
+        /// Story selectors, canonicalized before dispatch.
+        ids: Vec<String>,
+    },
     /// Patch the future-dispatch settings of a live run.
     Configure {
         /// Explicit run selector, or the current live run.
@@ -241,6 +247,7 @@ Usage:
   story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
                      [--model <id>] [--effort <id>] [--speed standard|fast]
   story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+  story engine adopt <id> [<id> ...] [--run <id>]
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
@@ -1848,6 +1855,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "unclaim",
         subcommand: None,
         flags: &[value("comment"), bare("no-comment"), bare("dry-run")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("adopt"),
+        flags: &[value("run")],
     },
     VerbFlags {
         verb: "engine",
@@ -3532,12 +3544,13 @@ const ENGINE_ACK_USAGE: &str = "usage: story engine ack [--run <id>]";
 fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story engine <start|configure|status|pause|resume|stop|ack>".to_string(),
+            "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>".to_string(),
         ));
     };
     let action = match action {
         "start" => parse_engine_start(args)?,
         "configure" => parse_engine_configure(args)?,
+        "adopt" => parse_engine_adopt(args)?,
         "status" => EngineAction::Status {
             run: parse_engine_run(args, ENGINE_STATUS_USAGE)?,
         },
@@ -3553,11 +3566,41 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
         },
         _ => {
             return Err(AppError::Usage(
-                "usage: story engine <start|configure|status|pause|resume|stop|ack>".to_string(),
+                "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>"
+                    .to_string(),
             ));
         }
     };
     Ok(Invocation::Engine { action })
+}
+
+const ENGINE_ADOPT_USAGE: &str = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
+
+fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
+    let mut run = None;
+    let mut ids = Vec::new();
+    let mut index = 2;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--run" && run.is_none() {
+            run = Some(
+                args.get(index + 1)
+                    .filter(|v| !v.starts_with("--"))
+                    .ok_or_else(|| AppError::Usage(ENGINE_ADOPT_USAGE.into()))?
+                    .clone(),
+            );
+            index += 2;
+        } else if arg.starts_with('-') {
+            return Err(AppError::Usage(ENGINE_ADOPT_USAGE.into()));
+        } else {
+            ids.push(arg.clone());
+            index += 1;
+        }
+    }
+    if ids.is_empty() {
+        return Err(AppError::Usage(ENGINE_ADOPT_USAGE.into()));
+    }
+    Ok(EngineAction::Adopt { run, ids })
 }
 
 const ENGINE_CONFIGURE_USAGE: &str = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";

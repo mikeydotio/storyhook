@@ -136,6 +136,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),

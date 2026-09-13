@@ -981,6 +981,14 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
     let store_only = StoreOnlyDispatcher;
     let service = EngineService::new(ctx, &store_only);
     let view = match action {
+        EngineAction::Adopt { run, ids } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.adopt(
+                &run_id,
+                &ids,
+                &crate::service::engine::adoption::LiveDispatchInspector,
+            )?
+        }
         EngineAction::Configure { run, patch } => {
             let run_id = service.resolve_run_id(run.as_ref())?;
             service.configure_patch(&run_id, patch)?
