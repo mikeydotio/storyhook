@@ -98,7 +98,9 @@ marker="$private/storyhook-cleanup-lease-v1.json"
 cp "$marker" "$socket_root/original-marker.json"
 jq '.branch="foreign-branch"' "$socket_root/original-marker.json" > "$marker"
 out=$(cd "$repo" && story engine stop --run sh706-reset-marker --now --json 2>&1)
-assert_contains "$out" 'marker changed' 'marker mismatch is diagnosed'
+assert_contains "$out" 'cleanup lease marker' 'marker mismatch identifies its resource'
+assert_contains "$out" 'branch mismatch' 'marker mismatch is diagnosed'
+assert_contains "$(tmux -S "$socket" list-windows -a -F '#{window_name}')" "$bad" 'mismatched target window preserved'
 [ -d "$bad_wt" ] || fail_test 'mismatched worktree removed'
 assert_eq "$(cd "$repo" && story show "$bad" --json | jq -r '.story.story.state')" in-progress 'failed reset retains active claim'
 check=$(cd "$repo" && story engine reset-check "$bad" --json 2>&1)
@@ -127,7 +129,8 @@ marker="$private/storyhook-cleanup-lease-v1.json"
 cp "$marker" "$socket_root/partial-marker.json"
 jq '.branch="foreign-branch"' "$socket_root/partial-marker.json" > "$marker"
 out=$(cd "$repo" && story engine stop --run sh706-reset-partial --now --json 2>&1)
-assert_contains "$out" 'marker changed' 'partial fixture holds a durable reservation'
+assert_contains "$out" 'cleanup lease marker' 'partial fixture names its mismatched marker'
+assert_contains "$out" 'branch mismatch' 'partial fixture holds a durable reservation'
 git -C "$repo" worktree remove --force "$partial_wt" || exit 1
 out=$(cd "$repo" && story engine stop --run sh706-reset-partial --now --json 2>&1)
 assert_eq "$(jqf "$out" .run.state)" finished 'absent worktree retry finishes'

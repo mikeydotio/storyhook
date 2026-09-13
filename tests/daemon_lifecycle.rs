@@ -87,6 +87,76 @@ fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// PID retirement can lag the pidfile lock's release during kernel teardown.
+fn wait_for_process_exit(pid: u32, start_time: Option<&str>) {
+    wait_for(
+        &format!("process {pid} incarnation {start_time:?} to exit"),
+        || !lifecycle::process_identity_is_live(pid, start_time),
+    );
+}
+
+/// A released pidfile and an unreaped process can coexist; neither is a live daemon.
+#[test]
+fn process_exit_observation_waits_for_reaping_after_pidfile_release() {
+    use std::io::{Read, Write};
+    const CHILD: &str = "STORYHOOK_PID_RETIREMENT_FIXTURE";
+    if let Some(root) = std::env::var_os(CHILD) {
+        let env = storyhook::env::Environment::at(Path::new(&root));
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let _held = lifecycle::claim_pidfile(&env).unwrap();
+        std::fs::write(Path::new(&root).join("ready"), "ready").unwrap();
+        let mut byte = [0];
+        std::io::stdin().read_exact(&mut byte).unwrap();
+        std::process::exit(0);
+    }
+    let root = scratch_dir();
+    let env = storyhook::env::Environment::at(root.path());
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args([
+        "--exact",
+        "process_exit_observation_waits_for_reaping_after_pidfile_release",
+        "--nocapture",
+    ])
+    .env(CHILD, root.path())
+    .stdin(Stdio::piped());
+    let mut child = ChildGuard::spawn_with_output(&mut cmd).unwrap();
+    wait_for("the fixture pidfile holder", || {
+        root.path().join("ready").exists()
+    });
+    let pid = child.pid();
+    let token = lifecycle::process_start_time(pid).expect("live child incarnation");
+    assert!(lifecycle::is_live(&env));
+    assert!(lifecycle::process_identity_is_live(pid, Some(&token)));
+    child.stdin().unwrap().write_all(b"x").unwrap();
+    wait_for("kernel release of the exited child's pidfile", || {
+        !lifecycle::is_live(&env)
+    });
+    assert!(
+        lifecycle::process_identity_is_live(pid, None),
+        "an unreaped child retains its PID"
+    );
+    let reaper = std::thread::spawn(move || {
+        std::thread::sleep(WAIT_POLL * 4);
+        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "the retirement fixture must exit".into()
+        });
+        assert!(out.status.success());
+    });
+    let observed = std::panic::catch_unwind(|| wait_for_process_exit(pid, None));
+    reaper.join().unwrap();
+    observed.unwrap();
+    assert!(!lifecycle::process_identity_is_live(pid, Some(&token)));
+}
+
+/// An observation deadline must fail while the same process remains alive.
+#[test]
+#[should_panic(expected = "timed out waiting for process")]
+fn process_exit_observation_rejects_a_live_process() {
+    let pid = std::process::id();
+    let token = lifecycle::process_start_time(pid).expect("the test process's native identity");
+    wait_for_process_exit(pid, Some(&token));
+}
+
 /// How often [`wait_for`] re-asks its question.
 const WAIT_POLL: Duration = Duration::from_millis(25);
 
@@ -989,6 +1059,8 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     let _guard = DaemonGuard(&env);
     let daemon = start(&env);
     let environment = env.environment();
+    let daemon_start =
+        lifecycle::process_start_time(daemon.pid).expect("the daemon's native identity");
     let descendant_file = scratch_dir();
     let descendant_path = descendant_file.path().join("descendant.pid");
     // Published by rename so the file never exists without its content; the
@@ -1033,10 +1105,7 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
     wait_for("the verifier descendant to die", || {
         !lifecycle::process_identity_is_live(descendant_pid, Some(&descendant_start))
     });
-    assert!(
-        !lifecycle::process_identity_is_live(daemon.pid, None),
-        "the daemon survived forced shutdown"
-    );
+    wait_for_process_exit(daemon.pid, Some(&daemon_start));
 }
 
 /// The locked pidfile is the force-stop authority. The bearer-token portfile
@@ -1056,6 +1125,8 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
         .daemon()
         .expect("a started daemon must publish a portfile");
     let environment = env.environment();
+    let daemon_start =
+        lifecycle::process_start_time(daemon.pid).expect("the daemon's native identity");
     std::fs::write(environment.daemon_file(), "not-json").expect("corrupting the daemon portfile");
 
     env.story(dir.path())
@@ -1065,7 +1136,7 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_corrupt() {
         .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
 
     assert!(!lifecycle::is_live(&environment));
-    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+    wait_for_process_exit(daemon.pid, Some(&daemon_start));
 }
 
 #[test]
@@ -1083,6 +1154,8 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
         .daemon()
         .expect("a started daemon must publish a portfile");
     let environment = env.environment();
+    let daemon_start =
+        lifecycle::process_start_time(daemon.pid).expect("the daemon's native identity");
     std::fs::remove_file(environment.daemon_file()).expect("removing the daemon portfile");
 
     env.story(dir.path())
@@ -1092,7 +1165,7 @@ fn a_forced_stop_uses_the_locked_pidfile_when_the_portfile_is_missing() {
         .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
 
     assert!(!lifecycle::is_live(&environment));
-    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+    wait_for_process_exit(daemon.pid, Some(&daemon_start));
 }
 
 #[test]
@@ -1101,6 +1174,8 @@ fn a_forced_stop_falls_back_to_the_portfile_for_a_legacy_empty_pidfile() {
     let _guard = DaemonGuard(&env);
     let daemon = start(&env);
     let environment = env.environment();
+    let daemon_start =
+        lifecycle::process_start_time(daemon.pid).expect("the daemon's native identity");
     std::fs::write(environment.daemon_pidfile(), "").expect("planting a legacy empty pidfile");
 
     let dir = scratch_dir();
@@ -1111,7 +1186,7 @@ fn a_forced_stop_falls_back_to_the_portfile_for_a_legacy_empty_pidfile() {
         .stdout(predicates::str::contains(format!("PID {}", daemon.pid)));
 
     assert!(!lifecycle::is_live(&environment));
-    assert!(!lifecycle::process_identity_is_live(daemon.pid, None));
+    wait_for_process_exit(daemon.pid, Some(&daemon_start));
 }
 
 #[cfg(unix)]

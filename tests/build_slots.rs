@@ -22,15 +22,18 @@
 //!   environment, and the two cadences it shares with `machine-lock.sh` are
 //!   equal (SH-136 — one number, or a test that says when it stops being).
 //!
-//! Every deadline derives from the fake rustc's own sleep (SH-394): the bound
-//! a wait disproves is "this compile is still running", and how long that is
-//! is the fixture's to say.
+//! Compile-duration assertions derive from the fake rustc's sleep (SH-394).
+//! Contention uses an explicitly released holder, and process startup/exit
+//! observation uses the shared startup budget; neither depends on compile speed.
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
 use std::time::{Duration, Instant};
+use storyhook::daemon::lifecycle::SPAWN_DEADLINE;
 
 use storyhook_test_support::{ChildGuard, run_bounded, scratch_dir};
 use tempfile::TempDir;
@@ -41,7 +44,8 @@ fn checkout() -> PathBuf {
 
 /// The tracked wrapper, reached through a symlink in a disposable root, and
 /// a fake rustc that logs `start`/`end` lines with a nanosecond clock and its
-/// own pid, sleeps `FAKE_RUSTC_SLEEP` seconds, and exits `FAKE_RUSTC_EXIT`.
+/// own pid, sleeps `FAKE_RUSTC_SLEEP` seconds (or awaits explicit release when held),
+/// and exits `FAKE_RUSTC_EXIT`.
 ///
 /// The clock is `CLOCK_MONOTONIC` through `clock_gettime_ns`, never
 /// `time.monotonic_ns()`: the verifier's `PATH` resolves Xcode's Python 3.9,
@@ -74,7 +78,10 @@ impl Fixture {
                  while [ \"$#\" -gt 0 ]; do [ \"$1\" = --crate-name ] && crate=\"$2\"; shift; done\n\
                  now() {{ python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }}\n\
                  printf 'start %s %s %s\\n' \"$(now)\" \"$crate\" \"$$\" >>\"{log}\"\n\
-                 sleep \"${{FAKE_RUSTC_SLEEP:-0}}\"\n\
+                 if [ \"${{FAKE_RUSTC_HELD:-0}}\" = 1 ]; then\n\
+                     IFS= read -r release || exit 1\n\
+                     [ \"$release\" = release ] || exit 1\n\
+                 else sleep \"${{FAKE_RUSTC_SLEEP:-0}}\"; fi\n\
                  printf 'end %s %s %s\\n' \"$(now)\" \"$crate\" \"$$\" >>\"{log}\"\n\
                  exit \"${{FAKE_RUSTC_EXIT:-0}}\"\n",
                 log = root.path().join("log").display()
@@ -100,6 +107,47 @@ impl Fixture {
             .args(["--crate-name", crate_name])
             .env("FAKE_RUSTC_SLEEP", format!("{sleep_secs}"));
         cmd
+    }
+
+    fn held_compile(&self, crate_name: &str) -> Command {
+        let mut cmd = self.compile(1, crate_name, 0.0);
+        cmd.env("FAKE_RUSTC_HELD", "1").stdin(Stdio::piped());
+        cmd
+    }
+
+    fn waiting_compile(&self, journal: Option<&Path>) -> (ChildGuard, PathBuf) {
+        let stderr = self.path().join("waiter.stderr");
+        let mut cmd = self.compile(1, "waiter", 0.0);
+        cmd.stderr(fs::File::create(&stderr).unwrap());
+        if let Some(journal) = journal {
+            cmd.env("STORYHOOK_GATE_PROGRESS", journal)
+                .env("STORYHOOK_GATE_PROGRESS_PATH", "release gate/rust-suite");
+        }
+        let mut waiter = ChildGuard::spawn(&mut cmd).unwrap();
+        let deadline = Instant::now() + SPAWN_DEADLINE;
+        loop {
+            let output = fs::read_to_string(&stderr).unwrap();
+            assert!(
+                waiter.try_wait().is_none(),
+                "waiter exited before contention: {output}"
+            );
+            if output.contains("waiter is waiting") {
+                assert_eq!(
+                    self.log()
+                        .iter()
+                        .filter(|(kind, ..)| kind == "start")
+                        .count(),
+                    1
+                );
+                return (waiter, stderr);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "waiter never reported contention: {output}; log: {:?}",
+                self.log()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn wrapper(&self, slots: usize) -> Command {
@@ -242,14 +290,12 @@ fn never_more_than_k_compiles_overlap_and_the_bound_bit() {
 #[test]
 fn a_probe_without_a_crate_name_takes_no_slot_and_is_never_queued() {
     let fx = Fixture::new();
-    let hold = SLEEP * 10.0;
-    let mut holder = ChildGuard::spawn_with_output(&mut fx.compile(1, "holder", hold)).unwrap();
-    fx.wait_for_starts(1, secs(hold));
+    let mut holder = ChildGuard::spawn_with_output(&mut fx.held_compile("holder")).unwrap();
+    fx.wait_for_starts(1, SPAWN_DEADLINE);
 
     let mut probe = fx.wrapper(1);
     probe.arg(fx.path().join("rustc")).arg("-vV");
-    let started = Instant::now();
-    let out = run_bounded(probe, "rustc -vV through the wrapper", secs(hold));
+    let out = run_bounded(probe, "rustc -vV through the wrapper", SPAWN_DEADLINE);
     assert!(
         out.status.success(),
         "{}",
@@ -257,9 +303,8 @@ fn a_probe_without_a_crate_name_takes_no_slot_and_is_never_queued() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("rustc 0.0.0 (fake)"));
     assert!(
-        started.elapsed() < secs(hold / 2.0),
-        "the probe waited behind the held slot for {:?}",
-        started.elapsed()
+        holder.try_wait().is_none(),
+        "the probe must finish while its competing slot remains held"
     );
     assert!(
         String::from_utf8_lossy(&out.stderr).is_empty(),
@@ -293,34 +338,17 @@ fn rustcs_exit_status_and_pid_are_the_wrappers_own_because_it_execs() {
 #[test]
 fn a_sigkilled_holder_frees_its_slot_with_no_reclaim_path() {
     let fx = Fixture::new();
-    let hold = SLEEP * 50.0;
-    let mut holder = ChildGuard::spawn_with_output(&mut fx.compile(1, "holder", hold)).unwrap();
-    fx.wait_for_starts(1, secs(hold));
-    let mut waiter = ChildGuard::spawn_with_output(&mut fx.compile(1, "waiter", 0.0)).unwrap();
-    // The waiter must genuinely be blocked before the holder dies, or the
-    // test proves only that an empty slot can be taken.
-    std::thread::sleep(secs(SLEEP));
-    assert_eq!(
-        fx.log().iter().filter(|(k, ..)| k == "start").count(),
-        1,
-        "the waiter started while the slot was held: {:?}",
-        fx.log()
-    );
-
-    // SAFETY: the pid is a child this test spawned and still owns.
+    let mut holder = ChildGuard::spawn_with_output(&mut fx.held_compile("holder")).unwrap();
+    fx.wait_for_starts(1, SPAWN_DEADLINE);
+    let (mut waiter, stderr_path) = fx.waiting_compile(None);
+    // SAFETY: this test owns the still-running holder and its PID.
     assert_eq!(unsafe { libc::kill(holder.pid() as i32, libc::SIGKILL) }, 0);
-    // The ceiling is the holder's remaining sleep: had the slot NOT been
-    // released by the kernel on death, the waiter would sit until then.
-    let out = waiter.wait_with_output_within(secs(hold), || format!("{:?}", fx.log()));
+    let status = waiter.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()));
+    let stderr = fs::read_to_string(stderr_path).unwrap();
+    assert!(status.success(), "{stderr}");
     assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("waited"),
-        "the wait that ended must say so: {}",
-        String::from_utf8_lossy(&out.stderr)
+        stderr.contains("waited"),
+        "the completed wait must be reported: {stderr}"
     );
     holder.kill_and_reap();
 }
@@ -399,22 +427,15 @@ fn k_derives_from_the_machines_own_performance_core_count() {
 #[test]
 fn a_wait_is_reported_on_stderr_and_to_a_set_journal_and_nowhere_when_unset() {
     let fx = Fixture::new();
-    let hold = SLEEP * 4.0;
-    let mut holder = ChildGuard::spawn_with_output(&mut fx.compile(1, "holder", hold)).unwrap();
-    fx.wait_for_starts(1, secs(hold));
+    let mut holder = ChildGuard::spawn_with_output(&mut fx.held_compile("holder")).unwrap();
+    fx.wait_for_starts(1, SPAWN_DEADLINE);
 
     let journal = fx.path().join("progress.ndjson");
-    let mut cmd = fx.compile(1, "waiter", 0.0);
-    cmd.env("STORYHOOK_GATE_PROGRESS", &journal)
-        .env("STORYHOOK_GATE_PROGRESS_PATH", "release gate/rust-suite");
-    let mut waiter = ChildGuard::spawn_with_output(&mut cmd).unwrap();
-    let out = waiter.wait_with_output_within(secs(hold * 2.0), || format!("{:?}", fx.log()));
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (mut waiter, stderr_path) = fx.waiting_compile(Some(&journal));
+    holder.stdin().unwrap().write_all(b"release\n").unwrap();
+    let status = waiter.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()));
+    let stderr = fs::read_to_string(stderr_path).unwrap();
+    assert!(status.success(), "{stderr}");
     assert!(
         stderr.contains("build slots") && stderr.contains("waiting"),
         "{stderr}"
@@ -451,12 +472,13 @@ fn a_wait_is_reported_on_stderr_and_to_a_set_journal_and_nowhere_when_unset() {
     // The no-op contract: with the variable unset nothing is written, so an
     // interactive build is byte-identical to one before this file existed.
     let fx2 = Fixture::new();
-    let mut holder2 = ChildGuard::spawn_with_output(&mut fx2.compile(1, "holder", hold)).unwrap();
-    fx2.wait_for_starts(1, secs(hold));
-    let mut waiter2 = ChildGuard::spawn_with_output(&mut fx2.compile(1, "waiter", 0.0)).unwrap();
-    let out = waiter2.wait_with_output_within(secs(hold * 2.0), || format!("{:?}", fx2.log()));
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("waited"));
+    let mut holder2 = ChildGuard::spawn_with_output(&mut fx2.held_compile("holder")).unwrap();
+    fx2.wait_for_starts(1, SPAWN_DEADLINE);
+    let (mut waiter2, stderr_path) = fx2.waiting_compile(None);
+    holder2.stdin().unwrap().write_all(b"release\n").unwrap();
+    let status = waiter2.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx2.log()));
+    assert!(status.success());
+    assert!(fs::read_to_string(stderr_path).unwrap().contains("waited"));
     assert!(!fx2.path().join("progress.ndjson").exists());
     holder2.kill_and_reap();
 }
@@ -556,4 +578,30 @@ fn the_wrappers_cadences_equal_machine_locks() {
         shell_const(&lock, "GATE_MEDIAN_SECS")
     );
     assert!(lock.contains("readonly WAIT_REPORT_SECS=$GATE_MEDIAN_SECS"));
+}
+
+/// A delayed waiter cannot miss contention because its holder's sleep expired.
+#[test]
+fn a_holder_waits_for_release_even_when_the_waiter_starts_late() {
+    let fx = Fixture::new();
+    let mut holder = ChildGuard::spawn_with_output(&mut fx.held_compile("holder")).unwrap();
+    fx.wait_for_starts(1, SPAWN_DEADLINE);
+    std::thread::sleep(secs(SLEEP * 8.0));
+    assert!(
+        holder.try_wait().is_none(),
+        "the holder expired before explicit release: {:?}",
+        fx.log()
+    );
+    let (mut waiter, stderr) = fx.waiting_compile(None);
+    holder.stdin().unwrap().write_all(b"release\n").unwrap();
+    let out = holder.wait_with_output_within(storyhook::daemon::lifecycle::SPAWN_DEADLINE, || {
+        format!("{:?}", fx.log())
+    });
+    assert!(out.status.success());
+    assert!(
+        waiter
+            .wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()))
+            .success()
+    );
+    assert!(fs::read_to_string(stderr).unwrap().contains("waited"));
 }

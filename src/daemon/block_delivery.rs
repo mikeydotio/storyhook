@@ -153,6 +153,21 @@ pub fn process_one(
                 .and_then(|d| d.target);
         }
         let ctx = Ctx::new(store, project.id, env.home(), env.clone()).no_hooks(true);
+        if delivery.action == BlockAction::Resume
+            && tx.continuations(delivery.project)?.iter().any(|request| {
+                request.story_no == delivery.story
+                    && request.handoff["kind"] == "context"
+                    && request.status.outstanding()
+            })
+        {
+            delivery.status = DeliveryStatus::Superseded;
+            delivery.detail =
+                "outstanding context continuation owns resumption; no generic terminal input sent"
+                    .into();
+            finish(tx, &ctx, &delivery, DeliveryStatus::Pending)?;
+            return Ok(Some((delivery, project.slug, id, checkout)));
+        }
+
         if !applicable
             || checkout.is_none()
             || delivery.action == BlockAction::Resume && delivery.target.is_none()

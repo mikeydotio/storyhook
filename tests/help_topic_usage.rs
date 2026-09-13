@@ -22,6 +22,45 @@ struct Entry<'a> {
     raw: String,
 }
 
+/// Keep all continuation operations and both receiving providers testable.
+#[test]
+fn continuation_usage_covers_every_operation_and_provider() {
+    let body = get_help_topic("continuation").expect("continuation help topic");
+    let mut actual = Vec::new();
+    for entry in usage_entries("continuation", body) {
+        let invocation = entry.raw.strip_prefix("story ").expect("command prefix");
+        let DocumentedInvocation::Argvs(argvs) =
+            expand_documented_invocation(invocation).expect("valid continuation usage grammar")
+        else {
+            panic!("continuation commands must be checked");
+        };
+        for argv in argvs {
+            parse_documented_argv(&argv).expect("continuation usage must parse");
+            actual.push(argv.join(" "));
+        }
+    }
+    let request = "a2cb702b-12e8-46c4-831b-c78bf57e944b";
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let mut expected = vec![
+        "continuation capabilities --json".to_string(),
+        "continuation request SH-1 --stdin --json".to_string(),
+        "continuation status SH-1 --json".to_string(),
+        format!("continuation receipt SH-1 {request} --stdin --json"),
+        format!("continuation retry SH-1 {request} --json"),
+    ];
+    for provider in ["codex", "claude"] {
+        expected.push(format!(
+            "continuation ack SH-1 {request} --reviewed-seq 1 --head {head} --provider {provider} --session-id receiving-root-session --json"
+        ));
+    }
+    actual.sort();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "every continuation command must remain documented"
+    );
+}
+
 /// A parsing-only corpus could pass after deleting the offending command.
 /// Keep every verifier control, including both acknowledgement intents, visible.
 #[test]

@@ -192,8 +192,10 @@ fn foreign_prefix_refusal<S: Store>(
 /// beside it.
 fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
-        Invocation::SessionEligibility { id }
+        Invocation::Continuation { id, .. }
+        | Invocation::SessionEligibility { id }
         | Invocation::Show { id }
+        | Invocation::Resources { id, .. }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }
         | Invocation::Assign { id, .. }
@@ -259,7 +261,9 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Engine { action } => match action {
             EngineAction::ResetCheck { story } => vec![story],
             EngineAction::Start { epic, .. } => epic.iter_mut().collect(),
-            EngineAction::ResetTarget { .. }
+            EngineAction::Adopt { ids, .. } => ids.iter_mut().collect(),
+            EngineAction::Configure { .. }
+            | EngineAction::ResetTarget { .. }
             | EngineAction::Status { .. }
             | EngineAction::Pause { .. }
             | EngineAction::Resume { .. }

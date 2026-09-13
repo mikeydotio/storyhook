@@ -145,9 +145,18 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Explicit reset uses the same bounded file-backed capture and child environment.
     ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
-    ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
+    ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // Continuation stages JSON stdin and captures stdout/stderr in regular
+    // files, so descendants cannot hold an output-pipe EOF. The shared runner
+    // waits at most 45 s (125 s for resume) and kills its group on timeout.
+    (
+        "src/service/continuation/runtime.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // The lane census (SH-655): `tmux list-windows` through the same
     // file-backed, group-bounded `run_captured` the engine's probe uses, on
     // the caller's own PATH and environment so a client verb asks the server

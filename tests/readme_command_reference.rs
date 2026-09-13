@@ -160,6 +160,28 @@ fn the_readme_documents_every_verifier_help_invocation() {
     }
 }
 
+/// Keep continuation discovery aligned with the executable help contract.
+#[test]
+fn the_readme_documents_every_continuation_help_invocation() {
+    let entries = extract_entries(&readme_text());
+    let help = storyhook::help_topics::get_help_topic("continuation").expect("continuation help");
+    let usages: Vec<_> = help
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        usages.len(),
+        6,
+        "all six continuation operations must be documented"
+    );
+    for invocation in usages {
+        assert!(
+            entries.iter().any(|entry| entry.raw == invocation),
+            "README command reference omits continuation usage: {invocation}"
+        );
+    }
+}
+
 #[test]
 fn every_story_command_in_the_readme_parses() {
     let markdown = readme_text();
