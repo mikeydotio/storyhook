@@ -346,9 +346,11 @@ re-enters the queue on resubmission and waits its turn (step 4a;
 The detail excerpt lists every failing case the log holds, and since SH-697 a
 Rust battery runs to completion after its first red test binary
 (`cargo test --no-fail-fast` in `scripts/run-tests.sh`), so one RED carries
-every failure of the leg that went red rather than the first binary's; the
-legs after it are still not reached (`test-tiers.md`, "a battery finishes
-after its first red binary").
+the failures across that battery. Since SH-701, independent gate legs also
+continue after ordinary failures. Confirmed shared compilation failures and
+failed builds skip their dependents with explicit reasons; the RED summary
+lists failed legs and dependency skips even when their output is outside its
+bounded tail (`test-tiers.md`, "independent gate legs finish after RED").
 
 ### Green: merge, done, reap
 
