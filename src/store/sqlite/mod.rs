@@ -32,6 +32,7 @@
 
 mod block_delivery;
 mod continuation;
+mod engine_reset;
 pub(crate) mod read;
 pub(crate) mod write;
 
@@ -55,7 +56,7 @@ use crate::store::types::{
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
-use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
+use crate::store::{EngineReset, ReadOps, Store, WriteOps, WriteWithSnapshot};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -877,6 +878,14 @@ macro_rules! impl_read_ops {
                 read::verification_incidents(&self.conn)
             }
 
+            fn engine_reset(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<EngineReset>, StoreError> {
+                engine_reset::read(&self.conn, project, story)
+            }
+
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
                 read::engine_lanes(&self.conn, run_id)
             }
@@ -1084,6 +1093,14 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError> {
         write::update_engine_run(&self.conn, run)
+    }
+
+    fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::put(&self.conn, reset)
+    }
+
+    fn remove_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::remove(&self.conn, reset)
     }
 
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {

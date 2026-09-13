@@ -486,3 +486,77 @@ fn adoption_cli_and_wire_preserve_ids_and_refuse_missing_operands() {
         );
     }
 }
+
+#[test]
+fn stop_now_resets_adopted_work_but_preserves_adopted_verification() {
+    use storyhook::store::{EngineLaneState, EngineRunState, StoryNo};
+    use storyhook_test_support::{DispatcherCall, DispatcherStep};
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([
+        DispatcherStep::ResetFailure("retain adopted ownership".into()),
+        DispatcherStep::Reset,
+    ]);
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = start(&service, 2);
+    let active = claimed(&fixture);
+    let verifying = claimed(&fixture);
+    let adopted = service
+        .adopt(&run, &[active.clone(), verifying.clone()], &Inspector)
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&verifying, "verifying", None, None, None)
+        .unwrap();
+    let verifier_before = fixture
+        .store()
+        .read(|tx| tx.story(ctx.project(), StoryNo::new(2)))
+        .unwrap();
+
+    assert!(service.stop(&run, true).is_err());
+    let partial = service.status(Some(&run)).unwrap().remove(0);
+    assert_eq!(partial.run.state, EngineRunState::Draining);
+    assert_eq!(
+        partial.lanes[0].adopted_identity,
+        adopted.lanes[0].adopted_identity
+    );
+    assert_eq!(partial.lanes[1].state, EngineLaneState::Idle);
+    assert!(
+        service
+            .adopt(&run, std::slice::from_ref(&active), &Inspector)
+            .is_err()
+    );
+    assert_eq!(
+        service.stop(&run, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    let calls = fake.calls();
+    let resets: Vec<_> = calls
+        .iter()
+        .map(|call| match call {
+            DispatcherCall::Reset(reset) => reset,
+            other => panic!("adopted stop called unexpected actuator: {other:?}"),
+        })
+        .collect();
+    assert_eq!(resets.len(), 2);
+    assert_eq!(resets[0].token, resets[1].token);
+    assert_eq!(
+        Some(&resets[0].lease),
+        adopted.lanes[0].cleanup_lease.as_ref()
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(ctx.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .state,
+        "todo"
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(ctx.project(), StoryNo::new(2)))
+            .unwrap(),
+        verifier_before
+    );
+}

@@ -1694,6 +1694,8 @@ cmd_dispatch() {
     if [ "$result" != "ok" ]; then
       fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
     fi
+    local reset_check
+    reset_check=$(story_cli engine reset-check "$id" --json)       || refuse "reset-in-progress" "dispatch refused: $reset_check"
     # Every later resource name and the engine scope use the canonical id.
     id=$(canonical_story_id "$show_json" "$id")
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
@@ -5193,6 +5195,12 @@ cmd_unclaim() {
 # delete_merged_local_branch for exactly that reason.
 cmd_reset() {
   _parse_release_args "$RESET_USAGE" true "$@"
+  if [ -n "${STORYHOOK_ENGINE_RESET_V1:-}" ]; then
+    [ "$REL_FORCE" = true ] || refuse "engine-reset-force" "engine reset requires the explicit discard contract"
+    source "$STORY_PLUGIN_ROOT/lib/engine-reset.sh"
+    cmd_engine_reset "$REL_ID" "$STORYHOOK_ENGINE_RESET_V1"
+    return
+  fi
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
 

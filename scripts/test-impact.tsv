@@ -70,6 +70,13 @@ engine_adoption	src/store/schema/0040_engine_adoption.sql
 engine_adoption_identity	src/service/cleanup_lease.rs
 engine_adoption_identity	src/service/engine/adoption.rs
 engine_reconcile	:(glob)**/*
+engine_reset	src/service/engine.rs
+engine_reset	src/service/engine/reset.rs
+engine_reset	src/service/mod.rs
+engine_reset	src/store/engine_reset.rs
+engine_reset	src/store/schema/0042_engine_resets.sql
+engine_reset	src/store/sqlite/engine_reset.rs
+engine_run_model	src/store/schema/0042_engine_resets.sql
 epic_is_a_type	:(glob)**/*
 event_kind_vocabulary	:(glob)**/*
 fault_injection_guard	:(glob)**/*

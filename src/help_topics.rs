@@ -2908,8 +2908,10 @@ status / pause / resume / stop / ack
 
   pause stops new claims but keeps the run resumable. resume returns a
   paused run to running. stop drains occupied lanes and finishes once
-  they are idle; --now releases active claims and closes their windows
-  while preserving worktrees and branches. ack clears the persistent
+  they are idle; --now discards unfinished work in this run, removes its
+  windows, worktrees and local branches, and restores its stories. Stories
+  already verifying continue unchanged. Failed cleanup retains ownership
+  for retry without blocking the story. ack clears the persistent
   stop notification and is idempotent.
 
   Human output shows the run and its lanes as a table. --json returns

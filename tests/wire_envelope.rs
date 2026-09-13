@@ -363,6 +363,29 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             },
         ),
         (
+            "engine_reset",
+            Response::EngineReset(Box::new(storyhook::store::EngineReset {
+                project: storyhook::store::ProjectId::new(1),
+                story: storyhook::store::StoryNo::new(10),
+                run_id: "run-1".into(),
+                lane_index: 0,
+                token: "reset-1".into(),
+                lease: storyhook::domain::StoryCleanupLease {
+                    version: storyhook::domain::CLEANUP_LEASE_VERSION,
+                    project_slug: "storyhook".into(),
+                    story_id: "SH-10".into(),
+                    repository_path: "/repo".into(),
+                    worktree_path: "/repo/lane".into(),
+                    branch: "worktree-SH-10".into(),
+                    tmux: storyhook::domain::TmuxCleanupTarget {
+                        socket_path: "/socket".into(),
+                    },
+                },
+                restore_to: "todo".into(),
+                failure: Some("previous attempt retained its reservation".into()),
+            })),
+        ),
+        (
             "engine_run",
             Response::EngineRun(Box::new(EngineRunView {
                 id: "run-1".to_string(),
@@ -926,6 +949,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Unclaimed(..) => "unclaimed",
             Response::Stories { .. } => "stories",
             Response::EngineRun(_) => "engine_run",
+            Response::EngineReset(_) => "engine_reset",
             Response::Cleanup(_) => "cleanup",
             Response::Resources(_) => "resources",
             Response::Summary(_) => "summary",
@@ -944,7 +968,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 24] = [
+    const EVERY_VARIANT: [&str; 25] = [
         "verifier_status",
         "with_verifier",
         "message",
@@ -954,6 +978,7 @@ fn the_response_corpus_covers_every_variant() {
         "unclaimed",
         "stories",
         "engine_run",
+        "engine_reset",
         "cleanup",
         "resources",
         "summary",
@@ -1029,6 +1054,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("unclaimed", "unclaimed"),
         ("stories_empty", "stories"),
         ("engine_run", "engine_run"),
+        ("engine_reset", "engine_reset"),
         ("summary", "summary"),
         ("html_report", "html_report"),
         ("graph_overview", "graph"),
@@ -1897,6 +1923,17 @@ fn invocation_corpus() -> Vec<Invocation> {
                 model: Some("gpt-5.6-sol".to_string()),
                 effort: Some("xhigh".to_string()),
                 speed: Some(storyhook::store::EngineSpeed::Fast),
+            },
+        },
+        Invocation::Engine {
+            action: EngineAction::ResetCheck {
+                story: "SH-10".into(),
+            },
+        },
+        Invocation::Engine {
+            action: EngineAction::ResetTarget {
+                run: "run-1".into(),
+                token: "reset-1".into(),
             },
         },
         Invocation::Engine {
