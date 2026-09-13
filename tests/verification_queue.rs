@@ -1,5 +1,8 @@
 //! Store-backed contracts for the SH-521 centralized verification queue.
 
+#[path = "verification_queue/completed_capture.rs"]
+mod completed_capture;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
@@ -5856,5 +5859,105 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
             .read(|tx| tx.stories(project, &storyhook::store::StoryQuery::all().state("done")))
             .unwrap();
         assert_eq!(rows.len(), 1, "{prefix}: {rows:?}");
+    }
+}
+
+/// SH-702: the completed result and cleanup halt are independent durable facts.
+#[test]
+fn completed_verdict_and_cleanup_halt_are_recorded_together() {
+    use storyhook::daemon::verification::{CompletedVerification, VerificationCleanupFailure};
+    for kind in ["red", "passed", "merged"] {
+        let fixture = ServiceFixture::new();
+        fixture.link_origin("https://github.com/acme/widgets");
+        let id = submitted(&fixture, "cleanup refused", Priority::High, PR_ONE);
+        let verdict = match kind {
+            "red" => CompletedVerification::TestsFailed {
+                tree: "judged-tree".into(),
+                log: "/tmp/attempt.log".into(),
+                detail: "sh702_named_failure FAILED".into(),
+                gate: "custom gate".into(),
+            },
+            "passed" => CompletedVerification::GatePassed {
+                tree: "judged-tree".into(),
+                log: "/tmp/attempt.log".into(),
+                detail: "command exited 0".into(),
+                gate: "custom gate".into(),
+            },
+            _ => CompletedVerification::Merged {
+                tree: "judged-tree".into(),
+                detail: "landed".into(),
+                gate: "custom gate".into(),
+            },
+        };
+        let actuator = FakeActuator::new(VerificationOutcome::CleanupFailed {
+            verdict,
+            cleanup: VerificationCleanupFailure {
+                phase: "owner cleanup".into(),
+                detail: "retained live writers".into(),
+                owner: Some("/tmp/owner".into()),
+                worktree: Some("/tmp/verifier".into()),
+                disposition: VerificationFailureDisposition::Permanent,
+            },
+        });
+        assert_eq!(
+            tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
+            TickResult::Halted
+        );
+        let row = story_row(&fixture, &id);
+        assert_eq!(
+            row.state,
+            if kind == "merged" {
+                "done"
+            } else {
+                "verifying"
+            }
+        );
+        let comments = row
+            .snapshot
+            .comments
+            .iter()
+            .map(|comment| comment.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prefix = match kind {
+            "red" => "CENTRAL VERIFICATION RED",
+            "passed" => "CENTRAL VERIFICATION GATE PASSED",
+            _ => VERIFICATION_GREEN_PREFIX,
+        };
+        assert!(comments.contains(prefix), "{comments}");
+        assert!(
+            comments.contains("judged-tree") && comments.contains("custom gate"),
+            "{comments}"
+        );
+        assert!(
+            comments.contains("retained live writers") && comments.contains("/tmp/owner"),
+            "{comments}"
+        );
+        assert!(
+            !comments.contains("not classified red") && !comments.contains("No story is at fault"),
+            "{comments}"
+        );
+        if kind == "red" {
+            assert!(comments.contains("sh702_named_failure"));
+        }
+        if kind == "passed" {
+            assert!(!comments.contains(VERIFICATION_GREEN_PREFIX));
+        }
+        let incident = fixture
+            .store()
+            .read(|tx| tx.verification_incident(fixture.project()))
+            .unwrap()
+            .unwrap();
+        assert!(incident.halted);
+        assert_eq!(incident.attempts, 1);
+        assert!(actuator.notified.lock().unwrap().is_empty());
+        assert!(actuator.redispatched.lock().unwrap().is_empty());
+        assert!(actuator.reaped.lock().unwrap().is_empty());
+        let before = story_row(&fixture, &id).snapshot.comments;
+        assert_eq!(
+            tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
+            TickResult::Halted
+        );
+        assert_eq!(story_row(&fixture, &id).snapshot.comments, before);
     }
 }
