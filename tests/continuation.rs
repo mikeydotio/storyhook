@@ -598,7 +598,7 @@ fn continuation_migration_preserves_landed_adoption_and_recovery_data() {
     use storyhook::store::ReadOps;
     let lanes = store.read(|tx| tx.engine_lanes("adopted")).unwrap();
 
-    store.migrate().unwrap();
+    store.migrate_with(&MIGRATIONS[..41]).unwrap();
     assert_eq!(
         connection
             .query_row("SELECT count(*) FROM continuations", [], |row| row
@@ -652,7 +652,7 @@ fn continuation_migration_preserves_landed_adoption_and_recovery_data() {
                 )
                 .is_err()
         );
-        store.migrate().unwrap();
+        store.migrate_with(&MIGRATIONS[..41]).unwrap();
     }
 }
 #[test]

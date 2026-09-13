@@ -1092,6 +1092,23 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
     let store_only = StoreOnlyDispatcher;
     let service = EngineService::new(ctx, &store_only);
     let view = match action {
+        EngineAction::ResetCheck { story } => {
+            ctx.store().read(|tx| {
+                let prefix = crate::service::project_prefix(tx, ctx.project())?;
+                let (number, _) =
+                    crate::service::resolve_story(tx, ctx.project(), &prefix, &story)?;
+                crate::service::engine::reset::refuse_reserved(tx, ctx.project(), number)?;
+                Ok(())
+            })?;
+            return Ok(Response::Message(format!(
+                "story `{story}` has no pending engine reset"
+            )));
+        }
+        EngineAction::ResetTarget { run, token } => {
+            return Ok(Response::EngineReset(Box::new(
+                service.reset_target(&run, &token)?,
+            )));
+        }
         EngineAction::Adopt { run, ids } => {
             let run_id = service.resolve_run_id(run.as_ref())?;
             service.adopt(
@@ -1141,12 +1158,11 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
         EngineAction::Stop { run, now: true } => {
             let run_id = service.resolve_run_id(run.as_ref())?;
             let selected = one_engine_view(service.status(Some(&run_id))?, &run_id)?;
-            if selected.lanes.iter().all(|lane| {
-                matches!(
-                    lane.state,
-                    EngineLaneState::Idle | EngineLaneState::Quarantined
-                )
-            }) {
+            if selected
+                .lanes
+                .iter()
+                .all(|lane| matches!(lane.state, EngineLaneState::Idle))
+            {
                 service.stop(&run_id, true)?
             } else {
                 let script =

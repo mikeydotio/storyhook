@@ -447,9 +447,9 @@ One pass, per live run:
 natural end, and `resume` returns the run to `running`. `draining` is the
 irreversible state graceful and immediate stop produce; graceful stop becomes
 `finished` when the last lane frees. `stop --now`
-additionally kills lane windows and returns each claimed story to its prior
-state, preserving worktrees and branches — plain `story unclaim`, which touches
-no on-disk state by construction rather than by opting out of doing so.
+resets run-owned in-progress stories, discarding their windows, worktrees and
+local branches before restoring their prior eligible open state. Verifying or
+closed stories are detached without resource or story mutations (SH-706).
 
 ### Where the dispatch subprocess runs
 
@@ -707,12 +707,14 @@ Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
 mutating, exactly one required, so a dropped argument can never silently claim
 whatever happened to be top-priority. SH-477 removed the claiming mode SH-344
 had bolted onto `story next`, so `story next` is a pure read again. Releasing a claim is its inverse,
-`story unclaim <id>` (SH-483, with its plugin half in SH-484) — the primitive
-`stop --now` routes through rather than composing its own `story move`.
+`story unclaim <id>` (SH-483, with its plugin half in SH-484). Explicit engine
+Stop Now instead uses reserved leased reset (SH-706), sharing restoration
+semantics while retaining ownership until cleanup is proven.
 `unclaim` restores the claim's state and closes the lane's window; it does not
 touch on-disk state at all. Its destructive sibling `story reset <id>` deletes
-the worktree and branch for a clean restart, and **the engine never calls it**
-— see the restart policy below.
+the worktree and branch for a clean restart. The engine uses its reserved
+leased path only for an explicitly requested Stop Now; ordinary crash recovery
+continues to preserve work.
 
 As built (SH-484), both are `story.sh` verbs — `story.sh unclaim <id>` and
 `story.sh reset <id> [--force]` — because the window and the worktree are tmux
@@ -724,15 +726,14 @@ rather than torn down on a claim the engine no longer holds. Second, when the
 caller's own pane is the lane's window, `unclaim` performs the release and
 leaves that window open, naming the skip — it never refuses on that ground,
 which is what lets a lane release itself. `reset` refuses that case instead
-(`self-window`), and `--force` does not override it; since the engine never
-calls `reset`, that refusal is a guard for a human, not a constraint on the
-engine.
+(`self-window`), and `--force` does not override it. Reserved engine reset
+retains this refusal and never lets a verification conflict authorize deletion.
 
 **`unclaim` restores the state a story was claimed from**, derived from the
 story's own event log inside its own transaction — `StoryStateChanged` records
 only the destination, so it is a short replay rather than a field read. The
 engine therefore needs no `claimed_from` column, no explicit `story move`, and
-no second release path: it calls `unclaim` and the store answers the question.
+shared destination resolver: ordinary unclaim and reserved engine reset both derive prior state from the event history. Reset excludes active, closed and verifying destinations before restoration.
 Where the replay cannot answer it falls back to `todo` and **says so** — in the
 result and in the default comment. A silent substitution there would store a
 wrong answer about where the work came from. As built (SH-483) there are three
@@ -2087,25 +2088,40 @@ flow.
 ### SH-464 — lifecycle controls preserve recovery evidence
 
 `EngineService` owns start, status, pause, resume, stop, and acknowledge.
-Pause is resumable; graceful stop is irreversible draining; stop-now kills
-live windows and uses StoryHook's unclaim primitive to restore claimed
-stories, but preserves their branches and worktrees. Each successful dispatch
-stores the helper's versioned creation-time cleanup lease on its lane. Stop-now
-must use that lease and accept success only after the helper echoes it and
-proves that no exact-name story window remains on the leased tmux server. A
-legacy lane without a lease is retained with an explicit error instead of
-inventing cleanup identity from mutable checkout or provider settings. A
-fresh dispatching lane is not legacy: stop-now first makes the run draining,
-waits within the dispatch helper's existing bound for its validated lease, and
-then performs the same exact cleanup. A reconcile already inside one dispatch
-checks that the run is still `running` in the same write transaction that
-selects and claims the next story **and** marks its lane `dispatching`. Stop
-transitioning the run to `draining` therefore linearizes before any later
-claim, while a claim that linearizes first is already visible to stop as an
-occupied lane; neither a separate preflight read nor a later lane write can
-authorize work after stop. A partially failed stop-now can be retried.
-Quarantined lanes are already evidence and are cleared without unclaiming or
-deleting that evidence.
+Pause is resumable; graceful stop is irreversible draining. SH-706 supersedes
+Stop Now's original resource-preserving behavior: the explicitly cancelled
+run resets its occupied in-progress stories, including retained quarantined
+lanes. Verifying and closed stories leave the run without any state or
+resource change. Successful dispatch persists the exact creation-time lease;
+legacy occupied work without a lease is retained with a diagnostic. Dispatch
+already in progress must settle before reset reserves its target.
+
+`engine_resets` persists a unique token, project/story, run/lane, lease,
+restoration destination and latest failure. Reservation and verification
+handoff serialize through the store writer. Shared mutation guards prevent
+state transfer, blocking and deletion during cleanup; the helper's dispatch
+preflight rejects reserved stories. Comments remain available. No subprocess
+runs inside a store transaction. A per-run file lock serializes cleanup workers
+and survives process failure through kernel lock release.
+
+The leased helper validates its reservation through the internal read-only
+`engine reset-target` command, validates the resource marker and installed
+artifact boundary, closes the original window, then removes the worktree and
+local branch. Dirty files, untracked files, unpushed commits and an explicit
+worktree lock are part of the confirmed discard operation. Protected branches,
+caller resources, changed identities and ambiguous windows remain refusals.
+The receipt must echo the token and lease and prove every resource absent.
+Only then does one transaction restore the prior eligible open state (falling
+back to `todo`, never `verifying`), clear free-text awaiting, release the lane
+and remove the reservation. Relationships, labels, assignee and history remain.
+
+Partial failure retains the reservation and contextual diagnostics, processes
+independent targets, and leaves the run draining without creating a story
+block. Retry accepts already absent resources but rejects changed ownership.
+Restart preserves pending explicit cancellation during startup and resumes
+cleanup in the first steady pass, once helper callbacks can be served. Normal
+and stale reconciliation cannot quarantine or free stop-owned targets.
+Ordinary interrupted runs retain D11's non-destructive recovery policy.
 
 ### SH-467 — a singular operational CLI
 
