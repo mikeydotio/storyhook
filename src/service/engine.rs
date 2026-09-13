@@ -997,7 +997,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             };
             runs.into_iter()
                 .map(|run| {
-                    let lanes = tx.engine_lanes(&run.id)?;
+                    let mut lanes = tx.engine_lanes(&run.id)?;
+                    let continuations = tx.continuations(project)?;
+                    for lane in &mut lanes {
+                        if let Some(request) = continuations.iter().rev().find(|r| {
+                            lane.story_id.as_deref() == Some(&r.story_id) && r.status.outstanding()
+                        }) {
+                            lane.probe_detail = Some(format!(
+                                "continuation {} {:?}: {}",
+                                request.id, request.status, request.detail
+                            ));
+                        }
+                    }
                     let skipped_no_auto =
                         if run.state.is_live() && scope_is_available(tx, project, &run.scope)? {
                             needs_human_stories(tx, project, &now, &run.scope)?
@@ -1362,7 +1373,23 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
                 returned_for_repair,
             };
-            let classification = if row.is_none() {
+            let continuation_owned = if let Some(row) = &row {
+                self.ctx.store().read(|tx| {
+                    let pending = tx
+                        .continuations(project)?
+                        .iter()
+                        .any(|r| r.story_no == row.story_no && r.status.outstanding());
+                    Ok(pending
+                        && super::query::QueryService::new(tx, project, &now)
+                            .session_eligibility(&row.snapshot.id)?
+                            .eligible)
+                })?
+            } else {
+                false
+            };
+            let classification = if continuation_owned {
+                LaneClassification::Progressing
+            } else if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)
             } else {
                 classify(&observation, STALL_CEILING_SECS, pass)

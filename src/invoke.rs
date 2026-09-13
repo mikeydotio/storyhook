@@ -717,6 +717,44 @@ fn dispatch_inner<S: Store>(
         Invocation::Graph { mode } => {
             query(ctx, |service| service.graph(&mode)).map(|graph| Response::Graph(Box::new(graph)))
         }
+        Invocation::Continuation { id, action } => {
+            use crate::cli::ContinuationAction;
+            use crate::service::continuation::{ContinuationService, PythonRuntime};
+            let runtime = PythonRuntime::installed(ctx.env().clone());
+            let service = ContinuationService::new(ctx, &runtime);
+            let input =
+                || -> Result<serde_json::Value, AppError> {
+                    crate::service::continuation::parse_document(ctx.stdin().ok_or_else(|| {
+                        AppError::Usage("continuation requires JSON on stdin".into())
+                    })?)
+                };
+            let answer = match action {
+                ContinuationAction::Capabilities => {
+                    serde_json::json!({"result":"ok","continuation_protocol":1})
+                }
+                ContinuationAction::Status => service.status(&id)?,
+                ContinuationAction::Request => {
+                    let (record, native_feedback) = service.request_with_receipt(&id, input()?)?;
+                    serde_json::json!({"result":"ok","continuation":record,"native_feedback":native_feedback})
+                }
+                ContinuationAction::Receipt { request } => {
+                    serde_json::json!({"result":"ok","continuation":service.receipt(&id,&request,&input()?)?})
+                }
+                ContinuationAction::Retry { request } => {
+                    serde_json::json!({"result":"ok","continuation":service.retry(&id,&request)?})
+                }
+                ContinuationAction::Ack {
+                    request,
+                    reviewed_seq,
+                    head,
+                    provider,
+                    session_id,
+                } => {
+                    serde_json::json!({"result":"ok","continuation":service.ack(&id,&request,reviewed_seq,&head,&provider,&session_id)?})
+                }
+            };
+            Ok(Response::RawJson(serde_json::to_string(&answer)?))
+        }
         Invocation::SessionEligibility { id } => {
             let eligibility = query(ctx, |service| service.session_eligibility(&id))?;
             Ok(Response::RawJson(serde_json::to_string(
@@ -2819,6 +2857,11 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
         // in normal use — same as `Import` with no `--file`, which has read
         // stdin unconditionally since before this function existed.
         Invocation::SessionStart => true,
+        Invocation::Continuation {
+            action:
+                crate::cli::ContinuationAction::Request | crate::cli::ContinuationAction::Receipt { .. },
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -2885,6 +2928,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::Continuation { .. }
         | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
@@ -3090,6 +3134,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Decompose { .. } => "decompose",
         Invocation::Export => "export",
         Invocation::ImportProject { .. } => "import-project",
+        Invocation::Continuation { .. } => "continuation",
         Invocation::SessionEligibility { .. } => "session-eligibility",
         Invocation::Context { .. } => "context",
         Invocation::Handoff { .. } => "handoff",
@@ -4231,6 +4276,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }
         | Invocation::Export
+        | Invocation::Continuation { .. }
         | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }

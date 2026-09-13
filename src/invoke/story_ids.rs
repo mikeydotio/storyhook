@@ -192,7 +192,8 @@ fn foreign_prefix_refusal<S: Store>(
 /// beside it.
 fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
-        Invocation::SessionEligibility { id }
+        Invocation::Continuation { id, .. }
+        | Invocation::SessionEligibility { id }
         | Invocation::Show { id }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }

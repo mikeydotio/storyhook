@@ -14,6 +14,50 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
     || {
         let mut m = BTreeMap::new();
 
+        m.insert("continuation", r#"story continuation capabilities --json
+story continuation request <id> --stdin --json
+story continuation status <id> --json
+story continuation receipt <id> <request> --stdin --json
+story continuation retry <id> <request> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <session> --json
+
+Durable autonomous context handoffs preserve the story, branch, worktree, dirty
+files, approved scope, and launch settings. Context exhaustion is not a task
+dependency and does not clear existing holds. The daemon accepts handoffs only
+when the installed runtime can validate the current autonomous root session.
+
+Request reads the strict storyhook.session-handoff v1 envelope, original provider
+Stop payload, and provider from stdin. The native Stop hook returns the fixed
+continuation feedback after durable acceptance. Live providers use their native
+continuation and automatic compaction; the daemon never injects terminal input.
+Only a positively absent provider with retained owned resources may resume.
+
+Status returns result, story_id, snapshot_seq, and requests (each with id,
+generation, capture, handoff, status, phase, revision and diagnostics).
+Request/receipt/retry/ack return result and continuation. Request adds
+native_feedback: true only for the atomic creator of accepted context feedback;
+duplicates and administrative/held requests never replay feedback. Capabilities returns
+continuation_protocol: 1. All commands return JSON. Receipt is a provider-hook
+operation: it records native compaction evidence, never implementation approval.
+
+Before ack, reread the story, comments, relationships and durable handoff;
+inspect Git status/history/diff and relevant tests, and repeat obviation review.
+Pass the exact current snapshot_seq, Git HEAD, provider and root session ID.
+Plan mode defers acknowledgement until ordinary plan approval permits Default
+mode. Before moving to verifying, repeat the current review and refresh ack:
+a new durable correction or different HEAD invalidates the prior fence. Submit
+from the retained worktree and branch with all tracked, staged and untracked
+work committed (a clean worktree).
+Acknowledgement does not drain or certify unrecorded provider input queues.
+
+Retry never clears blockers or replays ambiguous live delivery. Resolve the
+reported ownership/observation issue first. A matching late acknowledgement can
+resolve an observation timeout. Three consecutive handoffs without changed HEAD
+or dirty content require attention. Obviation-review handoffs preserve evidence
+and reciprocal obviated-by edges and park open work for human determination;
+they never approve or close implementation.
+"#);
+
         m.insert(
             "session-eligibility",
             r#"story session-eligibility <id>
@@ -829,6 +873,13 @@ each new assignment, not only once per agent session.
    never an unconditional overwrite. Keep partial failures visible on the
    story. Stop implementation; leave the story open, without closing,
    unclaiming, deleting its worktree, or waiting for an interactive answer.
+
+In Plan mode with supported autonomous continuation capability, emit the strict
+storyhook.session-handoff v1 obviation-review envelope instead of attempting a
+tracker write. Include context, every matching candidate ID, and original_state
+in evidence. The trusted supervisor records the same reciprocal relationships,
+evidence, and guarded open blocked transition. It preserves prior holds and
+does not approve implementation or decide the human determination.
 
 This is a human review, not a dependency waiting to finish: do not use
 blocked-by or story block --on for it. An obviated-by relationship prevents
@@ -2341,7 +2392,17 @@ still be unused, and the added work should be small next to what is
 left of it — adopt it into the story's scope without doing it now:
 comment what you found and leave the story open rather than closing
 it, so the next session picks up exactly where you stopped. If you
-cannot tell how much context remains, treat it as spent.
+cannot tell how much context remains, treat it as spent for adopting EXTRA work
+in this context. Previously adopted work is assigned work in the next context;
+do not repeatedly defer that same approved scope because no token counter exists.
+
+When autonomous continuation capability is available, finish durable handoff
+evidence and emit the supported storyhook.session-handoff context envelope at
+Stop (see story help continuation). Native continuation/compaction retains the
+session; proven-absent recovery retains the same worktree, branch, approved plan
+and commits. Context exhaustion alone is not a story block. Keep real holds and
+obviation decisions intact. If capability is unavailable, retain the evidence
+and report the missing capability explicitly; do not invent delivery success.
 
 Never file for either reason alone. A discovery that belongs to this
 story is never better served by a new story than by a comment on this
