@@ -386,7 +386,10 @@ pub enum AgentPresence {
 /// answering (SH-626: a probe that could not run has not answered no), and
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
 /// gate, so the agent is presumed live.
-pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 8] = [
+pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 11] = [
+    ("resource-query-failed", AgentPresence::NotAbsent),
+    ("resource-identity-unsafe", AgentPresence::NotAbsent),
+    ("resource-identity-changed", AgentPresence::NotAbsent),
     ("pane-query-failed", AgentPresence::NotAbsent),
     ("pane-unavailable", AgentPresence::Absent),
     ("pane-provider-unknown", AgentPresence::NotAbsent),

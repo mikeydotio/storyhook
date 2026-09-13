@@ -105,7 +105,7 @@ therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit 
 ## Capture and doctor
 
 - `capture <id>`: run `bash "<story-helper>" capture <id>` and show `display`. The stable
-  launcher runs the helper as Codex, so no `STORY_AGENT` prefix is needed — and neither the
+  launcher uses provider-independent resource discovery, so no `STORY_AGENT` prefix is needed — and neither the
   installed-artifact guard nor Codex's own command rule admits one.
 - `doctor`: run `bash "<story-helper>" doctor` and show `display`. It reports
   the selected provider and independently confirms readiness, Plan mode, bracketed paste,
@@ -143,3 +143,5 @@ Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a match
 the model as the blocking reason. On both hosts a PreToolUse hook fails OPEN at its timeout, so
 a lane whose denial times out asks anyway and stalls — caught by the engine's stall ceiling and
 quarantined, never silent.
+
+Deterministic resource operations discover the actual worktree and recorded tmux socket. Do not set `STORY_AGENT` to locate Claude-created or custom worktrees. `dispatch --resume --agent=codex` changes the launch provider while preserving the resolved worktree.

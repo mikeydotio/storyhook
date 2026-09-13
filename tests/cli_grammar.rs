@@ -1118,3 +1118,45 @@ fn engine_start_canonicalizes_a_bare_epic_id() {
         .success()
         .stdout(predicate::str::contains("\"epic\": \"SH-1\""));
 }
+
+#[test]
+fn resources_grammar_carries_explicit_inputs_and_rejects_duplicate_or_missing_values() {
+    let args = [
+        "resources",
+        "7",
+        "--window-name",
+        "custom",
+        "--worktree-root",
+        "lanes",
+        "--tmux-socket",
+        "/tmp/owned",
+    ]
+    .map(String::from);
+    let Invocation::Resources { id, options } = parse_invocation(&args).unwrap() else {
+        panic!("wrong invocation")
+    };
+    assert_eq!(id, "7");
+    assert_eq!(options.window_name.as_deref(), Some("custom"));
+    assert_eq!(
+        options.tmux_socket.unwrap(),
+        std::path::Path::new("/tmp/owned")
+    );
+    for values in [
+        vec!["resources"],
+        vec!["resources", "7", "--lease-json"],
+        vec!["resources", "7", "--tmux-socket", "relative"],
+        vec![
+            "resources",
+            "7",
+            "--tmux-socket",
+            "/a",
+            "--tmux-socket",
+            "/b",
+        ],
+        vec!["resources", "7", "--window-name", "a", "--window-name", "b"],
+    ] {
+        assert!(
+            parse_invocation(&values.into_iter().map(String::from).collect::<Vec<_>>()).is_err()
+        );
+    }
+}

@@ -16,7 +16,7 @@ socket = scratch / "tmux.sock"
 bindir = scratch / "bin"
 bindir.mkdir()
 wrapper = bindir / "tmux"
-wrapper.write_text(f"#!/bin/sh\nif [ -f {shlex.quote(str(scratch / 'refuse-native'))} ] && [ \"$1\" = send-keys ]; then echo 'native delivery refused by fixture' >&2; exit 42; fi\nexec {shlex.quote(tmux)} -S {shlex.quote(str(socket))} \"$@\"\n")
+wrapper.write_text(f"#!/bin/sh\nif [ \"$1\" = -S ]; then shift 2; fi\nif [ -f {shlex.quote(str(scratch / 'refuse-native'))} ] && [ \"$1\" = send-keys ]; then echo 'native delivery refused by fixture' >&2; exit 42; fi\nexec {shlex.quote(tmux)} -S {shlex.quote(str(socket))} \"$@\"\n")
 wrapper.chmod(0o755)
 env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
            STORYHOOK_LOCK_DIR=str(scratch / "locks"),

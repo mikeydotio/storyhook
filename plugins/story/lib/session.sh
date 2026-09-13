@@ -811,9 +811,12 @@ pane_for_window() {
   # filtering so callers retain the exit status and the tmux diagnostic.
   panes=$(tmux list-panes -a -F '#{window_name}	#{pane_active}	#{pane_id}') || return
   awk -F'\t' -v w="$wname" '
-        $1==w && $2==1 { print $3; found=1; exit }
+        $1==w && $2==1 { active[++n]=$3 }
         $1==w && !first { first=$3 }
-        END { if (!found && first) print first }' <<<"$panes"
+        END {
+          if (n > 1) { print "ambiguous story windows: " w > "/dev/stderr"; exit 2 }
+          if (n == 1) print active[1]; else if (first) print first
+        }' <<<"$panes"
 }
 
 # capture_pane_transcript <target> [lines] — READ-ONLY. Echo the rendered

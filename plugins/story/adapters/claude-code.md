@@ -87,3 +87,5 @@ story's tmux window, which is terminal behavior this host owns.
   scaffold.
 - `do`, `capture`, and `doctor` require tmux unless `STORY_TARGET_SESSION` supplies a target
   for a non-interactive caller.
+
+Deterministic resource operations discover the actual worktree and recorded tmux socket. Do not set `STORY_AGENT` to locate Codex-created or custom worktrees. `dispatch --resume --agent=claude` changes the launch provider while preserving the resolved worktree.

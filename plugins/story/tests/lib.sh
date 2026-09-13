@@ -175,6 +175,9 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # header carries the parameters and the reason for each. `--home` IS passed:
   # this suite runs nothing but `story` and `git`.
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
+  # Read-only native resource queries must never inspect the operator server.
+  export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux"
+  mkdir -p "$TMUX_TMPDIR"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
