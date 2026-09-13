@@ -32,11 +32,9 @@ export FULL_AUTO_INERT_TMUX_LOG="$INERT_TMUX/calls.log"
 : >"$FULL_AUTO_INERT_TMUX_LOG"
 
 # hook_command <matcher> -- the command hooks.json ships for one PreToolUse
-# matcher. Looked up BY MATCHER, never by position: this event carries three
-# entries and an index would quietly hand a case somebody else's wiring.
+# matcher and script identity; neither group nor handler position is identity.
 hook_command() {
-  jq -r --arg e "${2:-PreToolUse}" --arg m "$1" \
-    '.hooks[$e][] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
+  manifest_hook "${2:-PreToolUse}" "$1" full-auto.sh "$MANIFEST" | jq -r '.command'
 }
 
 # payload <tool> -- a provider-shaped PreToolUse envelope for <tool>.

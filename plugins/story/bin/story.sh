@@ -166,6 +166,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
 source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
+source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -1122,36 +1123,32 @@ claim_rollback_note() {
 # for machine parsing; path and branch are read as whole lines so spaces remain
 # intact.
 registered_worktree_branch() {
-  local target="$1" line current="" branch="" found=false
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *)
-        if [ "$found" = true ]; then
-          printf '%s' "${branch:-DETACHED}"
-          return 0
-        fi
-        current="${line#worktree }"
-        branch=""
-        [ "$current" != "$target" ] || found=true
-        ;;
-      branch\ *)
-        [ "$found" != true ] || branch="${line#branch refs/heads/}"
-        ;;
-      '')
-        if [ "$found" = true ]; then
-          printf '%s' "${branch:-DETACHED}"
-          return 0
-        fi
-        current=""
-        branch=""
-        ;;
-    esac
-  done < <(git worktree list --porcelain 2>/dev/null)
-  if [ "$found" = true ]; then
-    printf '%s' "${branch:-DETACHED}"
-    return 0
-  fi
-  return 1
+  git worktree list --porcelain -z | python3 -c '
+import sys
+try:
+    listing = sys.stdin.buffer.read().decode("utf-8")
+    if not listing.startswith("worktree ") or not listing.endswith("\0\0"):
+        print("Git worktree inventory was unavailable or incomplete", file=sys.stderr)
+        sys.exit(2)
+    records = listing.split("\0\0")
+    for record in records:
+        fields = record.split("\0")
+        if "worktree " + sys.argv[1] in fields:
+            branch = next((f[len("branch refs/heads/"):] for f in fields if f.startswith("branch refs/heads/")), "DETACHED")
+            print(branch, end="")
+            sys.exit(0)
+    sys.exit(1)
+except UnicodeError as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+' "$1"
+}
+
+# Only a successful inventory with no registration proves absence.
+registration_absent() {
+  local status=0
+  registered_worktree_branch "$1" >/dev/null || status=$?
+  [ "$status" -eq 1 ]
 }
 
 # cleanup_dispatch_git <path> <branch> <worktree-created> <branch-created> —
@@ -1160,6 +1157,10 @@ registered_worktree_branch() {
 # targets, even when a later provider handoff fails.
 cleanup_dispatch_git() {
   local path="$1" branch="$2" worktree_created="$3" branch_created="$4"
+  if [ -n "${require_absent:-}" ] && [ "$worktree_created" = false ] && [ "$branch_created" = false ]; then
+    DISPATCH_CLEANUP_NOTE="the guarded continuation retained its original worktree, branch, and cleanup lease"
+    return 0
+  fi
   # A failed handoff must not leave a marker that a later manual transition
   # could mistake for a successful dispatch. This is safe for a resumed
   # worktree too: the current attempt replaced the marker with its own exact
@@ -1177,8 +1178,7 @@ cleanup_dispatch_git() {
   if [ "$worktree_created" = true ]; then
     git worktree remove --force "$path" >/dev/null 2>&1 \
       || failure="${failure:+$failure; }git worktree remove refused for $path"
-    git worktree prune >/dev/null 2>&1 || true
-    if registered_worktree_branch "$path" >/dev/null 2>&1 || [ -e "$path" ]; then
+    if ! registration_absent "$path" || [ -e "$path" ]; then
       failure="${failure:+$failure; }worktree remains at $path"
     fi
   fi
@@ -1569,42 +1569,17 @@ configure_dispatch_provider() {
   fi
 }
 
-# surviving_dispatch_provider <canonical-id> — echo the provider a RESUME
-# should relaunch, read from what the abandoned dispatch left behind, or
-# nothing when no surviving resource records one.
-#
-# Two facts, in order. The window's `@storyhook-agent` option (the record
-# cmd_notify already trusts) survives a dead pane under remain-on-exit. When
-# the window is gone entirely, the worktree the story's branch is checked out
-# in still names its CONTAINER, and the container is provider-derived
-# (DEFAULT_WORKTREE_IGNORE_PATH, configure_agent): a resume under the wrong
-# provider does not merely relaunch the wrong binary, it looks for the
-# worktree in the other provider's container, finds only the branch, and
-# fails to reattach it ("already used by worktree"). An operator container
-# override (STORY_WORKTREE_IGNORE_PATH) matches neither spelling and says
-# nothing, so the caller falls through to its own precedence.
-#
-# READ-ONLY and tolerant on purpose: runs before the tmux precondition and
-# from the checkout (branch_worktree_path needs the repository), and a dry run
-# outside tmux must still render.
-surviving_dispatch_provider() {
-  local wname pane provider path
-  wname=$(resolve_wname "$1")
-  pane=$(pane_for_window "$wname" 2>/dev/null) || pane=""
-  if [ -n "$pane" ]; then
-    provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null) || provider=""
-    case "$provider" in
-      claude | codex) printf '%s' "$provider"; return 0 ;;
-    esac
-  fi
-  path=$(branch_worktree_path "worktree-$wname") || return 0
-  case "$path" in
-    */.claude/worktrees/"$wname") printf 'claude' ;;
-    */.codex/worktrees/"$wname") printf 'codex' ;;
-  esac
+# ---- subcommand: dispatch ---------------------------------------------------
+CONTINUATION_PROMPT_CLAUSE='Context capacity alone is not a story blocker. Unknown capacity alone must not defer already assigned work. If context pressure prevents reliable continuation, or the adoption rubric requires deferring additional work, preserve the story and worktree and end with exactly one JSON object whose type is storyhook.session-handoff, version is integer 1, story_id is <n>, kind is context, and evidence contains nonempty context and outstanding_work strings plus approved scope and test evidence when available. StoryHook records this handoff and continues through the provider native context mechanism. Previously adopted work is assigned work in the continuing session. Never block solely for context, erase queued corrections, or type /compact. In Plan mode continue planning and defer continuation acknowledgement until ordinary plan approval switches to Default mode, then review and acknowledge before implementation. For likely-obviated work in Plan mode use the same envelope with kind obviation-review and evidence containing context, original_state and all unique candidate story IDs in candidates. This records a pending human review hold and grants no implementation permission.'
+# Revalidate the persisted dead-pane ownership before guarded recovery effects.
+continuation_preflight() {
+  local answer
+  answer=$(printf '%s' "$continuation_record" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" resume-preflight) \
+    || refuse "continuation-unsafe" "continuation ownership preflight could not run; retained work was preserved."
+  [ "$(printf '%s' "$answer" | jq -r '.ok // false')" = true ] \
+    || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
 }
 
-# ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
@@ -1618,6 +1593,7 @@ cmd_dispatch() {
   local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
   local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
+  local require_absent="" continuation_file="" continuation_record=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto)
@@ -1632,6 +1608,14 @@ cmd_dispatch() {
       --resume)
         [ -z "$resume" ] || fail "--resume may be specified only once — usage: $usage"
         resume=1; shift ;;
+      --require-absent)
+        [ -z "$require_absent" ] || fail "--require-absent may be specified only once"
+        require_absent=1; shift ;;
+      --continuation-file=*)
+        [ -z "$continuation_file" ] || fail "--continuation-file may be specified only once"
+        continuation_file="${1#--continuation-file=}"
+        [ -n "$continuation_file" ] || fail "--continuation-file requires a file path"
+        shift ;;
       --over-budget)
         [ -z "$over_budget" ] || fail "--over-budget may be specified only once — usage: $usage"
         over_budget=1
@@ -1674,6 +1658,10 @@ cmd_dispatch() {
     esac
   done
   [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: $usage"
+  [ -z "$require_absent" ] || { [ -n "$resume" ] && [ -n "$continuation_file" ]; } \
+    || fail "--require-absent requires --resume and --continuation-file"
+  [ -z "$continuation_file" ] || [ -n "$require_absent" ] \
+    || fail "--continuation-file requires --require-absent"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$want_next" ] || [ -z "$resume" ] \
@@ -1712,6 +1700,26 @@ cmd_dispatch() {
     id=$(canonical_story_id "$show_json" "$id")
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+
+    if [ -n "$require_absent" ]; then
+      [ -f "$continuation_file" ] && [ ! -L "$continuation_file" ] \
+        || refuse "continuation-unsafe" "continuation record is not an ordinary retained file."
+      continuation_record=$(cat "$continuation_file") \
+        || refuse "continuation-unsafe" "cannot read the retained continuation record."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.story_id // ""')" = "$id" ] \
+        || refuse "continuation-unsafe" "continuation record belongs to another story."
+      continuation_preflight
+      local continuation_socket="${TMUX:-}"
+      [ "${continuation_socket%%,*}" = "$(printf '%s' "$continuation_record" | jq -r '.capture.socket')" ] \
+        || refuse "continuation-unsafe" "dispatcher socket differs from the captured continuation."
+      TARGET_SESSION=$(tmux display-message -p -t "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" '#{session_name}') \
+        || refuse "continuation-unsafe" "cannot resolve the retained pane session."
+      [ -n "$TARGET_SESSION" ] || refuse "continuation-unsafe" "retained pane has no session."
+      [ "$(story_cli --deadline 2 continuation capabilities --json | jq -r '.continuation_protocol // 0')" = 1 ] \
+        || refuse "continuation-unavailable" "guarded resume requires the installed continuation protocol."
+      [ "$(story_cli session-eligibility "$id" --json | jq -r '.session_eligibility.eligible // false')" = true ] \
+        || refuse "continuation-ineligible" "the retained story is not eligible to continue."
+    fi
 
 
     # SH-499: epic identity is the explicit type, never the mere presence of
@@ -1782,7 +1790,7 @@ cmd_dispatch() {
   # The provider, and everything composed from it. SH-650: a resume relaunches
   # the provider the abandoned dispatch recorded, unless the caller named one
   # explicitly. Precedence is the explicit flag, then the surviving record
-  # (surviving_dispatch_provider), then STORY_AGENT, then claude: the record is
+  # (the shared resource reader), then STORY_AGENT, then claude: the record is
   # a fact about the thing being resumed, the environment variable is the
   # caller's claim about itself (SH-630), and a resume that silently switched
   # provider on that claim would rewrite the window option with a lie and look
@@ -1790,7 +1798,11 @@ cmd_dispatch() {
   # cannot resume, so it reads no record. Resolved here, from the checkout,
   # because the worktree half of the record needs the repository.
   if [ -n "$id" ] && [ -n "$resume" ] && [ -z "$requested_agent" ]; then
-    window_provider=$(surviving_dispatch_provider "$id")
+    load_story_resources "$id"
+    window_provider="$RESOURCE_PROVIDER"
+    if [ -z "$window_provider" ] && [ "$(printf '%s' "$RESOURCE_REPORT" | jq -r .status)" = resolved ]; then
+      refuse "resume-provider-unknown" "surviving resources record no launch provider; use dispatch --resume --agent=<provider>"
+    fi
   fi
   configure_dispatch_provider "${requested_agent:-${window_provider:-${STORY_AGENT:-claude}}}"
 
@@ -1804,7 +1816,13 @@ cmd_dispatch() {
     if [ -n "$DRY_RUN" ]; then
       dispatch_session="<current-session>"
     else
-      dispatch_session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || printf '')
+      if [ -n "${RESOURCE_PANE:-}" ]; then
+        dispatch_session=$(tmux display-message -p -t "$RESOURCE_PANE" '#{session_name}') || fail "cannot inspect surviving session"
+      elif [[ "$RESOURCE_CALLER_SOCKET" = /* ]]; then
+        dispatch_session=$(command tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
+      else
+        dispatch_session=$(command tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
+      fi
       [ -n "$dispatch_session" ] \
         || fail "cannot resolve the tmux session that would receive this dispatch — no claim was made."
     fi
@@ -1823,8 +1841,31 @@ cmd_dispatch() {
   if [ -n "$id" ]; then
     wname=$(resolve_wname "$id")
     wt_container="${WORKTREE_IGNORE_PATH%/}"
-    worktree_path="$dir/$wt_container/$wname"
-    worktree_branch="worktree-$wname"
+    load_story_resources "$id"
+    dir="$RESOURCE_REPOSITORY"
+    PROJECT_ROOT="$dir"
+    CDPATH= cd -- "$dir" || fail "cannot enter resolved repository $dir"
+    wname="$RESOURCE_WINDOW"
+    worktree_path="${RESOURCE_WORKTREE:-$dir/$wt_container/$wname}"
+    worktree_branch="$RESOURCE_BRANCH"
+
+    if [ -n "$require_absent" ]; then
+      worktree_path=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.worktree_path')
+      worktree_branch=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.branch')
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.lease.repository_path')" = "$dir" ] \
+        || refuse "continuation-unsafe" "continuation lease names another repository."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.provider')" = "$AGENT" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.model')" = "$effective_model" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.effort')" = "$resolved_effort" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.speed')" = "$resolved_speed" ] \
+        || refuse "continuation-unsafe" "provider or launch selectors differ from the captured continuation."
+      local expected_autonomy=auto
+      [ -z "$full_auto" ] || expected_autonomy="full-auto"
+      [ -n "$auto" ] && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.autonomy_mode')" = "$expected_autonomy" ] \
+        || refuse "continuation-unsafe" "autonomy mode differs from the captured continuation."
+      [ "$launch_overridden" = false ] \
+        || refuse "continuation-unsafe" "guarded recovery cannot preserve captured settings through a wholesale launcher override."
+    fi
 
     if registered_branch=$(registered_worktree_branch "$worktree_path"); then
       registered_worktree=true
@@ -1854,7 +1895,14 @@ cmd_dispatch() {
         "story $id's registered worktree names branch \`$worktree_branch\`, but that local branch does not exist; refusing to infer ownership from an inconsistent registration."
     fi
 
-    existing_pane=$(pane_for_window "$wname") || existing_pane=""
+    existing_pane=$(resource_find_pane) || refuse "resource-query-failed" "cannot inspect existing dispatch window"
+    if [ -n "$require_absent" ]; then
+      [ "$registered_worktree" = true ] && [ "$branch_reused" = true ] \
+        || refuse "continuation-unsafe" "guarded continuation requires the original worktree and branch."
+      [ -n "$existing_pane" ] && [ "$existing_pane" = "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" ] \
+        || refuse "continuation-unsafe" "the exact retained pane is missing; automatic recreation is unavailable."
+      continuation_preflight
+    fi
     if [ -n "$existing_pane" ]; then
       resources_exist=true
       artifacts_exist=true
@@ -1889,13 +1937,18 @@ cmd_dispatch() {
         "$recovery_display" \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
-    if [ -n "$resume" ] && [ -n "$existing_pane" ] \
-       && [ "$existing_pane" = "${TMUX_PANE:-}" ]; then
+    if [ -n "$resume" ] && [ -z "$require_absent" ] && [ -n "$existing_pane" ] \
+       && resource_is_self "$existing_pane"; then
       refuse_with "resume-unsafe" \
         "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
+  fi
+
+  # A resumed claim must still refer to the inventory just reviewed.
+  if [ "$resumed" = true ] && [ -z "$DRY_RUN" ]; then
+    revalidate_story_resources
   fi
 
   # SH-672: manual concurrency belongs to the operator. The census is an
@@ -2072,7 +2125,11 @@ cmd_dispatch() {
   # NEXT mode learns its deterministic resource names only after the atomic
   # claim chooses an id. Resume is intentionally unavailable in this mode.
   if [ -n "$want_next" ]; then
-    wname=$(resolve_wname "$id")
+    load_story_resources "$id"
+    if [ -n "$RESOURCE_WORKTREE" ] || local_branch_exists "$RESOURCE_BRANCH" || [ -n "$(resource_find_pane)" ]; then
+      fail "claimed story $id already has resources; refusing a duplicate dispatch.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+    wname="$RESOURCE_WINDOW"
     wt_container="${WORKTREE_IGNORE_PATH%/}"
     worktree_path="$dir/$wt_container/$wname"
     worktree_branch="worktree-$wname"
@@ -2115,6 +2172,10 @@ cmd_dispatch() {
       prompt_tpl="$AUTO_PROMPT_SOLO_TPL"
       [ -z "${STORY_AUTO_PROMPT_SOLO:-}" ] && prompt_builtin="true"
     fi
+  fi
+  if [ -n "$require_absent" ]; then
+    [ "$prompt_builtin" = true ] && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ] \
+      || refuse "continuation-unavailable" "guarded recovery requires the supported builtin continuation charter and runtime."
   fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
     if [ -n "$auto" ]; then
@@ -2232,6 +2293,7 @@ cmd_dispatch() {
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
       --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
+      --argjson require_absent "$([ -n "$require_absent" ] && echo true || echo false)" \
       --argjson resumed "$resumed" --argjson resources "$resources_json" \
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
@@ -2253,8 +2315,8 @@ cmd_dispatch() {
           + (if $worktree_reused then []
              elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
              else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
-          + [(if $window_reused then
-               ("tmux respawn-pane -k -c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+          + [(if $window_reused or $require_absent then
+               ("tmux respawn-pane " + (if $require_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
              else
                ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
                 + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -2299,7 +2361,7 @@ cmd_dispatch() {
   # Step 7: idempotently gitignore the per-story worktree CONTAINER dir,
   # BEFORE the worktree materializes. Best-effort — never flips ok to false.
   local gitignore_result="already-ignored"
-  if [ "$ignore_status" = "not-ignored" ]; then
+  if [ "$ignore_status" = "not-ignored" ] && [ -z "$require_absent" ]; then
     gitignore_result=$(append_worktree_ignore "$dir")
   fi
 
@@ -2461,15 +2523,25 @@ cmd_dispatch() {
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
   if [ -n "$existing_pane" ]; then
+    # The pane ID survives respawn; its process identity must still match.
+    revalidate_story_resources
     pane="$existing_pane"
-    # This file is a generated SessionStart witness, not project work. A
-    # replacement process must publish its own witness before handoff.
-    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    local respawn_flag=-k respawn_command="$launch_cmd"
+    if [ -n "$require_absent" ]; then
+      continuation_preflight
+      respawn_flag=""
+      # This runs only after tmux atomically accepts the dead pane. Removing
+      # the witness earlier can erase a replacement session's evidence even
+      # when the subsequent no-k respawn correctly refuses that live owner.
+      respawn_command="rm -f -- $(posix_quote_word "$worktree_path/.claude/dispatch-sentinel.json") && exec $launch_cmd"
+    else
+      rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    fi
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
-    if ! tmux respawn-pane -k -c "$worktree_path" \
+    if ! tmux respawn-pane ${respawn_flag:+"$respawn_flag"} -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
          -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
-         -t "$pane" "$launch_cmd" 2>/dev/null; then
+         -t "$pane" "$respawn_command" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
@@ -2587,6 +2659,39 @@ cmd_dispatch() {
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
+  if [ -n "$auto" ] && [ "$prompt_builtin" = true ] \
+     && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ]; then
+    local continuation_capabilities
+    continuation_capabilities=$(story_cli --deadline 2 continuation capabilities --json 2>/dev/null) || continuation_capabilities='{}'
+    if [ "$(printf '%s' "$continuation_capabilities" | jq -r '.continuation_protocol // 0')" = 1 ]; then
+      local registration registration_input autonomy_mode=auto
+      [ -z "$full_auto" ] || autonomy_mode="full-auto"
+      registration_input=$(jq -n --arg id "$id" --arg cwd "$worktree_path" \
+        --arg socket "$(printf '%s' "$DISPATCH_CLEANUP_LEASE" | jq -r '.tmux.socket_path')" \
+        --arg pane "$pane" --arg provider "$AGENT" --arg model "$effective_model" \
+        --arg effort "$resolved_effort" --arg speed "$resolved_speed" --arg autonomy "$autonomy_mode" \
+        '{story_id:$id,cwd:$cwd,socket:$socket,pane:$pane,provider:$provider,model:$model,
+          effort:$effort,speed:$speed,autonomy_mode:$autonomy}')
+      registration=$(printf '%s' "$registration_input" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" register) || registration='{}'
+      if [ "$(printf '%s' "$registration" | jq -r '.ok // false')" != true ]; then
+        if [ -n "$require_absent" ]; then
+          rollback_dispatch_attempt
+          refuse "continuation-unavailable" "native continuation ownership registration failed: $(printf '%s' "$registration" | jq -r '.detail // "no diagnostic"'). No story charter was delivered."
+        fi
+        auto_note="$auto_note Native context continuation unavailable: $(printf '%s' "$registration" | jq -r '.detail // "ownership registration failed"')."
+      else
+        prompt="$prompt $(render_template "$CONTINUATION_PROMPT_CLAUSE" "$id" "$wname" "$dir")"
+      fi
+    elif [ -n "$require_absent" ]; then
+      rollback_dispatch_attempt
+      refuse "continuation-unavailable" "native continuation capability disappeared before ownership registration. No story charter was delivered."
+    else
+      auto_note="$auto_note Native context continuation unavailable: the installed service does not advertise continuation protocol 1."
+    fi
+  elif [ -n "$auto" ] && [ "$prompt_builtin" = true ]; then
+    auto_note="$auto_note Native context continuation unavailable: the runtime adapter is not installed."
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
@@ -3336,9 +3441,6 @@ cmd_scaffold_claude_md() { _cmd_scaffold_instructions claude-md CLAUDE.md "$@"; 
 # the CLI. This runs both and reports them together.
 
 cmd_capture() {
-  if [ -z "$DRY_RUN" ]; then
-    [ -n "${TMUX:-}" ] || fail "story capture requires tmux — run $AGENT_LABEL inside a tmux session."
-  fi
   local id="${1:-}"
   [ -n "$id" ] || fail "usage: story.sh capture <story-id>"
   shift
@@ -3357,12 +3459,11 @@ cmd_capture() {
   # the canonical id: the window it is hunting was named by `dispatch` from
   # the CANONICAL id, so `story.sh capture 5` would otherwise look for a
   # window no dispatch has ever created (SH-118).
-  local wname
-  if command -v "$STORY" >/dev/null 2>&1; then
-    resolve_checkout || true
-    id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
-  fi
-  wname=$(resolve_wname "$id")
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  load_story_resources "$id"
+  id="$RESOURCE_ID"
+  local wname="$RESOURCE_WINDOW"
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
@@ -3376,7 +3477,7 @@ cmd_capture() {
   fi
 
   local pane transcript
-  pane=$(pane_for_window "$wname")
+  pane=$(resource_find_pane) || refuse "resource-query-failed" "cannot query capture target"
   [ -n "$pane" ] || fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
   transcript=$(capture_pane_transcript "$pane") \
     || fail "failed to capture pane \`$pane\` (window \`$wname\`)."
@@ -3408,11 +3509,15 @@ cmd_notify() {
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   local wname pane buffer provider server
-  wname=$(resolve_wname "$id")
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  load_story_resources "$id"
+  id="$RESOURCE_ID"
+  wname="$RESOURCE_WINDOW"
   server="${TMUX:-}"
   server="${server%%,*}"
   server="${server:-default (TMUX_TMPDIR=${TMUX_TMPDIR:-/tmp})}"
-  if ! pane=$(pane_for_window "$wname" 2>&1); then
+  if ! pane=$(resource_find_pane 2>&1); then
     refuse "pane-query-failed" "could not query tmux window \`$wname\` on server \`$server\`: $pane; verification diagnostics remain on $id."
   fi
   [ -n "$pane" ] \
@@ -3440,6 +3545,7 @@ cmd_notify() {
       || refuse "target-changed" "the interrupted session was replaced; no prompt sent to $id."
   fi
   if [ "$message" = --interrupt ]; then
+    revalidate_story_resources
     diagnostic=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" interrupt "$pane" "$provider" "$target" 2>&1) \
       || refuse "interruption-failed" "native interruption/owned gate cleanup was not acknowledged for $id: $diagnostic"
     jq -n --arg id "$id" --arg target "$target" \
@@ -3447,6 +3553,7 @@ cmd_notify() {
     return 0
   fi
 
+  revalidate_story_resources
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
@@ -3693,17 +3800,18 @@ story_completion_state() {
 # worktree feature locks the ones it creates, and reclaiming those is not this
 # verb's business.
 _story_worktree_status() {
-  local target="$1" cur="$2" locked
-  locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
-    function flush() { if (p == want) print (l ? "1" : "0") }
-    /^worktree / { flush(); p = substr($0, 10); l = 0 }
-    /^locked/    { l = 1 }
-    END          { flush() }')
-  [ -n "$locked" ] || { printf 'missing'; return 0; }
-  if [ "$target" = "$cur" ]; then printf 'current'; return 0; fi
-  if [ "$locked" = "1" ]; then printf 'locked'; return 0; fi
-  if [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then printf 'dirty'; return 0; fi
-  printf 'removable'
+  local target="$1" cur="$2" locked dirty
+  [ -n "$target" ] || { printf missing; return 0; }
+  # The reader already parsed NUL-delimited Git records and checked identity.
+  locked=$(printf '%s' "$RESOURCE_REPORT" | jq -r --arg path "$target" '[.candidates[] | select(.worktree == $path and .registered)] | if length == 0 then "missing" else .[0].locked end')
+  [ "$locked" != missing ] || { printf missing; return 0; }
+  if [ "$target" = "$cur" ]; then printf current; return 0; fi
+  if [ "$locked" = true ]; then printf locked; return 0; fi
+  if ! dirty=$(git -C "$target" status --porcelain 2>&1); then
+    printf 'cannot inspect worktree %s: %s' "$target" "$dirty" >&2
+    return 1
+  fi
+  if [ -n "$dirty" ]; then printf dirty; else printf removable; fi
 }
 
 # _close_story_window <window-name> — close every matching window and prove
@@ -3722,22 +3830,16 @@ _story_worktree_status() {
 # SH-360). What differs between the three verbs is WHEN they call it and
 # whether they are allowed to, never how the window is found.
 _close_story_window() {
-  local wname="$1" pane window found=false attempts=0
-  while :; do
-    pane=$(pane_for_window "$wname") || return 2
-    [ -n "$pane" ] || break
-    found=true
-    attempts=$((attempts + 1))
-    [ "$attempts" -le 256 ] || return 2
-    window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-    if [ -n "$window" ]; then
-      tmux kill-window -t "$window" 2>/dev/null || return 2
-    else
-      tmux kill-window -t "$pane" 2>/dev/null || return 2
-    fi
-  done
-  [ "$found" = true ] && return 0
-  return 1
+  local expected current remaining window
+  RESOURCE_CLOSE_ERROR=""
+  expected=$(printf '%s' "$RESOURCE_REPORT" | jq -c '.pane | if . == null then {} else del(.dead) end')
+  current=$(resource_window_snapshot 2>&1) || { RESOURCE_CLOSE_ERROR="$current"; return 2; }
+  [ "$current" = "$expected" ] || { RESOURCE_CLOSE_ERROR="terminal identity changed: expected $expected, observed $current"; return 2; }
+  window=$(printf '%s' "$current" | jq -r '.window_id // empty')
+  [ -n "$window" ] || return 1
+  RESOURCE_CLOSE_ERROR=$(tmux kill-window -t "$window" 2>&1) || return 2
+  remaining=$(resource_window_snapshot 2>&1) || { RESOURCE_CLOSE_ERROR="$remaining"; return 2; }
+  [ "$remaining" = '{}' ] || return 2
 }
 
 # _complete_prepare <id> — shared by plan and execute. Resolves the story,
@@ -3758,11 +3860,7 @@ _complete_prepare() {
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   require_story
-  # The same lookup dispatch performs, for the same reason: a worktree created
-  # under one rule and cleaned up under another is SH-166 verbatim.
-  resolve_checkout || fail "$CHECKOUT_ERROR"
-  enter_checkout
-  CMP_DIR="$PROJECT_ROOT"
+  resolve_project || fail "$CHECKOUT_ERROR"
 
   local show_json result
   show_json=$(story_cli show "$id" --json 2>/dev/null) || true
@@ -3779,8 +3877,34 @@ _complete_prepare() {
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
   CMP_DONE_STATE=$(story_completion_state)
 
-  local wt_container wname
-  wname=$(resolve_wname "$id")
+  load_story_resources "$id"
+  CMP_DIR="$RESOURCE_REPOSITORY"
+  PROJECT_ROOT="$CMP_DIR"
+  CDPATH= cd -- "$CMP_DIR" || fail "cannot enter resolved repository $CMP_DIR"
+  CMP_WNAME="$RESOURCE_WINDOW"
+  CMP_WT_PATH="$RESOURCE_WORKTREE"
+  CMP_WT_BRANCH="$RESOURCE_BRANCH"
+
+  # Configuration and symlinked parents can redirect cleanup into an installed
+  # tree. Prove the actual targets before even fetching, let alone releasing a
+  # claim. All callers of this preparation share the non-overridable invariant.
+  local common_dir artifact_error
+  common_dir=$(git rev-parse --git-common-dir 2>&1) \
+    || refuse "installed-artifact-resource" "cannot resolve Git metadata for $id: $common_dir"
+  case "$common_dir" in /*) : ;; *) common_dir="$CMP_DIR/$common_dir" ;; esac
+  artifact_error=$(python3 "$STORY_PLUGIN_ROOT/lib/artifact-resources.py" \
+    "$CMP_DIR" "$common_dir" "$CMP_WT_PATH" 2>&1) \
+    || refuse "installed-artifact-resource" "cannot prepare $id: $artifact_error — no claim was released or resource removed."
+
+  if [ -n "${STORY_WORKTREE_IGNORE_PATH:-}" ]; then
+    local configured_target
+    configured_target="$STORY_WORKTREE_IGNORE_PATH/$(resolve_wname "$id")"
+    case "$configured_target" in /*) : ;; *) configured_target="$CMP_DIR/$configured_target" ;; esac
+    artifact_error=$(python3 "$STORY_PLUGIN_ROOT/lib/artifact-resources.py" \
+      "$CMP_DIR" "$common_dir" "$configured_target" 2>&1) \
+      || refuse "installed-artifact-resource" "cannot prepare $id: $artifact_error — no claim was released or resource removed."
+  fi
+
   # Origin's default branch (SH-691): asked of origin; when origin does not
   # answer, the local origin/HEAD cache is used and SAID to be used
   # (CMP_DEFAULT_SOURCE, plus a note in every receipt that reports the
@@ -3800,12 +3924,7 @@ _complete_prepare() {
   fi
   freshen_base_ref "$CMP_DEFAULT"
 
-  wt_container="${WORKTREE_IGNORE_PATH%/}"
-
-  CMP_WNAME="$wname"
-  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
-  CMP_WT_BRANCH="worktree-$CMP_WNAME"
-  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel") || refuse "resource-query-failed" "cannot classify resolved worktree"
 
   # Window classification (SH-308) — read-only, safe under `plan`. `complete`
   # never touched tmux before this: it could remove a worktree out from under a
@@ -3822,10 +3941,10 @@ _complete_prepare() {
   # judgment call here.
   CMP_WINDOW_STATUS="none"
   CMP_WINDOW_PANE=""
-  if [ -n "${TMUX:-}" ]; then
-    CMP_WINDOW_PANE=$(pane_for_window "$CMP_WNAME") || CMP_WINDOW_PANE=""
+  if [ -z "$DRY_RUN" ] || [ -n "${TMUX:-}" ]; then
+    CMP_WINDOW_PANE=$(resource_find_pane) || refuse "resource-query-failed" "cannot query story window"
     if [ -n "$CMP_WINDOW_PANE" ]; then
-      if [ -n "${TMUX_PANE:-}" ] && [ "$CMP_WINDOW_PANE" = "$TMUX_PANE" ]; then
+      if resource_is_self "$CMP_WINDOW_PANE"; then
         CMP_WINDOW_STATUS="self"
       else
         CMP_WINDOW_STATUS="open"
@@ -3860,7 +3979,8 @@ _complete_prepare() {
   # that work to be.
   CMP_BR_UNPUSHED=0
   if [ "$CMP_BR_STATUS" != "missing" ]; then
-    CMP_BR_UNPUSHED=$(git rev-list --count "refs/heads/$CMP_WT_BRANCH" --not --remotes 2>/dev/null || printf '0')
+    CMP_BR_UNPUSHED=$(git rev-list --count "refs/heads/$CMP_WT_BRANCH" --not --remotes) \
+      || refuse "resource-query-failed" "cannot inspect unpushed commits for $CMP_WT_BRANCH"
   fi
 
   # Nothing at all under the project's checkout is REPORTED, never
@@ -3969,6 +4089,7 @@ cmd_complete_execute() {
   done
   _complete_prepare "$id"
   id="$CMP_ID"
+  revalidate_story_resources
 
   local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
   local closed=false close_note="" closed_window=false
@@ -4052,15 +4173,14 @@ cmd_complete_execute() {
           # do exactly that. Computed as a plain `if` beforehand instead.
           local force_prefix=""
           if [ -n "$force" ]; then force_prefix="--force "; fi
-          commands+=("git worktree remove ${force_prefix}$CMP_WT_PATH" "git worktree prune")
+          commands+=("git worktree remove ${force_prefix}$CMP_WT_PATH")
           removed_wt+=("$CMP_WT_PATH")
         else
           local -a rm_args=(worktree remove)
           [ -n "$force" ] && rm_args+=(--force)
           rm_args+=("$CMP_WT_PATH")
           if git "${rm_args[@]}" >/dev/null 2>&1; then
-            git worktree prune >/dev/null 2>&1 || true
-            if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 \
+                  if ! registration_absent "$CMP_WT_PATH" \
                || [ -e "$CMP_WT_PATH" ]; then
               failed+=("worktree:$CMP_WT_PATH(postcondition)")
             else
@@ -4149,25 +4269,9 @@ cmd_complete() {
 # because cleanup cannot prove that every matching window is gone.
 LEASE_TMUX_WINDOWS=""
 leased_story_windows() {
-  local lease="$1" story="$2" socket listing window_id window_name seen=""
-  socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-  LEASE_TMUX_WINDOWS=""
-  if [ ! -e "$socket" ]; then
-    return 0
-  fi
-  if ! listing=$(tmux -S "$socket" list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null); then
-    [ ! -e "$socket" ] && return 0
-    return 1
-  fi
-  [ -z "$listing" ] && return 0
-  while read -r window_id window_name; do
-    [[ "$window_id" =~ ^@[0-9]+$ ]] || return 1
-    [ "$window_name" = "$story" ] || continue
-    case "$seen" in *"|$window_id|"*) continue ;; esac
-    seen="${seen}|$window_id|"
-    LEASE_TMUX_WINDOWS="${LEASE_TMUX_WINDOWS:+$LEASE_TMUX_WINDOWS$'\n'}$window_id"
-  done <<< "$listing"
-  return 0
+  local snapshot
+  snapshot=$(resource_window_snapshot) || return 1
+  LEASE_TMUX_WINDOWS=$(printf '%s' "$snapshot" | jq -r '.window_id // empty')
 }
 
 # cmd_unclaim_leased <story-id> <lease-json> — release an engine-owned claim
@@ -4197,6 +4301,8 @@ cmd_unclaim_leased() {
   [ "$typed_id" = "$lease_story" ] \
     || refuse "cleanup-lease-story-mismatch" "story.sh unclaim: lease story `$lease_story` does not match requested story `$typed_id`."
 
+  load_story_resources "$typed_id" "$lease"
+  revalidate_story_resources
   _release_story unclaim "$lease_story"
   local unclaimed=false conflict=""
   case "$REL_RESULT" in
@@ -4208,17 +4314,13 @@ cmd_unclaim_leased() {
   leased_story_windows "$lease" "$lease_story" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh unclaim: the leased tmux server exists but its story windows cannot be enumerated."
   local initial="$LEASE_TMUX_WINDOWS" removed=false failure=""
-  if [ -n "$initial" ]; then
-    local socket window_id
-    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-    while IFS= read -r window_id; do
-      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
-        removed=true
-      else
-        failure="${failure:+$failure; }tmux refused to kill $window_id"
-      fi
-    done <<< "$initial"
-  fi
+  local close_status=0
+  _close_story_window "$RESOURCE_WINDOW" || close_status=$?
+  case "$close_status" in
+    0) removed=true ;;
+    1) ;;
+    *) failure="tmux identity changed or window closure could not be proved" ;;
+  esac
   local absent=false
   if leased_story_windows "$lease" "$lease_story"; then
     [ -n "$LEASE_TMUX_WINDOWS" ] || absent=true
@@ -4338,6 +4440,7 @@ validate_cleanup_lease() {
   LEASE_STATE=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.state // ""')
   LEASE_SUPER=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.superstate // ""')
 
+  load_story_resources "$LEASE_CANONICAL_ID" "$lease"
   local repository_real root worktree_real registered_branch branch_holder
   repository_real=$(cd_resolve / "$LEASED_REPO") \
     || refuse "cleanup-lease-repository-missing" "story.sh $verb: leased repository \`$LEASED_REPO\` is unreachable."
@@ -4392,7 +4495,7 @@ cmd_reap_leased() {
   default=$(default_branch 2>&1) \
     || refuse "default-branch-unknown" "story.sh reap: origin's default branch could not be established for $canonical_id, so nothing can be classed merged: $(printf '%s' "$default" | tr '\n' ' ')"
   freshen_base_ref "$default"
-  wt_status=$(_story_worktree_status "$leased_worktree" "")
+  wt_status=$(_story_worktree_status "$leased_worktree" "") || refuse "resource-query-failed" "cannot classify leased worktree"
   case "$wt_status" in
     dirty) refuse "dirty-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) has uncommitted changes." ;;
     locked) refuse "locked-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) is locked." ;;
@@ -4414,10 +4517,10 @@ cmd_reap_leased() {
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
 
+  revalidate_story_resources
   local reaped_wt=false reaped_br=false reaped_tmux=false failure=""
   if [ "$wt_status" != missing ]; then
     if git worktree remove "$leased_worktree" >/dev/null 2>&1; then
-      git worktree prune >/dev/null 2>&1 || true
       reaped_wt=true
     else
       failure="git worktree remove refused for $leased_worktree"
@@ -4430,18 +4533,16 @@ cmd_reap_leased() {
       failure="${failure:+$failure; }could not delete branch $leased_branch"
     fi
   fi
-  if [ -n "$initial_tmux_windows" ]; then
-    local socket window_id
-    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-    while IFS= read -r window_id; do
-      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
-        reaped_tmux=true
-      fi
-    done <<< "$initial_tmux_windows"
-  fi
+  local close_status=0
+  _close_story_window "$RESOURCE_WINDOW" || close_status=$?
+  case "$close_status" in
+    0) reaped_tmux=true ;;
+    1) ;;
+    *) failure="${failure:+$failure; }tmux identity changed or window closure could not be proved" ;;
+  esac
 
   local registration_absent=false path_absent=false branch_absent=false tmux_absent=false
-  registered_worktree_branch "$leased_worktree" >/dev/null 2>&1 || registration_absent=true
+  registration_absent "$leased_worktree" && registration_absent=true
   [ -e "$leased_worktree" ] || path_absent=true
   local_branch_exists "$leased_branch" || branch_absent=true
   if leased_story_windows "$lease" "$canonical_id"; then
@@ -4616,8 +4717,10 @@ Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge
     *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
   esac
   local pull_request display
-  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" \
-    '{url:.url, number:.number, base:.baseRefName, head_oid:.headRefOid, adopted:$adopted}')
+  # PR metadata can lag a successful push; the receipt names the head already
+  # verified against the origin branch, independently of GitHub's API view.
+  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" --arg head_oid "$head_oid" \
+    '{url:.url, number:.number, base:.baseRefName, head_oid:$head_oid, adopted:$adopted}')
   if [ "$adopted" = true ]; then
     display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; adopted open pull request $(printf '%s' "$pr" | jq -r .url)."
   else
@@ -4712,6 +4815,7 @@ cmd_reap() {
 
   _complete_prepare "$id"
   id="$CMP_ID"
+  revalidate_story_resources
 
   if [ "$CMP_SUPER" != "CLOSED" ]; then
     refuse "not-closed" "story.sh reap: $id is not closed (state \`$CMP_STATE\`) -- refusing to reclaim a worktree for a story that isn't done."
@@ -4736,7 +4840,7 @@ cmd_reap() {
   if [ -n "$DRY_RUN" ]; then
     local -a commands=()
     if [ "$CMP_WT_STATUS" != "missing" ]; then
-      commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
+      commands+=("git worktree remove $CMP_WT_PATH")
     fi
     [ "$CMP_BR_STATUS" = "deletable" ] && commands+=("git branch -d $CMP_WT_BRANCH")
     commands+=("tmux kill-window -t <window of $CMP_WNAME>")
@@ -4762,7 +4866,6 @@ cmd_reap() {
       # here -- dirty already refused above, and this process has already
       # left "current" behind), and that veto is a feature, not an
       # obstacle to route around.
-      git worktree prune >/dev/null 2>&1 || true
       reaped_wt=true
     else
       wt_fail="git worktree remove refused for $CMP_WT_PATH"
@@ -4798,7 +4901,12 @@ cmd_reap() {
 
   # Best-effort, LAST -- see _close_story_window for why nothing here needs a
   # guard past "was a pane found at all".
-  _close_story_window "$CMP_WNAME" || true
+  local close_status=0
+  _close_story_window "$CMP_WNAME" || close_status=$?
+  if [ "$close_status" -gt 1 ]; then
+    reap_ok=false
+    display="$display Could not prove tmux window absence; resources may require another guarded cleanup."
+  fi
 
   jq -n --arg id "$id" --argjson ok "$reap_ok" \
         --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
@@ -4976,7 +5084,7 @@ _close_release_window() {
       else
         local rc=$?
         [ "$rc" -ne 1 ] \
-          && RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname" \
+          && RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname: ${RESOURCE_CLOSE_ERROR:-postcondition remained false}" \
           || RELEASE_WINDOW="none"
       fi ;;
     *)
@@ -4985,7 +5093,7 @@ _close_release_window() {
       else
         local rc=$?
         [ "$rc" -eq 1 ] \
-          || RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname"
+          || RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname: ${RESOURCE_CLOSE_ERROR:-postcondition remained false}"
       fi
       ;;
   esac
@@ -5004,6 +5112,7 @@ cmd_unclaim() {
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
 
+  revalidate_story_resources
   _release_story unclaim "$id"
   case "$REL_RESULT" in
     ok) : ;;
@@ -5127,6 +5236,7 @@ cmd_reset() {
     fi
   fi
 
+  revalidate_story_resources
   _release_story reset "$id"
   local unclaimed=false conflict=""
   case "$REL_RESULT" in
@@ -5143,7 +5253,7 @@ cmd_reset() {
     local -a dry_cmds=()
     [ "$REL_RESULT" = "ok" ] && dry_cmds+=("story unclaim $id")
     if [ "$CMP_WT_STATUS" != "missing" ]; then
-      dry_cmds+=("git worktree remove --force $CMP_WT_PATH" "git worktree prune")
+      dry_cmds+=("git worktree remove --force $CMP_WT_PATH")
     fi
     [ "$CMP_BR_STATUS" != "missing" ] && dry_cmds+=("git branch -D $CMP_WT_BRANCH")
     [ "$CMP_WINDOW_STATUS" != "self" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
@@ -5179,7 +5289,6 @@ cmd_reset() {
       rm_args=(worktree remove --force --force "$CMP_WT_PATH")
     fi
     if git "${rm_args[@]}" >/dev/null 2>&1; then
-      git worktree prune >/dev/null 2>&1 || true
       removed_wt=true
     else
       wt_fail="git worktree remove refused for $CMP_WT_PATH"
@@ -5195,7 +5304,7 @@ cmd_reset() {
     fi
   fi
 
-  if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 || [ -e "$CMP_WT_PATH" ]; then
+  if ! registration_absent "$CMP_WT_PATH" || [ -e "$CMP_WT_PATH" ]; then
     wt_fail="${wt_fail:-worktree cleanup postcondition failed for $CMP_WT_PATH}"
     removed_wt=false
   fi
@@ -5294,7 +5403,7 @@ done
 # Every command except dispatch and capabilities reads the provider from the
 # environment. Both resolve it only after parsing their own explicit
 # --agent override.
-if [ "${1:-}" != "dispatch" ] && [ "${1:-}" != "capabilities" ]; then
+if [ "${1:-}" = "doctor" ]; then
   configure_agent "${STORY_AGENT:-claude}"
 fi
 

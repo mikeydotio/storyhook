@@ -20,11 +20,11 @@
 use std::path::PathBuf;
 
 use storyhook::cli::{
-    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
-    DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
-    HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
-    PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, VerifierAction, WebAction,
+    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, ContinuationAction,
+    CrashesAction, DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode,
+    HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
+    TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
@@ -415,6 +415,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 created_at: "2026-08-30T20:00:00Z".to_string(),
                 updated_at: "2026-08-30T20:01:00Z".to_string(),
                 lanes: vec![EngineLaneView {
+                    adopted_identity: None,
                     index: 0,
                     state: EngineLaneState::Working,
                     story: Some("SH-10".to_string()),
@@ -428,6 +429,23 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     id: "SH-11".to_string(),
                     title: "Approve the rollout".to_string(),
                 }],
+            })),
+        ),
+        (
+            "resources",
+            Response::Resources(Box::new(storyhook::service::resources::ResourceReport {
+                project: "fixture".into(),
+                story_id: "SH-7".into(),
+                status: "absent".into(),
+                repository: Some("/repo".into()),
+                worktree: None,
+                branch: Some("worktree-SH-7".into()),
+                window_name: "SH-7".into(),
+                socket_path: Some("/tmp/socket".into()),
+                pane: None,
+                provider: None,
+                candidates: vec![],
+                diagnostics: vec![],
             })),
         ),
         (
@@ -933,6 +951,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::EngineRun(_) => "engine_run",
             Response::EngineReset(_) => "engine_reset",
             Response::Cleanup(_) => "cleanup",
+            Response::Resources(_) => "resources",
             Response::Summary(_) => "summary",
             Response::HtmlReport(_) => "html_report",
             Response::Graph(_) => "graph",
@@ -949,7 +968,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 24] = [
+    const EVERY_VARIANT: [&str; 25] = [
         "verifier_status",
         "with_verifier",
         "message",
@@ -961,6 +980,7 @@ fn the_response_corpus_covers_every_variant() {
         "engine_run",
         "engine_reset",
         "cleanup",
+        "resources",
         "summary",
         "html_report",
         "graph",
@@ -1260,12 +1280,46 @@ fn error_variants_travel_under_a_kind_tag() {
 // Invocation
 // ---------------------------------------------------------------------------
 
-/// Every `Invocation` variant, plus every variant of the six action enums
+/// Every `Invocation` variant, plus every variant of the action enums
 /// they nest. `Invocation` derives `PartialEq`, so unlike `Response` this one
 /// can assert on values directly.
 fn invocation_corpus() -> Vec<Invocation> {
     vec![
         Invocation::Help,
+        Invocation::Continuation {
+            id: String::new(),
+            action: ContinuationAction::Capabilities,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Request,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Status,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Receipt {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+            },
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Retry {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+            },
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Ack {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+                reviewed_seq: 36_458,
+                head: "78e3e9dd01e48b08a6bd97e52d80a907f9df1f90".into(),
+                provider: "codex".into(),
+                session_id: "receiving-root-session".into(),
+            },
+        },
         // All four `NewProjectRequest`/`Attach` shapes. `Ask` is on the wire
         // deliberately: the client is the only process that can answer it, and
         // the dispatcher's refusal of it is only reachable if it survives a
@@ -1927,6 +1981,10 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Cleanup { dry_run: true },
+        Invocation::Resources {
+            id: "SH-7".into(),
+            options: Default::default(),
+        },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1952,6 +2010,7 @@ fn invocation_corpus() -> Vec<Invocation> {
 /// compiling until someone has decided how it crosses the wire.
 fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
+        Invocation::Continuation { .. } => "Continuation",
         Invocation::Help => "Help",
         Invocation::Project { .. } => "Project",
         Invocation::New { .. } => "New",
@@ -1966,6 +2025,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Engine { .. } => "Engine",
         Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
+        Invocation::Resources { .. } => "Resources",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -2036,7 +2096,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        71,
+        73,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

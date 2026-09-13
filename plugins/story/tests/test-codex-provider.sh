@@ -95,7 +95,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI start
   "dropped Plan key: fixture exercised the retry"
 
 # Safe reap uses the provider's path and removes only the closed, merged leaf.
-(cd "$repo" && story move "$id" done >/dev/null)
+(cd "$repo" && story move "$id" "done" >/dev/null)
 export FAKE_TMUX_PANES
 FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
 out=$(run_codex "$repo" reap "$id")
@@ -245,8 +245,15 @@ assert_eq "$(jqf "$out" .agent)" "claude" "legacy env alias: canonical provider"
 assert_contains "$(cat "$alias_err")" "deprecated" "legacy env alias: warning"
 assert_contains "$(cat "$alias_err")" "STORY_AGENT=claude" "legacy env alias: canonical remedy"
 
+# Deterministic readers ignore caller provider settings; launch still validates them.
 out=$(cd "$repo_plan" && STORY_AGENT=unknown bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown provider: refused"
-assert_contains "$(jqf "$out" .display)" "supported agents" "unknown provider: names choices"
+assert_eq "$(jqf "$out" .ok)" "true" "unknown caller provider: list succeeds"
+assert_eq "$(printf '%s' "$out" | jq -r --arg id "$id_auto" '.stories | any(.id == $id)')" \
+  "true" "unknown caller provider: list returns the ready story"
+
+out=$(cd "$repo_plan" && STORY_AGENT=unknown STORY_DRY_RUN=1 \
+  bash "$SCRIPT" dispatch "$id_auto" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "unknown launch provider: refused"
+assert_contains "$(jqf "$out" .display)" "supported agents" "unknown launch provider: names choices"
 
 finish

@@ -130,6 +130,9 @@ pub struct EngineScopeView {
 /// One lane as presented by the engine control surfaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineLaneView {
+    /// Captured identity for an adopted manual lane; absent for engine-created work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_identity: Option<crate::store::AdoptedIdentity>,
     pub index: u32,
     pub state: EngineLaneState,
     pub story: Option<String>,
@@ -206,6 +209,7 @@ impl EngineRunView {
                 let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
                 let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
+                    adopted_identity: lane.adopted_identity,
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
@@ -902,6 +906,8 @@ pub enum Response {
     EngineReset(Box<crate::store::EngineReset>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
+    /// Read-only story resource identity and refusal evidence.
+    Resources(Box<crate::service::resources::ResourceReport>),
     Summary(Box<SummaryView>),
     /// `story report --html`: the report's data, rendered into an HTML
     /// document by the client (SH-679). The daemon used to compose the HTML
@@ -1255,6 +1261,9 @@ fn render_json(response: &Response) -> String {
             "result": "ok",
             "run": run,
         })),
+        Response::Resources(report) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "resources":report}))
+        }
         Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "cleanup": report,
@@ -1567,6 +1576,12 @@ fn render_human(response: &Response) -> String {
             reset.token, reset.run_id, reset.lane_index, reset.lease.story_id
         ),
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Resources(report) => format!(
+            "resources {}: {}\n{}\n",
+            report.story_id,
+            report.status,
+            serde_json::to_string_pretty(report).expect("resource report serializes")
+        ),
         Response::Cleanup(report) => {
             let action = if report.dry_run {
                 "would remove"

@@ -59,7 +59,9 @@
 //! and disagree.
 
 pub mod block_delivery;
+pub mod continuation;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
+pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub mod conformance;
 mod engine_reset;
 pub use engine_reset::EngineReset;
@@ -94,12 +96,12 @@ pub use rebuild::{
 };
 pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
-    EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, FeedEvent,
-    LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, VerificationFailureDisposition,
-    VerificationIncident, partition_known,
+    AdoptedIdentity, AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord,
+    EngineLaneState, EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope,
+    EngineSpeed, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
+    VerificationFailureDisposition, VerificationIncident, partition_known,
 };
 pub use verification_recovery::{
     VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,
@@ -259,6 +261,8 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Durable context handoffs in creation order.
+    fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
     fn block_deliveries(&self, project: ProjectId) -> Result<Vec<BlockDelivery>, StoreError>;
 
@@ -530,6 +534,14 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Inserts generation-bound context intent atomically with its story comment.
+    fn insert_continuation(&mut self, record: &Continuation) -> Result<(), StoreError>;
+    /// Writes the next revision only if the expected revision still owns the row.
+    fn update_continuation(
+        &mut self,
+        record: &Continuation,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Append an ordered block transition effect inside the mutation transaction.
     fn enqueue_block_delivery(
         &mut self,

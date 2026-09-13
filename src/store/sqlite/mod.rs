@@ -31,6 +31,7 @@
 //! three things every guarantee in this module is about.
 
 mod block_delivery;
+mod continuation;
 mod engine_reset;
 pub(crate) mod read;
 pub(crate) mod write;
@@ -809,6 +810,13 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn continuations(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::Continuation>, StoreError> {
+                continuation::list(&self.conn, project)
+            }
+
             fn block_deliveries(
                 &self,
                 project: ProjectId,
@@ -1046,6 +1054,19 @@ impl_read_ops!(SqliteReadTx);
 impl_read_ops!(SqliteWriteTx);
 
 impl WriteOps for SqliteWriteTx<'_> {
+    fn insert_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+    ) -> Result<(), StoreError> {
+        continuation::insert(&self.conn, record)
+    }
+    fn update_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        continuation::update(&self.conn, record, expected)
+    }
     fn enqueue_block_delivery(
         &mut self,
         project: ProjectId,

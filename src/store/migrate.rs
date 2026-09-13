@@ -404,8 +404,20 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 40,
+        name: "engine_adoption",
+        sql: include_str!("schema/0040_engine_adoption.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 41,
+        name: "continuations",
+        sql: include_str!("schema/0041_continuations.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 42,
         name: "engine_resets",
-        sql: include_str!("schema/0040_engine_resets.sql"),
+        sql: include_str!("schema/0042_engine_resets.sql"),
         foreign_keys_off: false,
     },
 ];

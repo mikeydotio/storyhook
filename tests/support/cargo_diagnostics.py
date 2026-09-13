@@ -249,5 +249,77 @@ use std::io::Write;
         self.assertEqual(sum(json.loads(x).get("kind") == "case" for x in progress.read_text().splitlines()), 2)
 
 
+class GateBuildOutcome(unittest.TestCase):
+    """Shared compilation is confirmed against a normal production build."""
+
+    def setUp(self):
+        CollectorContracts.setUp(self)
+        self.outcome = self.root / "outcome.jsonl"
+        self.outcome.touch()
+        self.env["STORYHOOK_GATE_BUILD_OUTCOME"] = str(self.outcome)
+
+    invoke = CollectorContracts.invoke
+    package = CollectorContracts.package
+
+    def confirm(self, cwd):
+        return subprocess.run([sys.executable, "-B", str(SCRIPT), "--confirm-shared", str(self.outcome)],
+                              cwd=cwd, env=self.env, capture_output=True, timeout=60)
+
+    def test_real_shared_error_and_test_only_error_are_distinguished(self):
+        for name, source, expected in [
+            ("shared", "pub fn broken() { missing; }", 10),
+            ("test_only", "#[cfg(test)] fn broken() { missing; }", 0),
+        ]:
+            with self.subTest(name=name):
+                self.outcome.write_text("")
+                manifest = self.package(name, source)
+                result = self.invoke(["--", "cargo", "test", "--offline", "--manifest-path", str(manifest)])
+                self.assertEqual(result.returncode, 101, result.stderr)
+                confirmed = self.confirm(manifest.parent)
+                self.assertEqual(confirmed.returncode, expected, confirmed.stdout + confirmed.stderr)
+
+    def test_integration_compile_failure_and_test_output_do_not_block_production(self):
+        manifest = self.package("integration", "")
+        tests = manifest.parent / "tests"
+        tests.mkdir()
+        (tests / "broken.rs").write_text("#[test] fn broken() { absent; }")
+        result = self.invoke(["--", "cargo", "test", "--offline", "--manifest-path", str(manifest)])
+        self.assertEqual(result.returncode, 101, result.stderr)
+        self.assertEqual(self.confirm(manifest.parent).returncode, 0)
+        self.outcome.write_text("")
+        (tests / "broken.rs").write_text(
+            '#[test] fn broken() { assert!(std::env::var_os("STORYHOOK_GATE_BUILD_OUTCOME").is_none()); panic!("ordinary test failure"); }')
+        result = self.invoke(["--", "cargo", "test", "--offline", "--manifest-path", str(manifest)])
+        self.assertEqual(result.returncode, 101, result.stderr)
+        self.assertEqual(self.outcome.read_text(), "")
+        self.assertEqual(self.confirm(manifest.parent).returncode, 0)
+
+    def test_passing_test_cannot_inherit_or_forge_build_outcomes(self):
+        manifest = self.package("provenance", r'''#[test] fn isolated() {
+    assert!(std::env::var_os("STORYHOOK_GATE_BUILD_OUTCOME").is_none());
+    assert!(std::env::var_os("STORYHOOK_COMPILER_DIAGNOSTICS").is_none());
+    println!("{}", r#"{"reason":"compiler-message","message":{"level":"error","message":"impostor"}}"#);
+}
+''')
+        result = self.invoke(["--", "cargo", "test", "--offline", "--manifest-path", str(manifest),
+                              "--", "--nocapture"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(b"impostor", result.stdout)
+        self.assertEqual(self.outcome.read_text(), "")
+        self.assertEqual(self.confirm(manifest.parent).returncode, 0)
+
+    def test_outcome_without_verifier_diagnostics_and_invalid_evidence(self):
+        self.env.pop(ENV_KEY)
+        manifest = self.package("standalone", "pub fn broken() { missing; }")
+        result = self.invoke(["--", "cargo", "test", "--offline", "--manifest-path", str(manifest)])
+        self.assertEqual(result.returncode, 101, result.stderr)
+        self.assertEqual(self.confirm(manifest.parent).returncode, 10)
+        for contents in ["not json", '{"reason":"compiler-message","message":null}']:
+            self.outcome.write_text(contents)
+            self.assertEqual(self.confirm(manifest.parent).returncode, 125)
+        self.outcome.unlink()
+        self.assertEqual(self.confirm(manifest.parent).returncode, 125)
+
+
 if __name__ == "__main__":
     unittest.main()

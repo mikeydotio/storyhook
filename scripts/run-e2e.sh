@@ -169,7 +169,7 @@ run_one_project() {
   shift
   playwright_args=("$@")
 
-  data_root="$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)"
+  data_root="$(mktemp -d /private/tmp/story-e2e.XXXXXX)"
   daemon_started=0
 
   cleanup() {
