@@ -219,6 +219,19 @@ verification_failure_detail() {
 
     printf 'Verification failure summary\n'
     printf 'The completed gate failed with exit status %s.\n' "$failure_status"
+    # Leg outcomes remain visible when their detailed output exceeds the tail.
+    awk '
+        /^leg (fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e): FAILED — exit [0-9]+$/ {
+            if (!heading++) print "Failed legs:"
+            if (!seen[$2]++) print "  - " substr($0, 5)
+        }
+    ' "$failure_log"
+    awk '
+        /^leg (fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e): SKIPPED — dependency (rust-suite|rust-contracts|build) failed$/ {
+            if (!heading++) print "Dependency skips:"
+            if (!seen[$2]++) print "  - " substr($0, 5)
+        }
+    ' "$failure_log"
     if [ -n "$compiler_problem" ]; then
         printf 'Compiler diagnostic collection unavailable: %.500s\n' "$compiler_problem"
     fi
