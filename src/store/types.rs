@@ -343,9 +343,22 @@ pub struct EngineQuarantineRecord {
     pub observed_at: String,
 }
 
+/// Immutable process identity captured when a manual lane is adopted.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdoptedIdentity {
+    /// Provider recorded by dispatch on the window.
+    pub provider: EngineAgent,
+    /// Process owning the pane when adoption was inspected.
+    pub pane_pid: i32,
+    /// Server-local immutable window identifier.
+    pub window_id: String,
+}
+
 /// One row of durable Full Auto lane state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineLaneRecord {
+    /// Present only for an explicitly adopted manual dispatch.
+    pub adopted_identity: Option<AdoptedIdentity>,
     /// The run that owns the lane.
     pub run_id: String,
     /// Zero-based lane position within the run.

@@ -5,6 +5,9 @@
 //! keeps the store-pool deadlock rule in the caller while giving reconcile
 //! tests a seam that never needs a worktree, tmux server, or agent process.
 
+/// Read-only inspection and transactional adoption of manual dispatches.
+pub mod adoption;
+
 use std::ffi::OsString;
 #[cfg(test)]
 use std::fs::File;
@@ -554,6 +557,10 @@ pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn probe_window(&self, window: &str) -> WindowProbe;
+    /// Probes a lane using its durable identity when the dispatcher supports it.
+    fn probe_lane(&self, _lane: &EngineLaneRecord, target: &str) -> WindowProbe {
+        self.probe_window(target)
+    }
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
     /// lanes on — every dispatched session, engine-filled or manual.
@@ -668,6 +675,14 @@ impl Dispatcher for ShellDispatcher {
             &request.cleanup_lease,
             &self.env,
         )
+    }
+
+    fn probe_lane(&self, lane: &EngineLaneRecord, target: &str) -> WindowProbe {
+        if lane.adopted_identity.is_some() {
+            adoption::probe(lane)
+        } else {
+            self.probe_window(target)
+        }
     }
 
     fn probe_window(&self, window: &str) -> WindowProbe {
@@ -1359,7 +1374,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         detail: "the lane records neither a pane id nor a window name to probe"
                             .to_string(),
                     },
-                    |target| self.dispatcher.probe_window(&target),
+                    |target| self.dispatcher.probe_lane(&lane, &target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             // Read only when it can change the verdict: a Gone window on an
@@ -1384,6 +1399,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 } => seconds_between_unix(*at, &now),
                 _ => None,
             };
+            let adoption_blocked = if lane.adopted_identity.is_some() {
+                self.ctx.store().read(|tx| {
+                    let all = adoption::snapshots(tx, project)?;
+                    Ok(row
+                        .as_ref()
+                        .is_some_and(|row| crate::domain::is_blocked(&row.snapshot, &all)))
+                })?
+            } else {
+                false
+            };
             let observation = LaneObservation {
                 story_closed: row
                     .as_ref()
@@ -1391,9 +1416,10 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 story_verifying: row
                     .as_ref()
                     .is_some_and(|row| row.state == VERIFYING_STATE_SLUG),
-                agent_blocked: row.as_ref().is_some_and(|row| {
-                    row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
-                }),
+                agent_blocked: adoption_blocked
+                    || row.as_ref().is_some_and(|row| {
+                        row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
+                    }),
                 window,
                 head_global_seq,
                 last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),
@@ -1407,6 +1433,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             };
             let classification = if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)
+            } else if lane.adopted_identity.is_some()
+                && !observation.agent_blocked
+                && row.as_ref().is_some_and(|row| row.state != "in-progress")
+            {
+                LaneClassification::Completed
             } else {
                 classify(&observation, STALL_CEILING_SECS, pass)
             };
@@ -1494,7 +1525,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
-        idle.outcome = Some(COMPLETED.to_string());
+        idle.outcome = Some(
+            if lane.adopted_identity.is_some() {
+                "adopted-released"
+            } else {
+                COMPLETED
+            }
+            .to_string(),
+        );
         idle.outcome_detail = lane.story_id.clone();
         Ok(self.ctx.store().write(|tx| {
             if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
@@ -2318,6 +2356,7 @@ fn pty_output_after(probe: &WindowProbe, recorded_at: Option<&str>) -> Option<St
 /// would let the next story inherit a stall clock it never started (SH-465).
 fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     EngineLaneRecord {
+        adopted_identity: None,
         run_id: run_id.to_string(),
         lane_index,
         state: EngineLaneState::Idle,

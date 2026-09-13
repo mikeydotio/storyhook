@@ -84,6 +84,7 @@ fn migration_32_adds_nullable_run_configuration_without_inventing_defaults() {
 
 fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
     EngineLaneRecord {
+        adopted_identity: None,
         run_id: run_id.into(),
         lane_index,
         state: EngineLaneState::Idle,
@@ -1402,4 +1403,25 @@ fn immediate_stop_clears_a_quarantined_lane_without_unclaiming_it() {
         Some("needs a person")
     );
     assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn migration_39_preserves_existing_lanes_and_refuses_incomplete_adoption() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..38]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    raw(&store).execute("INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at) VALUES ('legacy','alpha','project',1,'codex','running','2026-01-01','2026-01-01')", []).unwrap();
+    raw(&store).execute("INSERT INTO engine_lanes (run_id,lane_index,state,last_observed_at) VALUES ('legacy',0,'idle','2026-01-01')", []).unwrap();
+    store.migrate().unwrap();
+    let lanes = store.read(|tx| tx.engine_lanes("legacy")).unwrap();
+    assert!(lanes[0].adopted_identity.is_none());
+    assert!(
+        raw(&store)
+            .execute(
+                "UPDATE engine_lanes SET adopted_identity_json='{}' WHERE run_id='legacy'",
+                []
+            )
+            .is_err()
+    );
 }

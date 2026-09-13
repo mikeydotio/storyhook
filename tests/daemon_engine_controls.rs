@@ -82,4 +82,22 @@ fn cli_start_and_resume_wake_runs_created_after_the_daemon_began_waiting() {
         &["engine", "resume", "--run", &paused.id],
     );
     finished(&store, &paused.id);
+
+    // A run introduced after the worker parked must also wake on configure.
+    // An empty queue proves a pass occurred without launching any agent.
+    paused.id = "running-before-configure".into();
+    paused.state = EngineRunState::Running;
+    lane.run_id = paused.id.clone();
+    store
+        .write(|tx| {
+            tx.create_engine_run(&paused)?;
+            tx.put_engine_lane(&lane)
+        })
+        .unwrap();
+    command(
+        &env,
+        project.path(),
+        &["engine", "configure", "--run", &paused.id, "--lanes", "3"],
+    );
+    finished(&store, &paused.id);
 }

@@ -2781,6 +2781,7 @@ Use `story delete <id> [--force]` for permanent story removal.
             "engine",
             r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+story engine adopt <id> [<id> ...] [--run <id>]
 story engine status [--run <id>]
 story engine pause [--run <id>]
 story engine resume [--run <id>]
@@ -2788,6 +2789,15 @@ story engine stop [--run <id>] [--now]
 story engine ack [--run <id>]
 
 Control one Full Auto run for the selected project.
+
+adopt
+  Binds named live manual dispatches to idle lanes of the current running
+  or paused run. Every story needs its original readable worktree lease
+  and exact live provider pane. The entire batch must fit current capacity.
+  Adoption preserves claims and agents. Identical retries consume no extra
+  capacity. Adopted bindings release at verification, closure, or unclaim;
+  blocked or failed work is quarantined. Engine-created lanes retain their
+  existing verification ownership. Automatic adoption at start is not supported.
 
 configure
   Changes only supplied settings on a running or paused run; at least one

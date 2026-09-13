@@ -521,7 +521,7 @@ pub(super) fn engine_lanes(
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
                     dispatched_at, last_observed_at, outcome, outcome_detail, \
                     last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
-                    probe_detail \
+                    probe_detail, adopted_identity_json \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -544,6 +544,7 @@ pub(super) fn engine_lanes(
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
             ))
         }),
         "reading engine lanes",
@@ -567,6 +568,7 @@ pub(super) fn engine_lanes(
                 pane_id,
                 cleanup_lease_json,
                 probe_detail,
+                adopted_identity_json,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -580,7 +582,17 @@ pub(super) fn engine_lanes(
                         })
                     })
                     .transpose()?;
+                let adopted_identity = adopted_identity_json
+                    .map(|encoded| {
+                        serde_json::from_str(&encoded).map_err(|error| {
+                            StoreError::Corrupt(format!(
+                                "invalid engine adoption identity: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?;
                 Ok(EngineLaneRecord {
+                    adopted_identity,
                     run_id,
                     lane_index: stored_u32(lane_index, "engine_lanes.lane_index")?,
                     state,
