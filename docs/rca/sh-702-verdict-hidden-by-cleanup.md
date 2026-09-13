@@ -43,10 +43,48 @@ Bare final answers followed by a wrapper timeout also retain both facts: the
 daemon synthesizes a cleanup halt and explicitly marks unreported resource paths
 unknown. Partial answers do not establish a verdict.
 
-## Remaining baseline repairs
+## Continuation integration and validation
 
 The impacted run also reproduced two defects at unchanged base `db827a022`:
-`dashboard_local_time` lacks its test-impact manifest row, and a leased-reap
-fixture has no origin although default-branch lookup now requires one. Both are
-adopted into SH-702 for continuation, with exact diagnostics on the story. They
-must be repaired and tested before the widened story is submitted to verifying.
+`dashboard_local_time` lacked its test-impact manifest row, and a leased-reap
+fixture had no origin although default-branch lookup now requires one. SH-698
+landed both repairs as `c38d8e0da` and `b58639762`, plus the process-registration
+exit-observation repair `574286228`. Integration commit `c38782322` merges their
+landed history at `d3a01a0e2`, preserving primary fix `5c66ca540` and both stories'
+lifecycle contracts. The adopted baseline work is resolved.
+
+Continuation validation exposed three journal-damage assertions that still
+required discarding a completed merge. Commit `612f52ffa` reconciles them with
+the approved contract: missing, replaced and truncated journals each retain a
+previously published verdict plus permanent cleanup failure, while the same
+damage without completion remains infrastructure-only. All eight progress
+timeout tests pass, including both states for each damage case.
+
+The cancellation registration fixture also failed repeatedly: it published
+readiness before starting a foreground worker, whose wait could defer the
+parent's TERM trap. A controlled TERM-ignoring worker reproduced the missing
+handler marker. Commit `b98b59506` uses an interruptible asynchronous wait and
+publishes readiness only after the worker installs its handler. Both cooperative
+and ignoring-parent cases retain cancellation and leader-reaping assertions.
+The foreground version failed; the repaired process filter passes all ten tests
+after integration. Production cancellation policy is unchanged.
+
+The sibling sweep fixed the same cooperative foreground-wait pattern in the
+graceful-timeout, withdrawal and manual-stop fixtures (`c5e9ef93e`). All their
+assertions remain, and the withdrawal/control targets pass 6 and 11 tests.
+Fixture constraint: a cooperative shell must use an interruptible `wait` when
+its trap is expected to finish while a child is still alive. Deliberately
+TERM-ignoring workers remain unchanged because they test escalation.
+
+Across thirteen directly impacted integration targets, 232 Rust tests pass;
+three focused library filters pass another 29. The two lifecycle wrappers run
+the production-flow Python suites. Targeted Clippy with warnings denied,
+formatting and whitespace checks pass. The selector ran against each changed
+tree and returned `ALL` because certified baseline `7d8c74f5` has no coverage
+map; the full suite remains the central verifier's responsibility.
+
+The initial sandboxed compile was interrupted after shared build-slot access
+failed. Approved escalation restored access; subsequent compiler waits confirmed
+the normal shared bound. Cargo replayed cached fallback diagnostics from the
+interrupted run. No lock relocation, guard bypass or installed-artifact edit was
+used. Detailed commands, logs and regression evidence are recorded on SH-702.
