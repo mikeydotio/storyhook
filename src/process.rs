@@ -120,7 +120,7 @@ pub(crate) fn run_captured_with_registration<G>(
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, None, register, || {
+    run_captured_until(command, termination, None, None, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
     .map_err(|failure| failure.error)
@@ -138,6 +138,7 @@ pub(crate) fn run_captured_cancellable<G>(
     run_captured_until(
         command,
         termination,
+        None,
         None,
         Some(cancellation),
         register,
@@ -165,6 +166,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     let captured = run_captured_until(
         command,
         termination,
+        None,
         Some(poll),
         Some(cancellation),
         register,
@@ -181,9 +183,29 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     Ok(captured)
 }
 
+/// Runs a bounded subprocess with staged, file-backed standard input.
+pub(crate) fn run_captured_with_input(
+    command: Command,
+    input: File,
+    timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        Some(input),
+        None,
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
+    input: Option<File>,
     poll: Option<Duration>,
     cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
@@ -207,7 +229,7 @@ fn run_captured_until<G>(
     let child_stdout = stdout_file.try_clone().map_err(CaptureError::Stage)?;
     let child_stderr = stderr_file.try_clone().map_err(CaptureError::Stage)?;
     command
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(child_stdout)
         .stderr(child_stderr);
     #[cfg(unix)]

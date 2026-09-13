@@ -351,6 +351,8 @@ fn the_manifest_currently_declares_exactly_these_hooks() {
         scripts,
         vec![
             "codex-stop.sh",
+            "continuation.sh",
+            "continuation.sh",
             "full-auto.sh",
             "full-auto.sh",
             "full-auto.sh",
@@ -384,7 +386,13 @@ fn hook_manifest_has_the_shared_provider_contract() {
     events.sort_unstable();
     assert_eq!(
         events,
-        ["PostToolUse", "PreToolUse", "SessionStart", "Stop"]
+        [
+            "PostCompact",
+            "PostToolUse",
+            "PreToolUse",
+            "SessionStart",
+            "Stop"
+        ]
     );
 
     // One row per (event, matcher). `PreToolUse` retains Claude's plan-tool
@@ -415,6 +423,8 @@ fn hook_manifest_has_the_shared_provider_contract() {
         ("PreToolUse", "AskUserQuestion", "full-auto.sh", 10),
         ("PreToolUse", "request_user_input", "full-auto.sh", 10),
         ("PostToolUse", "Bash", "post-git.sh", 10),
+        ("PostCompact", "manual|auto", "continuation.sh", 10),
+        ("Stop", "*", "continuation.sh", 10),
         ("Stop", "*", "stop-handoff.sh", 15),
         ("Stop", "*", "codex-stop.sh", 50),
     ];
@@ -442,13 +452,21 @@ fn hook_manifest_has_the_shared_provider_contract() {
         })
         .collect();
     declared_pairs.sort();
+    let command_for = |event: &str, script: &str| {
+        let argument = match (event, script) {
+            ("PostCompact", "continuation.sh") => " compact",
+            ("Stop", "continuation.sh") => " stop",
+            _ => "",
+        };
+        format!("bash \"${{PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/hooks/{script}\"{argument}")
+    };
     let mut expected_pairs: Vec<(String, String, String)> = expected
         .iter()
         .map(|(event, matcher, script, _)| {
             (
                 (*event).to_string(),
                 (*matcher).to_string(),
-                format!("bash \"${{PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/hooks/{script}\""),
+                command_for(event, script),
             )
         })
         .collect();
@@ -467,12 +485,7 @@ fn hook_manifest_has_the_shared_provider_contract() {
             .iter()
             .filter(|entry| entry["matcher"] == matcher)
             .flat_map(|entry| entry["hooks"].as_array().unwrap())
-            .find(|hook| {
-                hook["command"]
-                    .as_str()
-                    .unwrap()
-                    .ends_with(&format!("/hooks/{script}\""))
-            })
+            .find(|hook| hook["command"] == command_for(event, script))
             .unwrap_or_else(|| {
                 panic!("hooks.json declares no {event} matcher `{matcher}` for {script}")
             });
@@ -489,7 +502,7 @@ fn hook_manifest_has_the_shared_provider_contract() {
             command_text.contains("${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}"),
             "{event} does not resolve either provider's installed plugin root: {command_text}"
         );
-        assert!(command_text.ends_with(&format!("/hooks/{script}\"")));
+        assert_eq!(command_text, command_for(event, script));
     }
 
     let codex_manifest = repo_root().join("plugins/story/.codex-plugin/plugin.json");
@@ -502,6 +515,53 @@ fn hook_manifest_has_the_shared_provider_contract() {
         codex.get("hooks").is_none(),
         "current Codex validation rejects an explicit hooks field; hooks are default-discovered"
     );
+}
+
+/// Delegated Python calls have their own deadlines and cumulative outer budget.
+/// The shell-only detector cannot see these calls, so measure their literal
+/// bounds against the same declared manifest rather than exempting the wrapper.
+#[test]
+fn administrative_python_calls_fit_their_hook_budgets() {
+    let hooks = storyhook_test_support::all_declared_hooks();
+    for (source, event, calls) in [
+        ("session_handoff.py", "Stop", 1),
+        ("compact_receipt.py", "PostCompact", 2),
+    ] {
+        let text = std::fs::read_to_string(storyhook_test_support::hook_script(source))
+            .expect("administrative Python hook source");
+        let deadline = text
+            .split("'--deadline', '")
+            .nth(1)
+            .and_then(|suffix| suffix.split('\'').next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("delegated CLI call has a literal inner deadline");
+        let bounds: Vec<u64> = text
+            .split("timeout=")
+            .skip(1)
+            .map(|suffix| {
+                suffix
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .expect("every delegated call has a literal outer bound")
+            })
+            .collect();
+        assert_eq!(
+            bounds.len(),
+            calls,
+            "{source} call count changed; review its cumulative budget"
+        );
+        assert!(bounds.iter().all(|bound| *bound > deadline));
+        let hook = hooks
+            .iter()
+            .find(|hook| hook.event == event && hook.script == "continuation.sh")
+            .expect("administrative wrapper is declared for its native event");
+        assert!(
+            Duration::from_secs(bounds.iter().sum()) + MIN_WRAPPER_MARGIN < hook.timeout,
+            "{source} can exhaust {event}'s outer timeout before its bounded calls finish"
+        );
+    }
 }
 
 fn repo_root() -> &'static std::path::Path {
