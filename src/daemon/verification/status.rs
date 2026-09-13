@@ -11,8 +11,13 @@ pub struct VerifierStatus {
     pub project: String,
     /// Manual admission and live cancellation state.
     pub control: VerificationControlState,
-    /// Current infrastructure failure, if any.
+    /// Retained infrastructure failure, if any; consult `incident_is_current`
+    /// before treating it as a current blocker.
     pub incident: Option<VerificationIncident>,
+    /// Whether the retained incident currently blocks work rather than describes
+    /// an earlier failure of the authenticated retry. Legacy payloads fail closed.
+    #[serde(default = "incident_current_default")]
+    pub incident_is_current: bool,
     /// Display identity of the incident's first-hit story.
     pub first_hit_story: Option<String>,
     /// Seconds since the first failure.
@@ -44,7 +49,7 @@ impl VerificationActivity {
     /// Reads one consistent ownership/store snapshot and matching journal evidence.
     pub fn status(&self, ctx: &Ctx<'_, impl Store>) -> Result<VerifierStatus, AppError> {
         self.read_project(ctx.store(), ctx.project(), |tx, active, control| {
-            snapshot(tx, ctx, active, control)
+            snapshot(tx, ctx, active, control).map(|(status, _)| status)
         })
         .map_err(Into::into)
     }
@@ -55,7 +60,13 @@ pub(crate) fn snapshot(
     ctx: &Ctx<'_, impl Store>,
     active: Option<&ActiveVerification>,
     control: VerificationControlState,
-) -> Result<VerifierStatus, crate::store::StoreError> {
+) -> Result<
+    (
+        VerifierStatus,
+        Vec<crate::daemon::verification_progress::StoryVerificationStatus>,
+    ),
+    crate::store::StoreError,
+> {
     use crate::service::engine::elapsed_secs;
     let now = ctx.now();
     let project = tx
@@ -72,80 +83,28 @@ pub(crate) fn snapshot(
         .as_ref()
         .map_or(0, |i| i.attempts.saturating_sub(1));
     let verifying: Vec<String> = ordered.iter().map(|c| c.story_id.clone()).collect();
+    let evidence = super::evidence::AttemptEvidence::read(&ordered, active, ctx.env());
+    let incident_is_current = evidence.incident_is_current(&ordered, active, incident.as_ref());
+    let statuses = crate::daemon::verification_progress::status_snapshot_with_evidence(
+        &ordered,
+        active,
+        incident.as_ref(),
+        &now,
+        &evidence,
+        incident_is_current,
+    );
     let stopped = control != VerificationControlState::Running;
-    let held_stories = if stopped || incident.is_some() {
+    let held_stories = if stopped || incident_is_current {
         verifying.clone()
     } else {
         Vec::new()
     };
-    let mut evidence_error = None;
-    let mut last_evidence_at = None;
-    let silence_seconds = if let Some(active) = active {
-        let candidate = ordered
-            .iter()
-            .find(|c| c.story_id == active.story_id && c.verifying_generation == active.generation);
-        match candidate {
-            Some(candidate) => {
-                let path = journal_path(ctx.env(), candidate);
-                match std::fs::File::open(&path) {
-                    Ok(mut file) => {
-                        use std::io::Read;
-                        let mut text = String::new();
-                        match file
-                            .read_to_string(&mut text)
-                            .and_then(|_| file.metadata()?.modified())
-                        {
-                            Ok(modified) => {
-                                let progress = crate::service::gate_progress::fold(&text);
-                                if crate::daemon::verification_progress::identifies_active_attempt(
-                                    &progress, active,
-                                ) {
-                                    match crate::service::gate_output::metadata_time(modified) {
-                                        Ok(modified) => {
-                                            let at = modified.to_rfc3339();
-                                            last_evidence_at = Some(at.clone());
-                                            elapsed_secs(&at, &now)
-                                        }
-                                        Err(error) => {
-                                            evidence_error = Some(format!(
-                                                "cannot inspect {} timestamp: {error}",
-                                                path.display()
-                                            ));
-                                            None
-                                        }
-                                    }
-                                } else {
-                                    evidence_error = Some(
-                                        "journal does not identify the active generation and attempt".into(),
-                                    );
-                                    last_evidence_at = Some(active.started_at.clone());
-                                    elapsed_secs(&active.started_at, &now)
-                                }
-                            }
-                            Err(error) => {
-                                evidence_error =
-                                    Some(format!("cannot inspect {}: {error}", path.display()));
-                                None
-                            }
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        last_evidence_at = Some(active.started_at.clone());
-                        elapsed_secs(&active.started_at, &now)
-                    }
-                    Err(error) => {
-                        evidence_error = Some(format!("cannot open {}: {error}", path.display()));
-                        None
-                    }
-                }
-            }
-            None => {
-                evidence_error =
-                    Some("owned generation is no longer in the verifying queue".into());
-                last_evidence_at = Some(active.started_at.clone());
-                elapsed_secs(&active.started_at, &now)
-            }
-        }
+    let mut evidence_error = evidence.error;
+    let mut last_evidence_at = evidence.last_evidence_at;
+    let silence_seconds = if active.is_some() {
+        last_evidence_at
+            .as_deref()
+            .and_then(|at| elapsed_secs(at, &now))
     } else {
         ordered
             .iter()
@@ -168,7 +127,10 @@ pub(crate) fn snapshot(
         evidence_error =
             Some("evidence age unavailable (missing timestamp or clock moved backwards)".into());
     }
-    let warning = if let Some(i) = incident.as_ref().filter(|i| i.halted) {
+    let warning = if let Some(i) = incident
+        .as_ref()
+        .filter(|i| incident_is_current && i.halted)
+    {
         Some(format!(
             "{} verifier HALTED: incident {}, {} held; story verifier ack {}; story daemon logs",
             project.slug,
@@ -199,23 +161,31 @@ pub(crate) fn snapshot(
     } else {
         None
     };
-    Ok(VerifierStatus {
-        project: project.slug,
-        control,
-        incident,
-        first_hit_story,
-        incident_age_seconds,
-        retry_count,
-        verifying,
-        held_stories,
-        active: active.cloned(),
-        recovery,
-        command_receipt: None,
-        last_evidence_at,
-        silence_seconds,
-        evidence_error,
-        warning,
-    })
+    Ok((
+        VerifierStatus {
+            project: project.slug,
+            control,
+            incident,
+            incident_is_current,
+            first_hit_story,
+            incident_age_seconds,
+            retry_count,
+            verifying,
+            held_stories,
+            active: active.cloned(),
+            recovery,
+            command_receipt: None,
+            last_evidence_at,
+            silence_seconds,
+            evidence_error,
+            warning,
+        },
+        statuses,
+    ))
+}
+
+fn incident_current_default() -> bool {
+    true
 }
 
 impl VerifierStatus {
@@ -223,7 +193,7 @@ impl VerifierStatus {
     pub fn render_human(&self) -> String {
         let mut text = format!(
             "queue {}: {} verifying\n",
-            if self.incident.as_ref().is_some_and(|i| i.halted) {
+            if self.incident_is_current && self.incident.as_ref().is_some_and(|i| i.halted) {
                 "halted"
             } else {
                 match self.control {
@@ -236,9 +206,14 @@ impl VerifierStatus {
             self.verifying.len()
         );
         if let Some(i) = &self.incident {
-            text.push_str(&format!("Incident {}: {}; first hit {}; age {}s; {} attempts ({} retries); unacknowledged\n{}\nHeld: {}\n",
+            if self.incident_is_current {
+                text.push_str(&format!("Incident {}: {}; first hit {}; age {}s; {} attempts ({} retries); unacknowledged\n{}\nHeld: {}\n",
                 i.incident_id, if i.halted { "HALTED" } else { "retrying" }, self.first_hit_story.as_deref().unwrap_or("unknown"),
                 self.incident_age_seconds.map_or_else(|| "unknown".into(), |n| n.to_string()), i.attempts, self.retry_count, i.detail, self.held_stories.join(", ")));
+            } else {
+                text.push_str(&format!("Previous infrastructure failure; current retry running. Incident {}; first hit {}; {} attempts ({} retries).\n{}\n",
+                    i.incident_id, self.first_hit_story.as_deref().unwrap_or("unknown"), i.attempts, self.retry_count, i.detail));
+            }
         }
         if let Some(active) = &self.active {
             text.push_str(&format!(

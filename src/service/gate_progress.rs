@@ -287,6 +287,9 @@ pub struct GateProgress {
     pub output: Option<OutputReference>,
     /// A malformed output record replaces prior evidence with this diagnostic.
     pub output_error: Option<String>,
+    // Invalid complete records cannot establish recovery authority. This does
+    // not discard otherwise useful checklist or output diagnostics.
+    recovery_evidence_invalid: bool,
 }
 
 /// Non-checklist work performed within one checklist item. Activities are
@@ -324,6 +327,25 @@ pub struct CurrentStep {
 }
 
 impl GateProgress {
+    /// Whether explicit successful preflight precedes this run's gate lifecycle.
+    /// Derived parents and raw output never prove that a retry reached the gate.
+    #[must_use]
+    pub fn reached_verification_gate(&self) -> bool {
+        if self.recovery_evidence_invalid {
+            return false;
+        }
+        let preflight = self
+            .items
+            .iter()
+            .find(|item| item.label == "merge preflight");
+        let gate = self.items.iter().find(|item| item.label == "release gate");
+        matches!((preflight, gate), (Some(preflight), Some(gate))
+            if preflight.explicit && preflight.status == ItemStatus::Passed
+                && gate.explicit && gate.status_order > preflight.status_order
+                && matches!(gate.status, ItemStatus::Running | ItemStatus::Passed
+                    | ItemStatus::Failed | ItemStatus::Reused))
+    }
+
     /// Returns the most recently started explicit running item or activity.
     /// An implied parent is never a step. Counts belong only to the selected
     /// item, so an earlier completed suite cannot appear beside later work.
@@ -413,15 +435,21 @@ impl GateProgress {
 /// write, or simply garbage — is skipped rather than treated as an error:
 /// the journal is read while it may still be appended to, and a reader must
 /// tolerate its own last line being a half-written fragment.
+/// A complete malformed record separately invalidates recovery proof until the
+/// next valid run record. Output-reference diagnostics remain independent of
+/// lifecycle proof, since raw output cannot establish preflight or gate status.
 #[must_use]
 pub fn fold(journal_text: &str) -> GateProgress {
     let mut progress = GateProgress::default();
-    for (order, line) in journal_text.lines().enumerate() {
-        let line = line.trim();
+    for (order, raw_line) in journal_text.split_inclusive('\n').enumerate() {
+        let line = raw_line.trim();
         if line.is_empty() {
             continue;
         }
         let Ok(parsed) = serde_json::from_str::<JournalLine>(line) else {
+            if raw_line.ends_with('\n') {
+                progress.recovery_evidence_invalid = true;
+            }
             continue;
         };
         match parsed {
@@ -458,6 +486,9 @@ pub fn fold(journal_text: &str) -> GateProgress {
                 total,
             } => {
                 let Some(status) = ItemStatus::parse(&status) else {
+                    if matches!(path.as_str(), "merge preflight" | "release gate") {
+                        progress.recovery_evidence_invalid = true;
+                    }
                     continue;
                 };
                 let item = progress.item_mut(&path);
@@ -682,6 +713,46 @@ pub const STALE_GATE_THRESHOLD_SECS: u64 = 180;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_proof_tolerates_only_an_unfinished_final_record_and_resets_with_run() {
+        let run = "{\"kind\":\"run\",\"generation\":1,\"attempt_id\":\"retry\",\"at\":\"now\"}\n";
+        let reached = "{\"kind\":\"item\",\"path\":\"merge preflight\",\"status\":\"passed\"}\n{\"kind\":\"item\",\"path\":\"release gate\",\"status\":\"running\",\"at\":\"now\"}\n";
+        let valid = format!("{run}{reached}");
+        assert!(fold(&valid).reached_verification_gate());
+        assert!(fold(&format!("{valid}{{\"kind\":")).reached_verification_gate());
+        for malformed in [
+            "not json\n",
+            "{\"kind\":\"item\"}\n",
+            "{\"kind\":\"item\",\"path\":\"release gate\",\"status\":\"unknown\"}\n",
+        ] {
+            let damaged = format!("{valid}{malformed}");
+            let progress = fold(&damaged);
+            assert!(!progress.reached_verification_gate(), "{malformed}");
+            assert_eq!(
+                progress.current_step().unwrap().label,
+                "release gate",
+                "ordinary display remains available"
+            );
+            assert!(
+                !fold(&format!("{damaged}{run}")).reached_verification_gate(),
+                "new run cannot inherit old steps"
+            );
+            assert!(
+                fold(&format!("{damaged}{run}{reached}")).reached_verification_gate(),
+                "new valid run resets damaged proof"
+            );
+        }
+        assert!(
+            fold(&format!("{valid}{{\"kind\":\"future_event\"}}\n")).reached_verification_gate()
+        );
+        let invalid_output = fold(&format!("{valid}{{\"kind\":\"output\",\"path\":42}}\n"));
+        assert!(invalid_output.output_error.is_some());
+        assert!(
+            invalid_output.reached_verification_gate(),
+            "output diagnostics do not authenticate or revoke lifecycle evidence"
+        );
+    }
 
     #[test]
     fn an_item_line_sets_status_and_seconds() {

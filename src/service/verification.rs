@@ -750,20 +750,24 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
-    /// Rewrites a marked comment only while `candidate` remains current.
+    /// Rewrites a marked comment only while its generation and incident snapshot
+    /// remain current. An attempt can publish a new failure before releasing ownership.
     pub(crate) fn upsert_generation_comment(
         &self,
         ctx: &Ctx<'_, S>,
         candidate: &VerificationCandidate,
         marker: &str,
         body: &str,
+        expected_incident: Option<&VerificationIncident>,
     ) -> Result<GenerationWrite<bool>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
         Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
-            if !candidate_is_current(&*tx, &row, candidate)? {
+            if !candidate_is_current(&*tx, &row, candidate)?
+                || tx.verification_incident(project)?.as_ref() != expected_incident
+            {
                 return Ok(GenerationWrite::Superseded);
             }
             let events = marked_comment_events(&row, marker, body, &now);
@@ -1338,6 +1342,92 @@ mod tests {
     }
 
     #[test]
+    fn progress_write_rejects_a_changed_incident_even_in_the_same_generation() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let service = crate::service::StoryService::new(&ctx);
+        let id = service
+            .create(&crate::service::NewStoryInput {
+                title: "Incident publication race".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        service
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let candidate = queue.next().unwrap().unwrap();
+        let record = || {
+            queue
+                .record_generation_incident(
+                    &ctx,
+                    &candidate,
+                    VerificationFailureDisposition::Retryable,
+                    "preflight unavailable",
+                    3,
+                )
+                .unwrap()
+        };
+        record();
+        let incident = store
+            .read(|tx| tx.verification_incident(ctx.project()))
+            .unwrap()
+            .unwrap();
+        let write = |expected| {
+            queue
+                .upsert_generation_comment(
+                    &ctx,
+                    &candidate,
+                    "progress",
+                    "progress current retry",
+                    expected,
+                )
+                .unwrap()
+        };
+        assert!(
+            matches!(write(None), GenerationWrite::Superseded),
+            "incident appeared after snapshot"
+        );
+        assert!(matches!(
+            write(Some(&incident)),
+            GenerationWrite::Applied(true)
+        ));
+        record();
+        let before = store
+            .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        assert!(
+            matches!(write(Some(&incident)), GenerationWrite::Superseded),
+            "new failure while owner still held"
+        );
+        assert_eq!(
+            store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap()
+                .head_seq,
+            before
+        );
+        store
+            .write(|tx| tx.clear_verification_incident(&incident.incident_id))
+            .unwrap();
+        assert!(
+            matches!(write(Some(&incident)), GenerationWrite::Superseded),
+            "retired incident cannot be republished"
+        );
+    }
+
+    #[test]
     fn blocked_generation_cannot_record_outcomes_or_comments() {
         let f = storyhook_test_support::ServiceFixture::new();
         let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
@@ -1365,7 +1455,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             queue
-                .upsert_generation_comment(&ctx, &c, "result", "stale")
+                .upsert_generation_comment(&ctx, &c, "result", "stale", None)
                 .unwrap(),
             GenerationWrite::Superseded
         ));

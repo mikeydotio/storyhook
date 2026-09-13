@@ -140,3 +140,56 @@ story's continuation report; they are not attributed to the hook repair.
 The selector still returns `ALL` for its missing baseline coverage map. The full
 suite and final merge verification remain central-verifier-owned. No adopted
 implementation scope remains pending.
+
+## Recovered infrastructure retries — SH-714
+
+An incident records failed attempts and enforces their retry ceiling. Its presence
+alone does not establish that the current attempt is still blocked. Deleting it
+when a launcher starts would erase the failure budget without proving recovery.
+
+Transactional admission captures the prior incident ID and failed-attempt count
+in optional process-local `ActiveVerification.retry_origin`. A shared journal
+observation can classify that incident as history only when all conditions hold:
+
+| Evidence | Required condition |
+|---|---|
+| Incident | Retryable, not halted, unchanged admission ID and attempt count |
+| Ownership | Same project, story, and nonempty submission generation as the queued candidate and incident |
+| Journal | Exact active attempt UUID and generation |
+| Lifecycle | Explicit root merge-preflight Passed, then explicit root release-gate Running, Passed, Failed, or Reused |
+
+This means the retry reached verification; it neither certifies success nor
+promises infrastructure cannot fail again. Classification continues through gate
+completion and landing while ownership remains current. A new failure recorded
+before ownership release immediately restores incident authority.
+
+Missing, stale, legacy generation-only, or malformed lifecycle evidence cannot
+override an incident. A complete malformed journal record invalidates recovery
+proof until the next valid run record. An unfinished final append is tolerated;
+unknown future record kinds remain forward compatible. Output-reference schema
+diagnostics remain independent because raw output is not lifecycle authority.
+
+Status, dashboard data, and progress publication share one parsed journal per
+snapshot. `VerifierStatus.incident_is_current` is false with no incident or a
+proven recovering attempt, and missing fields deserialize conservatively as true.
+The retained `incident` still carries its original diagnosis, counts and dates.
+Human status identifies it as “Previous infrastructure failure; current retry
+running.” Story cards and live comments show Running; waiting cards show ordinary
+ownership instead of inheriting the historical prerequisite failure.
+
+Manual stopped, draining, and stopping controls remain independent and still hold
+the queue. Halted incidents always retain acknowledgement authority. Publication
+rechecks ownership and cancellation under the registry lock, then compares the
+incident inside the generation-guarded store transaction, so a prepared Running
+body cannot overwrite a later failure or interruption.
+
+Regression coverage includes the production shell verifier failing real local
+head-ref convergence, automatically retrying into a held gate, and separately
+settling RED and GREEN. Production CLI/load-context, REST data, status, comments,
+failure budgets, stale identity, malformed proof, terminal/reused gates and
+browser rendering are exercised. Mutation checks must reject restored
+incident-first precedence and removed UUID/new-failure guards.
+
+The read-only installed-system inspection workaround remains necessary until a
+containing release is installed and an installed recovery regression validates
+the transition. A source merge does not retire it.
