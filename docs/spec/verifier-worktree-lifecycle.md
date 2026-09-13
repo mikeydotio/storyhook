@@ -87,10 +87,11 @@ reflogs and working files are preserved. Stale administration has its own
 `stale-admin/` and manifest. Retained objects are never deleted automatically.
 A stale format marker alone does not authorize discarding a healthy checkout.
 
-A gate completion record is written only after successful restoration and
-cleanup. Retention or uncertain supervision remains an infrastructure failure,
-including when the gate command itself exited zero. A receipt cannot turn
-failed restoration into a test verdict.
+The restoration completion record is written only after successful restoration
+and cleanup. Independently, the gate owner atomically publishes normal command
+completion before any cleanup census (SH-702). Retention or uncertain supervision
+halts reuse and landing, but cannot replace that completed verdict. A receipt
+cannot authorize failed restoration or prove that a command ran to completion.
 
 ## Clean startup — SH-684
 
@@ -117,7 +118,8 @@ Caches may rebuild; routine outputs are not retained as diagnostic archives.
 This policy does not apply to generic pollers, foreign worktrees, logs, receipts,
 or recovery archives outside the verifier checkout. It does not authorize
 cleanup under a live or ambiguous owner. Post-gate recovery retains its existing
-contract: tracked damage or obstructed restoration invalidates that attempt.
+contract: tracked damage or obstructed restoration prevents landing; any normally
+completed gate verdict is retained separately from that cleanup failure (SH-702).
 
 The unanimous startup-policy council verdict is recorded in `story show SH-684`
 (2026-09-11). It chose preservation of damaged units plus cleanup of disposable
@@ -223,6 +225,37 @@ child programs, for bare numeric process timeouts and monotonic deadlines.
 Named/derived bounds and comment lines are allowed; polling sleeps are not
 ceilings. Positive controls and a required lifecycle-harness corpus entry keep
 an empty or ineffective scan from passing silently.
+
+## Completed execution and failed cleanup — SH-702
+
+`verification-executions/<attempt-log-name>.json` records the owner nonce,
+attempt filename, pinned tree/base/head, execution state and observed status.
+The supervisor publishes through `verifier_state.save` before the first
+post-exit census. An exec-error pipe distinguishes launch refusal from a command
+that exits 125; signal-range statuses remain unjudged. Neither result-file
+location reaches the arbitrary gate. Records persist independently of the
+speculative lease and do not alter recovery authority.
+
+The old restoration marker still proves successful restoration. Failed
+restoration, marker removal, post-exit census, signalling, or final owner
+publication adds a permanent `cleanup_failure` to a completed `tests-failed`,
+`gate-passed`, or `merged` result. A signal during restoration consults the same
+execution evidence. The outer owner parses one complete buffered child result
+before adding its failure; incomplete output remains infrastructure-only.
+
+The daemon atomically records the verdict and incident. RED and unlanded passes
+remain verifying without remediation dispatch. `CENTRAL VERIFICATION GATE
+PASSED` records command execution only; the GREEN prefix continues to mean an
+actually landed, certified merge. Already landed results retain GREEN and Done,
+with reaping suspended. That incident survives later ticks because the completed
+story's exact verification generation carries GREEN. Acknowledgement retains
+the existing recovery and admission checks; it does not establish quiescence.
+
+Regression coverage: `test_verifier_verdict.py` runs the production script chain
+with isolated OS faults, including a real retained orphan; `merge_gate` retains
+the tracked-byte preservation and signal tests; daemon/service tests cover wire
+compatibility, atomic rollback, idempotence, generation withdrawal and persistent
+post-merge halts. No public CLI or database migration is required.
 
 ## Decision and references
 
