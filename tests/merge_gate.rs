@@ -294,6 +294,11 @@ fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
         "no completion record may outlive the attempt: {:?}",
         completion_records(&repo)
     );
+    assert_eq!(
+        lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+        ["running"],
+        "a signalled command has no validated terminal gate result"
+    );
     assert!(
         !repo
             .common_dir()
@@ -702,6 +707,126 @@ fn verifier_reports_unreadable_compiler_evidence_without_inventing_errors() {
         "{detail}"
     );
     assert!(!detail.contains("Compiler/build diagnostics ("), "{detail}");
+}
+
+#[test]
+fn foreign_gate_lifecycle_is_running_inside_the_command_then_records_its_exit() {
+    for (exit_status, expected_status) in [(0, "passed"), (9, "failed")] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+        let tree = stdout(&repo.preflight(&base, &head));
+        let poller_container = repo.poller(&base);
+        let poller = poller_container.path().join("poller");
+        let snapshot = repo.path().join("inside-gate.ndjson");
+        let result = repo.verification_gate(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                "cp \"$STORYHOOK_GATE_PROGRESS\" \"$1\"; printf 'ordinary stdout'; printf 'ordinary stderr' >&2; exit \"$2\"",
+                "foreign-gate",
+                snapshot.to_str().unwrap(),
+                &exit_status.to_string(),
+            ],
+        );
+        assert_ok(&result, "classify the foreign gate execution");
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(payload["exit_status"], exit_status, "{payload}");
+        assert_eq!(
+            lifecycle_statuses(&snapshot, "release gate"),
+            ["running"],
+            "the verifier must own a running lifecycle before invoking a foreign gate"
+        );
+        assert_eq!(
+            lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+            ["running", expected_status]
+        );
+    }
+}
+
+#[test]
+fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
+    for (exit_status, expected_status) in [(0, "passed"), (9, "failed")] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+        let tree = stdout(&repo.preflight(&base, &head));
+        let poller_container = repo.poller(&base);
+        let poller = poller_container.path().join("poller");
+        let armed = repo.path().join("gate-completed");
+        let restoring = repo.path().join("cleanup-started");
+        let release = repo.path().join("cleanup-release");
+        let hooks = repo.path().join("cleanup-hooks");
+        fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("post-checkout");
+        // A real checkout hook holds restoration after the gate's owner has
+        // recorded its exit. Walk only this hook's ancestry to identify the
+        // verifier shell whose deferred signal trap is under test.
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/bash\n[ -f '{}' ] || exit 0\nready='{}'\n[ ! -f \"$ready\" ] || exit 0\npid=$PPID\nwhile [ \"$pid\" -gt 1 ]; do\n command=$(ps -p \"$pid\" -o command=)\n case \"$command\" in bash*scripts/verify-pr.sh\\ --run-gate*) break ;; esac\n pid=$(ps -p \"$pid\" -o ppid= | tr -d ' ')\ndone\n[ \"$pid\" -gt 1 ] || exit 1\nprintf '%s' \"$pid\" > \"$ready.tmp\"\nmv \"$ready.tmp\" \"$ready\"\nwhile [ ! -f '{}' ]; do :; done\n",
+                armed.display(), restoring.display(), release.display()
+            ),
+        ).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_ok(
+            &repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]),
+            "install the fixture's restoration barrier",
+        );
+        let mut verifier = repo.spawn_verification_gate(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                ": > \"$1\"; exit \"$2\"",
+                "cleanup-probe",
+                armed.to_str().unwrap(),
+                &exit_status.to_string(),
+            ],
+        );
+        wait_for_within(&restoring, Duration::from_secs(60));
+        let verifier_shell: i32 = fs::read_to_string(&restoring).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(verifier_shell, libc::SIGTERM) }, 0);
+        fs::write(&release, "continue restoration\n").unwrap();
+        let result = verifier.wait_with_output_within(Duration::from_secs(120), || {
+            "the signalled cleanup did not report the completed gate".to_owned()
+        });
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout)
+            .unwrap_or_else(|error| panic!("{error}: {} / {}", stdout(&result), stderr(&result)));
+        assert_eq!(payload["exit_status"], exit_status, "{payload}");
+        assert_eq!(
+            payload["result"],
+            if exit_status == 0 {
+                "gate-passed"
+            } else {
+                "tests-failed"
+            },
+            "{payload}"
+        );
+        assert_eq!(
+            lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+            ["running", expected_status],
+            "{payload}"
+        );
+    }
+}
+
+fn lifecycle_statuses(journal: &Path, path: &str) -> Vec<String> {
+    fs::read_to_string(journal)
+        .unwrap_or_else(|error| panic!("read {}: {error}", journal.display()))
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|row| row["kind"] == "item" && row["path"] == path)
+        .map(|row| row["status"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 #[test]
@@ -3624,6 +3749,18 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     assert_eq!(payload["disposition"], "permanent", "{payload}");
     let detail = payload["detail"].as_str().unwrap();
     assert!(detail.contains("certified nothing"), "{detail}");
+    assert_eq!(
+        lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+        ["running", "passed"],
+        "missing certification must not rewrite a known successful execution"
+    );
+    assert_eq!(
+        lifecycle_statuses(
+            &repo.path().join("gate-progress.ndjson"),
+            "gate certification receipt"
+        ),
+        ["failed"]
+    );
     assert!(
         detail.contains("`gate-bin --ci`"),
         "names the gate: {detail}"

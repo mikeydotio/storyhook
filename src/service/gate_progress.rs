@@ -181,6 +181,17 @@ pub struct ProgressItem {
 }
 
 impl ProgressItem {
+    /// A verifier-owned gate without producer instrumentation cannot promise
+    /// a total: its execution lifecycle is not itself a test or gate leg.
+    fn has_unavailable_gate_counts(&self) -> bool {
+        self.label == "release gate"
+            && self.explicit
+            && self.status == ItemStatus::Running
+            && self.children.is_empty()
+            && self.counts.seen() == 0
+            && self.counts.explicit_total.is_none()
+    }
+
     fn new(label: String) -> Self {
         Self {
             label,
@@ -493,6 +504,10 @@ fn fraction(passed: u32, total: u32, estimated: bool) -> String {
 /// (`docs/spec/markdown-in-the-dashboard.md`).
 fn render_item(item: &ProgressItem, depth: usize, out: &mut String) {
     let indent = "  ".repeat(depth);
+    if depth == 0 && item.has_unavailable_gate_counts() {
+        out.push_str("- [ ] release gate — running; detailed counts unavailable\n");
+        return;
+    }
     let status = item.effective_status();
     let (passed, total, estimated) = item.contribution();
     let mut detail = Vec::new();
@@ -584,29 +599,25 @@ pub fn render(view: &VerificationProgressView<'_>, now: &str) -> String {
                 .fold((0, 0, false), |(p, t, e), (cp, ct, ce)| {
                     (p + cp, t + ct, e || ce)
                 });
-            let mut header = format!("Verification ({}", fraction(passed, total, estimated));
+            let counts_unavailable = progress
+                .items
+                .iter()
+                .any(ProgressItem::has_unavailable_gate_counts);
+            let mut details = Vec::new();
+            if !counts_unavailable {
+                details.push(fraction(passed, total, estimated));
+            }
             if let Some(elapsed_seconds) = elapsed_seconds {
-                header.push_str(&format!(", {}", elapsed(*elapsed_seconds)));
+                details.push(elapsed(*elapsed_seconds));
             }
-            // `Iterator::all` on an empty journal (the gate has been handed
-            // the candidate but has not emitted its first line yet) is
-            // vacuously true — this view is only ever built for the one
-            // candidate actually running, so "no items yet" must still read
-            // as running, not silently drop the word.
-            let all_terminal = !progress.items.is_empty()
-                && progress
-                    .items
-                    .iter()
-                    .all(|item| item.effective_status().is_terminal());
-            if !all_terminal {
-                header.push_str(", running");
-            }
+            // Ownership is the execution authority. Completed checklist rows
+            // cannot finish an attempt the daemon still owns.
+            details.push("running".to_owned());
             if let Some(stale) = seconds_since_last_event.filter(|s| *s > STALE_GATE_THRESHOLD_SECS)
             {
-                header.push_str(&format!(", NO GATE OUTPUT FOR {}", elapsed(stale)));
+                details.push(format!("NO GATE OUTPUT FOR {}", elapsed(stale)));
             }
-            header.push_str(")\n");
-            out.push_str(&header);
+            out.push_str(&format!("Verification ({})\n", details.join(", ")));
             for item in &progress.items {
                 render_item(item, 0, &mut out);
             }
