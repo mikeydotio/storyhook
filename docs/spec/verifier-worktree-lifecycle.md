@@ -196,6 +196,34 @@ process around real filesystem operations. `merge_gate`, `portable_receipt`,
 cleanup, object isolation, progress, reentrancy and packaged foreign projects.
 The central verifier owns the full suite.
 
+### Load-tolerant fixture observation — SH-698
+
+The Python harness explicitly supplies a 30-second cleanup budget, retaining
+8- and 16-second overrides where cancellation cases exercise shorter ladders.
+Its settlement allowance is the budget supplied to that child plus a named
+5-second scheduling/reaping margin. Wrapper exit and gate disappearance share
+one deadline; cleanup registrations retain the original child's allowance.
+Startup and synchronous commands receive three default cleanup budgets plus
+the margin (95 seconds). Startup has no production deadline: this is generous
+patience for a live stalled fixture, not a guarantee against arbitrary load.
+
+Existence-only markers still synchronize on creation. PID records instead
+require a newline-complete positive ASCII decimal value; empty or partial
+writes remain pending within one deadline. A child exiting before publication
+fails promptly after a final read, with its status, PID, elapsed time, allowance,
+load average, observed content and log. Cleanup captures the validated PID
+once rather than rereading its file. Production supervision and its cleanup
+budgets are unchanged, and load never causes a cancellation case to be skipped.
+
+`HarnessObservation` pins publication with a real pipe-controlled writer and
+uses controlled clocks for deadline cases. It also covers early exit, final
+publication at exit, malformed records and budget overrides. The Rust
+`timing_assertions` guard scans tracked Python test sources, including embedded
+child programs, for bare numeric process timeouts and monotonic deadlines.
+Named/derived bounds and comment lines are allowed; polling sleeps are not
+ceilings. Positive controls and a required lifecycle-harness corpus entry keep
+an empty or ineffective scan from passing silently.
+
 ## Decision and references
 
 The native Codex council selected gate-first kernel ownership and durable
