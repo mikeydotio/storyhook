@@ -2826,7 +2826,9 @@ Examples:
         m.insert(
             "verifier",
             r#"story verifier status
-story verifier start | stop | drain
+story verifier start
+story verifier stop
+story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
 
 Inspect and control this project's centralized verifier.
