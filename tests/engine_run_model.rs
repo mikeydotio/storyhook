@@ -1583,42 +1583,214 @@ fn migration_40_upgrades_landed_recovery_schema_without_losing_receipts_or_lanes
 
 #[test]
 fn reset_migration_follows_shipped_adoption_and_continuation_schema() {
+    assert_reset_migration_preserves_v41_records(migrate::MIGRATIONS[41].sql);
+}
+
+// Each mutant runs the same upgrade and assertions in its own scratch store.
+// Expected diagnostics prevent SQL errors or unrelated fixture panics from passing.
+#[test]
+#[should_panic(expected = "continuation records changed")]
+fn reset_migration_retention_detects_deleted_continuations() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "DELETE FROM continuations;"
+    ));
+}
+
+#[test]
+#[should_panic(expected = "adopted lane ownership changed")]
+fn reset_migration_retention_detects_erased_adoption_identity() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "UPDATE engine_lanes SET adopted_identity_json=NULL;"
+    ));
+}
+
+#[test]
+#[should_panic(expected = "adopted lane ownership changed")]
+fn reset_migration_retention_detects_rebound_cleanup_lease() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "UPDATE engine_lanes SET cleanup_lease_json=json_set(cleanup_lease_json, '$.branch', 'foreign-branch');"
+    ));
+}
+
+fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
+    use serde_json::json;
+    use storyhook::store::{
+        AdoptedIdentity, Continuation, ContinuationPhase, ContinuationStatus, ExpectedSeq,
+    };
+
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..41]).unwrap();
-    seed_project(&store, "alpha", "AL");
+    let project = seed_project(&store, "alpha", "AL");
+    let at = "2026-08-29T20:01:00Z";
+    let story = create_story(&store, project, "Retain adopted continuation", at);
+    let head = store.read(|tx| tx.story(project, story)).unwrap().unwrap();
+    store_support::append_and_fold(
+        &store,
+        project,
+        story,
+        ExpectedSeq::Exact(head.head_seq),
+        &[storyhook::domain::StoryEvent::StoryStateChanged {
+            at: at.into(),
+            state: "in-progress".into(),
+        }],
+    )
+    .unwrap();
+    let story_id = story.to_id("AL");
     let prior = run("run-before-reset", "alpha", EngineRunState::Paused);
+    let mut adopted = lane(&prior.id, 0);
+    let worktree = dir.path().join("retained-worktree");
+    let mut lease = cleanup_lease(&story_id, &worktree);
+    lease.project_slug = "alpha".into();
+    lease.repository_path = dir.path().join("repository");
+    lease.tmux.socket_path = dir.path().join("tmux.sock");
+    adopted.state = EngineLaneState::Working;
+    adopted.story_id = Some(story_id.clone());
+    adopted.pane_id = Some("%17".into());
+    adopted.window_name = Some(story_id.clone());
+    adopted.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    adopted.cleanup_lease = Some(lease.clone());
+    adopted.dispatched_at = Some(at.into());
+    adopted.adopted_identity = Some(AdoptedIdentity {
+        provider: EngineAgent::Codex,
+        pane_pid: 123,
+        window_id: "@7".into(),
+    });
+    let sequence = store
+        .read(|tx| tx.story(project, story))
+        .unwrap()
+        .unwrap()
+        .head_global_seq;
+    adopted.last_progress_seq = Some(sequence);
+    adopted.last_progress_at = Some(at.into());
+    let completed = Continuation {
+        id: "f5462488-c1c7-47c9-ae29-d46ef2ec11a1".into(),
+        project_id: project,
+        story_no: story,
+        story_id: story_id.clone(),
+        handoff: json!({
+            "type": "storyhook.session-handoff", "version": 1,
+            "story_id": story_id, "kind": "context",
+            "evidence": {"context": "context exhausted", "outstanding_work": "verify reset"}
+        }),
+        generation: json!({"provider": "codex", "session_id": "session-1", "turn_id": "turn-1"}),
+        capture: json!({
+            "lease": lease, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "fingerprint": "dirty-1", "provider": "codex", "session_id": "session-1",
+            "turn_id": "turn-1", "mode": "default", "socket": lease.tmux.socket_path,
+            "pane": "%17", "pid": 123, "started": at,
+            "model": "gpt", "effort": "high", "speed": "standard", "autonomy": true,
+            "engine_lane": {"run_id": prior.id, "lane_index": 0}
+        }),
+        status: ContinuationStatus::Acknowledged,
+        phase: ContinuationPhase::Complete,
+        revision: 2,
+        attempts: 1,
+        created_at: at.into(),
+        updated_at: "2026-09-01T00:05:00Z".into(),
+        detail: "receiving session reviewed the retained work".into(),
+        reviewed_seq: Some(sequence.get()),
+        reviewed_head: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+    };
+    let mut outstanding = completed.clone();
+    outstanding.id = "2f1a4dac-b8e8-486c-b569-c17c77398941".into();
+    outstanding.generation["turn_id"] = json!("turn-2");
+    outstanding.capture["turn_id"] = json!("turn-2");
+    outstanding.capture["fingerprint"] = json!("dirty-2");
+    outstanding.status = ContinuationStatus::AwaitingAck;
+    outstanding.phase = ContinuationPhase::NativeContinuation;
+    outstanding.created_at = "2026-09-01T00:06:00Z".into();
+    outstanding.updated_at = outstanding.created_at.clone();
+    outstanding.revision = 0;
+    outstanding.attempts = 0;
+    outstanding.detail = "native feedback delivered; receiving review remains outstanding".into();
+    outstanding.reviewed_seq = None;
+    outstanding.reviewed_head = None;
+    let continuations = vec![completed, outstanding];
     store
         .write(|tx| {
             tx.create_engine_run(&prior)?;
-            tx.put_engine_lane(&lane(&prior.id, 0))
+            tx.put_engine_lane(&adopted)?;
+            for record in &continuations {
+                tx.insert_continuation(record)?;
+            }
+            Ok(())
         })
         .unwrap();
-    let report = store.migrate_with(&migrate::MIGRATIONS[..42]).unwrap();
-    assert_eq!(report.from_version, 41);
-    assert_eq!(report.to_version, 42);
-    assert_eq!(report.applied, ["engine_resets"]);
-    assert_eq!(
-        store.read(|tx| tx.engine_run(&prior.id)).unwrap(),
-        Some(prior)
-    );
+
     let conn = raw(&store);
-    for table in ["engine_resets", "continuations"] {
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-                [table],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(exists, "{table}");
+    // Typed equality covers the public records; raw equality also covers duplicate
+    // ownership keys/revisions and the exact serialized JSON in the backing rows.
+    let snapshots: Vec<_> = [
+        "SELECT * FROM engine_runs ORDER BY id",
+        "SELECT * FROM engine_lanes ORDER BY run_id,lane_index",
+        "SELECT * FROM continuations ORDER BY id",
+        "SELECT * FROM schema_migrations WHERE version <= 41 ORDER BY version",
+    ]
+    .into_iter()
+    .map(|sql| (sql, migration_rows(&conn, sql)))
+    .collect();
+    let assert_retained = || {
+        assert_eq!(
+            store.read(|tx| tx.engine_run(&prior.id)).unwrap(),
+            Some(prior.clone())
+        );
+        assert_eq!(
+            store.read(|tx| tx.engine_lanes(&prior.id)).unwrap(),
+            vec![adopted.clone()],
+            "adopted lane ownership changed"
+        );
+        assert_eq!(
+            store.read(|tx| tx.continuations(project)).unwrap(),
+            continuations,
+            "continuation records changed"
+        );
+        for (sql, before) in &snapshots {
+            assert_eq!(
+                &migration_rows(&conn, sql),
+                before,
+                "persisted records changed: {sql}"
+            );
+        }
+    };
+    assert_eq!(store.schema_version().unwrap(), 41);
+    assert_retained();
+    let mut migrations = migrate::MIGRATIONS[..42].to_vec();
+    migrations[41].sql = reset_sql;
+    for from_version in [41, 42] {
+        let report = store.migrate_with(&migrations).unwrap();
+        assert_eq!(report.from_version, from_version);
+        assert_eq!(report.to_version, 42);
+        assert_eq!(
+            report.applied,
+            if from_version == 41 {
+                vec!["engine_resets"]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(store.schema_version().unwrap(), 42);
+        assert_retained();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM engine_resets", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
-    let adopted: Option<String> = conn
-        .query_row(
-            "SELECT adopted_identity_json FROM engine_lanes WHERE run_id='run-before-reset'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(adopted, None);
+}
+
+fn migration_rows(conn: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = conn.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    statement
+        .query_map([], |row| {
+            (0..columns).map(|column| row.get(column)).collect()
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
