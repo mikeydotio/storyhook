@@ -784,3 +784,20 @@ fn provider_transport_passes_literal_json_on_stdin_and_reports_invalid_replies()
             .contains("invalid continuation observe response")
     );
 }
+
+#[test]
+fn explicitly_closed_story_supersedes_delivery_without_observing_provider() {
+    use storyhook::store::ContinuationStatus;
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let runtime = Observer::new("busy");
+    ContinuationService::new(&ctx, &runtime)
+        .request(&id, input(&id))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&id, "done", None, None, None)
+        .unwrap();
+    storyhook::daemon::continuation::process_one(f.store(), f.env(), &runtime).unwrap();
+    assert_eq!(requests(&f)[0].status, ContinuationStatus::Superseded);
+    assert_eq!(runtime.calls.borrow().as_slice(), ["capture"]);
+}
