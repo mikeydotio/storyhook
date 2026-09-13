@@ -123,7 +123,7 @@ assert_contains "$(jqf "$out" .display)" "removed worktree" "happy: display name
 [ -d "$repo/.claude/worktrees/$whp" ] && fail_test "happy: worktree still on disk"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$whp") \
   && fail_test "happy: branch still in git"
-grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
+grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "happy: tmux kill-window did not target the resolved window"
 
 # --- idempotent: nothing to reclaim is still ok:true, not an error ---------
