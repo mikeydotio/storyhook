@@ -29,6 +29,32 @@ pub(crate) struct Captured {
     pub(crate) stderr: Vec<u8>,
 }
 
+/// A capture error with any bounded answer collected after process cleanup.
+pub(crate) struct CaptureFailure {
+    /// The process-lifetime failure, retained independently of its answer.
+    pub(crate) error: CaptureError,
+    /// Output available after termination; callers must validate it as evidence.
+    pub(crate) stdout: Vec<u8>,
+}
+
+impl From<CaptureError> for CaptureFailure {
+    fn from(error: CaptureError) -> Self {
+        Self {
+            error,
+            stdout: Vec::new(),
+        }
+    }
+}
+
+impl CaptureFailure {
+    fn after(error: CaptureError, stdout: File) -> Self {
+        Self {
+            error,
+            stdout: read_capture(stdout),
+        }
+    }
+}
+
 /// A failure to stage, start, wait for, or finish a bounded subprocess.
 pub(crate) enum CaptureError {
     Stage(std::io::Error),
@@ -94,9 +120,10 @@ pub(crate) fn run_captured_with_registration<G>(
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, None, register, || {
+    run_captured_until(command, termination, None, None, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
+    .map_err(|failure| failure.error)
 }
 
 /// Runs a command with owner-observed cancellation and bounded group cleanup.
@@ -112,10 +139,12 @@ pub(crate) fn run_captured_cancellable<G>(
         command,
         termination,
         None,
+        None,
         Some(cancellation),
         register,
         || Ok(deadline.saturating_duration_since(Instant::now())),
     )
+    .map_err(|failure| failure.error)
 }
 
 /// Runs a command until its append-only journal stops advancing for `timeout`.
@@ -128,7 +157,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     journal: &std::path::Path,
     cancellation: &Cancellation,
     register: impl FnOnce(u32) -> Result<G, String>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
     let mut deadline =
         progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
     // Observe at least four times per idle window, capped to keep journal
@@ -137,6 +166,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     let captured = run_captured_until(
         command,
         termination,
+        None,
         Some(poll),
         Some(cancellation),
         register,
@@ -144,20 +174,45 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     )?;
     // A child can damage the journal and exit inside one poll interval. Check
     // once more after reaping so a fast successful result cannot hide that.
-    deadline.remaining().map_err(CaptureError::Wait)?;
+    if let Err(error) = deadline.remaining() {
+        return Err(CaptureFailure {
+            error: CaptureError::Wait(error),
+            stdout: captured.stdout,
+        });
+    }
     Ok(captured)
+}
+
+/// Runs a bounded subprocess with staged, file-backed standard input.
+pub(crate) fn run_captured_with_input(
+    command: Command,
+    input: File,
+    timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        Some(input),
+        None,
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
 }
 
 fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
+    input: Option<File>,
     poll: Option<Duration>,
     cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
     if cancellation.is_some_and(Cancellation::is_cancelled) {
-        return Err(CaptureError::Cancelled);
+        return Err(CaptureError::Cancelled.into());
     }
     let poll = if cancellation.is_some() {
         Some(
@@ -174,7 +229,7 @@ fn run_captured_until<G>(
     let child_stdout = stdout_file.try_clone().map_err(CaptureError::Stage)?;
     let child_stderr = stderr_file.try_clone().map_err(CaptureError::Stage)?;
     command
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(child_stdout)
         .stderr(child_stderr);
     #[cfg(unix)]
@@ -189,37 +244,38 @@ fn run_captured_until<G>(
         &stdout_file,
         &stderr_file,
     );
-    // Registration owns the child's process group for the daemon's shutdown
-    // and identity checks, and it reads that group from the kernel AFTER the
-    // spawn. A child that has already exited by then is a zombie, and macOS
-    // answers `getpgid` on a zombie with ESRCH (measured, SH-650) — so a
-    // helper that refused within a few milliseconds used to be reported as
-    // "could not run" and its answer thrown away. A leader that is gone
-    // before it could be owned has nothing long-lived to register: the
-    // failure is explained by the exit, and the capture proceeds exactly as
-    // it would had the registration guard dropped one instant after the
-    // child's own exit. Any other registration failure is still fatal.
+    // macOS removes an exiting child from process lookup before publishing
+    // its wait status (SH-698). Either exit observation permits the ordinary
+    // bounded wait/capture path; a live unregistered child still fails closed.
     let _registration = match register(pid) {
         Ok(registration) => Some(registration),
-        Err(error) => match child.try_wait() {
-            Ok(Some(_)) => None,
-            _ => {
+        Err(error) => {
+            // Query before try_wait can reap: this PID still belongs to us.
+            let group = child_process_group(pid);
+            if registration_failure_is_exit(child.try_wait(), group) {
+                None
+            } else {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Track(error));
+                return Err(CaptureError::Track(error).into());
             }
-        },
+        }
     };
     let status = loop {
         if cancellation.is_some_and(Cancellation::is_cancelled) {
             terminate_timed_out(&mut child, pid, termination);
-            return Err(CaptureError::Cancelled);
+            drop(observer);
+            return Err(CaptureFailure::after(CaptureError::Cancelled, stdout_file));
         }
         let budget = match remaining() {
             Ok(budget) => budget,
             Err(error) => {
                 terminate_timed_out(&mut child, pid, termination);
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         };
         match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
@@ -234,12 +290,20 @@ fn run_captured_until<G>(
                     &context,
                     "process timed out; group terminated",
                 );
-                return Err(CaptureError::Timeout(outcome));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Timeout(outcome),
+                    stdout_file,
+                ));
             }
             Err(error) => {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         }
     };
@@ -325,6 +389,40 @@ fn process_group_is_live(pid: u32) -> bool {
     }
 }
 
+// Separate observations keep the macOS teardown window testable without
+// requiring the scheduler to stop between kernel exit milestones.
+fn registration_failure_is_exit(
+    status: std::io::Result<Option<ExitStatus>>,
+    group: std::io::Result<u32>,
+) -> bool {
+    match status {
+        Ok(Some(_)) => true,
+        Ok(None) => group.is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH)),
+        Err(_) => false,
+    }
+}
+
+/// Reads the group of a child we still own without discarding lookup errors.
+fn child_process_group(pid: u32) -> std::io::Result<u32> {
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        // SAFETY: getpgid only observes kernel state and takes no pointers.
+        let group = unsafe { libc::getpgid(pid) };
+        if group == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(group as u32)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
 fn kill_process_group(pid: u32) {
     #[cfg(unix)]
     // SAFETY: this is the process group created for the child immediately
@@ -348,6 +446,48 @@ pub(crate) fn read_capture(mut file: File) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_accepts_only_proven_exit_states() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let absent = || Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+        assert!(registration_failure_is_exit(Ok(None), absent()));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(0))),
+            absent(),
+        ));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(1 << 8))),
+            Ok(123),
+        ));
+        assert!(!registration_failure_is_exit(Ok(None), Ok(123)));
+        assert!(!registration_failure_is_exit(
+            Ok(None),
+            Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+        ));
+        assert!(!registration_failure_is_exit(
+            Err(std::io::Error::from_raw_os_error(libc::ECHILD)),
+            absent(),
+        ));
+    }
+
+    #[test]
+    fn a_live_child_registration_failure_remains_fatal() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 30"]);
+        let result = run_captured_with_registration(
+            command,
+            Duration::from_secs(10),
+            TerminationPolicy::Kill,
+            |_| Err::<(), _>("registry write refused".into()),
+        );
+        match result {
+            Err(CaptureError::Track(error)) => assert_eq!(error, "registry write refused"),
+            Err(error) => panic!("wrong failure: {}", error.detail()),
+            Ok(_) => panic!("a live unregistered child must not be accepted"),
+        }
+    }
 
     /// SH-650: a child that exits before its process group can be read is
     /// captured, not reported as untrackable. The race is CONSTRUCTED (SH-420's
@@ -417,7 +557,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30; done",
+            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30 & wait; done",
             "graceful-timeout-probe",
             marker.to_str().unwrap(),
             ready.to_str().unwrap(),

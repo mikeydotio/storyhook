@@ -16,8 +16,7 @@ use store_support::{create_story, new_store, raw, seed_project};
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
-    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, OPERATOR_STOPPED_NOW,
-    StartRequest,
+    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, StartRequest,
 };
 use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
 use storyhook::store::ids::StoryNo;
@@ -84,6 +83,7 @@ fn migration_32_adds_nullable_run_configuration_without_inventing_defaults() {
 
 fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
     EngineLaneRecord {
+        adopted_identity: None,
         run_id: run_id.into(),
         lane_index,
         state: EngineLaneState::Idle,
@@ -660,14 +660,6 @@ fn configure_request(lanes: u32) -> ConfigureRequest {
         effort: Some("high".into()),
         speed: Some(EngineSpeed::Fast),
     }
-}
-
-fn ok_unclaim() -> DispatchOutcome {
-    DispatchOutcome::from_payload(serde_json::json!({
-        "ok": true,
-        "closed_window": true,
-        "worktree_status": "dirty"
-    }))
 }
 
 fn cleanup_lease(story: &str, worktree: &Path) -> StoryCleanupLease {
@@ -1257,88 +1249,119 @@ fn status_and_controls_are_project_isolated_and_enforce_the_state_machine() {
     ));
 }
 
+fn active_reset_story(fixture: &ServiceFixture, title: &str) -> String {
+    StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: title.into(),
+            state: Some("in-progress".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id
+}
+
 #[test]
-fn immediate_stop_is_helper_backed_preserves_work_and_retries_partial_failure() {
+fn immediate_stop_retries_only_failed_targets_and_retains_reservation_identity() {
     let fixture = ServiceFixture::new();
-    let preserved = scratch_dir();
-    let first_worktree = preserved.path().join("first");
-    let second_worktree = preserved.path().join("second");
-    std::fs::create_dir_all(&first_worktree).unwrap();
-    std::fs::create_dir_all(&second_worktree).unwrap();
-    std::fs::write(first_worktree.join("dirty.txt"), "keep me").unwrap();
-    std::fs::write(second_worktree.join("dirty.txt"), "keep me too").unwrap();
-    let refused = DispatchOutcome::from_payload(serde_json::json!({
-        "ok": false,
-        "reason": "unclaim-conflict",
-        "display": "story is no longer claimed"
-    }));
+    let first = active_reset_story(&fixture, "first");
+    let second = active_reset_story(&fixture, "second");
     let fake = FakeDispatcher::new([
-        DispatcherStep::Unclaim(ok_unclaim()),
-        DispatcherStep::Unclaim(refused),
-        DispatcherStep::Unclaim(ok_unclaim()),
+        DispatcherStep::ResetFailure("window refused".into()),
+        DispatcherStep::Reset,
+        DispatcherStep::Reset,
     ]);
     let ctx = fixture.ctx();
-    let service = EngineService::new(&ctx, &fake);
-    let run = service.start(start_request(2)).unwrap();
-    occupy(
-        &fixture,
-        &run.id,
-        0,
-        "SH-10",
-        first_worktree.to_str().unwrap(),
-    );
-    occupy(
-        &fixture,
-        &run.id,
-        1,
-        "SH-11",
-        second_worktree.to_str().unwrap(),
-    );
-
-    let error = service.stop(&run.id, true).unwrap_err().to_string();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    occupy(&fixture, &run.id, 0, &first, "/owned/first");
+    occupy(&fixture, &run.id, 1, &second, "/owned/second");
     assert!(
-        error.contains("lane 1 story `SH-11`: story is no longer claimed"),
-        "{error}"
+        engine
+            .stop(&run.id, true)
+            .unwrap_err()
+            .to_string()
+            .contains("window refused")
     );
-    let partial = service.status(Some(&run.id)).unwrap().pop().unwrap();
+    let partial = engine.status(Some(&run.id)).unwrap().remove(0);
     assert_eq!(partial.run.state, EngineRunState::Draining);
-    assert_eq!(
-        partial.run.stop_reason.as_deref(),
-        Some(OPERATOR_STOPPED_NOW)
-    );
-    assert_eq!(partial.lanes[0].state, EngineLaneState::Idle);
-    assert_eq!(partial.lanes[1].state, EngineLaneState::Working);
-    assert!(first_worktree.join("dirty.txt").exists());
-    assert!(second_worktree.join("dirty.txt").exists());
-
-    let finished = service.stop(&run.id, true).unwrap();
-    assert_eq!(finished.run.state, EngineRunState::Finished);
+    assert_eq!(partial.lanes[0].state, EngineLaneState::Working);
+    assert_eq!(partial.lanes[1].state, EngineLaneState::Idle);
+    let reserved = fixture
+        .store()
+        .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
     assert!(
-        finished
-            .lanes
-            .iter()
-            .all(|lane| lane.state == EngineLaneState::Idle)
+        reserved
+            .failure
+            .as_deref()
+            .unwrap()
+            .contains("window refused")
     );
     assert_eq!(
-        fake.calls(),
-        vec![
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-10".into(),
-                cleanup_lease: cleanup_lease("SH-10", &first_worktree),
-            }),
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-11".into(),
-                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
-            }),
-            DispatcherCall::Unclaim(storyhook::service::engine::UnclaimRequest {
-                project: "fixture".into(),
-                story: "SH-11".into(),
-                cleanup_lease: cleanup_lease("SH-11", &second_worktree),
-            }),
-        ]
+        engine.reset_target(&run.id, &reserved.token).unwrap(),
+        reserved
     );
+    let stories = StoryService::new(&ctx);
+    for state in ["verifying", "todo", "done", "in-progress"] {
+        assert!(
+            stories
+                .set_state(&first, state, None, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("reset in progress")
+        );
+    }
+    assert!(
+        stories
+            .delete(&first)
+            .unwrap_err()
+            .to_string()
+            .contains("reset in progress")
+    );
+    assert!(
+        stories
+            .set_awaiting(&first, "cancelled")
+            .unwrap_err()
+            .to_string()
+            .contains("reset in progress")
+    );
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.awaiting, None);
+    assert_eq!(before.state, "in-progress");
+    assert_eq!(
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_none()
+    );
+    let calls = fake.calls();
+    let targets: Vec<_> = calls
+        .iter()
+        .map(|call| match call {
+            DispatcherCall::Reset(reset) => reset,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(targets.len(), 3);
+    assert_eq!(targets[0].token, targets[2].token);
+    assert_eq!(targets[0].lease, targets[2].lease);
+    assert_eq!(targets[1].lease.story_id, second);
+    assert!(engine.reset_target(&run.id, &reserved.token).is_err());
+    assert_eq!(
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert_eq!(fake.calls().len(), 3);
 }
 
 #[test]
@@ -1348,7 +1371,8 @@ fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
     let run = service.start(start_request(1)).unwrap();
-    occupy(&fixture, &run.id, 0, "SH-13", "/preserved/SH-13");
+    let story = active_reset_story(&fixture, "legacy");
+    occupy(&fixture, &run.id, 0, &story, "/preserved/SH-13");
     let mut lane = fixture
         .store()
         .read(|tx| tx.engine_lanes(&run.id))
@@ -1371,35 +1395,402 @@ fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
 }
 
 #[test]
-fn immediate_stop_clears_a_quarantined_lane_without_unclaiming_it() {
+fn immediate_stop_detaches_verification_without_calling_a_cleanup_helper() {
     let fixture = ServiceFixture::new();
-    let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
-    let service = EngineService::new(&ctx, &fake);
-    let run = service.start(start_request(1)).unwrap();
-    occupy(&fixture, &run.id, 0, "SH-12", "/preserved/SH-12");
-    let mut lane = fixture
-        .store()
-        .read(|tx| tx.engine_lanes(&run.id))
-        .unwrap()
-        .pop()
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Verifier owns this work".into(),
+            state: Some("verifying".into()),
+            ..NewStoryInput::default()
+        })
         .unwrap();
-    lane.state = EngineLaneState::Quarantined;
-    lane.outcome = Some("agent-blocked".into());
-    lane.outcome_detail = Some("needs a person".into());
+    let fake = FakeDispatcher::default();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/verifier/owned");
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap();
+    let stopped = engine.stop(&run.id, true).unwrap();
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert!(fake.calls().is_empty());
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn immediate_stop_resets_a_retained_quarantined_story() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Reset this interrupted attempt".into(),
+            state: Some("in-progress".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    stories
+        .set_awaiting(&story.id, "Full Auto: window-gone")
+        .unwrap();
+    let fake = FakeDispatcher::new([DispatcherStep::Reset]);
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/interrupted/owned");
     fixture
         .store()
-        .write(|tx| tx.put_engine_lane(&lane))
+        .write(|tx| {
+            let mut lane = tx.engine_lanes(&run.id)?.remove(0);
+            lane.state = EngineLaneState::Quarantined;
+            tx.put_engine_lane(&lane)
+        })
         .unwrap();
+    engine.stop(&run.id, true).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "todo");
+    assert_eq!(row.awaiting, None);
+}
 
-    let finished = service.stop(&run.id, true).unwrap();
-
-    assert_eq!(finished.run.state, EngineRunState::Finished);
-    assert_eq!(finished.lanes[0].state, EngineLaneState::Idle);
-    assert_eq!(finished.lanes[0].outcome.as_deref(), Some("agent-blocked"));
+#[test]
+fn immediate_stop_preserves_a_quarantined_verifying_story_and_its_diagnosis() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Verifier incident".into(),
+            state: Some("verifying".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    stories
+        .set_awaiting(&story.id, "verifier owns recovery")
+        .unwrap();
+    let fake = FakeDispatcher::default();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story.id, "/verifier/owned");
+    fixture
+        .store()
+        .write(|tx| {
+            let mut lane = tx.engine_lanes(&run.id)?.remove(0);
+            lane.state = EngineLaneState::Quarantined;
+            tx.put_engine_lane(&lane)
+        })
+        .unwrap();
+    let before = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap();
     assert_eq!(
-        finished.lanes[0].outcome_detail.as_deref(),
-        Some("needs a person")
+        engine.stop(&run.id, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap(),
+        before
     );
     assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn migration_40_preserves_existing_lanes_and_refuses_incomplete_adoption() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..38]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    raw(&store).execute("INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at) VALUES ('legacy','alpha','project',1,'codex','running','2026-01-01','2026-01-01')", []).unwrap();
+    raw(&store).execute("INSERT INTO engine_lanes (run_id,lane_index,state,last_observed_at) VALUES ('legacy',0,'idle','2026-01-01')", []).unwrap();
+    store.migrate().unwrap();
+    let lanes = store.read(|tx| tx.engine_lanes("legacy")).unwrap();
+    assert!(lanes[0].adopted_identity.is_none());
+    assert!(
+        raw(&store)
+            .execute(
+                "UPDATE engine_lanes SET adopted_identity_json='{}' WHERE run_id='legacy'",
+                []
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn migration_40_upgrades_landed_recovery_schema_without_losing_receipts_or_lanes() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..39]).unwrap();
+    seed_project(&store, "alpha", "AL");
+    let receipt = r#"{"incident":"alpha:17","outcome":"recovered"}"#;
+    raw(&store).execute(
+        "INSERT INTO verification_recovery (project_id,receipt) SELECT id,?1 FROM projects WHERE slug='alpha'",
+        [receipt],
+    ).unwrap();
+    raw(&store).execute("INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at) VALUES ('legacy','alpha','project',1,'codex','running','2026-01-01','2026-01-01')", []).unwrap();
+    raw(&store).execute("INSERT INTO engine_lanes (run_id,lane_index,state,last_observed_at) VALUES ('legacy',0,'idle','2026-01-01')", []).unwrap();
+
+    store.migrate().unwrap();
+    let lanes = store.read(|tx| tx.engine_lanes("legacy")).unwrap();
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].state, EngineLaneState::Idle);
+    assert!(lanes[0].adopted_identity.is_none());
+    let retained: String = raw(&store).query_row(
+        "SELECT receipt FROM verification_recovery WHERE project_id=(SELECT id FROM projects WHERE slug='alpha')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(retained, receipt);
+    let history: Vec<(u32, String)> = raw(&store)
+        .prepare(
+            "SELECT version,name FROM schema_migrations WHERE version IN (39,40) ORDER BY version",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        history,
+        vec![
+            (39, "verification_recovery".into()),
+            (40, "engine_adoption".into())
+        ]
+    );
+    assert!(
+        raw(&store)
+            .execute(
+                "UPDATE engine_lanes SET adopted_identity_json='{}' WHERE run_id='legacy'",
+                []
+            )
+            .is_err()
+    );
+    store.migrate().unwrap();
+    assert_eq!(store.read(|tx| tx.engine_lanes("legacy")).unwrap(), lanes);
+}
+
+#[test]
+fn reset_migration_follows_shipped_adoption_and_continuation_schema() {
+    assert_reset_migration_preserves_v41_records(migrate::MIGRATIONS[41].sql);
+}
+
+// Each mutant runs the same upgrade and assertions in its own scratch store.
+// Expected diagnostics prevent SQL errors or unrelated fixture panics from passing.
+#[test]
+#[should_panic(expected = "continuation records changed")]
+fn reset_migration_retention_detects_deleted_continuations() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "DELETE FROM continuations;"
+    ));
+}
+
+#[test]
+#[should_panic(expected = "adopted lane ownership changed")]
+fn reset_migration_retention_detects_erased_adoption_identity() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "UPDATE engine_lanes SET adopted_identity_json=NULL;"
+    ));
+}
+
+#[test]
+#[should_panic(expected = "adopted lane ownership changed")]
+fn reset_migration_retention_detects_rebound_cleanup_lease() {
+    assert_reset_migration_preserves_v41_records(concat!(
+        include_str!("../src/store/schema/0042_engine_resets.sql"),
+        "UPDATE engine_lanes SET cleanup_lease_json=json_set(cleanup_lease_json, '$.branch', 'foreign-branch');"
+    ));
+}
+
+fn assert_reset_migration_preserves_v41_records(reset_sql: &'static str) {
+    use serde_json::json;
+    use storyhook::store::{
+        AdoptedIdentity, Continuation, ContinuationPhase, ContinuationStatus, ExpectedSeq,
+    };
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..41]).unwrap();
+    let project = seed_project(&store, "alpha", "AL");
+    let at = "2026-08-29T20:01:00Z";
+    let story = create_story(&store, project, "Retain adopted continuation", at);
+    let head = store.read(|tx| tx.story(project, story)).unwrap().unwrap();
+    store_support::append_and_fold(
+        &store,
+        project,
+        story,
+        ExpectedSeq::Exact(head.head_seq),
+        &[storyhook::domain::StoryEvent::StoryStateChanged {
+            at: at.into(),
+            state: "in-progress".into(),
+        }],
+    )
+    .unwrap();
+    let story_id = story.to_id("AL");
+    let prior = run("run-before-reset", "alpha", EngineRunState::Paused);
+    let mut adopted = lane(&prior.id, 0);
+    let worktree = dir.path().join("retained-worktree");
+    let mut lease = cleanup_lease(&story_id, &worktree);
+    lease.project_slug = "alpha".into();
+    lease.repository_path = dir.path().join("repository");
+    lease.tmux.socket_path = dir.path().join("tmux.sock");
+    adopted.state = EngineLaneState::Working;
+    adopted.story_id = Some(story_id.clone());
+    adopted.pane_id = Some("%17".into());
+    adopted.window_name = Some(story_id.clone());
+    adopted.worktree_path = Some(worktree.to_string_lossy().into_owned());
+    adopted.cleanup_lease = Some(lease.clone());
+    adopted.dispatched_at = Some(at.into());
+    adopted.adopted_identity = Some(AdoptedIdentity {
+        provider: EngineAgent::Codex,
+        pane_pid: 123,
+        window_id: "@7".into(),
+    });
+    let sequence = store
+        .read(|tx| tx.story(project, story))
+        .unwrap()
+        .unwrap()
+        .head_global_seq;
+    adopted.last_progress_seq = Some(sequence);
+    adopted.last_progress_at = Some(at.into());
+    let completed = Continuation {
+        id: "f5462488-c1c7-47c9-ae29-d46ef2ec11a1".into(),
+        project_id: project,
+        story_no: story,
+        story_id: story_id.clone(),
+        handoff: json!({
+            "type": "storyhook.session-handoff", "version": 1,
+            "story_id": story_id, "kind": "context",
+            "evidence": {"context": "context exhausted", "outstanding_work": "verify reset"}
+        }),
+        generation: json!({"provider": "codex", "session_id": "session-1", "turn_id": "turn-1"}),
+        capture: json!({
+            "lease": lease, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "fingerprint": "dirty-1", "provider": "codex", "session_id": "session-1",
+            "turn_id": "turn-1", "mode": "default", "socket": lease.tmux.socket_path,
+            "pane": "%17", "pid": 123, "started": at,
+            "model": "gpt", "effort": "high", "speed": "standard", "autonomy": true,
+            "engine_lane": {"run_id": prior.id, "lane_index": 0}
+        }),
+        status: ContinuationStatus::Acknowledged,
+        phase: ContinuationPhase::Complete,
+        revision: 2,
+        attempts: 1,
+        created_at: at.into(),
+        updated_at: "2026-09-01T00:05:00Z".into(),
+        detail: "receiving session reviewed the retained work".into(),
+        reviewed_seq: Some(sequence.get()),
+        reviewed_head: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+    };
+    let mut outstanding = completed.clone();
+    outstanding.id = "2f1a4dac-b8e8-486c-b569-c17c77398941".into();
+    outstanding.generation["turn_id"] = json!("turn-2");
+    outstanding.capture["turn_id"] = json!("turn-2");
+    outstanding.capture["fingerprint"] = json!("dirty-2");
+    outstanding.status = ContinuationStatus::AwaitingAck;
+    outstanding.phase = ContinuationPhase::NativeContinuation;
+    outstanding.created_at = "2026-09-01T00:06:00Z".into();
+    outstanding.updated_at = outstanding.created_at.clone();
+    outstanding.revision = 0;
+    outstanding.attempts = 0;
+    outstanding.detail = "native feedback delivered; receiving review remains outstanding".into();
+    outstanding.reviewed_seq = None;
+    outstanding.reviewed_head = None;
+    let continuations = vec![completed, outstanding];
+    store
+        .write(|tx| {
+            tx.create_engine_run(&prior)?;
+            tx.put_engine_lane(&adopted)?;
+            for record in &continuations {
+                tx.insert_continuation(record)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let conn = raw(&store);
+    // Typed equality covers the public records; raw equality also covers duplicate
+    // ownership keys/revisions and the exact serialized JSON in the backing rows.
+    let snapshots: Vec<_> = [
+        "SELECT * FROM engine_runs ORDER BY id",
+        "SELECT * FROM engine_lanes ORDER BY run_id,lane_index",
+        "SELECT * FROM continuations ORDER BY id",
+        "SELECT * FROM schema_migrations WHERE version <= 41 ORDER BY version",
+    ]
+    .into_iter()
+    .map(|sql| (sql, migration_rows(&conn, sql)))
+    .collect();
+    let assert_retained = || {
+        assert_eq!(
+            store.read(|tx| tx.engine_run(&prior.id)).unwrap(),
+            Some(prior.clone())
+        );
+        assert_eq!(
+            store.read(|tx| tx.engine_lanes(&prior.id)).unwrap(),
+            vec![adopted.clone()],
+            "adopted lane ownership changed"
+        );
+        assert_eq!(
+            store.read(|tx| tx.continuations(project)).unwrap(),
+            continuations,
+            "continuation records changed"
+        );
+        for (sql, before) in &snapshots {
+            assert_eq!(
+                &migration_rows(&conn, sql),
+                before,
+                "persisted records changed: {sql}"
+            );
+        }
+    };
+    assert_eq!(store.schema_version().unwrap(), 41);
+    assert_retained();
+    let mut migrations = migrate::MIGRATIONS[..42].to_vec();
+    migrations[41].sql = reset_sql;
+    for from_version in [41, 42] {
+        let report = store.migrate_with(&migrations).unwrap();
+        assert_eq!(report.from_version, from_version);
+        assert_eq!(report.to_version, 42);
+        assert_eq!(
+            report.applied,
+            if from_version == 41 {
+                vec!["engine_resets"]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(store.schema_version().unwrap(), 42);
+        assert_retained();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM engine_resets", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+fn migration_rows(conn: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = conn.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    statement
+        .query_map([], |row| {
+            (0..columns).map(|column| row.get(column)).collect()
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }

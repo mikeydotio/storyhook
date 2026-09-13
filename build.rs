@@ -182,6 +182,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "verifier-owner.py",
     "verifier-worktree.py",
     "verifier_state.py",
+    "verifier_result.py",
     "verify-pr.sh",
     "verify-window.sh",
 ];

@@ -535,7 +535,7 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   request,
 }) => {
   // This test waits on two real story.sh subprocesses: the engine dispatch and
-  // stop-now's unclaim. Everything outside tmux is production code; the
+  // stop-now's leased reset. Everything outside tmux is production code; the
   // runner's isolated fake tmux is the sole process-boundary double.
   test.setTimeout(2 * REAL_ENGINE_TIMEOUT + 30_000);
 
@@ -592,12 +592,8 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await alert.locator(".engine-alert-ack").click();
   await expect(alert).not.toHaveClass(/open/);
 
-  // Stop-now returns the story to the state it was claimed from, and a lane
-  // no pass ever quarantined leaves no `awaiting` behind: a quarantine that
-  // landed inside `draining` is cleared from the lane silently by stop-now
-  // (`clear_quarantined_lane`) but its block reason would still be on the
-  // story, which is the one place the SH-626 verdict could hide from the
-  // assertions above.
+  // A cancelled attempt returns to its prior state without a quarantine
+  // reason, even when a stale probe observed the window disappear.
   const restored = await readStory(request, slug, ENGINE_STORY_ID);
   expect(restored.state).toBe(priorState);
   expect(restored.awaiting, `story ${ENGINE_STORY_ID} after stop-now: ${JSON.stringify(restored)}`).toBeNull();
@@ -1296,7 +1292,7 @@ test("Stop offers guarded Drain and Stop now with exact consequences", async ({ 
     "Occupied lanes finish, no new stories are claimed, and Run Full Auto returns after the last lane lands.",
   );
   await expect(modal).toContainText(
-    "Active claims are released and their windows are closed. Branches and worktrees are preserved.",
+    "Unfinished stories are reset: their windows, worktrees, local branches, and uncommitted work are removed. Stories already verifying continue unchanged.",
   );
   await expect(page.locator("#engine-stop-cancel")).toBeFocused();
   await page.locator("#engine-stop-cancel").click();

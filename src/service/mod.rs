@@ -35,8 +35,10 @@ pub mod catalog;
 pub mod cleanup;
 mod cleanup_lease;
 pub mod config;
+pub mod continuation;
 pub mod engine;
 pub mod gate_command;
+pub mod gate_output;
 pub mod gate_progress;
 pub mod git;
 pub mod git_links;
@@ -53,6 +55,7 @@ pub mod project;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub mod resources;
 pub mod session;
 pub mod settings;
 mod state_set;
@@ -156,6 +159,7 @@ pub struct Ctx<'a, S: Store> {
     stdin: Option<String>,
     github_token: Option<crate::domain::secret::GithubToken>,
     provenance: Provenance,
+    verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -183,7 +187,24 @@ impl<'a, S: Store> Ctx<'a, S> {
             stdin: None,
             github_token: None,
             provenance: Provenance::unrecorded(),
+            verification_activity: None,
         }
+    }
+
+    /// Supplies the daemon's shared verifier ownership registry.
+    pub fn with_verification_activity(
+        mut self,
+        activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    ) -> Self {
+        self.verification_activity = activity;
+        self
+    }
+
+    /// Returns the actual daemon runtime; absence never means an idle verifier.
+    pub fn verification_activity(
+        &self,
+    ) -> Option<&crate::daemon::verification::VerificationActivity> {
+        self.verification_activity
     }
 
     /// Supplies the standard input this invocation should read, instead of this
@@ -501,6 +522,20 @@ pub(crate) fn append_and_fold(
     // cannot reach the store through this, the one path every service uses.
     for event in events {
         crate::domain::validate_event_for_append(event)?;
+    }
+    // A durable reset owns state transfer until cleanup is proven. Keep
+    // discussion and metadata edits available while guarding every producer.
+    if events.iter().any(|event| {
+        matches!(
+            event,
+            StoryEvent::StoryStateChanged { .. }
+                | StoryEvent::StoryClosedAndArchived { .. }
+                | StoryEvent::StoryDeleted { .. }
+                | StoryEvent::StoryAwaitingSet { .. }
+                | StoryEvent::StoryStateCleared { .. }
+        )
+    }) {
+        engine::reset::refuse_reserved(&*tx, project, story)?;
     }
     // The same backstop for a transition (SH-692): a `verifying` story is
     // completed only with a verdict or a recorded override, whichever door

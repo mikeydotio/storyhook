@@ -267,7 +267,8 @@ where
     // its own reason, so a write that landed before this daemon started is
     // history, never news.
     let watcher = crate::daemon::watch::ChangeWatcher::new(store);
-    let verification_activity = crate::daemon::verification::VerificationActivity::new();
+    let verification_activity =
+        crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
     let serving = Serving {
         store,
         env: env.clone(),
@@ -345,6 +346,12 @@ where
             let env = env.clone();
             let bus = bus.clone();
             scope.spawn(move || crate::daemon::block_delivery::poll(store, &env, &bus, &stop));
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::continuation::poll(store, &env, &bus, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-pr` feature, the same way `pr_check::run_check`, the
@@ -1476,6 +1483,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let entry = serving.inflight.enter();
     let surface = rpc::Surface {
         store: serving.store,
+        verification_activity: &serving.verification_activity,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,

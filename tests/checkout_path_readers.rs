@@ -85,12 +85,24 @@ const ALLOWED: &[(&str, &str)] = &[
         "engine start refuses repo-side work when the already-selected project has no checkout",
     ),
     (
+        "src/service/engine/adoption.rs",
+        "adoption uses the already-selected project's checkout for Git inspection and revalidates it before binding lanes",
+    ),
+    (
         "src/service/verification.rs",
         "the verifier chooses the registered checkout only after selecting a project from the store",
     ),
     (
+        "src/daemon/verification.rs",
+        "incident retirement uses the already-selected project's checkout for resumed-hook configuration and working directory",
+    ),
+    (
         "src/daemon/engine.rs",
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
+    ),
+    (
+        "src/service/resources/mod.rs",
+        "resource discovery chooses a repository inventory directory after selecting the project; pointer UUIDs and registered origins independently verify association",
     ),
     (
         "src/service/cleanup.rs",

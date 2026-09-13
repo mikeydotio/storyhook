@@ -4,6 +4,42 @@ use super::*;
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
 #[test]
+fn progress_capture_retains_the_answer_emitted_during_cancellation() {
+    let root = scratch_dir();
+    let journal = root.path().join("journal");
+    let ready = root.path().join("ready");
+    std::fs::write(&journal, "").unwrap();
+    let mut command = Command::new("bash");
+    command.args(["-c", "trap 'printf completed; exit 143' TERM; printf ready > \"$1\"; while :; do sleep 30 & wait; done", "probe"]).arg(&ready);
+    let cancellation = Cancellation::default();
+    let allowance = Duration::from_secs(2);
+    let result = std::thread::scope(|scope| {
+        let running = scope.spawn(|| {
+            run_captured_with_progress_and_registration(
+                command,
+                allowance,
+                TerminationPolicy::TerminateThenKill { grace: allowance },
+                &journal,
+                &cancellation,
+                |_| Ok(()),
+            )
+        });
+        let deadline = Instant::now() + allowance;
+        while !ready.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        cancellation.cancel();
+        assert!(ready.exists(), "the signal handler was never installed");
+        running.join().unwrap()
+    });
+    let Err(failure) = result else {
+        panic!("cancellation must remain a capture failure")
+    };
+    assert!(matches!(failure.error, CaptureError::Cancelled));
+    assert_eq!(failure.stdout, b"completed");
+}
+
+#[test]
 fn both_deadline_modes_record_output_and_timeouts() {
     // The sink is process-wide and daemon-only. Run this probe in its own
     // test process so it cannot capture another library test's activity.
@@ -60,7 +96,7 @@ fn both_deadline_modes_record_output_and_timeouts() {
         &Cancellation::default(),
         |_| Ok(()),
     )
-    .unwrap_or_else(|error| panic!("{}", error.detail()));
+    .unwrap_or_else(|error| panic!("{}", error.error.detail()));
     assert!(captured.status.success());
     assert!(
         started.elapsed() > idle,
@@ -82,7 +118,10 @@ fn both_deadline_modes_record_output_and_timeouts() {
             &Cancellation::default(),
             |_| Ok(()),
         ),
-        Err(CaptureError::Timeout(_))
+        Err(CaptureFailure {
+            error: CaptureError::Timeout(_),
+            ..
+        })
     ));
 
     let journal = std::fs::read_dir(env.daemon_state_dir().join("activity"))

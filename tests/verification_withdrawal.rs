@@ -118,7 +118,7 @@ fn run_with_gate(
         r#"[ "$STORYHOOK_VERIFIER_CLEANUP_GRACE_MS" = 5000 ] || exit 99
 trap 'printf terminated > "$STORYHOOK_GATE_PROGRESS.terminated"; exit 0' TERM
 printf ready > "$STORYHOOK_GATE_PROGRESS.started"
-while :; do sleep 30; done
+while :; do sleep 30 & wait; done
 "#,
     )
     .unwrap();

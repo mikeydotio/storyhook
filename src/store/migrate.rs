@@ -396,6 +396,30 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0038_block_deliveries.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 39,
+        name: "verification_recovery",
+        sql: include_str!("schema/0039_verification_recovery.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 40,
+        name: "engine_adoption",
+        sql: include_str!("schema/0040_engine_adoption.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 41,
+        name: "continuations",
+        sql: include_str!("schema/0041_continuations.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 42,
+        name: "engine_resets",
+        sql: include_str!("schema/0042_engine_resets.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

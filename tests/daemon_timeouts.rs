@@ -357,18 +357,20 @@ mod exchange {
 
     /// What one run of [`keep_the_record_moving`] came to.
     #[derive(Debug)]
-    enum Churned {
+    enum Churned<T> {
         /// The record moved on cadence for a whole stretch and the client
         /// never gave up: the property these tests exist for.
         HeldOut,
         /// The client gave up while the record was demonstrably still moving.
         /// The product, and the only outcome that may fail a test.
-        GaveUp,
+        GaveUp(T),
         /// The churn loop itself went quiet for `stale` — past the very
         /// deadline it exists to keep resetting — so the client was entitled
         /// to give up and this run says nothing either way. A disturbed
         /// measurement rather than a verdict (SH-289).
         Starved { stale: Duration },
+        /// The shared retry budget ended before a full clean stretch.
+        Deadline,
     }
 
     /// Republishes the in-flight record under a fresh id every [`CHURN`],
@@ -383,11 +385,10 @@ mod exchange {
     /// says whose fault it was — which is what a separate churn thread could
     /// not answer, and why load used to read as a product failure (SH-289).
     ///
-    /// `deadline` bounds the whole measurement, and is not optional: a silence
-    /// restarts the stretch, so a machine that keeps producing them — while the
-    /// client, watching a record that does keep moving, correctly never
-    /// answers — would otherwise leave this loop nothing to end it. Past the
-    /// deadline the run is reported as the silence that kept it from settling.
+    /// A silence invalidates the entire client attempt immediately. Resetting
+    /// only the stretch clock would forget why a delayed client result was
+    /// legitimate (SH-708). The caller retries with a fresh client, within the
+    /// shared `deadline`; expiry is not evidence of a publication silence.
     ///
     /// `stall` injects the starvation only a loaded machine produced before: it
     /// returns how long the loop should be absent before its `n`th publication.
@@ -397,13 +398,15 @@ mod exchange {
         stretch: Duration,
         deadline: Instant,
         mut stall: impl FnMut(u32) -> Duration,
-    ) -> Churned {
+    ) -> Churned<T> {
         let mut n = 0_u32;
         let mut published = Instant::now();
-        let mut clean_since = Instant::now();
-        let mut worst = Duration::ZERO;
+        let clean_since = published;
 
         loop {
+            if Instant::now() >= deadline {
+                return Churned::Deadline;
+            }
             n += 1;
             let absent = stall(n);
             if !absent.is_zero() {
@@ -420,19 +423,22 @@ mod exchange {
                 cwd: std::path::PathBuf::from("/"),
             };
             storyhook::daemon::lifecycle::publish_inflight(env, std::slice::from_ref(&record));
+            assert_eq!(
+                storyhook::daemon::lifecycle::read_inflight(env),
+                [record],
+                "the fixture must publish the record it claims is moving"
+            );
 
             let gap = published.elapsed();
             published = Instant::now();
-            worst = worst.max(gap);
-            // A gap this long entitles the client to give up, so nothing after
-            // it can be read as a verdict until the cadence has held for a
-            // whole fresh stretch.
+            // This client may already have timed out. Later publications
+            // cannot restore its validity, even if its result is still delayed.
             if gap >= STALE_ENOUGH {
-                clean_since = Instant::now();
+                return Churned::Starved { stale: gap };
             }
 
             match rx.recv_timeout(CHURN) {
-                Ok(_) => {
+                Ok(outcome) => {
                     // Whose fault? Both intervals count: the gap just measured
                     // covers a loop absent *before* publishing, and
                     // `published.elapsed()` covers one absent after — which is
@@ -442,7 +448,7 @@ mod exchange {
                     return if stale >= STALE_ENOUGH {
                         Churned::Starved { stale }
                     } else {
-                        Churned::GaveUp
+                        Churned::GaveUp(outcome)
                     };
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -451,16 +457,17 @@ mod exchange {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
 
+            // A descheduled receive can cross both the stale threshold and
+            // the stretch deadline without delivering anything. It is not a pass.
+            let stale = published.elapsed();
+            if stale >= STALE_ENOUGH {
+                return Churned::Starved { stale };
+            }
+            if Instant::now() >= deadline {
+                return Churned::Deadline;
+            }
             if clean_since.elapsed() >= stretch {
                 return Churned::HeldOut;
-            }
-            // Every silence restarts the stretch, so a machine that produces
-            // one often enough would leave this loop with nothing to end it —
-            // an unbounded wait, in the file whose subject is unbounded waits.
-            // Reaching here means the stretch never survived a silence, so
-            // `worst` is one of them.
-            if Instant::now() >= deadline {
-                return Churned::Starved { stale: worst };
             }
         }
     }
@@ -585,8 +592,7 @@ mod exchange {
                 ));
             });
 
-            // Eight driven deadlines deep. A wall-clock bound would have fired
-            // thirty times over.
+            // Eight driven deadlines deep: a wall-clock bound cannot survive.
             match keep_the_record_moving(&env, &rx, DRIVEN * 8, deadline, |_| Duration::ZERO) {
                 Churned::HeldOut => {
                     // And once the record stops moving, it does give up.
@@ -596,10 +602,13 @@ mod exchange {
                     assert!(outcome.is_err(), "a silent peer cannot have answered");
                     return;
                 }
-                Churned::GaveUp => {
-                    panic!("a client must not give up while the daemon is visibly finishing things")
+                Churned::GaveUp(outcome) => {
+                    panic!(
+                        "a client must not give up while the daemon is visibly finishing things: {outcome:?}"
+                    )
                 }
                 Churned::Starved { stale } => disturbed.push(stale),
+                Churned::Deadline => break,
             }
         }
 
@@ -675,17 +684,59 @@ mod exchange {
         }
     }
 
-    /// The other half of SH-289's repair: a stretch the fixture went quiet
-    /// during is measured again from scratch, never counted through.
-    ///
-    /// Without this, remeasuring would be theatre — a "clean stretch" that
-    /// spans a starved interval proves nothing about a client's bound, because
-    /// the record it is supposedly watching stood still inside it.
-    ///
-    /// No client at all: the sender is held open so the loop only ever times
-    /// out, which leaves its own arithmetic as the whole subject. The
-    /// assertion is one-sided — load can lengthen the run but never shorten it
-    /// below the stall it must have discarded.
+    /// A client can time out during a pause and deliver that result only after
+    /// publication has resumed. Later healthy gaps cannot validate that client.
+    #[test]
+    fn a_delayed_client_result_cannot_erase_an_earlier_publishing_pause() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let peer = SilentPeer::bind();
+        let info = peer.as_daemon();
+        let (client_tx, client_rx) = std::sync::mpsc::channel();
+        let waiting = env.clone();
+        std::thread::spawn(move || {
+            let _ = client_tx.send(HttpInvoker::send(
+                &waiting,
+                &info,
+                &envelope(),
+                Some(ExchangeBound::After(DRIVEN)),
+                POLL,
+                PATIENCE,
+                true,
+            ));
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut delayed = None;
+        let outcome = keep_the_record_moving(
+            &env,
+            &rx,
+            DRIVEN * 8,
+            Instant::now() + CHURN_PATIENCE,
+            |n| {
+                if n == 4 {
+                    return DRIVEN * 2;
+                }
+                if n == 5 {
+                    let result = client_rx.recv_timeout(PATIENCE).unwrap();
+                    assert!(result.is_err(), "a silent peer cannot answer: {result:?}");
+                    delayed = Some(result);
+                }
+                if n == 6 {
+                    tx.send(delayed.take().unwrap()).unwrap();
+                }
+                Duration::ZERO
+            },
+        );
+        assert!(
+            matches!(outcome, Churned::Starved { .. }),
+            "a publishing pause invalidates the client even when its result arrives later: {outcome:?}"
+        );
+    }
+
+    /// A silence requires a separate attempt, not a fresh stopwatch on the
+    /// same possibly finished client. No client here: held-open senders expose
+    /// only the publisher's measurement and the fresh attempt's full stretch.
     #[test]
     fn a_stretch_the_fixture_went_quiet_during_is_measured_again_from_scratch() {
         let dir = storyhook_test_support::scratch_dir();
@@ -704,12 +755,20 @@ mod exchange {
             Instant::now() + CHURN_PATIENCE,
             move |n| if n == 4 { absent } else { Duration::ZERO },
         );
-        let took = started.elapsed();
-
         assert!(
-            matches!(outcome, Churned::HeldOut),
-            "nobody gave up, so the cadence must simply have held: {outcome:?}"
+            matches!(outcome, Churned::Starved { .. }),
+            "a silence must end the attempt before it can count a later clean stretch: {outcome:?}"
         );
+        let (_fresh_tx, fresh_rx) = std::sync::mpsc::channel::<()>();
+        let fresh = keep_the_record_moving(
+            &env,
+            &fresh_rx,
+            stretch,
+            Instant::now() + CHURN_PATIENCE,
+            |_| Duration::ZERO,
+        );
+        assert!(matches!(fresh, Churned::HeldOut), "{fresh:?}");
+        let took = started.elapsed();
         assert!(
             took >= absent + stretch,
             "a stretch containing a {absent:?} silence must be discarded and taken again, \
@@ -717,21 +776,8 @@ mod exchange {
         );
     }
 
-    /// A measurement that never settles ends anyway.
-    ///
-    /// Remeasuring a disturbed stretch is only safe if "disturbed" cannot
-    /// recur forever, and it can: every silence past [`STALE_ENOUGH`] restarts
-    /// the stretch, so a machine that produces one every few hundred
-    /// milliseconds — while the client, watching a record that does keep
-    /// moving, correctly never answers — leaves a loop with nothing to end it.
-    /// That is the file's own subject turned on the file: an unbounded wait,
-    /// which would stall the suite exactly the way [`within_patience`] exists
-    /// to prevent.
-    ///
-    /// Every iteration goes quiet here, so the stretch can never complete and
-    /// only the deadline can end the call. Run on a worker thread because the
-    /// failure being pinned is a *hang* — a test that hangs to report a hang is
-    /// no report at all.
+    /// The remaining shared budget can be shorter than one clean stretch.
+    /// Even without a client result or a silence, the measurement must end.
     #[test]
     fn a_measurement_that_never_settles_ends_at_its_deadline() {
         let dir = storyhook_test_support::scratch_dir();
@@ -747,13 +793,14 @@ mod exchange {
                 // answers and the loop has only its own bounds to stop it.
                 let (_tx, rx) = std::sync::mpsc::channel::<()>();
                 keep_the_record_moving(&env, &rx, DRIVEN * 8, Instant::now() + budget, |_| {
-                    STALE_ENOUGH
+                    Duration::ZERO
                 })
             },
         );
         let took = started.elapsed();
 
         match outcome {
+            Churned::Deadline => {}
             Churned::Starved { stale } => assert!(
                 stale >= STALE_ENOUGH,
                 "the run must be reported as the disturbance that kept it from settling: {stale:?}"
@@ -763,6 +810,42 @@ mod exchange {
         assert!(
             took < budget * 3,
             "the deadline must end the call promptly, not eventually: {took:?}"
+        );
+    }
+
+    /// Exhaustion is distinct from an observed publishing pause and must not
+    /// start another attempt or accept an already-queued result as evidence.
+    #[test]
+    fn an_exhausted_measurement_budget_starts_no_publication() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send("a result from outside the measurement").unwrap();
+        let outcome = keep_the_record_moving(&env, &rx, DRIVEN, Instant::now(), |_| {
+            panic!("an expired attempt must not publish")
+        });
+        assert!(matches!(outcome, Churned::Deadline), "{outcome:?}");
+    }
+
+    /// A client ending without any observed pause still fails, with its actual
+    /// result available to distinguish timeout policy from transport errors.
+    #[test]
+    fn a_clean_early_client_result_is_preserved_as_a_failure() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send("unexpected transport error").unwrap();
+        let outcome = keep_the_record_moving(
+            &env,
+            &rx,
+            DRIVEN * 8,
+            Instant::now() + CHURN_PATIENCE,
+            |_| Duration::ZERO,
+        );
+        assert!(
+            matches!(outcome, Churned::GaveUp("unexpected transport error")),
+            "a clean early result must not be retried or discarded: {outcome:?}"
         );
     }
 
