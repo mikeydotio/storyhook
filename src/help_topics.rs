@@ -19,7 +19,7 @@ story continuation request <id> --stdin --json
 story continuation status <id> --json
 story continuation receipt <id> <request> --stdin --json
 story continuation retry <id> <request> --json
-story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider <codex|claude> --session-id <session> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider codex|claude --session-id <session> --json
 
 Durable autonomous context handoffs preserve the story, branch, worktree, dirty
 files, approved scope, and launch settings. Context exhaustion is not a task
