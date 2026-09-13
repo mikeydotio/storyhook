@@ -5,11 +5,11 @@ use std::process::Command;
 use std::time::Duration;
 
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, VerificationActuator, VerificationOutcome,
+    CompletedVerification, ShellVerificationActuator, VerificationActuator, VerificationOutcome,
 };
 use storyhook::domain::Priority;
 use storyhook::service::{VerificationCandidate, VerificationProblem};
-use storyhook::store::PrLink;
+use storyhook::store::{PrLink, VerificationFailureDisposition};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir};
 
 fn verify_script(script: &str, idle: Duration) -> VerificationOutcome {
@@ -165,12 +165,7 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
 
 #[test]
 fn loss_of_the_progress_journal_is_an_infrastructure_failure() {
-    let script = format!("rm \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n");
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("progress journal")),
-        "{outcome:?}"
-    );
+    assert_journal_damage("rm \"$STORYHOOK_GATE_PROGRESS\"", "progress journal");
 }
 
 #[test]
@@ -187,26 +182,52 @@ fn an_uncreatable_journal_refuses_before_starting_the_verifier() {
 #[test]
 fn truncating_an_observed_journal_is_an_infrastructure_failure() {
     let script = format!(
-        "printf 'initial progress' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep {}\n: > \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n",
+        "printf 'initial progress' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep {}\n: > \"$STORYHOOK_GATE_PROGRESS\"\n",
         IDLE.as_secs_f64() / 2.0,
     );
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("shrank")),
-        "{outcome:?}"
-    );
+    assert_journal_damage(&script, "shrank");
 }
 
 #[test]
 fn replacing_a_journal_cannot_renew_the_deadline() {
     // Publish a new inode atomically in the same directory. Moving the old
     // journal away first would race the separate missing-journal refusal.
-    let script = format!(
-        "printf replacement > \"$STORYHOOK_GATE_PROGRESS.replacement\"\nmv \"$STORYHOOK_GATE_PROGRESS.replacement\" \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n"
-    );
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("replaced")),
-        "{outcome:?}"
-    );
+    let script = "printf replacement > \"$STORYHOOK_GATE_PROGRESS.replacement\"\nmv \"$STORYHOOK_GATE_PROGRESS.replacement\" \"$STORYHOOK_GATE_PROGRESS\"\n";
+    assert_journal_damage(script, "replaced");
+}
+
+/// Journal damage must remain visible without erasing an already emitted verdict.
+fn assert_journal_damage(damage: &str, diagnosis: &str) {
+    for completed in [false, true] {
+        // Publish before damage so failure observation cannot race verdict output.
+        let answer = if completed { MERGED } else { "" };
+        let outcome = verify_script(&format!("set -eu\n{answer}\n{damage}\n"), IDLE);
+        if completed {
+            let VerificationOutcome::CleanupFailed { verdict, cleanup } = outcome else {
+                panic!("completed merge lost after {diagnosis}: {outcome:?}");
+            };
+            assert_eq!(
+                verdict,
+                CompletedVerification::Merged {
+                    tree: "verified-tree".into(),
+                    detail: "completed".into(),
+                    gate: "make test".into(),
+                }
+            );
+            assert_eq!(cleanup.phase, "daemon process capture");
+            assert_eq!(
+                cleanup.disposition,
+                VerificationFailureDisposition::Permanent
+            );
+            assert!(cleanup.detail.contains(diagnosis), "{cleanup:?}");
+            assert!(cleanup.detail.contains("Registered source checkout:"));
+            assert!(cleanup.owner.is_none());
+            assert!(cleanup.worktree.is_none());
+        } else {
+            assert!(
+                matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains(diagnosis)),
+                "uncompleted command after {diagnosis}: {outcome:?}"
+            );
+        }
+    }
 }

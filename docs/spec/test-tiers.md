@@ -190,6 +190,60 @@ machine-wide `gate` lock longer on a tree already known red. Per-leg reuse
 above bounds the cost of the second round trip to the legs that were
 actually red. It is filed as its own story, related to SH-697.
 
+### As built: independent gate legs finish after RED (SH-701)
+
+SH-701 implements the cross-leg continuation deferred by SH-697. The private
+Make recipes source `scripts/gate-legs.sh` and run serially in one shell.
+Ordinary failures accumulate; `gate_finish` exits with the first failure.
+The public target still wraps the body in unconditional orphan cleanup and
+keeps the receipt as its final recipe line. Only a successful body AND cleanup
+can reach that line. Concrete commands remain visible in `make -n`; no global
+`.ONESHELL` or `make -k` behavior changes other targets.
+
+| Failure | Remaining work |
+|---|---|
+| fmt, clippy, executed tests | Continue independent legs in the original order |
+| Confirmed shared production compilation error in a Rust battery | Skip later contracts/build requiring it |
+| Integration compilation or cfg(test)-only error | Continue other batteries and production build |
+| build | Skip plugin and enabled browser execution |
+| plugin | Still run enabled browser execution |
+| Cancellation or invalid orchestration evidence | Stop; no receipt |
+
+Cargo compiler-message target identity does not distinguish a library's
+normal and cfg(test) compilations. Each Rust leg therefore gets a fresh private
+`STORYHOOK_GATE_BUILD_OUTCOME` file populated only by the existing build-only
+adapter. The adapter removes both diagnostic destination variables before
+starting Cargo or tests. It works without a verifier diagnostic destination;
+missing/corrupt evidence fails loudly, while empty evidence proves nothing.
+
+After a failed Rust leg, errors naming this checkout's src/lib.rs, src/main.rs
+or build.rs are candidates, not proof. One normal production `cargo build`
+confirms a shared error only if the failed build repeats the same structured
+source/code/message identity. Test-only compilation failures cannot suppress
+other batteries. Other target layouts/dependency errors remain unknown and
+continue conservatively. The confirmation runs only on ambiguous failures;
+the scheduled build retains its position, either skipped after confirmation
+or using the warmed build artifacts. No diagnostic prose or test output is
+used to infer a compilation dependency.
+
+Skipped dependents emit their reason in the log and progress journal and earn
+no reusable receipt. Failed legs and dependency skips appear in the RED summary
+independently of the bounded log tail. Successful legs retain reusable evidence
+even when the aggregate is red. Changes to the orchestration helper invalidate
+all leg fingerprints.
+
+The pre-change audit read 117 retained attempt logs: 10 completed rust-suite
+without reaching contracts; four later attempts for those PRs reached contracts,
+and three failed there. Their trees differed, so this is evidence of repeated
+round trips, not a simultaneous-failure frequency estimate. Ninety contracts
+executions took a median 420.5s (57–1148s). Serial continuation deliberately spends
+that time to collect independent failures; reuse and confirmed dependency skips
+bound repeated work. Whole-run locking remains the supervisor's responsibility.
+
+Regression coverage executes the production Make recipes and accumulator with
+controlled leaves, the Cargo adapter against real tiny Rust crates, and the
+existing verifier summary, receipt, orphan-cleanup, tier and reuse contracts.
+
 ## Merge commits reach the gate a different way (SH-396)
 
 Everything above assumes the gate is reached by a **push**: `.githooks/pre-

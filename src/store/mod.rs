@@ -59,8 +59,12 @@
 //! and disagree.
 
 pub mod block_delivery;
+pub mod continuation;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
+pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub mod conformance;
+mod engine_reset;
+pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
 pub mod ids;
@@ -79,6 +83,7 @@ use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
 pub use conformance::ConformanceFixture;
+mod verification_recovery;
 pub use error::StoreError;
 pub use fault::{DELIVERY_BACKSTOP, FaultPoint};
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
@@ -91,12 +96,16 @@ pub use rebuild::{
 };
 pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
-    EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, FeedEvent,
-    LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, VerificationFailureDisposition,
-    VerificationIncident, partition_known,
+    AdoptedIdentity, AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord,
+    EngineLaneState, EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope,
+    EngineSpeed, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
+    VerificationFailureDisposition, VerificationIncident, partition_known,
+};
+pub use verification_recovery::{
+    VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,
+    VerificationRecovery, VerificationRecoveryOutcome, VerificationRecoveryRequest,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -252,6 +261,8 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Durable context handoffs in creation order.
+    fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
     fn block_deliveries(&self, project: ProjectId) -> Result<Vec<BlockDelivery>, StoreError>;
 
@@ -297,12 +308,23 @@ pub trait ReadOps {
         project: ProjectId,
     ) -> Result<Option<VerificationIncident>, StoreError>;
 
+    /// Latest durable recovery evidence for this project.
+    fn verification_recovery(&self, project: ProjectId)
+    -> Result<VerificationRecovery, StoreError>;
+
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
 
     /// Every project's verifier incident, ordered by project — for the
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
+
+    /// Pending explicit reset, if this story is reserved for cleanup.
+    fn engine_reset(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<EngineReset>, StoreError>;
 
     /// Every lane belonging to a run, ordered by lane index.
     fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
@@ -512,6 +534,14 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Inserts generation-bound context intent atomically with its story comment.
+    fn insert_continuation(&mut self, record: &Continuation) -> Result<(), StoreError>;
+    /// Writes the next revision only if the expected revision still owns the row.
+    fn update_continuation(
+        &mut self,
+        record: &Continuation,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Append an ordered block transition effect inside the mutation transaction.
     fn enqueue_block_delivery(
         &mut self,
@@ -542,6 +572,12 @@ pub trait WriteOps: ReadOps {
     /// creation on the constraint-arbitrated path above.
     fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
 
+    /// Reserves a reset or updates diagnostics without replacing its owner.
+    fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError>;
+
+    /// Removes exactly the reset whose receipt was accepted.
+    fn remove_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError>;
+
     /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;
 
@@ -560,6 +596,13 @@ pub trait WriteOps: ReadOps {
 
     /// Clears the incident only when its identity still matches `incident_id`.
     fn clear_verification_incident(&mut self, incident_id: &str) -> Result<bool, StoreError>;
+
+    /// Replaces this project's latest recovery receipt within the caller's transaction.
+    fn put_verification_recovery(
+        &mut self,
+        project: ProjectId,
+        recovery: &VerificationRecovery,
+    ) -> Result<(), StoreError>;
 
     /// Persists manual verifier admission permission independently of incidents.
     fn put_verification_enabled(

@@ -92,6 +92,16 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // production file-backed capture and whole-group deadline cleanup.
     ("src/process/activity_tests.rs", "test_binary", Kind::Reads),
     ("src/process/activity_tests.rs", "\"sh\"", Kind::Waited),
+    // SH-702's Bash cancellation probe retains output in regular files;
+    // cancellation terminates/reaps its group before captured bytes are read.
+    ("src/process/activity_tests.rs", "\"bash\"", Kind::Waited),
+    // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
+    // recording tools never create persistent terminal readers.
+    (
+        "src/daemon/activity/tests.rs",
+        "std::env::current_exe(",
+        Kind::Reads,
+    ),
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),
@@ -132,10 +142,21 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // A descendant therefore has no EOF rendezvous with the caller and no
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
+    // Explicit reset uses the same bounded file-backed capture and child environment.
+    ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
-    ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
+    ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // Continuation stages JSON stdin and captures stdout/stderr in regular
+    // files, so descendants cannot hold an output-pipe EOF. The shared runner
+    // waits at most 45 s (125 s for resume) and kills its group on timeout.
+    (
+        "src/service/continuation/runtime.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // The lane census (SH-655): `tmux list-windows` through the same
     // file-backed, group-bounded `run_captured` the engine's probe uses, on
     // the caller's own PATH and environment so a client verb asks the server

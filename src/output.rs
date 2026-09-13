@@ -130,6 +130,9 @@ pub struct EngineScopeView {
 /// One lane as presented by the engine control surfaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineLaneView {
+    /// Captured identity for an adopted manual lane; absent for engine-created work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_identity: Option<crate::store::AdoptedIdentity>,
     pub index: u32,
     pub state: EngineLaneState,
     pub story: Option<String>,
@@ -206,6 +209,7 @@ impl EngineRunView {
                 let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
                 let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
+                    adopted_identity: lane.adopted_identity,
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
@@ -836,6 +840,18 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
+    /// Shared verifier snapshot, rendered by the client.
+    VerifierStatus(Box<crate::daemon::verification::status::VerifierStatus>),
+    /// Existing command result with additive project-level verifier evidence.
+    WithVerifier {
+        /// Original response, preserving its JSON keys.
+        response: Box<Response>,
+        /// Shared verifier snapshot.
+        verifiers: Vec<crate::daemon::verification::status::VerifierStatus>,
+        /// Explicit diagnostic when the store-free caller cannot reach live status.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unavailable: Option<String>,
+    },
     Message(String),
     /// A plain-text result plus one or more non-fatal warnings about what it
     /// did **not** do.
@@ -886,8 +902,12 @@ pub enum Response {
     },
     /// One Full Auto engine run after a start, read, or control mutation.
     EngineRun(Box<EngineRunView>),
+    /// Internal cleanup authorization; reading it performs no mutation.
+    EngineReset(Box<crate::store::EngineReset>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
+    /// Read-only story resource identity and refusal evidence.
+    Resources(Box<crate::service::resources::ResourceReport>),
     Summary(Box<SummaryView>),
     /// `story report --html`: the report's data, rendered into an HTML
     /// document by the client (SH-679). The daemon used to compose the HTML
@@ -1018,6 +1038,11 @@ pub fn render_response(response: &Response, json: bool, quiet: bool) -> String {
         return format!("{raw}\n");
     }
 
+    if matches!(response, Response::WithVerifier { response, .. } if matches!(response.as_ref(), Response::RawJson(_)))
+    {
+        return render_json(response);
+    }
+
     if quiet {
         return String::new();
     }
@@ -1075,6 +1100,37 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::VerifierStatus(status) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "verifier":status}))
+        }
+        Response::WithVerifier {
+            response,
+            verifiers,
+            unavailable,
+        } => {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&render_response(response, true, false))
+                    .expect("response JSON");
+            if verifiers.len() == 1 {
+                value["verifier"] = serde_json::to_value(&verifiers[0]).expect("verifier JSON");
+            } else {
+                value["verifiers"] = serde_json::to_value(verifiers).expect("verifier JSON");
+            }
+            for warning in verifiers
+                .iter()
+                .filter_map(|v| v.warning.as_ref())
+                .chain(unavailable.iter())
+            {
+                if value.get("warnings").is_none() {
+                    value["warnings"] = serde_json::json!([]);
+                }
+                value["warnings"]
+                    .as_array_mut()
+                    .expect("response warning array")
+                    .push(warning.clone().into());
+            }
+            serde_json::to_string_pretty(&value)
+        }
         Response::HtmlReport(data) => {
             return render_json(&Response::Message(render_html_report_data(data)));
         }
@@ -1198,10 +1254,16 @@ fn render_json(response: &Response) -> String {
             warnings,
             flagged_reasons: &[],
         }),
+        Response::EngineReset(reset) => {
+            serde_json::to_string_pretty(&serde_json::json!({ "result": "ok", "reset": reset }))
+        }
         Response::EngineRun(run) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "run": run,
         })),
+        Response::Resources(report) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "resources":report}))
+        }
         Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "cleanup": report,
@@ -1361,6 +1423,22 @@ fn render_json(response: &Response) -> String {
 
 fn render_human(response: &Response) -> String {
     match response {
+        Response::VerifierStatus(status) => status.render_human(),
+        Response::WithVerifier {
+            response,
+            verifiers,
+            unavailable,
+        } => {
+            let mut body = render_response(response, false, false);
+            for warning in verifiers
+                .iter()
+                .filter_map(|v| v.warning.as_ref())
+                .chain(unavailable.iter())
+            {
+                body.push_str(&format!("warning: {warning}\n"));
+            }
+            body
+        }
         Response::HtmlReport(data) => format!("{}\n", render_html_report_data(data)),
         Response::Message(message) => format!("{message}\n"),
         Response::MessageWithWarnings(message, warnings) => {
@@ -1493,7 +1571,17 @@ fn render_human(response: &Response) -> String {
             }
             body
         }
+        Response::EngineReset(reset) => format!(
+            "Reset {}: run {} lane {} story {}",
+            reset.token, reset.run_id, reset.lane_index, reset.lease.story_id
+        ),
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Resources(report) => format!(
+            "resources {}: {}\n{}\n",
+            report.story_id,
+            report.status,
+            serde_json::to_string_pretty(report).expect("resource report serializes")
+        ),
         Response::Cleanup(report) => {
             let action = if report.dry_run {
                 "would remove"

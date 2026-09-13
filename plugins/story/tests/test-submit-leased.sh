@@ -108,7 +108,7 @@ assert_eq "$(jqf "$out" .pull_request.adopted)" "false" "the pull request was op
 assert_eq "$(jqf "$out" .pull_request.url)" "https://github.com/acme/widgets/pull/100" "the receipt carries the URL"
 assert_eq "$(jqf "$out" .pull_request.number)" "100" "the receipt carries the number"
 assert_eq "$(jqf "$out" .pull_request.base)" "main" "the pull request targets the repository's default branch"
-assert_eq "$(jqf "$out" .pull_request.head_oid)" "$head" "the receipt carries the head GitHub reports"
+assert_eq "$(jqf "$out" .pull_request.head_oid)" "$head" "the receipt carries the verified submitted head"
 assert_eq "$(create_count)" "1" "exactly one pull request was created"
 create_line=$(grep $'^pr\tcreate\t' "$FAKE_GH_STATE/argv.log")
 assert_contains "$create_line" $'--base\tmain' "create targets the default branch"
@@ -181,7 +181,7 @@ git -C "$worktree" reset -q --hard "$(remote_tip)"
 wrong=$(printf '%s' "$lease" | jq '.branch = "worktree-elsewhere"')
 out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$wrong" PATH="$FAKES_PATH" \
   bash "$SCRIPT" --project "$slug" submit "$id" 2>&1)
-assert_eq "$(jqf "$out" .reason)" "cleanup-lease-worktree-mismatch" "a lease naming another branch is refused"
+assert_eq "$(jqf "$out" .reason)" "resource-identity-unsafe" "a lease naming another branch is refused"
 other=$(new_story "$repo" "Another story")
 out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" PATH="$FAKES_PATH" \
   bash "$SCRIPT" --project "$slug" submit "$other" 2>&1)

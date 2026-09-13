@@ -31,6 +31,8 @@
 //! three things every guarantee in this module is about.
 
 mod block_delivery;
+mod continuation;
+mod engine_reset;
 pub(crate) mod read;
 pub(crate) mod write;
 
@@ -54,7 +56,7 @@ use crate::store::types::{
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
-use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
+use crate::store::{EngineReset, ReadOps, Store, WriteOps, WriteWithSnapshot};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -808,6 +810,13 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn continuations(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::Continuation>, StoreError> {
+                continuation::list(&self.conn, project)
+            }
+
             fn block_deliveries(
                 &self,
                 project: ProjectId,
@@ -854,12 +863,27 @@ macro_rules! impl_read_ops {
                 read::verification_incident(&self.conn, project)
             }
 
+            fn verification_recovery(
+                &self,
+                project: ProjectId,
+            ) -> Result<crate::store::VerificationRecovery, StoreError> {
+                read::verification_recovery(&self.conn, project)
+            }
+
             fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
                 read::verification_enabled(&self.conn, project)
             }
 
             fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
                 read::verification_incidents(&self.conn)
+            }
+
+            fn engine_reset(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<EngineReset>, StoreError> {
+                engine_reset::read(&self.conn, project, story)
             }
 
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
@@ -1030,6 +1054,19 @@ impl_read_ops!(SqliteReadTx);
 impl_read_ops!(SqliteWriteTx);
 
 impl WriteOps for SqliteWriteTx<'_> {
+    fn insert_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+    ) -> Result<(), StoreError> {
+        continuation::insert(&self.conn, record)
+    }
+    fn update_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        continuation::update(&self.conn, record, expected)
+    }
     fn enqueue_block_delivery(
         &mut self,
         project: ProjectId,
@@ -1058,6 +1095,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::update_engine_run(&self.conn, run)
     }
 
+    fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::put(&self.conn, reset)
+    }
+
+    fn remove_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::remove(&self.conn, reset)
+    }
+
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
         write::put_engine_lane(&self.conn, lane)
     }
@@ -1071,6 +1116,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         incident: &VerificationIncident,
     ) -> Result<(), StoreError> {
         write::put_verification_incident(&self.conn, incident)
+    }
+
+    fn put_verification_recovery(
+        &mut self,
+        project: ProjectId,
+        recovery: &crate::store::VerificationRecovery,
+    ) -> Result<(), StoreError> {
+        write::put_verification_recovery(&self.conn, project, recovery)
     }
 
     fn put_verification_enabled(

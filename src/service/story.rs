@@ -102,7 +102,7 @@ pub const UNCLAIM_FALLBACK_STATE: &str = "todo";
 /// Pure, and separate from the two service methods for exactly that reason:
 /// the real release and its dry run must not be able to disagree about where
 /// the story is going.
-fn resolve_unclaim_destination(
+pub(crate) fn resolve_unclaim_destination(
     id: &str,
     events: &[StoryEvent],
     active: &str,
@@ -781,6 +781,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let states = tx.state_map(project)?;
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             if row.state == active.slug {
                 return Err(
                     AppError::StateConflict(UNCLAIMED.to_string(), row.state.clone()).into(),
@@ -1157,6 +1158,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let (canonical, title, retracted, removed) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             let canonical = story_no.to_id(&prefix);
             let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
             let states = tx.state_map(project)?;
@@ -1435,7 +1437,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
     /// Fires the hooks a state change owes: always `state_change`, plus
     /// `close` when the story ended up closed.
-    fn fire_transition_hooks(
+    pub(crate) fn fire_transition_hooks(
         &self,
         id: &str,
         title: &str,

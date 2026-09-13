@@ -115,7 +115,9 @@ branch_oid=$(cd "$repo_branch" && git rev-parse "worktree-$id_branch")
 (cd "$repo_branch" && git worktree remove "$branch_wt")
 (cd "$repo_branch" && story move "$id_branch" in-progress >/dev/null)
 
-resumed_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume)
+unknown_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume)
+assert_eq "$(jqf "$unknown_branch" .reason)" resume-provider-unknown "branch: missing launch identity requires an explicit provider"
+resumed_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume --agent=claude)
 assert_eq "$(jqf "$resumed_branch" .ok)" "true" "branch: resume succeeds"
 assert_eq "$(jqf "$resumed_branch" .worktree_reused)" "false" "branch: tree reconstructed"
 assert_eq "$(jqf "$resumed_branch" .branch_reused)" "true" "branch: existing branch reused"
@@ -172,14 +174,12 @@ provider_case "bare"
 assert_codex_resumed "bare"
 STORY_AGENT=claude provider_case "STORY_AGENT=claude"
 assert_codex_resumed "STORY_AGENT=claude"
-# The explicit flag outranks the record. It cannot make a Claude resume of a
-# Codex dispatch work -- the worktree lives in the other container -- but the
-# refusal is loud and names the conflict, never a silent fallback to the
-# record the caller overrode.
+# Explicit provider changes preserve the verified surviving worktree.
 provider_case "--agent=claude" --agent=claude
-assert_eq "$(jqf "$out" .ok)" "false" "provider (--agent=claude): the override is honoured, and fails loudly"
-assert_contains "$(jqf "$out" .display)" "already used by worktree" \
-  "provider (--agent=claude): the refusal names the container conflict"
+assert_eq "$(jqf "$out" .ok)" true "provider override: resume succeeds"
+assert_eq "$(jqf "$out" .agent)" claude "provider override: launches Claude"
+assert_contains "$(jqf "$out" .worktree_path)" ".codex/worktrees/" \
+  "provider override: preserves the Codex-created worktree"
 unset STORY_AGENT
 
 # The window gone entirely, only the worktree left: its container names the
@@ -209,13 +209,9 @@ id_pane_only=$(new_story "$repo_pane_only" "Abandoned pane only")
 (cd "$repo_pane_only" && story move "$id_pane_only" in-progress >/dev/null)
 export FAKE_TMUX_PANES="$id_pane_only	1	%8"
 resumed_pane_only=$(dispatch_real "$repo_pane_only" "$id_pane_only" --resume)
-assert_eq "$(jqf "$resumed_pane_only" .ok)" "true" "pane only: resume succeeds"
-assert_eq "$(jqf "$resumed_pane_only" .worktree_created)" "true" \
-  "pane only: missing worktree created"
-assert_eq "$(jqf "$resumed_pane_only" .branch_created)" "true" \
-  "pane only: missing branch created"
-assert_eq "$(jqf "$resumed_pane_only" .window_reused)" "true" \
-  "pane only: surviving pane reused"
+assert_eq "$(jqf "$resumed_pane_only" .ok)" false "pane only: unverified ownership refuses"
+assert_eq "$(jqf "$resumed_pane_only" .reason)" resource-identity-unsafe "pane only: identity diagnostic"
+[ ! -f "$FAKE_TMUX_STATE/respawn_pane_args.log" ] || fail_test "pane only: unowned session was replaced"
 
 # Unsafe identities and self-replacement refuse without damaging evidence.
 fresh_tmux_state
@@ -227,7 +223,7 @@ printf 'not yours\n' >"$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt"
 (cd "$repo_unsafe" && story move "$id_unsafe" in-progress >/dev/null)
 unsafe=$(dispatch_real "$repo_unsafe" "$id_unsafe" --resume)
 assert_eq "$(jqf "$unsafe" .ok)" "false" "unsafe: unregistered path refuses"
-assert_eq "$(jqf "$unsafe" .reason)" "resume-unsafe" "unsafe: typed reason"
+assert_eq "$(jqf "$unsafe" .reason)" "resource-identity-unsafe" "unsafe: typed reason"
 assert_eq "$(cat "$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt")" "not yours" \
   "unsafe: evidence preserved"
 
@@ -238,8 +234,8 @@ id_wrong=$(new_story "$repo_wrong" "Expected path on the wrong branch")
   ".claude/worktrees/$id_wrong" HEAD)
 (cd "$repo_wrong" && story move "$id_wrong" in-progress >/dev/null)
 wrong=$(dispatch_real "$repo_wrong" "$id_wrong" --resume)
-assert_eq "$(jqf "$wrong" .reason)" "resume-unsafe" "wrong branch: typed refusal"
-assert_contains "$(jqf "$wrong" .display)" "not \`worktree-$id_wrong\`" \
+assert_eq "$(jqf "$wrong" .reason)" "resource-identity-unsafe" "wrong branch: typed refusal"
+assert_contains "$(jqf "$wrong" .display)" "unrelated branch other-$id_wrong" \
   "wrong branch: both identities reported"
 [ -d "$repo_wrong/.claude/worktrees/$id_wrong" ] \
   || fail_test "wrong branch: existing worktree was removed"

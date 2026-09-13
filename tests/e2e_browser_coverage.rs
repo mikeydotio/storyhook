@@ -761,7 +761,7 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
         .0;
 
     for required in [
-        "data_root=\"$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)\"",
+        "data_root=\"$(mktemp -d /private/tmp/story-e2e.XXXXXX)\"",
         "export FAKE_TMUX_STATE=\"$data_root/faketmux\"",
         "seed_dir=\"$data_root/seed\"",
         "start_output=\"$(\"$story_bin\" daemon start 2>&1)\"",

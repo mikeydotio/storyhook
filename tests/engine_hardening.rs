@@ -572,9 +572,7 @@ fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
         DispatcherStep::Dispatch(DispatchOutcome::from_payload(
             serde_json::json!({"ok": true, "cleanup_lease": lease}),
         )),
-        DispatcherStep::Unclaim(DispatchOutcome::from_payload(
-            serde_json::json!({"ok": true}),
-        )),
+        DispatcherStep::Reset,
     ]);
     let run = start(&ctx, &fake, EngineScope::Epic(scope.clone()), 1);
     let engine = EngineService::new(&ctx, &fake);
@@ -590,8 +588,6 @@ fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
         EngineRunState::Finished
     );
     let calls = fake.calls();
-    assert!(
-        matches!(&calls[1], DispatcherCall::Unclaim(request) if request.cleanup_lease == lease)
-    );
+    assert!(matches!(&calls[1], DispatcherCall::Reset(request) if request.lease == lease));
     assert_eq!(calls.len(), 2);
 }
