@@ -427,6 +427,7 @@ story verifier start
 story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
+story resources <id> [--json]
 story cleanup [--dry-run]
 story summary
 story report [--html]

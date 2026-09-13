@@ -408,6 +408,23 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             })),
         ),
         (
+            "resources",
+            Response::Resources(Box::new(storyhook::service::resources::ResourceReport {
+                project: "fixture".into(),
+                story_id: "SH-7".into(),
+                status: "absent".into(),
+                repository: Some("/repo".into()),
+                worktree: None,
+                branch: Some("worktree-SH-7".into()),
+                window_name: "SH-7".into(),
+                socket_path: Some("/tmp/socket".into()),
+                pane: None,
+                provider: None,
+                candidates: vec![],
+                diagnostics: vec![],
+            })),
+        ),
+        (
             "cleanup",
             Response::Cleanup(Box::new(CleanupReport {
                 project: "fixture".to_string(),
@@ -909,6 +926,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Stories { .. } => "stories",
             Response::EngineRun(_) => "engine_run",
             Response::Cleanup(_) => "cleanup",
+            Response::Resources(_) => "resources",
             Response::Summary(_) => "summary",
             Response::HtmlReport(_) => "html_report",
             Response::Graph(_) => "graph",
@@ -925,7 +943,7 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 23] = [
+    const EVERY_VARIANT: [&str; 24] = [
         "verifier_status",
         "with_verifier",
         "message",
@@ -936,6 +954,7 @@ fn the_response_corpus_covers_every_variant() {
         "stories",
         "engine_run",
         "cleanup",
+        "resources",
         "summary",
         "html_report",
         "graph",
@@ -1890,6 +1909,10 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Cleanup { dry_run: true },
+        Invocation::Resources {
+            id: "SH-7".into(),
+            options: Default::default(),
+        },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1929,6 +1952,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Engine { .. } => "Engine",
         Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
+        Invocation::Resources { .. } => "Resources",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1999,7 +2023,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        71,
+        72,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

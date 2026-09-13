@@ -1885,3 +1885,29 @@ fn reinstall_clears_the_stale_release_the_doctor_reports() {
         combined(&output)
     );
 }
+
+#[test]
+fn stable_codex_bridge_does_not_inject_a_provider_for_deterministic_commands() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.install_fake_plugin_helper(
+        "0.6.0",
+        "#!/bin/sh\nprintf '%s\\n' \"${STORY_AGENT:-unset}\"\n",
+    );
+    for verb in [
+        "reset", "unclaim", "capture", "complete", "reap", "context", "notify",
+    ] {
+        let output = harness.run(&[
+            "plugin",
+            "run",
+            "codex",
+            "--",
+            "--project",
+            "fixture",
+            verb,
+            "SH-9",
+        ]);
+        assert!(output.status.success(), "{}", combined(&output));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "unset\n", "{verb}");
+    }
+}

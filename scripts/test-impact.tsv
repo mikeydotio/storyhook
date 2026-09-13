@@ -87,6 +87,7 @@ mcp_tool_drift	:(glob)**/*
 merge_gate	:(glob)**/*
 migration_guard	:(glob)**/*
 notify_reasons	plugins/story/bin/story.sh
+notify_reasons	plugins/story/lib/resources.sh
 notify_reasons	plugins/story/lib/session.sh
 obviation_startup	:(glob)**/*
 orphan_check	:(glob)**/*
