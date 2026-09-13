@@ -2,7 +2,7 @@
 
 - **Date**: 2026-09-12
 - **Severity/Impact**: SH-699 reported 14 fixture banner windows and two day-old test-binary activity readers in the operator's `storyhook-verifier` tmux session. This investigation reproduced the isolation defects; it did not repeat that historical resource census. No data loss was reported.
-- **Status**: Implemented locally in `a82829ce3` and `bbd74a2eb` on baseline `db827a0224a02e2f666fa0c095b4c29f20f0a304`. SH-699 remains open and unsubmitted for baseline repairs owned by SH-702 and an adopted process-registration investigation described below.
+- **Status**: Implemented locally in `a82829ce3` and `bbd74a2eb` on baseline `db827a0224a02e2f666fa0c095b4c29f20f0a304`. Continuation merge `33d82f770` integrates SH-698's landed prerequisite repairs. All adopted scope and directly impacted checks are complete; central verification remains pending.
 
 ## Summary
 
@@ -17,6 +17,7 @@ Verifier tests could create persistent tmux readers outside their fixture lifeti
 | 2026-09-11–12 | SH-699's discussion reported retained fixture windows and activity readers. Historical PIDs were not used as fresh reproduction evidence. |
 | 2026-09-12 | On baseline `db827a0224a02e2f666fa0c095b4c29f20f0a304`, the new child-environment matrix failed twice before production edits. Independent shipping-script probes showed that disabled `banner`, `tail`, and `logs` commands made no tmux calls. |
 | 2026-09-12 | Commits `a82829ce3` (policy and regressions) and `bbd74a2eb` (fixture containment, ownership, and regressions) record the repair. The policy matrix and all 18 mirror tests passed. Disposable mutations removing propagation, server ownership, and activity isolation were detected. Restored checks and targeted Clippy with `-D warnings` passed. |
+| 2026-09-13 | The operator identified the stale dependency: SH-698 had landed all three retained prerequisite repairs in `d3a01a0e2`. Merge `33d82f770` preserves that history and the three SH-699 commits. The combined tree passes 299 integration tests and 75 focused unit tests. |
 
 ## Root cause & trigger
 
@@ -69,7 +70,32 @@ were dead, with no cleanup errors. The restored teardown regression then
 passed in 5.23 seconds. This tests teardown separately from startup ownership
 without leaving deliberately leaked resources on the machine.
 
-Direct integration runs also found a missing `dashboard_local_time` impact declaration and a real-reap fixture lacking an origin; SH-702 owns those independently diagnosed baseline repairs. A serial rerun of the verification queue's `shell_` tests passed 14 and failed two: the known real-reap case, and `shell_notification_classifies_absence_by_the_helpers_reason_slug`, which reported `could not read process group for verifier-notify pid 197`. The related process and lifecycle ownership sources are unchanged from baseline. Matching earlier reports exist on SH-663 and SH-668, including SH-668's 2026-09-11T14:56:15Z adoption comment, but that history does not establish the present failure's root cause or prove a completed repair. SH-699 adopts the registration investigation as remaining scope; it was deferred under the session's context-budget rule. The story therefore remains open rather than claiming a green submission. The centralized verifier owns the full suite.
+The initial integration run also found a missing `dashboard_local_time` impact declaration and a real-reap fixture lacking an origin, independently diagnosed on SH-702. A serial rerun of the verification queue's `shell_` tests passed 14 and failed two: the real-reap case and `shell_notification_classifies_absence_by_the_helpers_reason_slug`, which reported `could not read process group for verifier-notify pid 197`. At that point the process and lifecycle ownership sources were unchanged from baseline. SH-699 adopted the registration investigation and remained open with these failures recorded.
+
+## Continuation: prerequisite repairs and validation
+
+SH-698 subsequently reproduced and repaired all three failures, then passed central verification and landed as `d3a01a0e25815c388f6ad95d4b697dfcd86adedf`. The operator removed the stale SH-702 dependency. SH-699 integrated that landed history in `33d82f770`, with no conflicts or rewritten commits.
+
+| Landed commit | Resolution and regression evidence |
+|---|---|
+| `c38d8e0da` | Declare `dashboard_local_time` against `src/web_dashboard.html` and require the exact row in the manifest regression. Both this row and SH-699's fixture-hygiene row survive integration. |
+| `b58639762` | Give the original leased-reap repository a private bare origin advertising its default branch. The production origin-authority refusal and unrelated replacement checkout remain intact. |
+| `574286228` | Handle the macOS exit window where `getpgid` reports `ESRCH` before a child becomes waitable. Observe the group before `try_wait` can reap and release the PID, then retain ordinary bounded capture when exit evidence explains registration failure. Live-child failures, unrelated lookup errors, and wait errors remain fatal. |
+
+SH-698's native probe observed the exit window in 64 of 64 children. Its deterministic syscall-state regression covers absent-but-not-waitable, completed success/nonzero status, live group, unrelated lookup error, and wait error. The live-child refusal and real-registry capture controls also pass on the integrated tree. This provides stronger evidence than merely rerunning the formerly intermittent notification test until it passes. See [Apple's getpgid reference](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getpgid.2.html) and [Rust's Child lifecycle reference](https://doc.rust-lang.org/std/process/struct.Child.html).
+
+Fresh continuation validation:
+
+| Checks | Result |
+|---|---|
+| 23 directly impacted integration targets | 299 passed, zero failed or ignored; includes all 85 queue cases, 54 merge-gate cases, the lifecycle harness, policy matrix, fixture guards, and 18 real-mirror cases |
+| Focused library units | Process 9/9, environment 60/60, activity 6/6 |
+| Static checks | Targeted Clippy with `-D warnings`, formatting, and staged/unstaged whitespace checks pass |
+| Resource ownership | Normal and panic teardown remove owned banner/activity readers; the second private control server remains unaffected |
+
+The selector ran against the actual combined tree and returned `ALL` because certified baseline `7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247` has no coverage map. Only the new/directly impacted targets ran; the full suite remains central-verifier owned. Logs are `/tmp/sh699-continuation-{impacted,process,env,activity,clippy}.log`. Earlier mutation evidence remains applicable because the tested containment boundaries are unchanged.
+
+Native tests used reviewed access to shared compiler locks and private sockets. Cargo replayed cached dependency slot-refusal diagnostics from the initial session (newest cache timestamp 2026-09-12 16:47 local); current Clippy records successful shared-slot waiting/acquisition. No guard was disabled. A separate installed-helper grammar refusal is owned by SH-712: use the supported direct `story load-context --story SH-699` reader until a release containing that guard repair is installed and the managed-launcher form is validated. No installed files or historical operator resources were changed.
 
 ## Preventative action — killing the class
 
