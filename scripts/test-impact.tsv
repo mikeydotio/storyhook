@@ -141,6 +141,7 @@ verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
 verifier_bundle	:(glob)scripts/*
 verifier_bundle	build.rs
+verifier_fixture_hygiene	:(glob)**/*
 verifier_foreign_checkout	:(glob)scripts/*
 verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*
