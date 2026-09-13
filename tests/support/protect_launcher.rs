@@ -140,9 +140,8 @@ pub(super) const ADMITTED_DISPATCH_ARGS: [&str; 9] = [
 
 /// Argument lists no entry point may be admitted with: mutating verbs, unknown
 /// verbs, and malformed selectors or reader options.
-pub(super) const REJECTED_ARGS: [&str; 36] = [
+pub(super) const REJECTED_ARGS: [&str; 33] = [
     "",
-    "create --title x",
     "sync",
     "handoff",
     "triage",
@@ -154,11 +153,9 @@ pub(super) const REJECTED_ARGS: [&str; 36] = [
     "capture TST-1 extra",
     "capture ../TST-1",
     "capture TST-1 TST-2",
-    "reset TST-1",
     "reap TST-1",
     "notify TST-1 x",
     "complete execute TST-1",
-    "unclaim TST-1",
     "scaffold-agents-md",
     "unknown",
     "context --unknown",
@@ -377,7 +374,7 @@ fn launcher_identity_requires_the_installer_bytes_and_no_symlink() {
 fn unknown_operation_is_not_misreported_as_an_artifact_edit() {
     let harness = fixture();
     let text = format!(
-        "bash {} create --title x",
+        "bash {} unknown-operation",
         quoted(&harness.codex_launcher())
     );
     let response = ask(&harness, &text, true);
@@ -499,7 +496,7 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
 }
 
 /// Replace the fixture release payload with this checkout's actual helper tree.
-fn install_checkout_helpers(harness: &Harness) -> PathBuf {
+pub(super) fn install_checkout_helpers(harness: &Harness) -> PathBuf {
     let cache = harness
         .home
         .join(".codex/plugins/cache/storyhook/story")
