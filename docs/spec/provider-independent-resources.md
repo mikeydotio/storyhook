@@ -139,3 +139,15 @@ UUID. These checks do not add authority to delete resources.
 The terminal reader accepts tmux's exact `no server running on <socket>` response
 as confirmed absence after the final window exits, even while the socket entry
 remains. Other failed observations remain errors.
+
+## Integration with installed-artifact protection
+
+The SH-708 guard runs on the native report's repository, common Git directory
+and actual worktree before completion preparation fetches or mutates anything.
+An explicit configured container is also checked as a safety hint; it never
+selects ownership. Branch-only and absent results have no recursive-removal
+target, while repository and metadata write locations remain protected.
+
+Combined regressions cover protected Claude, Codex and custom worktrees,
+Codex installed entry points operating on Claude worktrees, redirected hints,
+and branch-only/absent cleanup with an installed-path manifest present.
