@@ -67,6 +67,7 @@ event_kind_vocabulary	:(glob)**/*
 fault_injection_guard	:(glob)**/*
 fix_cycle_5	:(glob)**/*
 fixture_isolation	:(glob)**/*
+gate_completion	:(glob)**/*
 gate_leg_reuse	:(glob)**/*
 gate_lock	:(glob)**/*
 gate_tiers	:(glob)**/*
