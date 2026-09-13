@@ -32,6 +32,7 @@
 //! or contributing a test or gate leg. The newest running item or activity is
 //! the current step; only a selected test item can carry test counts.
 
+use super::gate_output::{OutputObservation, OutputReference};
 use serde::Deserialize;
 
 /// One parsed line of the journal. An unrecognised `kind` (a future producer
@@ -43,6 +44,12 @@ enum JournalLine {
     Run {
         generation: i64,
         at: String,
+        #[serde(default)]
+        attempt_id: Option<String>,
+    },
+    Output {
+        #[serde(flatten)]
+        fields: serde_json::Map<String, serde_json::Value>,
     },
     Item {
         path: String,
@@ -276,6 +283,10 @@ pub struct GateProgress {
     /// Absent on journals written before SH-549 or while journal preparation
     /// failed; consumers must not reuse their progress for a later attempt.
     pub run: Option<GateRun>,
+    /// Exact raw-output binding, independent of checklist/test counts.
+    pub output: Option<OutputReference>,
+    /// A malformed output record replaces prior evidence with this diagnostic.
+    pub output_error: Option<String>,
 }
 
 /// Non-checklist work performed within one checklist item. Activities are
@@ -296,6 +307,8 @@ pub struct GateRun {
     pub generation: i64,
     /// Time at which the verifier acquired this attempt.
     pub started_at: String,
+    /// Unique process attempt; absent in legacy generation-only journals.
+    pub attempt_id: Option<String>,
 }
 
 /// The deepest explicit checklist item currently running.
@@ -412,11 +425,30 @@ pub fn fold(journal_text: &str) -> GateProgress {
             continue;
         };
         match parsed {
-            JournalLine::Run { generation, at } => {
+            JournalLine::Run {
+                generation,
+                at,
+                attempt_id,
+            } => {
+                // A new run record cannot authenticate earlier rows or logs.
+                progress = GateProgress::default();
                 progress.run = Some(GateRun {
                     generation,
                     started_at: at,
+                    attempt_id,
                 });
+            }
+            JournalLine::Output { fields } => {
+                match serde_json::from_value::<OutputReference>(fields.into()) {
+                    Ok(reference) => {
+                        progress.output = Some(reference);
+                        progress.output_error = None;
+                    }
+                    Err(error) => {
+                        progress.output = None;
+                        progress.output_error = Some(format!("invalid output reference: {error}"));
+                    }
+                }
             }
             JournalLine::Item {
                 path,
@@ -561,9 +593,10 @@ pub enum VerificationProgressView<'a> {
         progress: &'a GateProgress,
         /// Elapsed seconds since this story last entered `verifying`.
         elapsed_seconds: Option<u64>,
-        /// Elapsed seconds since the journal file last changed, when known —
-        /// the staleness signal a wedged run shows up as.
-        seconds_since_last_event: Option<u64>,
+        /// Age of the structured journal, not ordinary stdout/stderr.
+        seconds_since_structured_progress: Option<u64>,
+        /// Independent observation of the authenticated current-attempt log.
+        output: &'a OutputObservation,
     },
 }
 
@@ -590,7 +623,8 @@ pub fn render(view: &VerificationProgressView<'_>, now: &str) -> String {
         VerificationProgressView::Running {
             progress,
             elapsed_seconds,
-            seconds_since_last_event,
+            seconds_since_structured_progress,
+            output,
         } => {
             let (passed, total, estimated) = progress
                 .items
@@ -613,25 +647,36 @@ pub fn render(view: &VerificationProgressView<'_>, now: &str) -> String {
             // Ownership is the execution authority. Completed checklist rows
             // cannot finish an attempt the daemon still owns.
             details.push("running".to_owned());
-            if let Some(stale) = seconds_since_last_event.filter(|s| *s > STALE_GATE_THRESHOLD_SECS)
+            if let Some(stale) =
+                seconds_since_structured_progress.filter(|s| *s > STALE_GATE_THRESHOLD_SECS)
             {
-                details.push(format!("NO GATE OUTPUT FOR {}", elapsed(stale)));
+                details.push(format!("No structured progress for {}", elapsed(stale)));
             }
             out.push_str(&format!("Verification ({})\n", details.join(", ")));
             for item in &progress.items {
                 render_item(item, 0, &mut out);
+            }
+            match output {
+                OutputObservation::Observed(age) if *age > STALE_GATE_THRESHOLD_SECS => {
+                    out.push_str(&format!(
+                        "No stdout/stderr output observed for {}.\n",
+                        elapsed(*age)
+                    ));
+                }
+                OutputObservation::Unavailable(detail) => {
+                    out.push_str(&format!("Output observation unavailable: {detail}.\n"));
+                }
+                OutputObservation::Observed(_) | OutputObservation::NotCapturing => {}
             }
         }
     }
     out
 }
 
-/// Below this many silent seconds, a running gate is unremarkable. Above it,
-/// silence itself becomes the signal a wedged run shows up as. Three times
-/// the publisher's own base one-minute publish interval (`crate::daemon::
-/// verification_progress::PUBLISH_INTERVAL`) rather than a bare literal
-/// (SH-394): three consecutive missed publishes is what "no gate output"
-/// means, not a picked number of seconds.
+/// Reporting threshold for independently observed structured and raw-output
+/// inactivity. Three times the publisher's base one-minute interval
+/// (`crate::daemon::verification_progress::PUBLISH_INTERVAL`, SH-394).
+/// This is a display threshold, never a process timeout or verdict.
 pub const STALE_GATE_THRESHOLD_SECS: u64 = 180;
 
 #[cfg(test)]
@@ -719,6 +764,35 @@ mod tests {
     }
 
     #[test]
+    fn a_new_run_clears_previous_rows_and_output_binding() {
+        let progress = fold(concat!(
+            "{\"kind\":\"run\",\"generation\":42,\"attempt_id\":\"old\",\"at\":\"t\"}\n",
+            "{\"kind\":\"item\",\"path\":\"release gate\",\"status\":\"passed\"}\n",
+            "{\"kind\":\"output\",\"attempt_id\":\"old\",\"path\":\"/old/log\",\"dev\":1,\"ino\":2,\"at\":\"t\"}\n",
+            "{\"kind\":\"run\",\"generation\":42,\"attempt_id\":\"new\",\"at\":\"t\"}\n",
+        ));
+        assert!(progress.items.is_empty());
+        assert!(progress.output.is_none());
+        assert_eq!(progress.run.unwrap().attempt_id.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn a_malformed_output_record_does_not_retain_prior_evidence() {
+        let progress = fold(concat!(
+            "{\"kind\":\"output\",\"attempt_id\":\"owned\",\"path\":\"/log\",\"dev\":1,\"ino\":2,\"at\":\"t\"}\n",
+            "{\"kind\":\"output\",\"path\":null}\n",
+        ));
+        assert!(progress.output.is_none());
+        assert!(
+            progress
+                .output_error
+                .unwrap()
+                .contains("invalid output reference")
+        );
+        assert!(progress.items.is_empty());
+    }
+
+    #[test]
     fn attempt_identity_and_current_step_counts_fold_together() {
         let progress = fold(
             "{\"kind\":\"run\",\"generation\":42,\"at\":\"2026-01-01T00:00:00Z\"}\n\
@@ -732,6 +806,7 @@ mod tests {
             progress.run,
             Some(GateRun {
                 generation: 42,
+                attempt_id: None,
                 started_at: "2026-01-01T00:00:00Z".into(),
             })
         );
@@ -873,7 +948,8 @@ mod tests {
         let view = VerificationProgressView::Running {
             progress: &progress,
             elapsed_seconds: Some(125),
-            seconds_since_last_event: Some(3),
+            seconds_since_structured_progress: Some(3),
+            output: &OutputObservation::Unavailable("no authenticated reference".into()),
         };
         let body = render(&view, "2026-08-31T18:04:00Z");
         assert!(body.contains("Verification ("));
@@ -893,10 +969,12 @@ mod tests {
         let view = VerificationProgressView::Running {
             progress: &progress,
             elapsed_seconds: Some(4 * 3600),
-            seconds_since_last_event: Some(3 * 3600 + 51 * 60),
+            seconds_since_structured_progress: Some(3 * 3600 + 51 * 60),
+            output: &OutputObservation::Unavailable("no authenticated reference".into()),
         };
         let body = render(&view, "2026-08-31T18:04:00Z");
-        assert!(body.contains("NO GATE OUTPUT FOR 3h 51m"));
+        assert!(body.contains("No structured progress for 3h 51m"));
+        assert!(!body.contains("No stdout/stderr output observed"));
     }
 
     /// The running candidate's journal can be empty for a moment — handed
@@ -910,7 +988,8 @@ mod tests {
         let view = VerificationProgressView::Running {
             progress: &progress,
             elapsed_seconds: Some(1),
-            seconds_since_last_event: None,
+            seconds_since_structured_progress: None,
+            output: &OutputObservation::Unavailable("no authenticated reference".into()),
         };
         let body = render(&view, "2026-08-31T18:04:00Z");
         assert!(body.contains(", running)"), "{body}");

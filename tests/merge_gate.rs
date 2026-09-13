@@ -710,6 +710,83 @@ fn verifier_reports_unreadable_compiler_evidence_without_inventing_errors() {
 }
 
 #[test]
+fn foreign_gate_registers_its_exact_attempt_log_before_ordinary_output() {
+    use std::os::unix::fs::MetadataExt;
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let mut previous_log = None;
+    for attempt in ["first-owned-attempt", "same-generation-retry"] {
+        let journal = repo.path().join("gate-progress.ndjson");
+        fs::write(&journal, "").unwrap();
+        let snapshot = repo.path().join("output-binding-inside.ndjson");
+        let args = MergeRepo::verification_gate_args(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                "cp \"$STORYHOOK_GATE_PROGRESS\" \"$1\"; printf stdout-partial; printf stderr-partial >&2",
+                "foreign-output",
+                snapshot.to_str().unwrap(),
+            ],
+        );
+        let result = Command::new("bash")
+            .args(args)
+            .current_dir(repo.path())
+            .envs(storyhook_test_support::daemon_containment())
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", attempt)
+            .env("STORYHOOK_LOCK_DIR", repo.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", repo.path().join("activity"))
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .unwrap();
+        assert_ok(&result, "run foreign gate with authenticated capture");
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(payload["result"], "gate-passed", "{payload}");
+        let inside = fs::read_to_string(snapshot).unwrap();
+        let progress = storyhook::service::gate_progress::fold(&inside);
+        let reference = progress
+            .output
+            .expect("binding exists before foreign command starts");
+        let path = PathBuf::from(payload["log"].as_str().unwrap());
+        assert_eq!(reference.path, path);
+        assert_eq!(reference.attempt_id, attempt);
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (reference.dev, reference.ino),
+            (metadata.dev(), metadata.ino())
+        );
+        let log = fs::read_to_string(&path).unwrap();
+        assert!(log.contains("stdout-partial"), "{log}");
+        assert!(log.contains("stderr-partial"), "{log}");
+        assert_ne!(previous_log.as_ref(), Some(&path));
+        previous_log = Some(path);
+        let all = fs::read_to_string(&journal).unwrap();
+        assert_eq!(
+            all.lines()
+                .filter(
+                    |line| serde_json::from_str::<serde_json::Value>(line).unwrap()["kind"]
+                        == "output"
+                )
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn foreign_gate_lifecycle_is_running_inside_the_command_then_records_its_exit() {
     for (exit_status, expected_status) in [(0, "passed"), (9, "failed")] {
         let repo = MergeRepo::new();
