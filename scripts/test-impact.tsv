@@ -39,6 +39,7 @@ dashboard_enter_submit_guard	:(glob)**/*
 dashboard_error_reporting	:(glob)**/*
 dashboard_focus_coverage	:(glob)**/*
 dashboard_icon_glyphs	:(glob)**/*
+dashboard_local_time	src/web_dashboard.html
 dashboard_mutation_deadline	:(glob)**/*
 dashboard_reserved_labels	:(glob)**/*
 dead_public_surface	:(glob)**/*
