@@ -1,4 +1,8 @@
-# SH-707: AGE-54 refresh, ready for native review
+# SH-707: historical AGE-54 refresh preparation
+
+> **Superseded by the installed Agentics 3.9.2 release.** Follow
+> [the released-plugin handoff](RELEASE-3.9.2.md). Do not install or activate this
+> alias. It remains staged and uninstalled; the procedure below is historical.
 
 The replacement is **staged, not installed**. Use this procedure instead of the
 older `greenlight@personal` activation instructions. Source preparation, real

@@ -2,19 +2,19 @@
 
 - **Date**: 2026-09-12
 - **Severity/Impact**: One reported Codex `PreToolUse` failure; two independently reproduced incompatible emitters. Duration and wider impact are unknown.
-- **Status**: **PARTIAL — candidate installed and disabled; native activation pending**. Personal hook repaired locally; Greenlight source repairs pass 127 tests. The supervisor installed the development candidate and passed 20 actual installed controls; the original producer remains enabled. Mikey's native trust and final selection remain under root-supervisor coordination.
+- **Status**: **PARTIAL — released Agentics 3.9.2 installed and enabled; native review pending**. All 21 installed Greenlight files match the tagged release; 164 shipped tests and 20 installed-manifest controls pass. Codex reports the updated official handler's trust as modified. Personal-hook repair is already installed.
 
-The operator-authorized development artifact is now staged and installed. Its
-immutable identity, metadata-only source exception, safe supervisor receipt and
-remaining native action are in [DEVELOPMENT.md](sh-707/DEVELOPMENT.md).
-Do not rerun staging/install or copy private raw configuration backups.
+The normal release supersedes both temporary development activation procedures.
+Use [the current release handoff](sh-707/RELEASE-3.9.2.md). No personal plugin
+installation or selection is needed. Preserve remaining caches and artifacts;
+do not copy private raw configuration backups.
 
 ## Summary
 
 Codex reported `unsupported permissionDecision:allow` during StoryHook work.
 Greenlight 3.9.1 and the personal Codex hook each independently emit a Claude-specific approval envelope that Codex rejects.
 StoryHook v2.4.2 already has the relevant compatibility guard, and its installed and checkout controls pass.
-The personal hook now emits neutral Codex approvals. AGE-103 repaired the five historical failures and completed the source regression matrix. Its development candidate is installed but disabled, with 20 actual installed-manifest controls passing. The original Greenlight cache/trust remain unchanged and its producer stays enabled until Mikey's deliberate native activation sequence.
+The personal hook now emits neutral Codex approvals. AGE-103 repaired the five historical failures; AGE-54 subsequently repaired explorer uncertainty and redirection policy gaps. Mikey deployed Agentics 3.9.2, and its installed Greenlight passes the expanded 164-test suite plus 20 manifest controls. The official identity remains enabled, the old personal candidate remains disabled, and the newer personal alias remains staged only. Native discovery reports the updated official handler as modified; its execution in a trusted fresh host is not yet certified.
 No hook-specific live trace attributes the original incident to either producer.
 
 ## Timeline
@@ -30,6 +30,8 @@ No hook-specific live trace attributes the original incident to either producer.
 | 2026-09-13 | AGE-103 source repairs inspected; 127 Greenlight tests pass again against pinned committed source. Normal Codex installer rehearsal passes baseline, repaired candidate and baseline rollback with exact byte/mode parity. |
 | 2026-09-13 | Operator authorizes a disposable development identity. Official Codex helpers produce `3.9.1+codex.20260913021137`; real personal-marketplace replacement/rollback preserves eight unrelated plugins and trust witnesses through five states, with 20 installed-manifest controls passing. Live changes remain reserved for supervisor review. |
 | 2026-09-13 02:33–02:36 UTC | Supervisor reviews and stages the exact artifact, installs greenlight@personal, and disables only the candidate through the version-protected supported config API. Original producer remains enabled; all preexisting caches and unrelated config/trust remain unchanged. Twenty actual installed-manifest controls pass. Native activation remains unverified. |
+| 2026-09-13 06:53–07:20 UTC | Supervisor prepares a separate AGE-54-repaired alias to preserve active-session cache references. It remains staged, not installed; commit `38af7943c` preserves its evidence and refusal regressions. |
+| 2026-09-13 22:53 UTC onward | After Mikey reports deployment, all 21 installed Agentics 3.9.2 Greenlight files/modes match tagged commit `da6db5643ef1a36f985078217e36174b17b2478c`. All 164 shipped tests and 20 manifest controls pass. Native handler is enabled but has modified trust; both personal activation procedures are superseded. The updater had already removed the old Agentics 3.9.1 cache before this inspection. |
 
 Personal-hook introduction history and a last-known-good Codex interval are unknown. No bisect or first-onset claim is justified.
 
@@ -69,8 +71,8 @@ versioned Codex manifest; it changes no Agentics source file or release identity
 | Component | State and evidence |
 |---|---|
 | Personal Codex hook | Installed at `~/.codex/hooks/git-readonly-allow.py`; SHA256 `710fbb086454438e3e1f13d130a93529290fb71054ef3a1b0f09b7d4d98fe284`. Original preserved at `~/.codex/hooks/git-readonly-allow.py.sh707-backup-20260912T234300Z`. Separate Claude copy compared unchanged. |
-| Greenlight source | AGE-103 candidate `af73549175847d158c5a59de772f6cfee7b256f5`, including repairs `11f2ae9`, `2b5e20c`, and `66fe644`. Original partial patch remains historical evidence only. |
-| Greenlight installed | Development `3.9.1+codex.20260913021137` is installed as `greenlight@personal` and disabled. Original `greenlight@agentics` remains enabled, with its 3.9.1 cache and trust preserved. See [live receipt](sh-707/installed-disabled-receipt.json) and [native handoff](sh-707/DEVELOPMENT.md). |
+| Greenlight source | Released Agentics `v3.9.2`, commit `da6db5643ef1a36f985078217e36174b17b2478c`, Greenlight tree `750c2dba8be5d8e14a871493dadc5197ce51234d`. Earlier AGE-103 and AGE-54 candidates remain historical evidence. |
+| Greenlight installed | Official `greenlight@agentics` 3.9.2 enabled; all installed bytes/modes match the release. Native trust is modified. Personal candidate disabled; AGE-54 alias staged only. See [release receipt](sh-707/release-3.9.2-receipt.json) and [native handoff](sh-707/RELEASE-3.9.2.md). |
 | StoryHook | Documentation/evidence only. Installed/checkout hook SHA256: `e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54`. |
 
 Durable continuation artifacts: [personal patch](sh-707/personal-hook.patch), [personal regression](sh-707/test_personal_hook.py), [Greenlight candidate and regression patch](sh-707/greenlight-candidate.patch), and [comparison evidence](sh-707/evidence.json).
@@ -82,7 +84,8 @@ Durable continuation artifacts: [personal patch](sh-707/personal-hook.patch), [p
 | Installed personal regression | Five tests pass, including neutral approvals, Claude compatibility, passthrough, malformed JSON/unrelated tools, and denial serialization. |
 | Historical Greenlight new regression | 11/16 passed; four valid boolean-false AI cases and one manifest environment case failed. Subsequently fixed by AGE-103. |
 | Historical Greenlight directly impacted existing tests | 84/84 passed against the initial partial candidate. |
-| Current Greenlight source suite | 127/127 pass against committed AGE-103 candidate exported into isolation. No full repository suite run. |
+| Historical AGE-103 source suite | 127/127 pass against committed candidate exported into isolation. No full repository suite run. |
+| Current installed release suite | 164/164 pass with isolated HOME, no skips; 20/20 actual installed-manifest controls pass. All 21 installed files match tagged 3.9.2 Git blobs and executable modes before and after testing. Native-host acceptance remains pending. |
 | Current personal installed regression | 5/5 pass; repaired hash remains exact and both original backup and separate Claude copy retain the original hash. |
 | Installer and rollback | 12 baseline controls, 20 repaired installed-manifest controls, 12 rollback controls pass. Each stage verifies all shipped files/modes, identity, registration and enablement. |
 | Receipt negative controls | 10 tests pass, covering wrong/missing/extra bytes, modes, roots, identities, registration, unsafe links and immutable source export. Git replacement-view regression failed before explicit original-object reads. |
@@ -97,9 +100,9 @@ Durable continuation artifacts: [personal patch](sh-707/personal-hook.patch), [p
 ### Remaining work and exact resume procedure
 
 1. Read SH-707's newest operator comments and repeat the complete obviation review. Preserve all committed preparation and original evidence.
-2. Read AGE-103 and AGE-84 for current combined-source certification. AGE-103 was verifying at `1305100174dbbc3702fc2af1d3b6a5502200eef3` with the prerequisite fixes incorporated; Greenlight still matches the tested pinned candidate. Do not duplicate their work or wait on stale relationships.
-3. Follow [DEVELOPMENT.md](sh-707/DEVELOPMENT.md). Supervisor review, staging, installation and 20 actual installed controls are complete; do not repeat them. Preserve the disabled candidate, enabled original, both caches and all trust. Root will ask Mikey for native candidate trust and final selection. No generic source, permission or context block remains.
-4. After that deliberate native action, record actual activation in a fresh native host thread. Keep source, installed behavior, release and active-host receipts distinct. Do not version the Agentics checkout, patch installed artifacts or bypass trust.
+2. The normal Agentics 3.9.2 release is installed and verified. Source prerequisites have landed; do not repeat candidate staging/install or wait on stale relationships.
+3. Follow [RELEASE-3.9.2.md](sh-707/RELEASE-3.9.2.md). Only the updated official handler's native trust review remains. No personal plugin installation or selection is needed. Preserve all remaining caches, trust and historical artifacts.
+4. After that deliberate native action, confirm trusted status and record actual activation in a fresh native host thread. Keep installed behavior and active-host receipts distinct. Do not version the Agentics checkout, patch installed artifacts or bypass trust.
 5. Record final evidence and commit; only after live acceptance, make `story move SH-707 verifying` the last action. Until that concrete prerequisite is available, keep SH-707 open and record the delivery boundary for the supervisor. A context handoff is not a blocker.
 
 The managed helper reader refusal is owned by SH-712. The supported direct CLI
