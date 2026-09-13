@@ -3289,10 +3289,13 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
         repository.path(),
         &["config", "user.email", "test@example.test"],
     );
-    git_ok(
+    storyhook::service::project::write_pointer(
         repository.path(),
-        &["commit", "--allow-empty", "-qm", "base"],
-    );
+        &storyhook::service::project::ProjectPointer::new("fixture-uuid".into(), "SH".into()),
+    )
+    .unwrap();
+    git_ok(repository.path(), &["add", ".storyhook.toml"]);
+    git_ok(repository.path(), &["commit", "-qm", "base"]);
     // Reaping asks origin for its authoritative HEAD (SH-691). Keep this
     // fixture offline while supplying the same contract as a hosted remote.
     let origin = scratch_dir();
@@ -3326,7 +3329,19 @@ fn real_shell_actuator_reaps_the_leased_original_from_a_clean_replacement_checko
     );
 
     let replacement = scratch_dir();
-    git_ok(replacement.path(), &["init", "-q", "-b", "main"]);
+    git_ok(
+        repository.path(),
+        &[
+            "clone",
+            "-q",
+            origin.path().to_str().unwrap(),
+            replacement.path().to_str().unwrap(),
+        ],
+    );
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(replacement.path())))
+        .unwrap();
     let mut candidate = cleanup_candidate(&fixture, repository.path());
     candidate.story_id = id.clone();
     candidate.checkout = replacement.path().to_path_buf();

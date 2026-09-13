@@ -7,7 +7,8 @@ source "$(dirname "$0")/lib.sh"
 # are production code, copied into this fixture's private installed layout.
 installed="$HOME/.codex/plugins/cache/storyhook/story/fixture"
 mkdir -p "$installed" "$HOME/bin"
-ln -s "$resource_test_tmux" "$HOME/bin/tmux"
+resource_bin=$(cd "$HOME/bin" && pwd) || exit 1
+ln -s "$resource_test_tmux" "$resource_bin/tmux"
 export TMUX_TMPDIR="$HOME/private-tmux"
 mkdir -p "$TMUX_TMPDIR"
 cp -R "$PLUGIN_ROOT/." "$installed/"
@@ -16,7 +17,7 @@ cat >"$HOME/bin/codex" <<'EOF'
 printf '%s\n' '{"installed":[{"pluginId":"story@storyhook","marketplaceName":"storyhook","name":"story","installed":true,"enabled":true,"version":"fixture"}]}'
 EOF
 chmod +x "$HOME/bin/codex"
-export PATH="$HOME/bin:$PATH"
+export PATH="$resource_bin:$PATH"
 repo=$(mk_story_repo)
 slug=$(slug_for "$repo")
 
