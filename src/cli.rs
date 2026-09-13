@@ -15,6 +15,9 @@ pub enum HooksAction {
     Test { event_type: String },
 }
 
+mod continuation;
+pub use continuation::ContinuationAction;
+
 /// `story github-auth login|status|logout` — SH-212's durable GitHub
 /// credential for unattended `pr-check` polling.
 ///
@@ -493,6 +496,13 @@ pub enum UnclaimComment {
 /// `u16`, `PathBuf` or a collection of those.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Invocation {
+    /// Durable autonomous context and administrative handoffs.
+    Continuation {
+        /// Canonical target story, empty only for capabilities.
+        id: String,
+        /// Lifecycle operation.
+        action: ContinuationAction,
+    },
     Help,
     Project {
         action: ProjectAction,
@@ -1020,6 +1030,7 @@ impl Invocation {
             | Self::Export
             | Self::ImportProject { .. }
             | Self::Migrate { .. }
+            | Self::Continuation { .. }
             | Self::SessionEligibility { .. }
             | Self::Context { .. }
             | Self::Handoff { .. }
@@ -1815,6 +1826,17 @@ struct VerbFlags {
 /// names no flags at all — see `UNDISCOVERABLE` in `tests/unknown_flag_sweep.rs`.
 static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
+        verb: "continuation",
+        subcommand: None,
+        flags: &[
+            bare("stdin"),
+            value("reviewed-seq"),
+            value("head"),
+            value("provider"),
+            value("session-id"),
+        ],
+    },
+    VerbFlags {
         verb: "new",
         subcommand: None,
         flags: &[
@@ -2482,6 +2504,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "token" => parse_token(args),
         "daemon" => parse_daemon(args),
         "store" => parse_store(args),
+        "continuation" => continuation::parse(args),
         "session-eligibility" => {
             if args.len() != 2 {
                 return Err(AppError::Usage(

@@ -11,6 +11,7 @@ import sys
 
 from codex_classifier import classify, run_process
 from plan_request import parse_plan_request
+from session_handoff import handle_stop
 
 MAX_MESSAGE = 64 * 1024
 MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024
@@ -96,7 +97,7 @@ def handle(payload, env, classify=classify, eligible=eligible):
     if not STORY_ID.fullmatch(marker) or not isinstance(payload, dict):
         return {}
     if (payload.get('hook_event_name') != 'Stop' or payload.get('agent_id')
-            or payload.get('agent_type') or payload.get('stop_hook_active') is not False):
+            or payload.get('agent_type') or type(payload.get('stop_hook_active')) is not bool):
         return {}
     if any(not isinstance(payload.get(k), str) or not IDENTITY.fullmatch(payload[k])
            for k in ('session_id', 'turn_id')):
@@ -112,6 +113,11 @@ def handle(payload, env, classify=classify, eligible=eligible):
     if re.fullmatch(r'\s*<proposed_plan>[\s\S]*</proposed_plan>\s*', message):
         return {}
     try:
+        administrative = handle_stop(payload, env, 'codex', run_process)
+        if administrative is not None:
+            return administrative
+        if payload['stop_hook_active']:
+            return {}
         mode = transcript_mode(payload)
         plan = parse_plan_request(message, marker)
         # A sidecar to the provider-owned transcript survives worktree cleanup,

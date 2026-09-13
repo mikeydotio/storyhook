@@ -408,6 +408,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0040_engine_adoption.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 41,
+        name: "continuations",
+        sql: include_str!("schema/0041_continuations.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
