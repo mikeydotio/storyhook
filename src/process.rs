@@ -29,6 +29,32 @@ pub(crate) struct Captured {
     pub(crate) stderr: Vec<u8>,
 }
 
+/// A capture error with any bounded answer collected after process cleanup.
+pub(crate) struct CaptureFailure {
+    /// The process-lifetime failure, retained independently of its answer.
+    pub(crate) error: CaptureError,
+    /// Output available after termination; callers must validate it as evidence.
+    pub(crate) stdout: Vec<u8>,
+}
+
+impl From<CaptureError> for CaptureFailure {
+    fn from(error: CaptureError) -> Self {
+        Self {
+            error,
+            stdout: Vec::new(),
+        }
+    }
+}
+
+impl CaptureFailure {
+    fn after(error: CaptureError, stdout: File) -> Self {
+        Self {
+            error,
+            stdout: read_capture(stdout),
+        }
+    }
+}
+
 /// A failure to stage, start, wait for, or finish a bounded subprocess.
 pub(crate) enum CaptureError {
     Stage(std::io::Error),
@@ -97,6 +123,7 @@ pub(crate) fn run_captured_with_registration<G>(
     run_captured_until(command, termination, None, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
+    .map_err(|failure| failure.error)
 }
 
 /// Runs a command with owner-observed cancellation and bounded group cleanup.
@@ -116,6 +143,7 @@ pub(crate) fn run_captured_cancellable<G>(
         register,
         || Ok(deadline.saturating_duration_since(Instant::now())),
     )
+    .map_err(|failure| failure.error)
 }
 
 /// Runs a command until its append-only journal stops advancing for `timeout`.
@@ -128,7 +156,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     journal: &std::path::Path,
     cancellation: &Cancellation,
     register: impl FnOnce(u32) -> Result<G, String>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
     let mut deadline =
         progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
     // Observe at least four times per idle window, capped to keep journal
@@ -144,7 +172,12 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     )?;
     // A child can damage the journal and exit inside one poll interval. Check
     // once more after reaping so a fast successful result cannot hide that.
-    deadline.remaining().map_err(CaptureError::Wait)?;
+    if let Err(error) = deadline.remaining() {
+        return Err(CaptureFailure {
+            error: CaptureError::Wait(error),
+            stdout: captured.stdout,
+        });
+    }
     Ok(captured)
 }
 
@@ -155,9 +188,9 @@ fn run_captured_until<G>(
     cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
     if cancellation.is_some_and(Cancellation::is_cancelled) {
-        return Err(CaptureError::Cancelled);
+        return Err(CaptureError::Cancelled.into());
     }
     let poll = if cancellation.is_some() {
         Some(
@@ -202,20 +235,25 @@ fn run_captured_until<G>(
             } else {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Track(error));
+                return Err(CaptureError::Track(error).into());
             }
         }
     };
     let status = loop {
         if cancellation.is_some_and(Cancellation::is_cancelled) {
             terminate_timed_out(&mut child, pid, termination);
-            return Err(CaptureError::Cancelled);
+            drop(observer);
+            return Err(CaptureFailure::after(CaptureError::Cancelled, stdout_file));
         }
         let budget = match remaining() {
             Ok(budget) => budget,
             Err(error) => {
                 terminate_timed_out(&mut child, pid, termination);
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         };
         match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
@@ -230,12 +268,20 @@ fn run_captured_until<G>(
                     &context,
                     "process timed out; group terminated",
                 );
-                return Err(CaptureError::Timeout(outcome));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Timeout(outcome),
+                    stdout_file,
+                ));
             }
             Err(error) => {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         }
     };
@@ -489,7 +535,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30; done",
+            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30 & wait; done",
             "graceful-timeout-probe",
             marker.to_str().unwrap(),
             ready.to_str().unwrap(),
