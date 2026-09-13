@@ -75,22 +75,20 @@ overdue, and scheduled-recovery banners. A halt-cleared notice lasts until the
 next observed verifier transition. Responses remain bound to their originating
 project, so a delayed acknowledgement cannot affect another project's board.
 
-## Validation and remaining scope
+## Validation
 
 Regression coverage exercises admission parity, durable receipts, immediate
 worker wake, exact attempt correlation, stale-request settlement, output shapes,
 freshness boundaries, hook delivery, and dashboard visibility. Fixtures use
 isolated stores and production control/worker paths with external gate doubles.
 
-**SH-703 remains open for an adopted defect:** the existing
-`on_verification_halted` event is absent from `timeout_ceiling_violation`'s override
-roster. The new resumed event is registered correctly. A continuation must add
-halted-event validation in its own behavior-fix commit with a regression through
-the production loader: a `timeout_seconds` exceeding
-`HOOK_TIMEOUT_CEILING_SECS` must be rejected. This additional repair was deferred
-under the session's explicit context-limit rule; it must not be mistaken for
-completed scope.
-
+The adopted halted-hook timeout defect is repaired at configuration validation.
+Both supported loaders reject `on_verification_halted.timeout_seconds = 61`
+against the existing 60-second ceiling, naming the field, value, and limit.
+An independent table-driven regression covers all 13 hook names through both
+loaders: omitted overrides inherit the configured default, 60 seconds loads, and
+61 seconds rejects the entire configuration. `list_hooks` and `test_hook` expose
+the same refusal. No timeout policy or configuration precedence changed.
 
 ### Implementation validation (2026-09-12)
 
@@ -117,10 +115,28 @@ impacted checks ran here; the full suite remains central-verifier-owned. Broad
 queue tests with known fixture containment/reap defects were not selected; SH-699
 and SH-702 already track those issues. This is no claim that their checks pass.
 
-Continuation: repeat obviation review, reproduce the missing halted-event timeout
-validation through `load_hooks_config_result` (a halted-hook override of 61 seconds
-currently passes configuration loading although the ceiling is 60), repair that
-roster entry in its own commit with its regression, and rerun the directly impacted
-hook checks. Resolve any newer verification feedback without rewriting history.
-Only after all adopted scope is complete should this worktree be submitted with
-`story move SH-703 verifying` as the final action.
+### Continuation validation (2026-09-13)
+
+Merge `78ed02dd5` preserves the primary implementation and incorporates centrally
+verified SH-698 commit `d3a01a0e2`, including the impact-manifest, private-origin
+reap fixture, and process-teardown repairs. The three new hook regressions failed
+before the missing validator entry was added; all pass after the origin repair.
+
+| Direct check | Result |
+|---|---|
+| Hook units / hook CLI integration | 28 / 11 passed |
+| Verifier observability / controls | 12 / 13 passed |
+| Process units / selective gate / timing assertions | 9 / 25 / 12 passed |
+| Verifier lifecycle wrapper / exact leased-reap regression | 1 / 1 passed |
+| Targeted Clippy with warnings denied | Passed |
+
+The initial sandboxed process run had one cancellation assertion failure; the
+unchanged nine-test process selection passed with approved execution access.
+Compiler-slot access was also denied inside the sandbox; subsequent compilation
+used approved access to the existing shared slots without changing the wrapper.
+Cargo may replay earlier dependency stderr. These diagnostics remain in the
+story's continuation report; they are not attributed to the hook repair.
+
+The selector still returns `ALL` for its missing baseline coverage map. The full
+suite and final merge verification remain central-verifier-owned. No adopted
+implementation scope remains pending.
