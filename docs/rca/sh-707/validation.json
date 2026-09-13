@@ -1,6 +1,6 @@
 {
   "story_id": "SH-707",
-  "status": "development artifact and cache-preserving activation preparation complete; supervisor review and native activation pending",
+  "status": "supervisor live staging and installation complete; candidate disabled, original enabled; native trust and final selection pending",
   "tooling_commit": "567ef40e9",
   "source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
   "checks": [
@@ -57,6 +57,12 @@
     {
       "name": "config optimistic concurrency",
       "result": "configVersionConflict rejects stale expectedVersion and leaves fixture config byte-identical"
+    },
+    {
+      "name": "supervisor actual live installed-manifest controls",
+      "passed": 20,
+      "receipt": "installed-disabled-receipt.json",
+      "rerun_during_documentation_reconciliation": false
     }
   ],
   "selector": {
@@ -76,16 +82,25 @@
   "limits": {
     "active_host_validated": false,
     "release_certified": false,
-    "live_greenlight_installed": false,
+    "live_greenlight_installed": true,
     "no_source_version_changes": true,
-    "full_suites_verifier_owned": true
+    "full_suites_verifier_owned": true,
+    "candidate_enabled": false,
+    "original_enabled": true
   },
-  "remaining_prerequisite": "Supervisor review of the sealed artifact and cache-retaining live sequence, coordinated native trust and plugin selection, then installed/native-host evidence. No unavailable-source or context dependency remains.",
+  "remaining_prerequisite": "Only Mikey native candidate trust and final selection, coordinated by the root supervisor, followed by native-host activation evidence. Supervisor review, staging, installation and installed controls are complete.",
   "development_tooling_commit": "98e543fe3",
   "development_artifact": {
     "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
     "archive_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
     "version": "3.9.1+codex.20260913021137",
     "only_source_delta": ".codex-plugin/plugin.json added"
+  },
+  "live_installation": {
+    "receipt": "installed-disabled-receipt.json",
+    "observed_at": "2026-09-13T02:36:34.115512+00:00",
+    "actor": "root supervisor",
+    "native_host_validated": false,
+    "release_certified": false
   }
 }

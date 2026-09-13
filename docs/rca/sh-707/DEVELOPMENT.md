@@ -1,10 +1,11 @@
 # SH-707: reviewed development delivery candidate
 
-**Prepared and rehearsed; not installed in the live host.** The operator's
-2026-09-13 02:07 UTC remediation authorizes this separate disposable identity.
-It expressly reserves live registration changes for supervisor review of the
-concrete artifact and commands below. This supersedes the earlier runbook's
-missing-development-identity prerequisite. Native trust remains an operator step.
+**Installed and disabled; native activation pending.** The supervisor completed
+source staging at 2026-09-13 02:33 UTC and installation at 02:36 UTC after reviewing
+the exact artifact and commands. `greenlight@personal` is disabled;
+`greenlight@agentics` remains enabled. Both caches and all existing trust remain
+preserved. Do not repeat staging or installation. The root supervisor will ask
+Mikey for native candidate trust and final selection; this lane changes neither.
 The supervisor's 02:17 UTC review additionally requires retaining original cache
 bytes for running sessions. Native plugin selection below supersedes the earlier
 proposed live remove/reinstall transition; those prior receipts remain historical.
@@ -21,7 +22,8 @@ proposed live remove/reinstall transition; those prior receipts remain historica
 | Sole source-tree difference | Added `.codex-plugin/plugin.json`; no original file or executable mode changes |
 | Original manifest | `.claude-plugin/plugin.json` retained byte-for-byte as source provenance |
 | Lasting source owner | AGE-103 |
-| Claims deliberately unset | Release certification, live installation, native activation |
+| Live installation | Complete; candidate disabled, original enabled |
+| Claims deliberately unset | Release certification and native activation |
 
 The official plugin-creator scaffold, marketplace-name reader, default UTC
 cachebuster helper, and validator all passed. The validator ran with PyYAML 6.0.3
@@ -49,9 +51,13 @@ contains complete request/response evidence, including config-version conflict
 rejection. The [earlier remove/reinstall receipt](development-rehearsal.json) and
 [CLI transcript](development-commands.json) retain the first packaging experiment.
 Both use a disposable Agentics-shaped marketplace and the exact staging helper
-proposed below. The [live preservation snapshot](development-live-preservation.json)
-confirms the original active baseline and personal-hook hashes still match the
-earlier receipt; the personal source and marketplace do not exist in the live home.
+subsequently used by the supervisor. The
+[pre-staging snapshot](development-live-preservation.json) is historical evidence;
+its absent-source/marketplace observation is superseded by the
+[supervisor live receipt](installed-disabled-receipt.json). The live receipt
+records the installed candidate, disabled state, original enabled state, preserved
+existing caches/config/trust, and 20 passing actual installed-manifest controls.
+Raw private configuration backups remain outside this repository.
 
 | Transition | Enabled Greenlight plugin keys |
 |---|---|
@@ -83,100 +89,67 @@ not assert anything about an existing session's configuration-refresh behavior.
 `greenlight@personal` was synthesized by installation. An installer receipt
 therefore cannot certify an active safety hook.
 
-## Supervisor-reviewed live sequence
+## Completed supervisor delivery
 
-These commands are prepared, **not executed against the live home**. Run from the
-SH-707 worktree only after the supervisor reviews this exact artifact and sequence.
-Coordinate a maintenance interval with no agent tool execution during plugin
-replacement. Retain the original trusted producer until the new producer has
-passed installed checks and native review. Do not disable hooks, edit trust
-hashes, remove the Agentics marketplace, or change unrelated plugins.
-Only the supervisor-coordinated native plugin selection changes which reviewed
-producer new sessions use. Retain both installed caches and every hook trust entry.
+The SH-707 comments **SUPERVISOR LIVE REVIEW** (02:34 UTC) and
+**SUPERVISOR LIVE INSTALL COMPLETE** (02:38 UTC) are the authoritative handoff.
+Their actions are complete; the earlier staging/install commands are retained
+in Git history for provenance, not as instructions to run again.
 
-1. Re-read story/operator state and compare the live cache, registration, enabled
-   plugins, personal hooks, and trust with the preservation receipts. Capture a
-   fresh private snapshot before mutation. Stop on unexplained drift. Confirm the
-   original cache still matches the recorded 3.9.1 inventory. Rollback will select
-   those retained bytes, without reinstalling from a mutable marketplace source.
+| Completed action | Recorded result |
+|---|---|
+| Official scaffold and source staging, 02:33 UTC | `/Users/mikey/plugins/greenlight` and `/Users/mikey/.agents/plugins/marketplace.json` created; archive hash unchanged |
+| Normal `codex plugin add`, 02:36 UTC | Installed `greenlight@personal`, version `3.9.1+codex.20260913021137` |
+| Supported `config/value/write` with fresh expectedVersion | Changed only `plugins.greenlight@personal.enabled` to false |
+| Original producer | `greenlight@agentics` remains enabled; original 3.9.1 cache retained |
+| Preservation | All nine preexisting Agentics plugin caches and unrelated configuration/trust unchanged |
+| Actual installed-manifest validation | All 20 controls passed against the new live cache; inert payloads, only HTTP stubbed |
 
-2. Stage the exact sealed source using the official scaffold. This refuses an
-   existing personal marketplace/source, symlinked ancestors, altered archive,
-   and inconsistent provenance before the helper writes anything:
+Installed candidate path:
+`/Users/mikey/.codex/plugins/cache/personal/greenlight/3.9.1+codex.20260913021137`.
 
-   ```sh
-   PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/stage_personal.py \
-     --artifact-directory /Users/mikey/Enderchest/storyhook/sh707-development-20260913 \
-     --home /Users/mikey \
-     --expected-sha256 cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3
-   python3 /Users/mikey/.codex/skills/.system/plugin-creator/scripts/read_marketplace_name.py
-   ```
+The safe [installed-disabled receipt](installed-disabled-receipt.json) is copied
+unchanged from
+`/private/tmp/sh707-supervisor-live-20260913/installed-disabled-receipt.json`.
+The supervisor's installer/toggle results and raw private config backups stay in
+that private directory. No raw backup is copied into these docs.
 
-   The reader must return `personal`. The helper-created default marketplace is
-   implicitly discovered; do not run marketplace add. Source goes to
-   `~/plugins/greenlight`; the existing Agentics registration remains untouched.
+## Remaining native action — owned by Mikey and the root supervisor
 
-3. Install through the supported CLI and retain its JSON result:
+Keep the candidate disabled and the original enabled until the deliberate native
+activation sequence. The root supervisor will ask Mikey for this action; this
+lane must not activate either producer, rerun staging/install, or fabricate trust.
 
-   ```sh
-   codex plugin add greenlight@personal --json
-   codex plugin list --marketplace personal --json
-   ```
-
-   Require pluginId `greenlight@personal`, the exact development version above,
-   enabled true, and the installer-returned path. Compare that path's **entire**
-   inventory to `metadata_delta.files` in the approved provenance, then run the
-   real installed manifest controls. For the expected standard cache path:
-
-   ```sh
-   PYTHONDONTWRITEBYTECODE=1 python3 -W error - <<'PY'
-   import json, sys
-   from pathlib import Path
-   sys.path.insert(0, 'docs/rca/sh-707')
-   from packaging_evidence import inventory
-   from installed_contract import exercise
-   receipt = json.loads(Path('docs/rca/sh-707/development-provenance.json').read_text())
-   installed = Path('/Users/mikey/.codex/plugins/cache/personal/greenlight/3.9.1+codex.20260913021137')
-   assert inventory(installed) == receipt['metadata_delta']['files'], 'installed artifact differs'
-   print(json.dumps({'contracts': exercise(installed, repaired=True),
-                     'native_host_validated': False}, indent=2))
-   PY
-   ```
-
-4. Complete the native trust boundary, without running model tools in the
-   duplicate-enabled state. Start a fresh native Codex thread, choose **Review
-   hooks**, select the **PreToolUse** handler belonging to `greenlight@personal`,
-   and inspect its cache path and command. Expected command:
+1. During the root-coordinated native review, inspect the personal Greenlight
+   **PreToolUse** handler against the installed path and exact development
+   identity above. Its command is
    `bash "${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/greenlight.sh"`.
-   In the terminal hooks browser, **t on the selected handler** trusts that
-   handler; do not use the event-level trust-all action. Verify the selected
-   hook is enabled and trusted. Record the native UI's actual identity/hash;
-   never write a guessed trust hash. The app may present the equivalent native
-   review UI rather than the terminal key binding.
+   Use native candidate-specific trust review, not a trust-all action or config
+   write. Record the identity/hash reported by the native UI. The supervisor
+   owns the native sequence for exposing a disabled plugin's handler; the
+   rehearsal does not prove it appears in the startup review while disabled.
 
-5. Once the replacement's installed checks and native trust are accepted, open
-   **`/plugins`** in the new native session. Select the installed Greenlight row
-   from **agentics** (not personal), and press **Space** to turn that plugin off.
-   The selected-row hint explicitly says `Space to disable`. Keep the personal
-   development plugin on. This native plugin-level selection is the replacement
-   boundary; do not use hook-level enablement switches or remove/uninstall.
-   The supervisor must coordinate this with existing session owners; this lane
-   does not change their threads or promise they ignore config notifications.
-   Check the supported read-only listings:
+2. Once Mikey accepts candidate trust, use supported native plugin enablement to
+   enable `greenlight@personal` and then deselect `greenlight@agentics`, leaving
+   exactly one enabled producer. The terminal `/plugins` UI offers **Space** on
+   the selected installed plugin row. Retain the original producer until the
+   candidate is trusted and deliberately selected. Coordinate any intermediate
+   duplicate-enabled state without agent tool execution. Do not use hook-level
+   enablement switches, uninstall either plugin, or modify existing sessions.
+
+3. In a fresh native thread, confirm the intended candidate handler actually
+   runs without the unsupported-output diagnostic. Record native activation
+   separately from the already-passing installed controls. Preserve both
+   complete caches, all unrelated plugin settings, Agentics registration and
+   existing trust records. Safe read-only listings for the supervisor are:
 
    ```sh
    codex plugin list --marketplace personal --json
    codex plugin list --marketplace agentics --json
    ```
 
-   Confirm exactly one enabled Greenlight producer and unchanged unrelated
-   plugin inventories, both Greenlight caches, Agentics registration, and
-   existing trust entries. Original `greenlight@agentics` is installed but
-   disabled for new selection; its cache path must still exist byte-for-byte.
-   Start a fresh native thread to pick up the final configuration. Exercise a
-   benign request and capture hook-specific execution evidence without the
-   unsupported-output diagnostic. Subprocess controls above prove denials with
-   inert payloads; never execute a destructive command to test a denial.
+Native-host validation and release certification remain false. The installed
+receipt establishes packaging and subprocess behavior, not host activation.
 
 ## Rollback and retirement
 
@@ -200,8 +173,9 @@ belongs in this worktree.
 
 After actual live acceptance, record separate installed/native evidence, commit
 it, and make `story move SH-707 verifying` the absolute last worktree action.
-Until then retain this lane in progress for the supervisor's concrete review
-and native activation coordination; do not certify source readiness as completion.
+Until then retain this lane in progress for Mikey's native trust and final
+selection, coordinated by the root supervisor. Supervisor delivery review and
+installation are complete; no generic source, permission, or context block remains.
 
 ## Primary support and reproducibility
 
