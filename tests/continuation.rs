@@ -1,4 +1,6 @@
 //! Durable context transfers preserve story eligibility and require receiver evidence.
+mod store_support;
+
 use serde_json::{Value, json};
 use storyhook::error::AppError;
 use storyhook::service::continuation::{ContinuationRuntime, ContinuationService};
@@ -557,6 +559,101 @@ fn continuation_migration_preserves_legacy_operational_receipts() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn continuation_migration_preserves_landed_adoption_and_recovery_data() {
+    use storyhook::store::{MIGRATIONS, SqliteStore, Store};
+    let dir = storyhook_test_support::scratch_dir();
+    let path = dir.path().join("adoption.sqlite");
+    let store = SqliteStore::open(&path).unwrap();
+    store.migrate_with(&MIGRATIONS[..40]).unwrap();
+    store_support::seed_project(&store, "alpha", "AL");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let receipt = r#"{"incident":"alpha:17","outcome":"recovered"}"#;
+    let identity = r#"{"provider":"codex","pane_pid":123,"window_id":"@1"}"#;
+    connection.execute(
+        "INSERT INTO verification_recovery (project_id,receipt) SELECT id,?1 FROM projects WHERE slug='alpha'",
+        [receipt],
+    ).unwrap();
+    connection.execute_batch(
+        "INSERT INTO engine_runs (id,project_slug,scope_kind,lanes,agent,state,created_at,updated_at)
+         VALUES ('adopted','alpha','project',1,'codex','running','2026-01-01','2026-01-01');
+         INSERT INTO engine_lanes (run_id,lane_index,state,story_id,pane_id,worktree_path,cleanup_lease_json,last_observed_at)
+         VALUES ('adopted',0,'working','AL-1','%1','/tmp/retained-worktree','{}','2026-01-01');",
+    ).unwrap();
+    connection
+        .execute(
+            "UPDATE engine_lanes SET adopted_identity_json=?1 WHERE run_id='adopted'",
+            [identity],
+        )
+        .unwrap();
+    let lease = json!({"version":1,"project_slug":"alpha","story_id":"AL-1","repository_path":"/tmp/repo","worktree_path":"/tmp/retained-worktree","branch":"worktree-AL-1","tmux":{"socket_path":"/tmp/private-socket"}}).to_string();
+    connection
+        .execute(
+            "UPDATE engine_lanes SET cleanup_lease_json=?1 WHERE run_id='adopted'",
+            [&lease],
+        )
+        .unwrap();
+    use storyhook::store::ReadOps;
+    let lanes = store.read(|tx| tx.engine_lanes("adopted")).unwrap();
+
+    store.migrate().unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM continuations", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    for _ in 0..2 {
+        assert_eq!(store.read(|tx| tx.engine_lanes("adopted")).unwrap(), lanes);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT adopted_identity_json FROM engine_lanes WHERE run_id='adopted'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            identity
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT receipt FROM verification_recovery", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            receipt
+        );
+        let history: Vec<(u32, String)> = connection
+            .prepare(
+                "SELECT version,name FROM schema_migrations WHERE version >= 39 ORDER BY version",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            history,
+            vec![
+                (39, "verification_recovery".into()),
+                (40, "engine_adoption".into()),
+                (41, "continuations".into())
+            ]
+        );
+        assert_eq!(store.schema_version().unwrap(), 41);
+        assert!(
+            connection
+                .execute(
+                    "UPDATE engine_lanes SET pane_id=NULL WHERE run_id='adopted'",
+                    []
+                )
+                .is_err()
+        );
+        store.migrate().unwrap();
+    }
 }
 #[test]
 fn engine_restart_preserves_continuation_lane_before_missing_pane_classification() {

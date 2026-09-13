@@ -38,6 +38,7 @@ pub mod config;
 pub mod continuation;
 pub mod engine;
 pub mod gate_command;
+pub mod gate_output;
 pub mod gate_progress;
 pub mod git;
 pub mod git_links;

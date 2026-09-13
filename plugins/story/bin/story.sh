@@ -3897,6 +3897,22 @@ _complete_prepare() {
 
   local wt_container wname
   wname=$(resolve_wname "$id")
+  wt_container="${WORKTREE_IGNORE_PATH%/}"
+  CMP_WNAME="$wname"
+  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
+  CMP_WT_BRANCH="worktree-$CMP_WNAME"
+
+  # Configuration and symlinked parents can redirect cleanup into an installed
+  # tree. Prove the actual targets before even fetching, let alone releasing a
+  # claim. All callers of this preparation share the non-overridable invariant.
+  local common_dir artifact_error
+  common_dir=$(git rev-parse --git-common-dir 2>&1) \
+    || refuse "installed-artifact-resource" "cannot resolve Git metadata for $id: $common_dir"
+  case "$common_dir" in /*) : ;; *) common_dir="$CMP_DIR/$common_dir" ;; esac
+  artifact_error=$(python3 "$STORY_PLUGIN_ROOT/lib/artifact-resources.py" \
+    "$CMP_DIR" "$common_dir" "$CMP_WT_PATH" 2>&1) \
+    || refuse "installed-artifact-resource" "cannot prepare $id: $artifact_error — no claim was released or resource removed."
+
   # Origin's default branch (SH-691): asked of origin; when origin does not
   # answer, the local origin/HEAD cache is used and SAID to be used
   # (CMP_DEFAULT_SOURCE, plus a note in every receipt that reports the
@@ -3916,11 +3932,6 @@ _complete_prepare() {
   fi
   freshen_base_ref "$CMP_DEFAULT"
 
-  wt_container="${WORKTREE_IGNORE_PATH%/}"
-
-  CMP_WNAME="$wname"
-  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
-  CMP_WT_BRANCH="worktree-$CMP_WNAME"
   CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
 
   # Window classification (SH-308) — read-only, safe under `plan`. `complete`
@@ -4732,8 +4743,10 @@ Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge
     *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
   esac
   local pull_request display
-  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" \
-    '{url:.url, number:.number, base:.baseRefName, head_oid:.headRefOid, adopted:$adopted}')
+  # PR metadata can lag a successful push; the receipt names the head already
+  # verified against the origin branch, independently of GitHub's API view.
+  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" --arg head_oid "$head_oid" \
+    '{url:.url, number:.number, base:.baseRefName, head_oid:$head_oid, adopted:$adopted}')
   if [ "$adopted" = true ]; then
     display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; adopted open pull request $(printf '%s' "$pr" | jq -r .url)."
   else
