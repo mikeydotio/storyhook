@@ -1,0 +1,107 @@
+{
+  "observed_at": "2026-09-13T01:58:02.017928+00:00",
+  "status": "active installation observed; Greenlight still unrepaired",
+  "active_host_validated": false,
+  "release_certified": false,
+  "greenlight": {
+    "installed_root": "/Users/mikey/.codex/plugins/cache/agentics/greenlight/3.9.1",
+    "manifest": {
+      "name": "greenlight",
+      "version": "3.9.1",
+      "description": "Intelligent PreToolUse safety hook with deterministic command parsing, opt-in AI fallback via Claude Haiku, and permission mode awareness",
+      "author": {
+        "name": "mikeydotio"
+      }
+    },
+    "files": {
+      ".claude-plugin/plugin.json": {
+        "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+        "mode": "100644"
+      },
+      "README.md": {
+        "sha256": "6ca72abeb36b4df4ee1dffff04f12d5ba07257e387b99c7e846eeebd865b9ab5",
+        "mode": "100644"
+      },
+      "bin/greenlight-explore.sh": {
+        "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+        "mode": "100755"
+      },
+      "hooks/greenlight.sh": {
+        "sha256": "8b9bff8459c452fd74b4bf659a26112060abcf2b9431f2bc6709e4c55be2db23",
+        "mode": "100755"
+      },
+      "hooks/hooks.json": {
+        "sha256": "46d37910f1d87d145346adb31f81bc15f8503b997f1041583216c787ec5ec60c",
+        "mode": "100644"
+      },
+      "references/default-config.yaml": {
+        "sha256": "fb6ea2e5e92f72c0f48aa42b10eff537849e77ca1f4155327e65f0ff264e60f7",
+        "mode": "100644"
+      },
+      "skills/greenlight/SKILL.md": {
+        "sha256": "20e8e107fe5dde08937cb0a513cb5dd2cd4ddfedfb48316eeee23a3c578d37ba",
+        "mode": "100644"
+      },
+      "tests/greenlight-explore.bats": {
+        "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+        "mode": "100644"
+      },
+      "tests/greenlight-story.bats": {
+        "sha256": "c5159499915c7e68d73a269b59fdb9ff750560c4336332d044d05818670a7f19",
+        "mode": "100644"
+      },
+      "tests/greenlight.bats": {
+        "sha256": "1898574774b8e92c3b740a98a6ae5ea8df6506489186badd29d211659ad8fb54",
+        "mode": "100644"
+      },
+      "tests/run-tests.sh": {
+        "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+        "mode": "100755"
+      }
+    },
+    "registration": {
+      "source_type": "local",
+      "source": "/Volumes/Code/mikeyward/agentics"
+    },
+    "plugin": {
+      "enabled": true
+    },
+    "hook_trust": {
+      "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+        "trusted_hash": "sha256:cd0e38d792650e8c92bde2297bf4e1a86e5c48fa970e3e7c5f63ba586818e570"
+      }
+    }
+  },
+  "personal": {
+    "files": [
+      {
+        "path": "/Users/mikey/.codex/hooks/git-readonly-allow.py",
+        "sha256": "710fbb086454438e3e1f13d130a93529290fb71054ef3a1b0f09b7d4d98fe284"
+      },
+      {
+        "path": "/Users/mikey/.codex/hooks/git-readonly-allow.py.sh707-backup-20260912T234300Z",
+        "sha256": "26ad58eaf61558678b2ea625872b3af246a5c505211e11d655c515a9b895ce7c"
+      },
+      {
+        "path": "/Users/mikey/.claude/hooks/git-readonly-allow.py",
+        "sha256": "26ad58eaf61558678b2ea625872b3af246a5c505211e11d655c515a9b895ce7c"
+      }
+    ],
+    "pre_tool_use_registration": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/mikey/.codex/hooks/git-readonly-allow.py'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "regressions": {
+      "passed": 5,
+      "command": "PYTHONDONTWRITEBYTECODE=1 PERSONAL_HOOK=/Users/mikey/.codex/hooks/git-readonly-allow.py python3 docs/rca/sh-707/test_personal_hook.py"
+    }
+  }
+}

@@ -1,0 +1,2592 @@
+{
+  "artifact_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
+  "version": "3.9.1+codex.20260913021137",
+  "states": [
+    {
+      "stage": "baseline",
+      "enabled_producers": [
+        "greenlight@agentics"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-native-toggle-final/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "personal-added-duplicates-exist",
+      "enabled_producers": [
+        "greenlight@agentics",
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-native-toggle-final/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "development-selected",
+      "enabled_producers": [
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-native-toggle-final/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": false
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "baseline-restored-duplicates-exist",
+      "enabled_producers": [
+        "greenlight@agentics",
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-native-toggle-final/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "rollback-complete",
+      "enabled_producers": [
+        "greenlight@agentics"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-native-toggle-final/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": false
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    }
+  ],
+  "contracts": [
+    {
+      "provider": "codex",
+      "case": "safe",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:35Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "codex",
+      "case": "read",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:35Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "codex",
+      "case": "deny",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:35Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "warning",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:35Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "codex",
+      "case": "malformed",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "unrelated",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "ai-quiet",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:36Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-context",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:36Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-destructive",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:36Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-invalid",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:30:36Z [PASS] AI fallback failed, deferring to user\n"
+    },
+    {
+      "provider": "claude",
+      "case": "safe",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "claude",
+      "case": "read",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:36Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "claude",
+      "case": "deny",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "warning",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "claude",
+      "case": "malformed",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "unrelated",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "ai-quiet",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:37Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-context",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:37Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-destructive",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:30:37Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-invalid",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:30:37Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:30:37Z [PASS] AI fallback failed, deferring to user\n"
+    }
+  ],
+  "native_trust_required": true,
+  "release_certified": false,
+  "live_changes_performed": false,
+  "both_caches_preserved": true,
+  "toggle_rpc_transcript": [
+    {
+      "request": {
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientInfo": {
+            "name": "sh707-fixture",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "id": 1,
+        "result": {
+          "userAgent": "sh707-fixture/0.154.0 (Mac OS 26.6.2; arm64) unknown (sh707-fixture; 1)",
+          "codexHome": "/private/tmp/sh707-native-toggle-final/codex-home",
+          "platformFamily": "unix",
+          "platformOs": "macos"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 2,
+        "method": "config/read",
+        "params": {
+          "includeLayers": true
+        }
+      },
+      "response": {
+        "id": 2,
+        "result": {
+          "config": {
+            "model": null,
+            "review_model": null,
+            "model_context_window": null,
+            "model_auto_compact_token_limit": null,
+            "model_auto_compact_token_limit_scope": null,
+            "model_provider": null,
+            "approval_policy": null,
+            "approvals_reviewer": null,
+            "sandbox_mode": null,
+            "sandbox_workspace_write": null,
+            "forced_chatgpt_workspace_id": null,
+            "forced_login_method": null,
+            "web_search": null,
+            "tools": null,
+            "instructions": null,
+            "developer_instructions": null,
+            "compact_prompt": null,
+            "model_reasoning_effort": null,
+            "model_reasoning_summary": null,
+            "model_verbosity": null,
+            "service_tier": null,
+            "analytics": null,
+            "apps": null,
+            "browser_use": null,
+            "computer_use": null,
+            "desktop": null,
+            "shell_environment_policy": {
+              "inherit": null,
+              "ignore_default_excludes": null,
+              "exclude": null,
+              "set": null,
+              "include_only": null,
+              "filters": null,
+              "experimental_use_profile": null
+            },
+            "include_collaboration_mode_instructions": true,
+            "plugins": {
+              "greenlight@agentics": {
+                "enabled": true
+              },
+              "council@agentics": {
+                "enabled": true
+              },
+              "hook-guard@agentics": {
+                "enabled": true
+              },
+              "greenlight@personal": {
+                "enabled": true
+              },
+              "agents@agentics": {
+                "enabled": true
+              },
+              "semver@agentics": {
+                "enabled": true
+              },
+              "rca@agentics": {
+                "enabled": true
+              },
+              "deployit@agentics": {
+                "enabled": true
+              },
+              "freshen@agentics": {
+                "enabled": true
+              },
+              "reconcile-pr@agentics": {
+                "enabled": true
+              }
+            },
+            "experimental_compact_prompt_file": null,
+            "log_dir": null,
+            "tool_output_token_limit": null,
+            "experimental_realtime_ws_backend_prompt": null,
+            "marketplaces": {
+              "agentics": {
+                "last_updated": null,
+                "last_revision": null,
+                "source_type": "local",
+                "source": "/private/tmp/sh707-native-toggle-final/agentics",
+                "ref": null,
+                "sparse_paths": null
+              }
+            },
+            "experimental_realtime_ws_model": null,
+            "realtime": null,
+            "responses_api_metadata": null,
+            "orchestrator": null,
+            "notice": null,
+            "windows": null,
+            "chatgpt_base_url": "https://chatgpt.com/backend-api/",
+            "check_for_update_on_startup": null,
+            "model_catalog_json": null,
+            "project_root_markers": [
+              ".git"
+            ],
+            "show_raw_agent_reasoning": null,
+            "experimental_thread_store": null,
+            "project_doc_max_bytes": 32768,
+            "skills": null,
+            "features": {
+              "auth_elicitation": true,
+              "background_paginated_rollout_migration": false,
+              "mcp_2026_07_28": false,
+              "memories": false,
+              "mentions_v2": true,
+              "remote_control": false,
+              "remote_plugin": true,
+              "tool_suggest": true,
+              "windows_sandbox_service": false
+            },
+            "include_permissions_instructions": true,
+            "mcp_oauth_credentials_store": "auto",
+            "model_providers": {},
+            "history": {
+              "persistence": "save-all",
+              "max_bytes": null
+            },
+            "file_opener": "vscode",
+            "model_instructions_file": null,
+            "auto_review": null,
+            "openai_base_url": null,
+            "include_environment_context": true,
+            "ghost_snapshot": null,
+            "apps_mcp_product_sku": null,
+            "goals": null,
+            "permissions": null,
+            "memories": null,
+            "cli_auth_credentials_store": "file",
+            "personality": null,
+            "feedback": null,
+            "hooks": {
+              "PreToolUse": [],
+              "PermissionRequest": [],
+              "PostToolUse": [],
+              "PreCompact": [],
+              "PostCompact": [],
+              "SessionStart": [],
+              "SessionEnd": [],
+              "UserPromptSubmit": [],
+              "SubagentStart": [],
+              "SubagentStop": [],
+              "Stop": [],
+              "Interrupt": [],
+              "state": {
+                "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              }
+            },
+            "notify": null,
+            "js_repl_node_module_dirs": null,
+            "allow_login_shell": true,
+            "hide_agent_reasoning": false,
+            "projects": null,
+            "tui": null,
+            "experimental_realtime_ws_startup_context": null,
+            "audio": null,
+            "mcp_oauth_callback_url": null,
+            "default_permissions": null,
+            "include_apps_instructions": true,
+            "experimental_realtime_webrtc_call_base_url": null,
+            "thread_unload_delay_secs": null,
+            "profile": null,
+            "plan_mode_reasoning_effort": null,
+            "profiles": {},
+            "mcp_oauth_callback_port": null,
+            "experimental_realtime_ws_base_url": null,
+            "tool_suggest": null,
+            "mcp_servers": {},
+            "experimental_thread_store_endpoint": null,
+            "agents": null,
+            "suppress_unstable_features_warning": null,
+            "experimental_realtime_start_instructions": null,
+            "disable_paste_burst": null,
+            "otel": null,
+            "js_repl_node_path": null,
+            "experimental_use_unified_exec_tool": null,
+            "sqlite_home": null,
+            "mcp_optional_startup_grace_ms": null,
+            "background_terminal_max_timeout": 300000,
+            "oss_provider": null,
+            "project_doc_fallback_filenames": [],
+            "allow_symlinked_codex_home": null
+          },
+          "origins": {
+            "hooks.state.reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.semver@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "marketplaces.agentics.source_type": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.deployit@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.semver@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.freshen@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.greenlight@personal.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.hook-guard@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.freshen@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.agents@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.greenlight@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.rca@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "marketplaces.agentics.source": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.rca@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.council@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.council@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.agents@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.deployit@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.reconcile-pr@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            }
+          },
+          "layers": [
+            {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d",
+              "config": {
+                "hooks": {
+                  "state": {
+                    "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                },
+                "marketplaces": {
+                  "agentics": {
+                    "source_type": "local",
+                    "source": "/private/tmp/sh707-native-toggle-final/agentics"
+                  }
+                },
+                "plugins": {
+                  "greenlight@agentics": {
+                    "enabled": true
+                  },
+                  "council@agentics": {
+                    "enabled": true
+                  },
+                  "freshen@agentics": {
+                    "enabled": true
+                  },
+                  "agents@agentics": {
+                    "enabled": true
+                  },
+                  "rca@agentics": {
+                    "enabled": true
+                  },
+                  "semver@agentics": {
+                    "enabled": true
+                  },
+                  "reconcile-pr@agentics": {
+                    "enabled": true
+                  },
+                  "deployit@agentics": {
+                    "enabled": true
+                  },
+                  "hook-guard@agentics": {
+                    "enabled": true
+                  },
+                  "greenlight@personal": {
+                    "enabled": true
+                  }
+                }
+              }
+            },
+            {
+              "name": {
+                "type": "system",
+                "file": "/etc/codex/config.toml"
+              },
+              "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "config": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 3,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight@agentics",
+          "value": {
+            "enabled": false
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      "response": {
+        "error": {
+          "code": -32600,
+          "data": {
+            "config_write_error_code": "configVersionConflict"
+          },
+          "message": "Configuration was modified since last read. Fetch latest version and retry."
+        },
+        "id": 3
+      }
+    },
+    {
+      "request": {
+        "id": 4,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight@agentics",
+          "value": {
+            "enabled": false
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+        }
+      },
+      "response": {
+        "id": 4,
+        "result": {
+          "status": "ok",
+          "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd",
+          "filePath": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+          "overriddenMetadata": null
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientInfo": {
+            "name": "sh707-fixture",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "id": 1,
+        "result": {
+          "userAgent": "sh707-fixture/0.154.0 (Mac OS 26.6.2; arm64) unknown (sh707-fixture; 1)",
+          "codexHome": "/private/tmp/sh707-native-toggle-final/codex-home",
+          "platformFamily": "unix",
+          "platformOs": "macos"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 2,
+        "method": "config/read",
+        "params": {
+          "includeLayers": true
+        }
+      },
+      "response": {
+        "id": 2,
+        "result": {
+          "config": {
+            "model": null,
+            "review_model": null,
+            "model_context_window": null,
+            "model_auto_compact_token_limit": null,
+            "model_auto_compact_token_limit_scope": null,
+            "model_provider": null,
+            "approval_policy": null,
+            "approvals_reviewer": null,
+            "sandbox_mode": null,
+            "sandbox_workspace_write": null,
+            "forced_chatgpt_workspace_id": null,
+            "forced_login_method": null,
+            "web_search": null,
+            "tools": null,
+            "instructions": null,
+            "developer_instructions": null,
+            "compact_prompt": null,
+            "model_reasoning_effort": null,
+            "model_reasoning_summary": null,
+            "model_verbosity": null,
+            "service_tier": null,
+            "analytics": null,
+            "apps": null,
+            "browser_use": null,
+            "computer_use": null,
+            "desktop": null,
+            "file_opener": "vscode",
+            "hide_agent_reasoning": false,
+            "ghost_snapshot": null,
+            "plan_mode_reasoning_effort": null,
+            "allow_login_shell": true,
+            "history": {
+              "persistence": "save-all",
+              "max_bytes": null
+            },
+            "sqlite_home": null,
+            "windows": null,
+            "experimental_use_unified_exec_tool": null,
+            "disable_paste_burst": null,
+            "model_instructions_file": null,
+            "mcp_oauth_callback_port": null,
+            "js_repl_node_path": null,
+            "mcp_optional_startup_grace_ms": null,
+            "chatgpt_base_url": "https://chatgpt.com/backend-api/",
+            "experimental_realtime_ws_model": null,
+            "background_terminal_max_timeout": 300000,
+            "log_dir": null,
+            "notice": null,
+            "include_collaboration_mode_instructions": true,
+            "profiles": {},
+            "experimental_realtime_ws_startup_context": null,
+            "experimental_realtime_start_instructions": null,
+            "model_providers": {},
+            "personality": null,
+            "memories": null,
+            "project_doc_fallback_filenames": [],
+            "otel": null,
+            "agents": null,
+            "orchestrator": null,
+            "experimental_thread_store": null,
+            "shell_environment_policy": {
+              "inherit": null,
+              "ignore_default_excludes": null,
+              "exclude": null,
+              "set": null,
+              "include_only": null,
+              "filters": null,
+              "experimental_use_profile": null
+            },
+            "tui": null,
+            "js_repl_node_module_dirs": null,
+            "include_environment_context": true,
+            "suppress_unstable_features_warning": null,
+            "model_catalog_json": null,
+            "cli_auth_credentials_store": "file",
+            "marketplaces": {
+              "agentics": {
+                "last_updated": null,
+                "last_revision": null,
+                "source_type": "local",
+                "source": "/private/tmp/sh707-native-toggle-final/agentics",
+                "ref": null,
+                "sparse_paths": null
+              }
+            },
+            "notify": null,
+            "thread_unload_delay_secs": null,
+            "responses_api_metadata": null,
+            "experimental_realtime_ws_base_url": null,
+            "include_apps_instructions": true,
+            "goals": null,
+            "project_doc_max_bytes": 32768,
+            "feedback": null,
+            "realtime": null,
+            "mcp_servers": {},
+            "audio": null,
+            "hooks": {
+              "PreToolUse": [],
+              "PermissionRequest": [],
+              "PostToolUse": [],
+              "PreCompact": [],
+              "PostCompact": [],
+              "SessionStart": [],
+              "SessionEnd": [],
+              "UserPromptSubmit": [],
+              "SubagentStart": [],
+              "SubagentStop": [],
+              "Stop": [],
+              "Interrupt": [],
+              "state": {
+                "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              }
+            },
+            "experimental_compact_prompt_file": null,
+            "permissions": null,
+            "openai_base_url": null,
+            "mcp_oauth_callback_url": null,
+            "experimental_realtime_ws_backend_prompt": null,
+            "features": {
+              "auth_elicitation": true,
+              "background_paginated_rollout_migration": false,
+              "mcp_2026_07_28": false,
+              "memories": false,
+              "mentions_v2": true,
+              "remote_control": false,
+              "remote_plugin": true,
+              "tool_suggest": true,
+              "windows_sandbox_service": false
+            },
+            "profile": null,
+            "include_permissions_instructions": true,
+            "plugins": {
+              "hook-guard@agentics": {
+                "enabled": true
+              },
+              "reconcile-pr@agentics": {
+                "enabled": true
+              },
+              "greenlight@agentics": {
+                "enabled": false
+              },
+              "council@agentics": {
+                "enabled": true
+              },
+              "agents@agentics": {
+                "enabled": true
+              },
+              "freshen@agentics": {
+                "enabled": true
+              },
+              "deployit@agentics": {
+                "enabled": true
+              },
+              "greenlight@personal": {
+                "enabled": true
+              },
+              "rca@agentics": {
+                "enabled": true
+              },
+              "semver@agentics": {
+                "enabled": true
+              }
+            },
+            "check_for_update_on_startup": null,
+            "oss_provider": null,
+            "experimental_realtime_webrtc_call_base_url": null,
+            "projects": null,
+            "tool_suggest": null,
+            "allow_symlinked_codex_home": null,
+            "tool_output_token_limit": null,
+            "project_root_markers": [
+              ".git"
+            ],
+            "show_raw_agent_reasoning": null,
+            "skills": null,
+            "auto_review": null,
+            "default_permissions": null,
+            "mcp_oauth_credentials_store": "auto",
+            "experimental_thread_store_endpoint": null,
+            "apps_mcp_product_sku": null
+          },
+          "origins": {
+            "plugins.agents@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.greenlight@personal.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.freshen@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.deployit@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.hook-guard@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.semver@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.reconcile-pr@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.deployit@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.council@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "marketplaces.agentics.source": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.freshen@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.agents@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.greenlight@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.semver@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "hooks.state.rca@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.council@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "plugins.rca@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            },
+            "marketplaces.agentics.source_type": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+            }
+          },
+          "layers": [
+            {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd",
+              "config": {
+                "hooks": {
+                  "state": {
+                    "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                },
+                "marketplaces": {
+                  "agentics": {
+                    "source_type": "local",
+                    "source": "/private/tmp/sh707-native-toggle-final/agentics"
+                  }
+                },
+                "plugins": {
+                  "greenlight@agentics": {
+                    "enabled": false
+                  },
+                  "council@agentics": {
+                    "enabled": true
+                  },
+                  "freshen@agentics": {
+                    "enabled": true
+                  },
+                  "agents@agentics": {
+                    "enabled": true
+                  },
+                  "rca@agentics": {
+                    "enabled": true
+                  },
+                  "semver@agentics": {
+                    "enabled": true
+                  },
+                  "reconcile-pr@agentics": {
+                    "enabled": true
+                  },
+                  "deployit@agentics": {
+                    "enabled": true
+                  },
+                  "hook-guard@agentics": {
+                    "enabled": true
+                  },
+                  "greenlight@personal": {
+                    "enabled": true
+                  }
+                }
+              }
+            },
+            {
+              "name": {
+                "type": "system",
+                "file": "/etc/codex/config.toml"
+              },
+              "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "config": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 3,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight@agentics",
+          "value": {
+            "enabled": true
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:c122e76de8ce8f1878e6e6161b533d671cdc12668b6efcad212251fefd3be6bd"
+        }
+      },
+      "response": {
+        "id": 3,
+        "result": {
+          "status": "ok",
+          "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d",
+          "filePath": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+          "overriddenMetadata": null
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientInfo": {
+            "name": "sh707-fixture",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "id": 1,
+        "result": {
+          "userAgent": "sh707-fixture/0.154.0 (Mac OS 26.6.2; arm64) unknown (sh707-fixture; 1)",
+          "codexHome": "/private/tmp/sh707-native-toggle-final/codex-home",
+          "platformFamily": "unix",
+          "platformOs": "macos"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 2,
+        "method": "config/read",
+        "params": {
+          "includeLayers": true
+        }
+      },
+      "response": {
+        "id": 2,
+        "result": {
+          "config": {
+            "model": null,
+            "review_model": null,
+            "model_context_window": null,
+            "model_auto_compact_token_limit": null,
+            "model_auto_compact_token_limit_scope": null,
+            "model_provider": null,
+            "approval_policy": null,
+            "approvals_reviewer": null,
+            "sandbox_mode": null,
+            "sandbox_workspace_write": null,
+            "forced_chatgpt_workspace_id": null,
+            "forced_login_method": null,
+            "web_search": null,
+            "tools": null,
+            "instructions": null,
+            "developer_instructions": null,
+            "compact_prompt": null,
+            "model_reasoning_effort": null,
+            "model_reasoning_summary": null,
+            "model_verbosity": null,
+            "service_tier": null,
+            "analytics": null,
+            "apps": null,
+            "browser_use": null,
+            "computer_use": null,
+            "desktop": null,
+            "experimental_realtime_ws_backend_prompt": null,
+            "mcp_optional_startup_grace_ms": null,
+            "experimental_thread_store": null,
+            "project_doc_max_bytes": 32768,
+            "marketplaces": {
+              "agentics": {
+                "last_updated": null,
+                "last_revision": null,
+                "source_type": "local",
+                "source": "/private/tmp/sh707-native-toggle-final/agentics",
+                "ref": null,
+                "sparse_paths": null
+              }
+            },
+            "features": {
+              "auth_elicitation": true,
+              "background_paginated_rollout_migration": false,
+              "mcp_2026_07_28": false,
+              "memories": false,
+              "mentions_v2": true,
+              "remote_control": false,
+              "remote_plugin": true,
+              "tool_suggest": true,
+              "windows_sandbox_service": false
+            },
+            "thread_unload_delay_secs": null,
+            "apps_mcp_product_sku": null,
+            "hooks": {
+              "PreToolUse": [],
+              "PermissionRequest": [],
+              "PostToolUse": [],
+              "PreCompact": [],
+              "PostCompact": [],
+              "SessionStart": [],
+              "SessionEnd": [],
+              "UserPromptSubmit": [],
+              "SubagentStart": [],
+              "SubagentStop": [],
+              "Stop": [],
+              "Interrupt": [],
+              "state": {
+                "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              }
+            },
+            "experimental_realtime_ws_startup_context": null,
+            "suppress_unstable_features_warning": null,
+            "experimental_compact_prompt_file": null,
+            "memories": null,
+            "skills": null,
+            "notice": null,
+            "mcp_oauth_credentials_store": "auto",
+            "allow_symlinked_codex_home": null,
+            "file_opener": "vscode",
+            "experimental_use_unified_exec_tool": null,
+            "auto_review": null,
+            "show_raw_agent_reasoning": null,
+            "include_environment_context": true,
+            "default_permissions": null,
+            "notify": null,
+            "mcp_oauth_callback_port": null,
+            "mcp_oauth_callback_url": null,
+            "history": {
+              "persistence": "save-all",
+              "max_bytes": null
+            },
+            "tool_output_token_limit": null,
+            "audio": null,
+            "ghost_snapshot": null,
+            "orchestrator": null,
+            "include_collaboration_mode_instructions": true,
+            "allow_login_shell": true,
+            "oss_provider": null,
+            "js_repl_node_path": null,
+            "chatgpt_base_url": "https://chatgpt.com/backend-api/",
+            "include_permissions_instructions": true,
+            "tool_suggest": null,
+            "check_for_update_on_startup": null,
+            "permissions": null,
+            "agents": null,
+            "project_doc_fallback_filenames": [],
+            "project_root_markers": [
+              ".git"
+            ],
+            "background_terminal_max_timeout": 300000,
+            "hide_agent_reasoning": false,
+            "experimental_realtime_ws_model": null,
+            "shell_environment_policy": {
+              "inherit": null,
+              "ignore_default_excludes": null,
+              "exclude": null,
+              "set": null,
+              "include_only": null,
+              "filters": null,
+              "experimental_use_profile": null
+            },
+            "include_apps_instructions": true,
+            "disable_paste_burst": null,
+            "sqlite_home": null,
+            "tui": null,
+            "openai_base_url": null,
+            "profiles": {},
+            "cli_auth_credentials_store": "file",
+            "js_repl_node_module_dirs": null,
+            "profile": null,
+            "feedback": null,
+            "log_dir": null,
+            "model_catalog_json": null,
+            "experimental_thread_store_endpoint": null,
+            "plugins": {
+              "rca@agentics": {
+                "enabled": true
+              },
+              "deployit@agentics": {
+                "enabled": true
+              },
+              "semver@agentics": {
+                "enabled": true
+              },
+              "hook-guard@agentics": {
+                "enabled": true
+              },
+              "greenlight@personal": {
+                "enabled": true
+              },
+              "freshen@agentics": {
+                "enabled": true
+              },
+              "agents@agentics": {
+                "enabled": true
+              },
+              "greenlight@agentics": {
+                "enabled": true
+              },
+              "council@agentics": {
+                "enabled": true
+              },
+              "reconcile-pr@agentics": {
+                "enabled": true
+              }
+            },
+            "goals": null,
+            "experimental_realtime_start_instructions": null,
+            "personality": null,
+            "responses_api_metadata": null,
+            "experimental_realtime_ws_base_url": null,
+            "otel": null,
+            "realtime": null,
+            "windows": null,
+            "model_providers": {},
+            "mcp_servers": {},
+            "plan_mode_reasoning_effort": null,
+            "projects": null,
+            "model_instructions_file": null,
+            "experimental_realtime_webrtc_call_base_url": null
+          },
+          "origins": {
+            "hooks.state.freshen@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.hook-guard@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.greenlight@personal.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.rca@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.rca@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.agents@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.council@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.deployit@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.greenlight@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.deployit@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.semver@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.reconcile-pr@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.agents@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "plugins.freshen@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.semver@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "marketplaces.agentics.source": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.council@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "marketplaces.agentics.source_type": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            },
+            "hooks.state.hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+            }
+          },
+          "layers": [
+            {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d",
+              "config": {
+                "hooks": {
+                  "state": {
+                    "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                },
+                "marketplaces": {
+                  "agentics": {
+                    "source_type": "local",
+                    "source": "/private/tmp/sh707-native-toggle-final/agentics"
+                  }
+                },
+                "plugins": {
+                  "greenlight@agentics": {
+                    "enabled": true
+                  },
+                  "council@agentics": {
+                    "enabled": true
+                  },
+                  "freshen@agentics": {
+                    "enabled": true
+                  },
+                  "agents@agentics": {
+                    "enabled": true
+                  },
+                  "rca@agentics": {
+                    "enabled": true
+                  },
+                  "semver@agentics": {
+                    "enabled": true
+                  },
+                  "reconcile-pr@agentics": {
+                    "enabled": true
+                  },
+                  "deployit@agentics": {
+                    "enabled": true
+                  },
+                  "hook-guard@agentics": {
+                    "enabled": true
+                  },
+                  "greenlight@personal": {
+                    "enabled": true
+                  }
+                }
+              }
+            },
+            {
+              "name": {
+                "type": "system",
+                "file": "/etc/codex/config.toml"
+              },
+              "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "config": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 3,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight@personal",
+          "value": {
+            "enabled": false
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:57a1de32398a86e0413895a307ff07aae57248ad49fdebbf71d73b45b462ee0d"
+        }
+      },
+      "response": {
+        "id": 3,
+        "result": {
+          "status": "ok",
+          "version": "sha256:4a47a1b0aee5b9073ac072fcfaf6b7040a7cde8d039b0b409dcfd423065d3bc2",
+          "filePath": "/private/tmp/sh707-native-toggle-final/codex-home/config.toml",
+          "overriddenMetadata": null
+        }
+      }
+    }
+  ]
+}

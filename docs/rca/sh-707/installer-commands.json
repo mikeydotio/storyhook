@@ -1,0 +1,151 @@
+[
+  {
+    "argv": [
+      "codex",
+      "--version"
+    ],
+    "exit_status": 0,
+    "stdout": "codex-cli 0.154.0\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "add",
+      "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"sh707-install\",\n  \"installedRoot\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace\",\n  \"alreadyAdded\": false\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@sh707-install\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"sh707-install\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "list",
+      "--marketplace",
+      "sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"installed\": [\n    {\n      \"pluginId\": \"greenlight@sh707-install\",\n      \"name\": \"greenlight\",\n      \"marketplaceName\": \"sh707-install\",\n      \"version\": \"3.9.1\",\n      \"installed\": true,\n      \"enabled\": true,\n      \"source\": {\n        \"source\": \"local\",\n        \"path\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace/plugins/greenlight\"\n      },\n      \"marketplaceSource\": {\n        \"sourceType\": \"local\",\n        \"source\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace\"\n      },\n      \"installPolicy\": \"AVAILABLE\",\n      \"authPolicy\": \"ON_INSTALL\"\n    }\n  ],\n  \"available\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "remove",
+      "sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"sh707-install\",\n  \"installedRoot\": null\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "add",
+      "/private/tmp/sh707-install-rehearsal-verified/candidate marketplace",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"sh707-install\",\n  \"installedRoot\": \"/private/tmp/sh707-install-rehearsal-verified/candidate marketplace\",\n  \"alreadyAdded\": false\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@sh707-install\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"sh707-install\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "list",
+      "--marketplace",
+      "sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"installed\": [\n    {\n      \"pluginId\": \"greenlight@sh707-install\",\n      \"name\": \"greenlight\",\n      \"marketplaceName\": \"sh707-install\",\n      \"version\": \"3.9.1\",\n      \"installed\": true,\n      \"enabled\": true,\n      \"source\": {\n        \"source\": \"local\",\n        \"path\": \"/private/tmp/sh707-install-rehearsal-verified/candidate marketplace/plugins/greenlight\"\n      },\n      \"marketplaceSource\": {\n        \"sourceType\": \"local\",\n        \"source\": \"/private/tmp/sh707-install-rehearsal-verified/candidate marketplace\"\n      },\n      \"installPolicy\": \"AVAILABLE\",\n      \"authPolicy\": \"ON_INSTALL\"\n    }\n  ],\n  \"available\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "remove",
+      "sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"sh707-install\",\n  \"installedRoot\": null\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "add",
+      "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"sh707-install\",\n  \"installedRoot\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace\",\n  \"alreadyAdded\": false\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@sh707-install\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"sh707-install\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "list",
+      "--marketplace",
+      "sh707-install",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"installed\": [\n    {\n      \"pluginId\": \"greenlight@sh707-install\",\n      \"name\": \"greenlight\",\n      \"marketplaceName\": \"sh707-install\",\n      \"version\": \"3.9.1\",\n      \"installed\": true,\n      \"enabled\": true,\n      \"source\": {\n        \"source\": \"local\",\n        \"path\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace/plugins/greenlight\"\n      },\n      \"marketplaceSource\": {\n        \"sourceType\": \"local\",\n        \"source\": \"/private/tmp/sh707-install-rehearsal-verified/baseline marketplace\"\n      },\n      \"installPolicy\": \"AVAILABLE\",\n      \"authPolicy\": \"ON_INSTALL\"\n    }\n  ],\n  \"available\": []\n}\n",
+    "stderr": ""
+  }
+]

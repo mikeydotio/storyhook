@@ -1,0 +1,984 @@
+{
+  "artifact_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
+  "version": "3.9.1+codex.20260913021137",
+  "states": [
+    {
+      "stage": "baseline",
+      "enabled_producers": [
+        "greenlight@agentics"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-development-final-rehearsal/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "personal-added-duplicates-exist",
+      "enabled_producers": [
+        "greenlight@agentics",
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-development-final-rehearsal/agentics"
+          }
+        },
+        "plugins": {
+          "greenlight@agentics": {
+            "enabled": true
+          },
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "development-selected",
+      "enabled_producers": [
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-development-final-rehearsal/agentics"
+          }
+        },
+        "plugins": {
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "baseline-restored-duplicates-exist",
+      "enabled_producers": [
+        "greenlight@agentics",
+        "greenlight@personal"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-development-final-rehearsal/agentics"
+          }
+        },
+        "plugins": {
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@personal": {
+            "enabled": true
+          },
+          "greenlight@agentics": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    },
+    {
+      "stage": "rollback-complete",
+      "enabled_producers": [
+        "greenlight@agentics"
+      ],
+      "config": {
+        "hooks": {
+          "state": {
+            "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+              "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        },
+        "marketplaces": {
+          "agentics": {
+            "source_type": "local",
+            "source": "/private/tmp/sh707-development-final-rehearsal/agentics"
+          }
+        },
+        "plugins": {
+          "council@agentics": {
+            "enabled": true
+          },
+          "freshen@agentics": {
+            "enabled": true
+          },
+          "agents@agentics": {
+            "enabled": true
+          },
+          "rca@agentics": {
+            "enabled": true
+          },
+          "semver@agentics": {
+            "enabled": true
+          },
+          "reconcile-pr@agentics": {
+            "enabled": true
+          },
+          "deployit@agentics": {
+            "enabled": true
+          },
+          "hook-guard@agentics": {
+            "enabled": true
+          },
+          "greenlight@agentics": {
+            "enabled": true
+          }
+        }
+      },
+      "unrelated_file_witnesses": {
+        "council": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5c210861a544fdb428211c7cd07112ad5096458864c218aa5b4ed14b8c74564f",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "74fe882da17f777555e3220c1b2cc70093e6392df20594da7f107fb3c9676d62",
+            "mode": "100644"
+          }
+        },
+        "freshen": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "84308daa75262be9e1c3a8ddf6d13aa4312f560ba4bd00af40aabdb87cac0e10",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7a21ea098216838f252fc86d0d629007153a58f10600ecdfbb6fadd688096efb",
+            "mode": "100644"
+          }
+        },
+        "agents": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "91dc5409e803f380d7b5d5e983793743ec071d0b37dc708aa907f0160650d8cb",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "4ef6d25467d8f58a0943d05d37c70a6c0bcc803d071637f1562fdbccfd0fd8ea",
+            "mode": "100644"
+          }
+        },
+        "rca": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "5f7214a230df10e8a0f088f0673956b170185d2ace00275221d768ea6fd54719",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "931cb81243e4c963b570522288822be0d852a597a8b4704f20c936504d7df139",
+            "mode": "100644"
+          }
+        },
+        "semver": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "6b6c5f748792bfb682c134a8115598c40f267c993e5f37a7d0b90af65234ce8e",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "7ea56c7e80ba7b08961ffd84c2c94dbdf86e1b9f743c67f41907b1f7a51e2eb2",
+            "mode": "100644"
+          }
+        },
+        "reconcile-pr": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "95d07e5163053a81a49a29b4c2f8ee89ee8e0c50c4b9c39855ea425f1857c552",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c5c536d4d4ed4e66b92eb340f3611690f709ae7ce393cdf672ea49534209d59f",
+            "mode": "100644"
+          }
+        },
+        "deployit": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "7e50e83e5d5d5cdcf8c5376738801a0fdbaef1644967c1ece299ce4e3f361461",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "774d163824a92418ca06c929eb6db52733252353550c68be69dbb5fe43d8b5b7",
+            "mode": "100644"
+          }
+        },
+        "hook-guard": {
+          ".claude-plugin/plugin.json": {
+            "sha256": "c4133586c346431ca7dbb8b6b71190d29184e70f14cadbc81b53e15fe87f6afa",
+            "mode": "100644"
+          },
+          "witness.txt": {
+            "sha256": "c61b3c815d7b7f07137666bb1c19e99a051c3ebeeaaaa71586720ecb07389b8c",
+            "mode": "100644"
+          }
+        }
+      },
+      "native_host_validated": false
+    }
+  ],
+  "contracts": [
+    {
+      "provider": "codex",
+      "case": "safe",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:18Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "codex",
+      "case": "read",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:18Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "codex",
+      "case": "deny",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:19Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "warning",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:19Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "codex",
+      "case": "malformed",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "unrelated",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "ai-quiet",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:19Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:19Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-context",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:19Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:19Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-destructive",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:20Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-invalid",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:20:20Z [PASS] AI fallback failed, deferring to user\n"
+    },
+    {
+      "provider": "claude",
+      "case": "safe",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "claude",
+      "case": "read",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "claude",
+      "case": "deny",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "warning",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "claude",
+      "case": "malformed",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "unrelated",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "ai-quiet",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:20Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:20Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-context",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:21Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:21Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-destructive",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:21Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:20:21Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-invalid",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:20:21Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:20:21Z [PASS] AI fallback failed, deferring to user\n"
+    }
+  ],
+  "native_trust_required": true,
+  "release_certified": false,
+  "live_changes_performed": false
+}
