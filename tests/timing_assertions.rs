@@ -188,12 +188,11 @@ fn bare_duration_ceilings(source: &str) -> Vec<BareCeiling> {
     found
 }
 
-/// Every tracked `tests/*.rs` file's text, keyed by its path relative to the
-/// repository root.
-fn tracked_test_files(root: &Path) -> BTreeMap<String, String> {
+/// Every tracked test matching a pathspec, keyed relative to the repository root.
+fn tracked_test_files(root: &Path, pathspec: &str) -> BTreeMap<String, String> {
     let listed = std::process::Command::new("git")
         .current_dir(root)
-        .args(["ls-files", "-z", "--", "tests/*.rs"])
+        .args(["ls-files", "-z", "--", pathspec])
         .output()
         .expect("listing this repository's tracked test files");
     assert!(
@@ -206,10 +205,13 @@ fn tracked_test_files(root: &Path) -> BTreeMap<String, String> {
         .stdout
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
-        .filter_map(|path| {
-            let relative = std::str::from_utf8(path).ok()?.to_string();
-            let text = std::fs::read_to_string(root.join(&relative)).ok()?;
-            Some((relative, text))
+        .map(|path| {
+            let relative = std::str::from_utf8(path)
+                .expect("tracked test paths must be UTF-8")
+                .to_string();
+            let text = std::fs::read_to_string(root.join(&relative))
+                .unwrap_or_else(|error| panic!("reading tracked test {relative}: {error}"));
+            (relative, text)
         })
         .collect()
 }
@@ -217,7 +219,7 @@ fn tracked_test_files(root: &Path) -> BTreeMap<String, String> {
 #[test]
 fn no_test_file_compares_a_duration_to_a_bare_literal_ceiling() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let corpus = tracked_test_files(root);
+    let corpus = tracked_test_files(root, "tests/*.rs");
 
     // Positive control on the corpus itself, in the style of
     // `tests/council_citations.rs`: every assertion below is about what the
@@ -463,7 +465,7 @@ fn no_test_file_hands_a_seconds_taking_script_flag_a_bare_literal() {
         "the usage line must still declare the idle ceiling flag; parsed: {flags:?}"
     );
 
-    let corpus = tracked_test_files(root);
+    let corpus = tracked_test_files(root, "tests/*.rs");
     assert!(
         corpus.len() > 100,
         "only {} tracked test files were read; this scan proved nothing",
@@ -577,4 +579,107 @@ fn the_usage_vocabulary_is_read_from_the_shape_the_script_uses() {
         vec![format!("--max-{}", "idle"), format!("--{}", "other")],
         "every bracketed `--flag <seconds>` group is a flag; `--plan` has no operand and is not"
     );
+}
+
+/// Bare Python process waits and milestone ceilings, including generated scripts.
+///
+/// This is a source-shape guard, not a Python parser: strings are scanned because
+/// the lifecycle harness embeds executable child programs inside them. Only
+/// full comment lines are prose; replacing them with spaces retains byte offsets
+/// and lets the matcher span line breaks without losing diagnostic line numbers.
+fn bare_python_ceilings(source: &str) -> Vec<BareCeiling> {
+    let code: String = source
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                line.bytes()
+                    .map(|byte| if byte == b'\n' { '\n' } else { ' ' })
+                    .collect()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    let shape = regex::Regex::new(r"\b(?:timeout\s*=\s*|monotonic\s*\(\s*\)\s*\+\s*)[0-9]")
+        .expect("the Python ceiling pattern is valid");
+    shape
+        .find_iter(&code)
+        .map(|found| {
+            let line = source[..found.start()]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count();
+            BareCeiling {
+                line: line + 1,
+                text: source
+                    .lines()
+                    .nth(line)
+                    .expect("match is within source")
+                    .trim()
+                    .into(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn no_python_test_uses_a_bare_process_or_milestone_ceiling() {
+    let corpus = tracked_test_files(Path::new(env!("CARGO_MANIFEST_DIR")), "scripts/tests/*.py");
+    assert!(
+        corpus.contains_key("scripts/tests/test_verifier_lifecycle.py"),
+        "the lifecycle harness was not read; this scan proved nothing"
+    );
+    let findings: Vec<String> = corpus
+        .iter()
+        .flat_map(|(path, source)| {
+            bare_python_ceilings(source)
+                .into_iter()
+                .map(move |found| format!("{path}:{}: {}", found.line, found.text))
+        })
+        .collect();
+    assert!(
+        findings.is_empty(),
+        "bare Python timeout or monotonic deadline: derive the ceiling from the supplied \
+             cleanup budget or name and document the startup allowance (SH-698):\n{}",
+        findings.join("\n")
+    );
+}
+
+#[test]
+fn python_scanner_recognizes_process_and_milestone_ceilings() {
+    for source in [
+        "child.wait(timeout=15)",
+        "subprocess.run(args, timeout = 30)",
+        "child.wait(timeout =\n    0.5)",
+        "deadline = time.monotonic() + 15",
+        "deadline = monotonic ( )\n + 8",
+        "    \"        deadline=time.monotonic()+10\\n\"",
+        "worker.wait(timeout=10)\nowner.wait(timeout=15)",
+    ] {
+        let expected = if source.starts_with("worker") { 2 } else { 1 };
+        assert_eq!(bare_python_ceilings(source).len(), expected, "{source}");
+    }
+    assert_eq!(
+        bare_python_ceilings("# heading\nchild.wait(timeout = 15)")[0],
+        BareCeiling {
+            line: 2,
+            text: "child.wait(timeout = 15)".into()
+        }
+    );
+}
+
+#[test]
+fn python_scanner_accepts_names_derivations_and_comment_lines() {
+    for source in [
+        "child.wait(timeout=MILESTONE_DEADLINE)",
+        "child.wait(timeout=self.budget + MARGIN)",
+        "child.wait(timeout=max(0, deadline - time.monotonic()))",
+        "deadline = time.monotonic() + self.settle_timeout",
+        "    # timeout=15 and time.monotonic()+10 are forbidden",
+        "MARGIN = 5\ntime.sleep(0.01)",
+        "other_timeout=15",
+        "timed_out = timeout == 15",
+    ] {
+        assert!(bare_python_ceilings(source).is_empty(), "{source}");
+    }
 }

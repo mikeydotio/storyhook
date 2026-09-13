@@ -1069,6 +1069,7 @@ fn this_checkouts_impact_manifest_covers_every_checkout_reader_and_named_escape(
 
     for required in [
         ("checkout_path_readers", ":(glob)src/**/*.rs"),
+        ("dashboard_local_time", "src/web_dashboard.html"),
         ("dead_public_surface", ":(glob)src/**/*.rs"),
         ("golden_cli", ":(glob)src/**/*.rs"),
         ("portfile_fixture_hygiene", ":(glob)tests/**/*.rs"),
