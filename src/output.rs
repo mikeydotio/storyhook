@@ -904,6 +904,8 @@ pub enum Response {
     EngineRun(Box<EngineRunView>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
+    /// Read-only story resource identity and refusal evidence.
+    Resources(Box<crate::service::resources::ResourceReport>),
     Summary(Box<SummaryView>),
     /// `story report --html`: the report's data, rendered into an HTML
     /// document by the client (SH-679). The daemon used to compose the HTML
@@ -1254,6 +1256,9 @@ fn render_json(response: &Response) -> String {
             "result": "ok",
             "run": run,
         })),
+        Response::Resources(report) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "resources":report}))
+        }
         Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "cleanup": report,
@@ -1562,6 +1567,12 @@ fn render_human(response: &Response) -> String {
             body
         }
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Resources(report) => format!(
+            "resources {}: {}\n{}\n",
+            report.story_id,
+            report.status,
+            serde_json::to_string_pretty(report).expect("resource report serializes")
+        ),
         Response::Cleanup(report) => {
             let action = if report.dry_run {
                 "would remove"

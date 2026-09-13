@@ -13,6 +13,7 @@ assert_contains "$out" '--continuation-file requires --require-absent' \
 # external process boundary. Its ownership decisions have separate real-process
 # tests. Here a receipt permits inspection of the downstream launch primitive.
 fixture=$(mktemp -d /tmp/story-continuation-dispatch.XXXXXX)
+fixture=$(cd "$fixture" && pwd -P)
 _TMP_REPOS+=("$fixture")
 mkdir -p "$fixture/bin"
 real_python=$(command -v python3)
@@ -44,7 +45,10 @@ chmod +x "$fixture/bin/story"
 export CONTINUATION_REAL_STORY="$real_story"
 cat >"$fixture/bin/tmux" <<'TMUX'
 #!/usr/bin/env bash
-if [ "$1" = respawn-pane ] && [ "${CONTINUATION_REFUSE_RESPAWN:-}" = 1 ]; then
+subcommand="$1"
+[ "$subcommand" != -S ] || subcommand="${3:-}"
+if [ "$subcommand" = respawn-pane ] && [ "${CONTINUATION_REFUSE_RESPAWN:-}" = 1 ]; then
+  touch "$FAKE_TMUX_STATE/respawn_refused"
   exit 1
 fi
 exec "$CONTINUATION_FAKE_TMUX" "$@"
@@ -60,22 +64,25 @@ worktree="$repo/.claude/worktrees/$id"
 printf 'preserve this\n' >"$worktree/retained.txt"
 (cd "$repo" && story move "$id" in-progress >/dev/null)
 record="$fixture/record.json"
-socket="$fixture/tmux.sock"
-jq -n --arg id "$id" --arg repo "$repo" --arg wt "$worktree" --arg socket "$socket" \
-  '{story_id:$id,capture:{provider:"claude",model:"opusplan",effort:"",speed:"standard",
-    autonomy_mode:"auto",mode:"default",pane:"%1",socket:$socket,
-    lease:{version:1,project_slug:"gcr",story_id:$id,repository_path:$repo,
-      worktree_path:$wt,branch:("worktree-"+$id),tmux:{socket_path:$socket}}}}' >"$record"
-
 export FAKE_TMUX_STATE="$fixture/tmux-state"
 mkdir -p "$FAKE_TMUX_STATE"
+socket="$FAKE_TMUX_STATE/tmux.sock"
+printf 'claude' >"$FAKE_TMUX_STATE/storyhook_agent"
+jq -n --arg id "$id" --arg repo "$repo" --arg wt "$worktree" --arg socket "$socket" \
+  --arg project "$(slug_for "$repo")" \
+  '{story_id:$id,capture:{provider:"claude",model:"opusplan",effort:"",speed:"standard",
+    autonomy_mode:"auto",mode:"default",pane:"%1",socket:$socket,
+    lease:{version:1,project_slug:$project,story_id:$id,repository_path:$repo,
+      worktree_path:$wt,branch:("worktree-"+$id),tmux:{socket_path:$socket}}}}' >"$record"
+
 export FAKE_TMUX_PANES="$id"$'\t1\t%1'
 export FAKE_TMUX_DEAD=1
 export FAKE_TMUX_PANE_COMMAND=claude
 mkdir -p "$worktree/.claude"
 printf 'old sentinel\n' >"$worktree/.claude/dispatch-sentinel.json"
 private_git=$(git -C "$worktree" rev-parse --absolute-git-dir)
-printf 'old lease\n' >"$private_git/storyhook-cleanup-lease-v1.json"
+original_lease=$(jq '.capture.lease' "$record")
+printf '%s\n' "$original_lease" >"$private_git/storyhook-cleanup-lease-v1.json"
 override=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX="$socket,0,0" TMUX_PANE=%0 STORY_AUTO_PROMPT='Custom charter' STORY_DRY_RUN=1 \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
@@ -95,9 +102,10 @@ race=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
 assert_eq "$(jqf "$race" .ok)" false 'tmux refuses a pane that became live after preflight'
+[ -f "$FAKE_TMUX_STATE/respawn_refused" ] || fail_test 'race reaches the socket-bound no-k respawn'
 assert_eq "$(cat "$worktree/.claude/dispatch-sentinel.json" 2>/dev/null)" 'old sentinel' \
   'atomic refusal preserves the other owner sentinel'
-assert_eq "$(cat "$private_git/storyhook-cleanup-lease-v1.json" 2>/dev/null)" 'old lease' \
+assert_eq "$(cat "$private_git/storyhook-cleanup-lease-v1.json" 2>/dev/null)" "$original_lease" \
   'atomic refusal preserves the inherited cleanup lease'
 out=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX="$socket,0,0" TMUX_PANE=%0 STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
