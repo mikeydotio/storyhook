@@ -1,6 +1,6 @@
 {
   "story_id": "SH-707",
-  "status": "independent preparation complete; live Greenlight delivery pending",
+  "status": "development artifact and cache-preserving activation preparation complete; supervisor review and native activation pending",
   "tooling_commit": "567ef40e9",
   "source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
   "checks": [
@@ -34,6 +34,29 @@
     {
       "name": "static checks",
       "result": "Python syntax with warnings-as-errors, JSON parse, local document links, staged and unstaged whitespace passed"
+    },
+    {
+      "name": "development metadata regressions",
+      "passed": 4,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_development_artifact.py"
+    },
+    {
+      "name": "staging preflight regressions",
+      "passed": 5,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_stage_personal.py"
+    },
+    {
+      "name": "native-style plugin selection and rollback",
+      "states": 5,
+      "installed_manifest_controls": 20,
+      "unrelated_enabled_plugins_preserved": 8,
+      "both_caches_preserved": true,
+      "native_trust_accepted": false,
+      "receipt": "development-native-toggle.json"
+    },
+    {
+      "name": "config optimistic concurrency",
+      "result": "configVersionConflict rejects stale expectedVersion and leaves fixture config byte-identical"
     }
   ],
   "selector": {
@@ -46,7 +69,9 @@
     "Initial seven identity tests failed against stubs (NotImplementedError).",
     "A real Git blob-replacement fixture exported wrong bytes before --no-replace-objects; the repaired exporter returns the original bytes.",
     "First disposable source transition failed: marketplace 'sh707-install' is already added from a different source; remove it before adding this source. Supported remove/add resolves the fixture transition.",
-    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields."
+    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields.",
+    "Four metadata tests initially failed against unimplemented stubs.",
+    "Altered metadata sidecar reached the scaffold before the new staging preflight comparison; the regression now refuses it before writes."
   ],
   "limits": {
     "active_host_validated": false,
@@ -55,5 +80,12 @@
     "no_source_version_changes": true,
     "full_suites_verifier_owned": true
   },
-  "remaining_prerequisite": "Owner-delivered validated containing release, or operator-authorized distinct development artifact with supported registration preserving other plugins; native Codex thread activation/trust and installed validation."
+  "remaining_prerequisite": "Supervisor review of the sealed artifact and cache-retaining live sequence, coordinated native trust and plugin selection, then installed/native-host evidence. No unavailable-source or context dependency remains.",
+  "development_tooling_commit": "98e543fe3",
+  "development_artifact": {
+    "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
+    "archive_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
+    "version": "3.9.1+codex.20260913021137",
+    "only_source_delta": ".codex-plugin/plugin.json added"
+  }
 }
