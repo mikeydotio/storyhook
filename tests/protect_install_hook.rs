@@ -35,6 +35,132 @@ use tempfile::TempDir;
 const HOOK_DEADLINE: Duration =
     Duration::from_secs(2 * storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs());
 
+/// Both hosts normalize shell requests to this payload; Codex adds a mode.
+fn heredoc_payload(command: &str, cwd: &std::path::Path, codex: bool) -> String {
+    let mut payload = serde_json::json!({
+        "tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd,
+    });
+    if codex {
+        payload["permission_mode"] = "default".into();
+    }
+    payload.to_string()
+}
+
+#[test]
+fn quoted_heredoc_reports_treat_installed_paths_as_literal_content() {
+    let (dir, data, managed) = managed_home();
+    let body = format!(
+        "Report about {}/bin/story.sh\n$(touch /tmp/must-not-run)\n`false`\n\"quotes\" 'quotes'\nEOF_suffix\n EOF\n",
+        managed.display()
+    );
+    for cat in ["cat", "/bin/cat", "/usr/bin/cat"] {
+        for delimiter in ["'EOF'", "\"EOF\""] {
+            for redirect in [">", ">>"] {
+                for header in [
+                    format!("{cat} {redirect} 'report with spaces.md' <<{delimiter}"),
+                    format!(
+                        "{cat} <<{delimiter} {redirect} '{}/report.md'",
+                        dir.path().display()
+                    ),
+                ] {
+                    let command = format!("{header}\n{body}EOF\n");
+                    for codex in [false, true] {
+                        let answer = ask(&data, &heredoc_payload(&command, dir.path(), codex));
+                        assert_eq!(answer, "{}", "{command}: {answer}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        !dir.path().join("report.md").exists(),
+        "classification executed the report write"
+    );
+    // Execute one admitted shape against an owned destination and prove the
+    // shell agrees that apparent substitutions in the body remain data.
+    let marker = dir.path().join("unexpected-command");
+    let literal = format!("{}\n$(touch '{}')\n", managed.display(), marker.display());
+    let text = format!("cat > report.md <<'EOF'\n{literal}EOF\n");
+    assert_eq!(ask(&data, &heredoc_payload(&text, dir.path(), true)), "{}");
+    let mut command = Command::new("bash");
+    command.current_dir(dir.path()).args(["-c", &text]);
+    let output =
+        storyhook_test_support::run_bounded(command, "literal heredoc execution", HOOK_DEADLINE);
+    assert!(output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("report.md")).unwrap(),
+        literal
+    );
+    assert!(!marker.exists());
+}
+
+#[test]
+fn heredoc_exception_preserves_output_and_shell_guards() {
+    let (dir, data, managed) = managed_home();
+    std::fs::create_dir_all(&managed).unwrap();
+    let alias = dir.path().join("alias");
+    std::os::unix::fs::symlink(&managed, &alias).unwrap();
+    let loop_path = dir.path().join("loop");
+    std::os::unix::fs::symlink(&loop_path, &loop_path).unwrap();
+    let outward = managed.join("outward");
+    std::os::unix::fs::symlink(dir.path(), &outward).unwrap();
+    for output in [
+        managed.join("report.md"),
+        alias.join("report.md"),
+        loop_path.join("report.md"),
+        outward.join("report.md"),
+        dir.path()
+            .join("provider/../provider/.claude/plugins/cache/storyhook/report.md"),
+    ] {
+        let text = format!(
+            "cat > '{}' <<'EOF'\n{}\nEOF\n",
+            output.display(),
+            managed.display()
+        );
+        for codex in [false, true] {
+            assert!(
+                refusal(&ask(&data, &heredoc_payload(&text, dir.path(), codex))).is_some(),
+                "{text}"
+            );
+        }
+    }
+    let body = managed.display().to_string();
+    for text in [
+        format!("cat > report.md <<EOF\n{body}\nEOF\n"),
+        format!("cat > report.md <<-'EOF'\n{body}\nEOF\n"),
+        format!("cat > report.md <<'EOF'\n{body}\n"),
+        format!("cat > report.md <<'EOF'\n{body}\n EOF\n"),
+        format!("cat > report.md <<'EOF'\n{body}\nEOF\nrm '{body}'"),
+        format!("cat > report.md <<'EOF'\n{body}\nEOF\n\u{00a0}"),
+        format!("cat > report.md <<'EOF'\n{body}\nEOF\n\r"),
+        format!("cat > report.md <<'EOF'\nEOF\n{body}\nEOF"),
+        format!("cat > report.md <<'EOF' | bash\n{body}\nEOF\n"),
+        format!("cat > report.md <<'EOF' && true\n{body}\nEOF\n"),
+        format!("bash > report.md <<'EOF'\n{body}\nEOF\n"),
+        format!("cat > report.md 2> other <<'EOF'\n{body}\nEOF\n"),
+        format!("cat >> report.md < input <<'EOF'\n{body}\nEOF\n"),
+        format!("cat > \"$OUTPUT\" <<'EOF'\n{body}\nEOF\n"),
+        format!("cat > $(echo report.md) <<'EOF'\n{body}\nEOF\n"),
+        format!("cat > report.md <<'EOF' <<'OTHER'\n{body}\nEOF\nOTHER\n"),
+        format!("cat > /dev/null <<'EOF'\n{body}\nEOF\n"),
+    ] {
+        for codex in [false, true] {
+            assert!(
+                refusal(&ask(&data, &heredoc_payload(&text, dir.path(), codex))).is_some(),
+                "{text}"
+            );
+        }
+    }
+    let text = format!("cat > report.md <<'EOF'\n{body}\nEOF\n");
+    assert!(
+        refusal(&ask(
+            &data,
+            &heredoc_payload(&text, std::path::Path::new("relative"), true)
+        ))
+        .is_some()
+    );
+}
+
 /// The tracked hook, never a copy.
 fn hook() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/story/hooks/protect-install.sh")
