@@ -1038,3 +1038,36 @@ The Python lifecycle owner must install signal handling before releasing its
 child handshake, settle its recorded lifecycle and gate sessions before the
 outer termination deadline, and retain ownership until cleanup is established.
 The design council's complete decision is recorded on SH-686.
+
+## Completed verdicts survive cleanup failure — SH-702
+
+A completed gate answers independently of its cleanup. `tests-failed` and
+`merged` retain their wire results and can carry `cleanup_failure` with phase,
+diagnosis, retained owner/worktree paths and permanent disposition. `gate-passed`
+with cleanup metadata reports a normally completed command whose landing was
+not attempted; it does not claim a release-gate receipt or authorize Done.
+
+The daemon writes the completed verdict and infrastructure halt in one guarded
+transaction. The halt says cleanup failed after the recorded verdict, never
+that the code was unjudged. RED includes the existing named failure summary and
+attempt log; RED and unlanded passes stay verifying until recovery. A guarded
+merge that already landed still records GREEN, the merged link and Done; its
+cleanup incident continues to halt later ticks and suppresses reaping.
+
+Normal completion evidence is bound to the attempt, owner nonce and pinned
+parents, and published before cleanup. Preparation failures, failed launches,
+missing/malformed evidence and terminated gate commands remain infrastructure
+failures. Existing PR-head and verification-generation guards still discard
+superseded attempts. See `verifier-worktree-lifecycle.md` for the artifact and
+recovery contract.
+
+Cancellation and idle timeout still terminate and reap the wrapper group. The
+progress-aware capture retains any bounded answer published during termination
+alongside the process error. A validated completed result with cleanup metadata
+survives a late manual stop and records its halt; malformed or incomplete answers
+retain the original interruption outcome. Authority withdrawal still discards
+the obsolete attempt. No cancellation result alone authorizes a verdict.
+If a wrapper reports a complete bare answer and then fails to exit, the daemon
+adds the capture failure as a permanent cleanup halt. It reports the known source
+checkout and explicitly marks owner/shared-worktree paths unavailable when the
+wrapper did not supply them. It never derives guessed cleanup authority.
