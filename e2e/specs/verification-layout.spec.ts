@@ -124,3 +124,31 @@ test("verification text stays inside cards on initial render, refresh, and timer
     }
   }
 });
+
+
+test("verifier recovery banner remains actionable at desktop and phone widths", async ({ page, request, isMobile }) => {
+  await seedToken(page);
+  await page.goto("/");
+  const slug = await projectSlug(request, "Alpha Project");
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "stopped" };
+    data.verifier = { control: "stopped", warning: "fixture verifier stopped: 2 verifying; story verifier start", recovery: {
+      acknowledgement: { incident: { incident_id: "fixture:703" }, at: "2026-09-12T23:00:00Z", enabled: false },
+      request: { id: "f05711fb-f9b2-47c8-a3af-123456789012", outcome: { state: "settled", reason: "stopped", detail: "Operator stopped admission" }, admission: null },
+    } };
+    await route.fulfill({ response, json: data });
+  });
+  for (const width of isMobile ? [320, 390] : [1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await openProject(page, "Alpha Project");
+    const banner = page.locator("#verification-banner-region");
+    await expect(banner).toContainText("Central verification stopped");
+    await expect(banner).toContainText("fixture:703");
+    await expect(banner.getByRole("button", { name: "Start verifier", exact: true })).toBeVisible();
+    expect(await banner.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await clickHeaderAction(page, "home-btn");
+  }
+});

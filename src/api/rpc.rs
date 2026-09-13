@@ -48,6 +48,8 @@ pub enum Answer {
 pub struct Surface<'a, S: Store> {
     /// The store commands run against.
     pub store: &'a S,
+    /// Shared verifier ownership, never a request-local registry.
+    pub verification_activity: &'a crate::daemon::verification::VerificationActivity,
     /// The environment they run under.
     pub env: &'a Environment,
     /// The bearer token this daemon requires.
@@ -120,9 +122,13 @@ pub fn route<S: Store>(
             200,
             serde_json::json!({"result": "ok", "protocol": PROTOCOL}).to_string(),
         )),
-        (["invoke"], Method::Post) => {
-            Answer::Reply(invoke(surface.store, surface.env, surface.entry, body))
-        }
+        (["invoke"], Method::Post) => Answer::Reply(invoke(
+            surface.store,
+            surface.env,
+            surface.entry,
+            surface.verification_activity,
+            body,
+        )),
         (["hello"] | ["shutdown"] | ["invoke"], _) => {
             Answer::Reply(text_reply(405, "Method not allowed"))
         }
@@ -159,7 +165,13 @@ pub fn route<S: Store>(
 /// reading if it can *name* the command, and the command does not exist until
 /// the envelope above has parsed. A record written earlier could say no more
 /// than `POST /api/v1/invoke`, which is the one thing the user already knows.
-fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str) -> Reply {
+fn invoke<S: Store>(
+    store: &S,
+    env: &Environment,
+    entry: &Entry<'_>,
+    activity: &crate::daemon::verification::VerificationActivity,
+    body: &str,
+) -> Reply {
     let request: WireRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(e) => {
@@ -216,6 +228,7 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         StoreInvoker::new(store, &request.cwd, env.clone())
+            .verification_activity(activity)
             .hook_depth(request.hook_depth)
             .invoke(
                 InvokeRequest::new(request.invocation.clone())
@@ -444,6 +457,7 @@ mod tests {
             token: "t",
             hello: &hello,
             entry: &entry,
+            verification_activity: &Default::default(),
         };
         route(&surface, segments, method, headers, "", loopback)
     }
@@ -582,7 +596,7 @@ mod tests {
         let env = Environment::at(dir.path());
         let inflight = lifecycle::InFlight::new(env.clone());
         let entry = inflight.enter();
-        let reply = invoke(&store, &env, &entry, "{ not json");
+        let reply = invoke(&store, &env, &entry, &Default::default(), "{ not json");
         assert_eq!(reply.status, 400);
     }
 
@@ -602,6 +616,7 @@ mod tests {
             &store,
             &env,
             &entry,
+            &Default::default(),
             &serde_json::to_string(&request).unwrap(),
         );
         assert_eq!(

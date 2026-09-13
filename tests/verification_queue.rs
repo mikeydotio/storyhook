@@ -3835,6 +3835,17 @@ fn a_halt_fires_one_post_commit_verification_hook() {
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["event_type"], "verification_halted");
     assert_eq!(lines[0]["attempts"], 1);
+    assert_eq!(lines[0]["held_stories"].as_array().unwrap().len(), 1);
+    assert!(
+        lines[0]["remedy"]
+            .as_str()
+            .unwrap()
+            .starts_with("story verifier ack ")
+    );
+    assert_eq!(
+        lines[0]["diagnostics"],
+        "story verifier status; story daemon logs"
+    );
 }
 
 #[test]
@@ -3885,6 +3896,13 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
 fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     let fixture = ServiceFixture::new();
     fixture.link_origin("https://github.com/acme/widgets");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
+        .unwrap();
+    fixture.write_hooks_toml(
+        "on_verification_resumed = { command = \"cat >> resumed.log; echo >> resumed.log\" }\n",
+    );
     let id = submitted(&fixture, "current generation", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -3923,6 +3941,16 @@ fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
             .unwrap()
             .is_none()
     );
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(fixture.cwd().join("resumed.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event_type"], "verification_resumed");
+    assert_eq!(events[0]["reason"], "incident generation retired");
+    assert_eq!(events[0]["enabled"], true);
+    assert_eq!(events[0]["story_id"], id);
 }
 
 /// A fresh lease for `story_id`, rooted under `root`.
@@ -5869,7 +5897,16 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
     for kind in ["red", "passed", "merged"] {
         let fixture = ServiceFixture::new();
         fixture.link_origin("https://github.com/acme/widgets");
+        fixture
+            .store()
+            .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
+            .unwrap();
+        fixture.write_hooks_toml(
+            "on_verification_halted = { command = \"cat >> halted.log; echo >> halted.log\" }\n\
+             on_verification_resumed = { command = \"cat >> resumed.log\" }\n",
+        );
         let id = submitted(&fixture, "cleanup refused", Priority::High, PR_ONE);
+        let waiting = submitted(&fixture, "held behind cleanup", Priority::Low, PR_TWO);
         let verdict = match kind {
             "red" => CompletedVerification::TestsFailed {
                 tree: "judged-tree".into(),
@@ -5950,6 +5987,33 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
             .unwrap();
         assert!(incident.halted);
         assert_eq!(incident.attempts, 1);
+        let expected_held = if kind == "merged" {
+            vec![waiting]
+        } else {
+            vec![id.clone(), waiting]
+        };
+        let halted_log = std::fs::read_to_string(fixture.cwd().join("halted.log")).unwrap();
+        let notifications: Vec<serde_json::Value> = halted_log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0]["held_stories"],
+            serde_json::json!(expected_held)
+        );
+        assert_eq!(notifications[0]["incident_id"], incident.incident_id);
+        assert_eq!(
+            notifications[0]["remedy"],
+            format!("story verifier ack {}", incident.incident_id)
+        );
+        assert_eq!(
+            notifications[0]["diagnostics"],
+            "story verifier status; story daemon logs"
+        );
+        let status = VerificationActivity::new().status(&fixture.ctx()).unwrap();
+        assert_eq!(status.held_stories, expected_held);
+        assert!(status.warning.unwrap().contains("HALTED"));
         assert!(actuator.notified.lock().unwrap().is_empty());
         assert!(actuator.redispatched.lock().unwrap().is_empty());
         assert!(actuator.reaped.lock().unwrap().is_empty());
@@ -5959,5 +6023,14 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
             TickResult::Halted
         );
         assert_eq!(story_row(&fixture, &id).snapshot.comments, before);
+        assert_eq!(
+            std::fs::read_to_string(fixture.cwd().join("halted.log")).unwrap(),
+            halted_log,
+            "a retained incident must not notify twice"
+        );
+        assert!(
+            !fixture.cwd().join("resumed.log").exists(),
+            "cleanup has not recovered"
+        );
     }
 }
