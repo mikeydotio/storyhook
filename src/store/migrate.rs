@@ -402,6 +402,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0039_verification_recovery.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 40,
+        name: "engine_adoption",
+        sql: include_str!("schema/0040_engine_adoption.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
