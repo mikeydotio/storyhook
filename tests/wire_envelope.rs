@@ -20,11 +20,11 @@
 use std::path::PathBuf;
 
 use storyhook::cli::{
-    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
-    DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
-    HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
-    PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, VerifierAction, WebAction,
+    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, ContinuationAction,
+    CrashesAction, DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode,
+    HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
+    TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
@@ -1234,12 +1234,46 @@ fn error_variants_travel_under_a_kind_tag() {
 // Invocation
 // ---------------------------------------------------------------------------
 
-/// Every `Invocation` variant, plus every variant of the six action enums
+/// Every `Invocation` variant, plus every variant of the action enums
 /// they nest. `Invocation` derives `PartialEq`, so unlike `Response` this one
 /// can assert on values directly.
 fn invocation_corpus() -> Vec<Invocation> {
     vec![
         Invocation::Help,
+        Invocation::Continuation {
+            id: String::new(),
+            action: ContinuationAction::Capabilities,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Request,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Status,
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Receipt {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+            },
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Retry {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+            },
+        },
+        Invocation::Continuation {
+            id: "SH-711".into(),
+            action: ContinuationAction::Ack {
+                request: "a2cb702b-12e8-46c4-831b-c78bf57e944b".into(),
+                reviewed_seq: 36_458,
+                head: "78e3e9dd01e48b08a6bd97e52d80a907f9df1f90".into(),
+                provider: "codex".into(),
+                session_id: "receiving-root-session".into(),
+            },
+        },
         // All four `NewProjectRequest`/`Attach` shapes. `Ask` is on the wire
         // deliberately: the client is the only process that can answer it, and
         // the dispatcher's refusal of it is only reachable if it survives a
@@ -1915,6 +1949,7 @@ fn invocation_corpus() -> Vec<Invocation> {
 /// compiling until someone has decided how it crosses the wire.
 fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
+        Invocation::Continuation { .. } => "Continuation",
         Invocation::Help => "Help",
         Invocation::Project { .. } => "Project",
         Invocation::New { .. } => "New",
@@ -1999,7 +2034,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        71,
+        72,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
