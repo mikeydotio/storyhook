@@ -15,8 +15,8 @@ def toggle(env, output, plugin_id, enabled, reject_stale=False):
             or Path(env["CODEX_HOME"]) != output / "codex-home"
             or not (output / "commands.json").is_file()):
         raise ValueError("config API requires an initialized isolated rehearsal")
-    if plugin_id not in ("greenlight@agentics", "greenlight@personal"):
-        raise ValueError("fixture toggle only supports the two Greenlight identities")
+    if plugin_id not in ("greenlight@agentics", "greenlight@personal", "greenlight-sh707-age54@personal"):
+        raise ValueError("fixture toggle only supports the reviewed Greenlight identities")
     records, incoming = [], queue.Queue()
     stderr_path = output / f"toggle-{plugin_id}-{enabled}.stderr"
     with stderr_path.open("x") as stderr:
