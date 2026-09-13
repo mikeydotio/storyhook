@@ -97,16 +97,26 @@ pub(crate) fn snapshot(
                         {
                             Ok(modified) => {
                                 let progress = crate::service::gate_progress::fold(&text);
-                                if progress.run.is_some_and(|r| {
-                                    Some(r.generation) == active.generation.map(|g| g.get())
-                                }) {
-                                    let modified: chrono::DateTime<chrono::Utc> = modified.into();
-                                    let at = modified.to_rfc3339();
-                                    last_evidence_at = Some(at.clone());
-                                    elapsed_secs(&at, &now)
+                                if crate::daemon::verification_progress::identifies_active_attempt(
+                                    &progress, active,
+                                ) {
+                                    match crate::service::gate_output::metadata_time(modified) {
+                                        Ok(modified) => {
+                                            let at = modified.to_rfc3339();
+                                            last_evidence_at = Some(at.clone());
+                                            elapsed_secs(&at, &now)
+                                        }
+                                        Err(error) => {
+                                            evidence_error = Some(format!(
+                                                "cannot inspect {} timestamp: {error}",
+                                                path.display()
+                                            ));
+                                            None
+                                        }
+                                    }
                                 } else {
                                     evidence_error = Some(
-                                        "journal does not identify the active generation".into(),
+                                        "journal does not identify the active generation and attempt".into(),
                                     );
                                     last_evidence_at = Some(active.started_at.clone());
                                     elapsed_secs(&active.started_at, &now)

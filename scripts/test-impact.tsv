@@ -69,6 +69,7 @@ fix_cycle_5	:(glob)**/*
 fixture_isolation	:(glob)**/*
 gate_leg_reuse	:(glob)**/*
 gate_lock	:(glob)**/*
+gate_output_reporting	scripts/gate-progress.sh
 gate_tiers	:(glob)**/*
 git_fixture_isolation	:(glob)**/*
 golden_cli	:(glob)src/**/*.rs

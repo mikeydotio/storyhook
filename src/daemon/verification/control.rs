@@ -337,6 +337,79 @@ mod tests {
     use crate::service::NewStoryInput;
     use storyhook_test_support::ServiceFixture;
 
+    #[test]
+    fn status_and_interruption_reject_a_previous_attempts_same_generation_journal() {
+        use serde_json::json;
+        use std::fs::{File, FileTimes};
+
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let candidate = candidate(&store, &env, project);
+        let ctx = Ctx::new(&store, project, env.home().to_path_buf(), env.clone()).no_hooks(true);
+        let activity = VerificationActivity::new();
+        let started = "2026-01-01T00:00:00Z";
+        let previous = activity.acquire(&candidate, started.into());
+        let previous_id = previous.active.attempt_id.clone();
+        drop(previous);
+        let current = activity.acquire(&candidate, started.into());
+        assert_ne!(previous_id, current.active.attempt_id);
+        let path = journal_path(&env, &candidate);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let modified = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z").unwrap();
+
+        for identity in ["previous", "current", "legacy", "generation"] {
+            let mut run = json!({"kind":"run", "generation":candidate.verifying_generation.unwrap().get(), "at":started});
+            match identity {
+                "previous" => run["attempt_id"] = json!(previous_id),
+                "current" => run["attempt_id"] = json!(current.active.attempt_id),
+                "generation" => {
+                    run["generation"] = json!(candidate.verifying_generation.unwrap().get() + 1)
+                }
+                _ => {}
+            }
+            let item = json!({"kind":"item", "path":"foreign gate old step", "status":"running", "at":started});
+            std::fs::write(&path, format!("{run}\n{item}\n")).unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(modified.into()))
+                .unwrap();
+            let status = activity.status(&ctx).unwrap();
+            let position = super::super::attempt_position(
+                &env,
+                &candidate,
+                &current.active,
+                "2026-01-02T00:00:00Z",
+            );
+            if matches!(identity, "previous" | "generation") {
+                assert_eq!(
+                    status.last_evidence_at.as_deref(),
+                    Some(started),
+                    "{identity}"
+                );
+                assert!(status.evidence_error.is_some(), "{identity}: {status:?}");
+                assert!(
+                    !position.contains("foreign gate old step"),
+                    "{identity}: {position}"
+                );
+            } else {
+                assert_eq!(
+                    status.last_evidence_at.as_deref(),
+                    Some("2026-01-02T00:00:00+00:00"),
+                    "{identity}"
+                );
+                assert_eq!(status.evidence_error, None, "{identity}");
+                assert!(
+                    position.contains("foreign gate old step"),
+                    "{identity}: {position}"
+                );
+            }
+        }
+    }
+
     fn candidate(
         store: &crate::store::SqliteStore,
         env: &Environment,
@@ -354,6 +427,47 @@ mod tests {
             .set_state(&id, "verifying", None, None, None)
             .unwrap();
         VerificationQueue::new(store).next().unwrap().unwrap()
+    }
+
+    #[test]
+    fn publication_rejects_stale_queued_and_same_generation_attempt_snapshots() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let candidate = candidate(&store, &env, project);
+        let activity = VerificationActivity::new();
+        assert_eq!(
+            activity.if_current(project, None, || "queued"),
+            Some("queued")
+        );
+        let guard = activity.acquire(&candidate, env.now());
+        let old = activity.active_for(project).unwrap();
+        assert_eq!(
+            activity.if_current(project, None, || panic!("stale queue write")),
+            None::<()>
+        );
+        drop(guard);
+        let _retry = activity.acquire(&candidate, env.now());
+        let current = activity.active_for(project).unwrap();
+        assert_eq!(current.generation, old.generation);
+        assert_ne!(current.attempt_id, old.attempt_id);
+        assert_eq!(
+            activity.if_current(project, Some(&old), || panic!("stale attempt write")),
+            None::<()>
+        );
+        assert_eq!(
+            activity.if_current(project, Some(&current), || {
+                assert!(
+                    activity.active.try_lock().is_err(),
+                    "identity must remain locked through the write"
+                );
+                // The established registry -> store order remains usable inside
+                // the critical section; no registry reentry happens in an upsert.
+                store.read(|tx| tx.projects()).unwrap().len()
+            }),
+            Some(1)
+        );
     }
 
     #[test]

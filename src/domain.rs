@@ -604,7 +604,8 @@ pub struct SubmittedPullRequest {
     pub number: u64,
     /// The base branch the pull request targets — the repository's default.
     pub base: String,
-    /// The head commit GitHub reports for the pull request after the push.
+    /// The submitted commit verified against the origin branch. This records
+    /// publication, not gate certification or convergence of GitHub's API view.
     pub head_oid: String,
     /// Whether the helper adopted an already-open pull request rather than
     /// creating one. `true` is the steady state: every resubmission after the
