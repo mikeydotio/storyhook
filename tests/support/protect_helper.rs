@@ -94,6 +94,7 @@ fn installed_helper_is_admitted_by_the_hook_of_its_own_plugin() {
                 &PROJECT_SELECTORS[..1],
                 vec![
                     "context",
+                    "context --story TST-1 --full",
                     "view TST-1",
                     "capture TST-1",
                     "doctor",
@@ -134,7 +135,7 @@ fn installed_helper_is_refused_by_any_other_plugins_hook() {
     }
     let claude = &roots[0];
     let text = format!(
-        "bash {} dispatch TST-1 --agent=claude",
+        "bash {} context --full --story TST-1",
         quoted(&helper_of(claude))
     );
     // The load-bearing case: the tracked hook is a plugin too — the checkout's —
@@ -149,7 +150,7 @@ fn installed_helper_is_refused_by_any_other_plugins_hook() {
     assert_denied_by(
         &harness,
         &hook_of(claude),
-        &format!("bash {} dispatch TST-1", quoted(&helper_of(&stale))),
+        &format!("bash {} context --story TST-1", quoted(&helper_of(&stale))),
     );
     assert_denied_by(&harness, &hook_of(&stale), &text);
 }
@@ -204,7 +205,7 @@ fn helper_identity_requires_a_regular_file_at_its_own_unredirected_path() {
     install_checkout_helpers_at(&root);
     let hook = hook_of(&root);
     let helper = helper_of(&root);
-    let text = format!("bash {} context", quoted(&helper));
+    let text = format!("bash {} context --story TST-1 --full", quoted(&helper));
     let original = fs::read(&helper).unwrap();
     assert_eq!(
         ask_hook(&harness, &hook, &text, true),
