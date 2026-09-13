@@ -88,3 +88,17 @@ failed. Approved escalation restored access; subsequent compiler waits confirmed
 the normal shared bound. Cargo replayed cached fallback diagnostics from the
 interrupted run. No lock relocation, guard bypass or installed-artifact edit was
 used. Detailed commands, logs and regression evidence are recorded on SH-702.
+
+## Central verification return: process inventory
+
+PR 803's merge-tree gate failed the process-spawn inventory: the new Bash
+cancellation probe in `src/process/activity_tests.rs` had no classification.
+The exact inventory test reproduced that sole missing entry locally. Classifying
+it as `Kind::Waited` reflects its regular-file capture and bounded process-group
+termination/reaping; the census and production process handling are unchanged.
+The inventory is also the regression and sibling sweep: both inventory tests
+and both activity tests pass after the repair. Scoped Clippy with warnings denied,
+formatting and whitespace checks pass. Out-of-line process tests participate in
+the source census, so adding a probe requires a classification and an inventory
+test run. The selector still reports `ALL` without a baseline coverage map;
+the central verifier retains ownership of the full suite.
