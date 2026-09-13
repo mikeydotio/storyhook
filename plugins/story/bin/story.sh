@@ -4614,8 +4614,10 @@ Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge
     *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
   esac
   local pull_request display
-  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" \
-    '{url:.url, number:.number, base:.baseRefName, head_oid:.headRefOid, adopted:$adopted}')
+  # PR metadata can lag a successful push; the receipt names the head already
+  # verified against the origin branch, independently of GitHub's API view.
+  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" --arg head_oid "$head_oid" \
+    '{url:.url, number:.number, base:.baseRefName, head_oid:$head_oid, adopted:$adopted}')
   if [ "$adopted" = true ]; then
     display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; adopted open pull request $(printf '%s' "$pr" | jq -r .url)."
   else

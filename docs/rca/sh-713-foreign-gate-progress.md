@@ -91,16 +91,42 @@ The central verifier owns full-suite validation. Source tests do not certify the
 installed release. Keep the operator's exact-log/process inspection bridge until
 a containing release is installed and the foreign-gate regression passes there.
 
-## Adopted work remaining on SH-713
+## Adopted submission-head reporting repair
 
 The 2026-09-13T05:33:27 story comment separately adopts stale submission-head
-reporting. `submit-leased` verifies the pushed branch HEAD, but its receipt can
-copy lagging PR API metadata and the central comment then calls that value the
-origin head. The foreign-gate repairs above do not fix that boundary.
+reporting. `submit-leased` verified the pushed branch HEAD, but its receipt copied
+lagging PR API metadata and the central comment called that value the origin
+head. SH-708's live gate used the correct head; its submission comment named an
+older one. No live gate was interrupted or changed during this investigation.
 
-Keep SH-713 open for a separate fix and regression commit. Preserve authoritative
-pushed branch identity separately from observed PR metadata; API lag must not
-become a new submission block. Cover fast-forward adoption, unchanged adoption,
-creation, and the emitted central comment. The complete specimen and source
-locations are in the story discussion. Decision SH713-D9 defers this work under
-the user's context-budget rule; it is not an external or human-input blocker.
+The real-helper reproduction returned successful receipts in six scenarios;
+independent remote reads equalled committed HEAD in every case. Three stale-API
+scenarios failed: fast-forward adoption, unchanged adoption, and creation. Three
+current-metadata controls passed. Passing those exact typed receipts to the
+production comment writer reproduced all three stale central comments. This
+falsifies an unsuccessful-push explanation and locates the reporting defect at
+the receipt mapping.
+
+The helper now maps the independently verified branch commit to the existing
+`head_oid` receipt field. PR metadata still supplies the PR identity, base and
+adoption decision; it cannot replace the verified origin observation. No new
+field, fallback, API wait or submission block is added. This follows the distinct
+evidence supplied by [Git remote refs](https://git-scm.com/docs/git-ls-remote) and
+[GitHub PR metadata](https://cli.github.com/manual/gh_pr_view).
+
+The receipt remains a submission observation, not certification or proof of API
+convergence. `verify-pr.sh` independently checks the API head, fetched PR ref,
+and remote branch before choosing the merge tree. The source audit found no
+other runtime consumer of the submission receipt's `head_oid`.
+
+Adopted-scope validation passed all five verification-service units (including
+the six real-helper receipt/comment scenarios), 18 submission queue tests, four
+head-convergence cases, and the existing `test-submit-leased.sh` suite. Targeted
+Clippy with warnings denied, formatting, shell syntax and diff checks passed.
+The actual-tree selector again returned `ALL` for the missing baseline map;
+the central verifier retains the full suite.
+
+SH713-D10/D11 record explicit native continuation, the competing hypotheses,
+independent challenge and this separately committed repair. The operational
+workaround still retires only after a containing release is installed and its
+stale-metadata regression is validated.
