@@ -12,6 +12,8 @@ use std::process::{Command, Output};
 use storyhook_test_support::{daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
+#[path = "support/protect_domain.rs"]
+mod protect_domain;
 #[path = "support/protect_helper.rs"]
 mod protect_helper;
 #[path = "support/protect_launcher.rs"]
