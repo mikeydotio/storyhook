@@ -92,12 +92,12 @@ pub use rebuild::{
 };
 pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
-    EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope, EngineSpeed, FeedEvent,
-    LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, VerificationFailureDisposition,
-    VerificationIncident, partition_known,
+    AdoptedIdentity, AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord,
+    EngineLaneState, EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope,
+    EngineSpeed, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
+    VerificationFailureDisposition, VerificationIncident, partition_known,
 };
 pub use verification_recovery::{
     VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,
