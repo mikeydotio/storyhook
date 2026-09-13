@@ -20,7 +20,7 @@ use storyhook::daemon::verification_progress::{
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{Clock, NewStoryInput, PrLinkService, StoryService, VerificationQueue};
 use storyhook::store::{ReadOps, Store, StoryNo, WriteOps};
-use storyhook_test_support::{ServiceFixture, scratch_dir};
+use storyhook_test_support::{ChildGuard, ServiceFixture, daemon_containment, scratch_dir};
 
 /// Only the remote GitHub response is substituted. A merge request creates an
 /// actual two-parent commit in the fixture remote, enabling production landing
@@ -72,9 +72,11 @@ fn isolated_scenario(verdict: &str) {
     let log = fs::File::create(&log_path).unwrap();
     // The child is the environment boundary: integration-test threads never
     // mutate PATH, and Cargo retains the real machine-wide compiler locks.
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args(["--ignored", "--exact", "retry_shell_worker", "--nocapture"])
         .env_clear()
+        .envs(daemon_containment())
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -88,29 +90,19 @@ fn isolated_scenario(verdict: &str) {
         .env("SH714_VERDICT", verdict)
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(
-                status.success(),
-                "{verdict} worker failed:\n{}",
-                fs::read_to_string(&log_path).unwrap()
-            );
-            break;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!(
-                "{verdict} worker exceeded deadline:\n{}",
-                fs::read_to_string(&log_path).unwrap()
-            );
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+        .stderr(log);
+    let mut child = ChildGuard::spawn(&mut command).unwrap();
+    let status = child.wait_within(Duration::from_secs(120), || {
+        format!(
+            "{verdict} worker exceeded deadline:\n{}",
+            fs::read_to_string(&log_path).unwrap()
+        )
+    });
+    assert!(
+        status.success(),
+        "{verdict} worker failed:\n{}",
+        fs::read_to_string(&log_path).unwrap()
+    );
 }
 
 fn git(cwd: &Path, args: &[&str]) -> String {

@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn absent_and_unowned_journals_preserve_ownership_freshness() {
-        let root = tempfile::tempdir().unwrap();
+        let root = storyhook_test_support::scratch_dir();
         let env = Environment::at(root.path());
         let (candidate, active, _) = fixture();
         let ordered = [candidate];
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn one_read_binds_progress_and_timestamp_to_current_owner() {
-        let root = tempfile::tempdir().unwrap();
+        let root = storyhook_test_support::scratch_dir();
         let env = Environment::at(root.path());
         let (candidate, active, incident) = fixture();
         let path = journal_path(&env, &candidate);
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn unreadable_journal_has_context_and_no_freshness() {
-        let root = tempfile::tempdir().unwrap();
+        let root = storyhook_test_support::scratch_dir();
         let env = Environment::at(root.path());
         let (candidate, active, _) = fixture();
         let path = journal_path(&env, &candidate);
