@@ -1,6 +1,6 @@
 {
   "story_id": "SH-707",
-  "status": "released Agentics 3.9.2 installed and enabled; native modified-hook review and fresh-host acceptance pending",
+  "status": "Agentics 3.9.2 installed, enabled and natively trusted; fresh-host smoke accepted; ready for central verification",
   "tooling_commit": "567ef40e9",
   "selector": {
     "baseline": "7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247",
@@ -17,16 +17,17 @@
     "Altered metadata sidecar reached the scaffold before the new staging preflight comparison; the regression now refuses it before writes."
   ],
   "limits": {
-    "active_host_validated": false,
+    "active_host_validated": true,
     "release_certified": false,
     "live_greenlight_installed": true,
     "no_source_version_changes": true,
     "full_suites_verifier_owned": true,
     "candidate_enabled": false,
     "official_release_enabled": true,
-    "native_review_required": true
+    "native_review_required": false,
+    "active_host_validation_scope": "Trusted native discovery and successful sttest pwd smoke; no separate per-handler success trace claimed."
   },
-  "remaining_prerequisite": "Only native review of the changed official greenlight@agentics 3.9.2 handler and fresh-host invocation evidence. Both personal activation instructions are superseded; no further installation or plugin selection is required.",
+  "remaining_prerequisite": null,
   "development_tooling_commit": "98e543fe3",
   "development_artifact": {
     "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
@@ -119,9 +120,9 @@
       "receipt": "release-3.9.2-receipt.json"
     },
     {
-      "name": "native discovery",
-      "result": "greenlight@agentics 3.9.2 enabled, trustStatus modified; no native execution certification",
-      "receipt": "release-3.9.2-receipt.json"
+      "name": "native discovery and fresh-host smoke",
+      "result": "3.9.2 enabled/trusted; sttest pwd exits 0 with no hook diagnostic",
+      "receipt": "native-acceptance-receipt.json"
     }
   ],
   "historical_live_installation": {
@@ -134,7 +135,8 @@
   "live_installation": {
     "receipt": "release-3.9.2-receipt.json",
     "actor": "Mikey deployed normal Agentics 3.9.2 release; this lane performed read-only verification",
-    "native_host_validated": false,
-    "installed_identity_verified": true
+    "native_host_validated": true,
+    "installed_identity_verified": true,
+    "native_acceptance_receipt": "native-acceptance-receipt.json"
   }
 }
