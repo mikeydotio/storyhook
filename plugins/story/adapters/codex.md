@@ -145,3 +145,18 @@ a lane whose denial times out asks anyway and stalls — caught by the engine's 
 quarantined, never silent.
 
 Deterministic resource operations discover the actual worktree and recorded tmux socket. Do not set `STORY_AGENT` to locate Claude-created or custom worktrees. `dispatch --resume --agent=codex` changes the launch provider while preserving the resolved worktree.
+
+### Unsupported approval output
+
+`PreToolUse hook returned unsupported permissionDecision:allow` means a matching
+hook emitted an approval shape Codex does not support. Identify the producer
+across user, project, and plugin hook registrations before changing Storyhook.
+For an unchanged tool call, a hook with no objection must return no decision;
+optional feedback uses `additionalContext`. Preserve explicit denials and normal
+Codex permission handling. Do not add artificial `updatedInput` to silence the
+error: that field requests a tool-input rewrite.
+
+SH-707 reproduced this independently in Greenlight and a personal readonly hook,
+while installed and checkout Storyhook controls passed. See the
+[RCA and repair status](../../../docs/rca/sh-707-unsupported-hook-allow.md) and
+[Codex hook contract](https://developers.openai.com/codex/hooks).

@@ -1,0 +1,114 @@
+{
+  "observed_at": "2026-09-13T02:22:01.877461+00:00",
+  "active_baseline_matches_prior_receipt": true,
+  "live_changes_performed": false,
+  "native_host_validated": false,
+  "personal_source_and_marketplace_absent": true,
+  "agentics_registration": {
+    "source_type": "local",
+    "source": "/Volumes/Code/mikeyward/agentics"
+  },
+  "agentics_plugins": {
+    "council@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/council",
+      "file_count": 15,
+      "inventory_sha256": "973dd2929e85336f43ab8a6cbfd88684a852ad8816510808fb12ef086d6eee5d"
+    },
+    "freshen@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/freshen",
+      "file_count": 30,
+      "inventory_sha256": "e51879db8330c75b8319122069f828b256215d7fb05effaafe05673637763881"
+    },
+    "agents@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/agents",
+      "file_count": 41,
+      "inventory_sha256": "0bfd1fe49d9a94450a87b27644f54fb7dde32719345ae777f04752d40c18bca2"
+    },
+    "rca@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/rca",
+      "file_count": 50,
+      "inventory_sha256": "dc2b77828ae3e1e798ba3a2df0db78324081e0dbaa40b9b0f916ed28c9ad6c2c"
+    },
+    "semver@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/semver",
+      "file_count": 33,
+      "inventory_sha256": "103b9ee809d3be7943b89cfcc7342107b2cd8218651dbd971a6910c0ba686bdc"
+    },
+    "reconcile-pr@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/reconcile-pr",
+      "file_count": 16,
+      "inventory_sha256": "2e0235c09af31d7ea0148cd497febe2a41da69d7c7c03905e78e168bc01b9f79"
+    },
+    "deployit@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/deployit",
+      "file_count": 101,
+      "inventory_sha256": "318bfa3bc443e831b2af905b7931531f94f26ce2c6e86c320f8ad1f71e49c168"
+    },
+    "greenlight@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/greenlight",
+      "file_count": 11,
+      "inventory_sha256": "944e8a7ea654e1bf93112f1eaccd845b40f8d4db9d45cd78c253e0c17e344265"
+    },
+    "hook-guard@agentics": {
+      "enabled": {
+        "enabled": true
+      },
+      "cache_root": "/Users/mikey/.codex/plugins/cache/agentics/hook-guard",
+      "file_count": 7,
+      "inventory_sha256": "3089f957f5e9f694b65f95987751a0fb7b6b22ce6cbf3357435bb6ae1105609c"
+    }
+  },
+  "agentics_hook_trust": {
+    "freshen@agentics:hooks/hooks.json:session_start:0:0": {
+      "trusted_hash": "sha256:d2872f6c2b46188e96a4ad1ba7eabd6f06800b456d27b0f473022cea7b3a2074"
+    },
+    "freshen@agentics:hooks/hooks.json:session_start:1:0": {
+      "trusted_hash": "sha256:971e3a6c3fc5cb8330b1cfd2888033bcb9b38d09bcef8baa17ad90005dccd720"
+    },
+    "freshen@agentics:hooks/hooks.json:stop:0:0": {
+      "trusted_hash": "sha256:65c751960274440b0410e8f30b9b40d0ed1e1c5357c8d3a573eabb82d748a3f2"
+    },
+    "semver@agentics:hooks/hooks.json:post_tool_use:0:0": {
+      "trusted_hash": "sha256:62d48a4517221c73d1fe566c368711d8443f500ac0a4b8efdb72bbc266b36825"
+    },
+    "semver@agentics:hooks/hooks.json:session_start:0:0": {
+      "trusted_hash": "sha256:c701d1c24b1b46ff4f1a9ff247ad42081b2562eab5eb37451b00c86634d93502"
+    },
+    "forge@agentics:hooks/hooks.json:session_start:0:0": {
+      "trusted_hash": "sha256:4604f106530750092f47af4162ebfc09e538180b353deec678336152a01c9e46"
+    },
+    "forge@agentics:hooks/hooks.json:stop:0:0": {
+      "trusted_hash": "sha256:1d31e1a51baeb0b991cc577a622084c41ebacef09dee1393cf1cd01aed0d79ad"
+    },
+    "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+      "trusted_hash": "sha256:cd0e38d792650e8c92bde2297bf4e1a86e5c48fa970e3e7c5f63ba586818e570"
+    },
+    "hook-guard@agentics:hooks/hooks.json:session_start:0:0": {
+      "trusted_hash": "sha256:6fe4d1be9122d24b8019bd8a448549d1b72eadaaa5b0f522e9486c41cc28b66f"
+    }
+  }
+}
