@@ -156,6 +156,7 @@ pub struct Ctx<'a, S: Store> {
     stdin: Option<String>,
     github_token: Option<crate::domain::secret::GithubToken>,
     provenance: Provenance,
+    verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -183,7 +184,24 @@ impl<'a, S: Store> Ctx<'a, S> {
             stdin: None,
             github_token: None,
             provenance: Provenance::unrecorded(),
+            verification_activity: None,
         }
+    }
+
+    /// Supplies the daemon's shared verifier ownership registry.
+    pub fn with_verification_activity(
+        mut self,
+        activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    ) -> Self {
+        self.verification_activity = activity;
+        self
+    }
+
+    /// Returns the actual daemon runtime; absence never means an idle verifier.
+    pub fn verification_activity(
+        &self,
+    ) -> Option<&crate::daemon::verification::VerificationActivity> {
+        self.verification_activity
     }
 
     /// Supplies the standard input this invocation should read, instead of this

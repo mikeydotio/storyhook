@@ -228,7 +228,7 @@ pub(super) fn record<S: Store>(
         Some(&diagnosis),
     )? {
         GenerationWrite::Applied(Some(incident)) => {
-            fire_verification_halted(ctx, candidate, &incident);
+            fire_verification_halted(ctx, candidate, &incident)?;
             Ok(GenerationWrite::Applied(TickResult::Halted))
         }
         GenerationWrite::Applied(None) => Err(AppError::Storage(

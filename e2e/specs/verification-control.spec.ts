@@ -111,3 +111,33 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   await page.reload();
   await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
 });
+
+test("stopped admission remains visible after an incident is acknowledged", async ({ page }) => {
+  const column = page.locator('.column[data-state="verifying"]');
+  await column.getByRole("button", { name: "Stop verifier", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Stop inflight verifications" }).click();
+  const banner = page.locator('#verification-banner-region');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Central verification stopped");
+  await expect(banner.getByRole("button", { name: "Start verifier", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(banner).toContainText("Central verification stopped");
+  await banner.getByRole("button", { name: "Start verifier", exact: true }).click();
+  await expect(column.getByRole("button", { name: "Stop verifier", exact: true })).toBeVisible();
+});
+
+test("overdue evidence warning is visible outside the verifier column", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "running" };
+    data.verifier = { control: "running", warning: "fixture verifier has no progress evidence for 61s; story verifier status; story daemon logs", recovery: { acknowledgement: null, request: null } };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const banner = page.locator('#verification-banner-region');
+  await expect(banner).toContainText("no progress evidence for 61s");
+  await expect(banner).toContainText("story verifier status");
+});
