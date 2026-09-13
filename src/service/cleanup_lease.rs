@@ -20,18 +20,21 @@ use crate::error::AppError;
 /// value fails loudly; silently degrading a claimed lease to legacy cleanup
 /// would recreate the false-success class this contract removes.
 pub(super) fn marker_at(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppError> {
-    let Some(toplevel) = git_env::output(cwd, &["rev-parse", "--show-toplevel"]) else {
+    if git_env::output(cwd, &["rev-parse", "--show-toplevel"]).is_none() {
         return Ok(None);
+    }
+    marker_at_registered(cwd)
+}
+
+/// Reads a known Git worktree without degrading failed queries to no marker.
+pub(super) fn marker_at_registered(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppError> {
+    let query = |args: &[&str]| -> Result<String, AppError> {
+        let value = super::resources::git::text(cwd, args)?;
+        Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
     };
-    let Some(git_dir) = git_env::output(cwd, &["rev-parse", "--absolute-git-dir"]) else {
-        return Ok(None);
-    };
-    let Some(common_dir) = git_env::output(
-        cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    ) else {
-        return Ok(None);
-    };
+    let toplevel = query(&["rev-parse", "--show-toplevel"])?;
+    let git_dir = query(&["rev-parse", "--absolute-git-dir"])?;
+    let common_dir = query(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
 
     let git_dir = canonical_existing(Path::new(&git_dir), "private Git directory")?;
     let common_dir = canonical_existing(Path::new(&common_dir), "Git common directory")?;
@@ -40,6 +43,22 @@ pub(super) fn marker_at(cwd: &Path) -> Result<Option<StoryCleanupLease>, AppErro
     }
 
     let marker_path = git_dir.join(CLEANUP_LEASE_MARKER);
+    match fs::symlink_metadata(&marker_path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(AppError::Validation(format!(
+                "cleanup marker {} is not a regular private file",
+                marker_path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Validation(format!(
+                "cannot inspect {}: {error}",
+                marker_path.display()
+            )));
+        }
+    }
     let encoded = match fs::read(&marker_path) {
         Ok(encoded) => encoded,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -109,17 +128,8 @@ fn canonical_existing(path: &Path, label: &str) -> Result<PathBuf, AppError> {
 }
 
 fn main_worktree(cwd: &Path) -> Result<PathBuf, AppError> {
-    let listing = git_env::output(cwd, &["worktree", "list", "--porcelain", "-z"])
-        .ok_or_else(|| AppError::Validation("cannot list cleanup lease worktrees".to_string()))?;
-    let repository = listing
-        .split('\0')
-        .find_map(|field| field.strip_prefix("worktree "))
-        .ok_or_else(|| {
-            AppError::Validation(
-                "git worktree inventory did not identify its main worktree".to_string(),
-            )
-        })?;
-    canonical_existing(Path::new(repository), "repository")
+    let records = super::resources::git::inventory(cwd)?;
+    canonical_existing(&records[0].path, "repository")
 }
 
 fn validate_path(
@@ -128,7 +138,7 @@ fn validate_path(
     actual: &Path,
     marker: &Path,
 ) -> Result<(), AppError> {
-    let claimed = canonical_existing(claimed, label)?;
+    let claimed = super::resources::git::canonical(claimed)?;
     if claimed != actual {
         return Err(marker_mismatch(
             marker,

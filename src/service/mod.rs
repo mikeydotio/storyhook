@@ -54,6 +54,7 @@ pub mod project;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub mod resources;
 pub mod session;
 pub mod settings;
 mod state_set;

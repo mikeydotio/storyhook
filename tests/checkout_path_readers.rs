@@ -101,6 +101,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
     ),
     (
+        "src/service/resources/mod.rs",
+        "resource discovery chooses a repository inventory directory after selecting the project; pointer UUIDs and registered origins independently verify association",
+    ),
+    (
         "src/service/cleanup.rs",
         "manual cleanup chooses a working directory only after resolving the selected project",
     ),
