@@ -405,6 +405,14 @@ deleted at merge time. Every refusal is a skip with a reason, which is what
 
 ### The locks, and the one invariant every verification depends on
 
+The verifier also holds a per-story workspace lock throughout its attempt.
+Bounded control commands (notification, submission, reap, and landing recovery)
+inherit that open descriptor and `STORY_WORKSPACE_LOCK_FD` together. The runner
+clears stale markers and retains ownership through execution and termination.
+The shell validates the descriptor against the exact workspace lock before
+reusing it. It must not reopen the file and contend with its own verifier
+(SH-730). Unrelated workspace operations remain excluded until all owners exit.
+
 `scripts/machine-lock.sh <name> -- <command>` is a pid-and-start-time-checked
 advisory lock rooted under `$HOME/.local/state/storyhook/locks` (deliberately
 not `$XDG_STATE_HOME`, which the test harness redirects per run). **Three**
