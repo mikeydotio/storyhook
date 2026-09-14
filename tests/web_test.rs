@@ -839,7 +839,7 @@ fn web_serve_and_query_root() {
     assert!(body.contains("Storyhook"));
 }
 
-/// The dashboard's About section reports the version of the binary serving
+/// The dashboard's footer reports the version of the binary serving
 /// it. Keeping this assertion at the HTTP boundary proves the embedded shell
 /// was rendered, not merely that its source file contains a placeholder.
 #[test]
@@ -855,8 +855,8 @@ fn web_serve_root_html_embeds_the_running_package_version() {
 
     let expected = format!("Storyhook v{}", env!("CARGO_PKG_VERSION"));
     assert!(
-        body.contains(&expected),
-        "served dashboard must contain the running package version `{expected}`"
+        body.contains(&format!("<div id=\"footer-version\">{expected}</div>")),
+        "served footer must contain the running package version `{expected}`"
     );
     assert!(
         !body.contains("__STORYHOOK_VERSION__"),
