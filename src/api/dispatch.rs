@@ -693,7 +693,7 @@ impl DispatchRegistry {
     /// installed (and vice versa). `try_start_for_agent` remains the atomic
     /// authority after resolution, closing the race between this advisory
     /// read and a concurrent first request.
-    fn running_handle(&self, story: &str) -> Option<String> {
+    pub(crate) fn running_handle(&self, story: &str) -> Option<String> {
         self.inner
             .lock()
             .expect("dispatch registry lock")

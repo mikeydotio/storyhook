@@ -63,6 +63,8 @@ pub mod continuation;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub mod conformance;
+mod story_reset;
+pub use story_reset::{ResetLane, StoryReset};
 mod engine_reset;
 pub use engine_reset::EngineReset;
 pub mod error;
@@ -319,6 +321,13 @@ pub trait ReadOps {
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
 
+    /// Latest card reset operation for this story, including completed receipts.
+    fn story_reset(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<StoryReset>, StoreError>;
+
     /// Pending explicit reset, if this story is reserved for cleanup.
     fn engine_reset(
         &self,
@@ -571,6 +580,9 @@ pub trait WriteOps: ReadOps {
     /// A missing id is an error rather than an implicit insert, keeping run
     /// creation on the constraint-arbitrated path above.
     fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
+
+    /// Creates or updates the current card reset operation.
+    fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError>;
 
     /// Reserves a reset or updates diagnostics without replacing its owner.
     fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError>;

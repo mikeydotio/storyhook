@@ -454,6 +454,22 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let excluded_labels = filters
             .exclude_label
             .map_or_else(Vec::new, label_csv_values);
+        let reserved: std::collections::BTreeSet<String> = self
+            .tx
+            .stories(self.project, &StoryQuery::all())?
+            .into_iter()
+            .filter_map(
+                |row| match self.tx.story_reset(self.project, row.story_no) {
+                    Ok(Some(reset)) if !reset.completed => Some(Ok(row.snapshot.id)),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                },
+            )
+            .collect::<Result<_, _>>()?;
+        let views: Vec<_> = views
+            .into_iter()
+            .filter(|view| !reserved.contains(&view.story.id))
+            .collect();
         let mut execution = execution_queue(
             &views,
             &stories,
@@ -462,6 +478,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             epic_descendants.as_ref(),
             &excluded_labels,
         );
+
         execution.truncate(count);
         Ok(execution)
     }

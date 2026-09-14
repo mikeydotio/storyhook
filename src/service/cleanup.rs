@@ -548,7 +548,7 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// at exit 0), is an error naming why — absence is not an answer (SH-372).
 /// The plugin's `default_branch` and the verifier bundle's
 /// `origin-default-branch.sh` are this derivation's shell copies.
-fn origin_default_branch(repository: &Path) -> Result<String, String> {
+pub(crate) fn origin_default_branch(repository: &Path) -> Result<String, String> {
     let advertised = git_text(repository, &["ls-remote", "--symref", "origin", "HEAD"])
         .map_err(|detail| format!("origin did not answer: {detail}"))?;
     advertised
