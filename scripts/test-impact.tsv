@@ -12,6 +12,7 @@ block_interrupt	plugins/story/bin/story.sh
 block_interrupt	scripts/gate-progress.sh
 block_interrupt	scripts/machine-lock.sh
 block_interrupt	tests/support/block_interrupt.py
+block_interrupt	tests/support/interrupt_capture.py
 block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
