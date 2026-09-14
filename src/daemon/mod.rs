@@ -44,9 +44,11 @@
 pub mod activity;
 pub mod agent;
 pub mod backup;
+pub mod block_delivery;
 pub mod bus;
 pub mod cleanup;
 pub mod commands;
+pub mod continuation;
 pub mod crash;
 pub mod engine;
 pub mod gc;

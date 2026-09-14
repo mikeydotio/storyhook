@@ -59,7 +59,7 @@ if [ "$directive" = "ALL" ]; then
     # Checkout-reading integration tests are a separate reusable battery.
     # Running the whole workspace here would duplicate them immediately
     # before Makefile's rust-contracts leg.
-    bash scripts/run-rust-battery.sh core
+    bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
     status=$?
     if [ "$status" -eq 0 ]; then
         printf 'gate\n' >"$state_file"
@@ -84,7 +84,9 @@ while IFS= read -r n; do
 done <<<"$names"
 cmd+=(-- --test-threads=4)
 
-"${cmd[@]}"
+# Selection and its receipt tier are rebuilt on every invocation. Cache only
+# the selected execution, whose argv names exactly which checks passed.
+bash scripts/leg.sh --reuse rust-suite -- "${cmd[@]}"
 status=$?
 if [ "$status" -eq 0 ]; then
     printf 'changed %s\n' "$baseline" >"$state_file"

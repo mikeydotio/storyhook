@@ -16,6 +16,7 @@ import sys
 
 sys.dont_write_bytecode = True
 from process_identity import process_identity
+from workspace_ownership import inherited_fds, require_workspace
 
 
 OPTION = "@storyhook-identity-v1"
@@ -37,7 +38,7 @@ class IdentityError(Exception):
 
 def run(*args, reason="pane-query-failed"):
     """Run a bounded external probe and retain stderr on failure."""
-    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
     if result.returncode:
         raise IdentityError(reason, f"{args[0]} {args[1]}: {result.stderr.strip() or result.returncode}")
     return result.stdout.rstrip("\n")
@@ -53,12 +54,26 @@ def canonical(path):
 
 def tmux(socket, *args):
     """Use a captured socket when available; otherwise retain caller tmux context."""
-    return run("tmux", *(["-S", socket] if socket else []), *args)
+    # Preserve identity field delimiters even when the caller has LC_ALL=C.
+    return run("tmux", "-u", *(["-S", socket] if socket else []), *args)
 
 
 def panes(socket=""):
-    """Read one consistent terminal inventory and reject malformed rows."""
-    return parse_panes(tmux(socket, "list-panes", "-a", "-F", FORMAT))
+    """Read all panes, distinguishing a proved absent server from probe failure."""
+    if socket:
+        try:
+            os.stat(socket)
+        except FileNotFoundError:
+            return {}
+    command = ["tmux", "-u", *(["-S", socket] if socket else []), "list-panes", "-a", "-F", FORMAT]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
+    if result.returncode:
+        # A closed server can leave its socket behind. Only tmux's exact
+        # ECONNREFUSED answer is absence; permissions and malformed data refuse.
+        if socket and not result.stdout and result.stderr.rstrip("\n") == f"no server running on {socket}":
+            return {}
+        raise IdentityError("pane-query-failed", f"tmux inventory on {socket or 'default'}: {result.stderr.strip() or result.returncode}")
+    return parse_panes(result.stdout)
 
 
 def pane_at(pane, socket=""):
@@ -227,7 +242,7 @@ def register(project, story, window, worktree, pane_id, pid, provider, launch_st
     return write_record(ctx, pane, provider, expected=expected)
 
 
-def resolve(project, story, window):
+def resolve(project, story, window, location_json=None):
     """Resolve one owner; unknown live identity never becomes agent absence."""
     lease = json.loads(os.environ.get("STORYHOOK_NOTIFY_LEASE_V1", "null"))
     socket = ""
@@ -237,13 +252,29 @@ def resolve(project, story, window):
             raise IdentityError("pane-provider-unknown", "notification lease names another project or story")
         socket = lease["tmux"]["socket_path"]
         worktree = lease["worktree_path"]
+    location = json.loads(location_json) if location_json is not None else None
+    if location is not None:
+        if (location.get("location_only") is not True
+                or location.get("status") not in ("resolved", "absent")
+                or (location.get("project"), location.get("story_id"), location.get("window_name"))
+                != (project, story, window)):
+            raise IdentityError("pane-provider-unknown", "notification location does not match the requested story")
+        socket = location.get("socket_path") or ""
+        worktree = location.get("worktree")
     inventory = [p for p in panes(socket).values() if p["window"] == window]
     if not inventory:
-        raise IdentityError("pane-unavailable", f"no tmux window named {window} on the requested server")
+        raise IdentityError("pane-unavailable", f"no tmux window named {window} on the requested server {socket or os.environ.get('TMUX', 'default')}")
     ctx = context(project, story, window, worktree)
     if lease and canonical(run("git", "-C", canonical(lease["repository_path"]), "rev-parse",
                                "--path-format=absolute", "--git-common-dir")) != ctx["common"]:
         raise IdentityError("pane-provider-unknown", "notification lease belongs to another repository")
+    if location is not None:
+        repository = location.get("repository")
+        if not repository or canonical(run("git", "-C", canonical(repository), "rev-parse",
+                                           "--path-format=absolute", "--git-common-dir")) != ctx["common"]:
+            raise IdentityError("pane-provider-unknown", "notification location belongs to another repository")
+        if not worktree:
+            raise IdentityError("pane-provider-unknown", "notification location has no registered story worktree")
     matches = []
     dead = []
     for pane in inventory:
@@ -283,25 +314,41 @@ def resolve(project, story, window):
         raise IdentityError("pane-provider-unknown", f"window {window} has {len(matches)} verified live destinations; require exactly one agent in its registered story worktree")
     pane, record = matches[0]
     if read_record(pane) is None:
-        record = write_record(ctx, pane, record["provider"], expected=record)
-    return validate(record)
+        return record, True
+    return validate(record), False
+
+
+def adopt(record):
+    """Register one revalidated observation after the caller revokes old authority."""
+    require_workspace(record["common"], record["story"])
+    pane = pane_at(record["pane"], record["socket"])
+    if not pane or pane["dead"] or read_record(pane) is not None:
+        raise IdentityError("pane-changed", "adoption destination changed after discovery")
+    ctx = context(record["project"], record["story"], pane["window"], record["worktree"])
+    if direct_provider(pane) != record["provider"]:
+        raise IdentityError("pane-changed", "adoption provider changed after discovery")
+    return write_record(ctx, pane, record["provider"], expected=record)
 
 
 def main():
     """Expose JSON receipts to the Bash provider adapter."""
     try:
         verb, *args = sys.argv[1:]
+        extra = {}
         if verb == "capture":
             record = process_identity(int(args[0]))
         elif verb == "register":
             record = register(*args)
         elif verb == "resolve":
-            record = resolve(*args)
+            record, requires_adoption = resolve(*args)
+            extra["requires_adoption"] = requires_adoption
+        elif verb == "adopt":
+            record = adopt(json.loads(args[0]))
         elif verb == "validate":
             record = validate(json.loads(args[0]))
         else:
             raise ValueError(f"unknown identity operation: {verb}")
-        print(json.dumps({"ok": True, "identity": record}))
+        print(json.dumps({"ok": True, "identity": record, **extra}))
         return 0
     except IdentityError as error:
         print(json.dumps({"ok": False, "reason": error.reason, "display": str(error)}))

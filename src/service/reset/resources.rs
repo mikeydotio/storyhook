@@ -225,6 +225,8 @@ fn tmux(
 ) -> Result<String, AppError> {
     let mut command = Command::new("tmux");
     command
+        // The C locale otherwise replaces literal inventory tabs with underscores.
+        .arg("-u")
         .arg("-S")
         .arg(&lease.tmux.socket_path)
         .args(args)

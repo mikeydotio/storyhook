@@ -1,0 +1,12 @@
+# Council Question
+
+**Convened:** 2026-09-14T03:21:06.891386+00:00
+**Caller:** SH-718 launch chair
+
+## Question
+
+Which compatibility strategy should StoryHook 3.0.0 use to reconcile the divergent main and dev schema histories, reset contracts, and verified-pane resource selection without losing data or weakening existing safety?
+
+## Context
+
+The user requires autonomous dev into main via merge commit, then publishing 3.0.0 from main and local installation. Fix launch issues in one launch report; no new stories. Repository /tmp/storyhook-v3-release.cV4Sva/repo has an in-progress merge: HEAD/main05a6f7816 and origin/dev8f5aa705b. Main-only SH-656 introduces durable landing-intent/block-admission guards; dev has newer override, withdrawal, generation-scoped cleanup and reset guards. Main schema38 is landing and schema39 legacy reset (stories.reset_json); dev schema38..42 are other changes and43 is story_resets. Must upgrade stores from BOTH histories, preserve pending operations, and avoid deciding lineage by version number alone. Main native CLI reset is safe by default, --force discards dirty/locked workspace but preserves committed branches and prior awaiting. Dev SH-717 typed-ID dashboard reset deliberately discards the named local lane and clears awaiting. These currently have separate reservations and cleanup implementations. Main SH-677 verifies a provider process in an inactive tmux split even when an unrelated pane is active. Dev resource discovery selects the active pane and may refuse its different cwd before verified-agent notification runs. Consider whether to preserve two entry contracts with shared ownership constraints and explicit lineage bridge, unify immediately with compatibility adapters, or another evidence-backed design. Specify concrete invariants and minimum regression evidence. No implementation or repository changes are allowed during council. Relevant reports: /tmp/sh718-verification-merge-report.md, /tmp/sh718-reset-merge-report.md, /tmp/sh718-plugin-merge-report.md. Production files: src/store/migrate.rs, src/store/sqlite/{mod,story_reset}.rs, src/service/{reset,story_reset,landing,verification}.rs, src/service/resources/{mod,tmux}.rs, plugins/story/lib/session.sh, plugins/story/bin/story.sh. Read refs using git show when conflict markers obstruct source. Do not assume all proposed fixes are correct. Your decision must support safe completion now, not defer the user back into consultation.

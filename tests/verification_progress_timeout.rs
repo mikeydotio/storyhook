@@ -5,11 +5,11 @@ use std::process::Command;
 use std::time::Duration;
 
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, VerificationActuator, VerificationOutcome,
+    CompletedVerification, ShellVerificationActuator, VerificationActuator, VerificationOutcome,
 };
 use storyhook::domain::Priority;
 use storyhook::service::{VerificationCandidate, VerificationProblem};
-use storyhook::store::PrLink;
+use storyhook::store::{PrLink, VerificationFailureDisposition};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir};
 
 fn verify_script(script: &str, idle: Duration) -> VerificationOutcome {
@@ -81,6 +81,7 @@ fn exercise<T>(
         created_at: FIXTURE_NOW.into(),
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
+        blocking_revision: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -117,12 +118,12 @@ const IDLE: Duration = Duration::from_secs(1);
 /// How a fake reaches the real sibling beside it — the shape the shipped
 /// family uses, since the fake's directory is the bundle's stand-in.
 const SIBLING: &str = r#""$(dirname "${BASH_SOURCE[0]}")""#;
-const MERGED: &str = r#"printf '%s\n' '{"result":"certified","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
+const CERTIFIED: &str = r#"printf '%s\n' '{"result":"certified","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
 
 #[test]
 fn progressing_verification_can_outlive_its_idle_budget() {
     let script = format!(
-        "set -eu\n. {SIBLING}/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{CERTIFIED}\n",
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
@@ -135,7 +136,7 @@ fn progressing_verification_can_outlive_its_idle_budget() {
 #[test]
 fn silence_after_progress_still_times_out() {
     let script = format!(
-        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{CERTIFIED}\n",
         (IDLE * 4).as_secs()
     );
     let outcome = verify_script(&script, IDLE);
@@ -148,7 +149,7 @@ fn silence_after_progress_still_times_out() {
 #[test]
 fn output_chatter_does_not_keep_a_stalled_verifier_alive() {
     let script = format!(
-        "for i in {{1..12}}; do echo waiting >&2; sleep {}; done\n{MERGED}\n",
+        "for i in {{1..12}}; do echo waiting >&2; sleep {}; done\n{CERTIFIED}\n",
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
@@ -169,7 +170,7 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
          bash {SIBLING}/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
          for i in {{1..100}}; do [ ! -f \"$lock/pid\" ] || break; sleep 0.01; done\n\
          test -f \"$lock/pid\"\n\
-         bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{MERGED}\n",
+         bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{CERTIFIED}\n",
         (idle * 2).as_secs()
     );
     let outcome = verify_script(&script, idle);
@@ -181,12 +182,7 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
 
 #[test]
 fn loss_of_the_progress_journal_is_an_infrastructure_failure() {
-    let script = format!("rm \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n");
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("progress journal")),
-        "{outcome:?}"
-    );
+    assert_journal_damage("rm \"$STORYHOOK_GATE_PROGRESS\"", "progress journal");
 }
 
 #[test]
@@ -203,28 +199,55 @@ fn an_uncreatable_journal_refuses_before_starting_the_verifier() {
 #[test]
 fn truncating_an_observed_journal_is_an_infrastructure_failure() {
     let script = format!(
-        "printf 'initial progress' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep {}\n: > \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n",
+        "printf 'initial progress' >> \"$STORYHOOK_GATE_PROGRESS\"\nsleep {}\n: > \"$STORYHOOK_GATE_PROGRESS\"\n",
         IDLE.as_secs_f64() / 2.0,
     );
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("shrank")),
-        "{outcome:?}"
-    );
+    assert_journal_damage(&script, "shrank");
 }
 
 #[test]
 fn replacing_a_journal_cannot_renew_the_deadline() {
     // Publish a new inode atomically in the same directory. Moving the old
     // journal away first would race the separate missing-journal refusal.
-    let script = format!(
-        "printf replacement > \"$STORYHOOK_GATE_PROGRESS.replacement\"\nmv \"$STORYHOOK_GATE_PROGRESS.replacement\" \"$STORYHOOK_GATE_PROGRESS\"\n{MERGED}\n"
-    );
-    let outcome = verify_script(&script, IDLE);
-    assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("replaced")),
-        "{outcome:?}"
-    );
+    let script = "printf replacement > \"$STORYHOOK_GATE_PROGRESS.replacement\"\nmv \"$STORYHOOK_GATE_PROGRESS.replacement\" \"$STORYHOOK_GATE_PROGRESS\"\n";
+    assert_journal_damage(script, "replaced");
+}
+
+/// Journal damage must remain visible without erasing an already emitted verdict.
+fn assert_journal_damage(damage: &str, diagnosis: &str) {
+    for completed in [false, true] {
+        // Publish before damage so failure observation cannot race verdict output.
+        let answer = if completed { CERTIFIED } else { "" };
+        let outcome = verify_script(&format!("set -eu\n{answer}\n{damage}\n"), IDLE);
+        if completed {
+            let VerificationOutcome::CleanupFailed { verdict, cleanup } = outcome else {
+                panic!("completed certification lost after {diagnosis}: {outcome:?}");
+            };
+            assert_eq!(
+                verdict,
+                CompletedVerification::Certified {
+                    head: "a".repeat(40),
+                    tree: "verified-tree".into(),
+                    detail: "completed".into(),
+                    gate: "make test".into(),
+                }
+            );
+            assert_eq!(cleanup.phase, "daemon process capture");
+            assert_eq!(
+                cleanup.disposition,
+                VerificationFailureDisposition::Permanent
+            );
+            assert!(cleanup.detail.contains(diagnosis), "{cleanup:?}");
+            assert!(cleanup.detail.contains("Registered source checkout:"));
+            assert!(cleanup.owner.is_none());
+            assert!(cleanup.worktree.is_none());
+        } else {
+            assert!(
+                matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains(diagnosis)),
+                "uncompleted command after {diagnosis}: {outcome:?}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -2,7 +2,7 @@
 #
 # Prints the Rust targets belonging to one reusable test battery.
 #
-# `core` owns ordinary integration tests, both workspace library targets, and
+# `core` owns ordinary integration tests, all workspace library targets, and
 # (through run-tests.sh) doctests. `contracts` owns integration tests that
 # inspect tracked checkout files at runtime. Keeping those checkout readers in
 # their own battery lets a browser/spec/doc edit rerun the contracts it can

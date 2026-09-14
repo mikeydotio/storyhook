@@ -69,4 +69,24 @@ assert_contains "$(jqf "$out" .display)" "Unset STORY_DONE_STATE" "STORY_DONE_ST
 out=$(cd "$repo" && STORY_DONE_STATE= bash "$SCRIPT" --project "$slug" list 2>&1)
 assert_eq "$(jqf "$out" .reason)" "story-done-state-retired" "STORY_DONE_STATE: empty value still refused"
 
+# --- SH-691: a reap that cannot establish origin's default refuses by name ---
+# Deleting on a guessed base is the one thing a reap must never do: an origin
+# whose HEAD is detached advertises no default, and the old helper answered
+# `main` for exactly that.
+origin=$(git -C "$repo" remote get-url origin)
+git --git-dir="$origin" update-ref --no-deref HEAD "$(git --git-dir="$origin" rev-parse refs/heads/main)"
+unk=$(new_story "$repo" "Unknown default")
+unkname=$(mk_dispatched "$repo" "$unk")
+unklease=$(lease_for "$unk" "$unkname")
+(cd "$repo" && story move "$unk" done >/dev/null)
+out=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$unklease" \
+  PATH="$TESTS_DIR/fakes:$PATH" bash "$SCRIPT" --project "$slug" reap "$unk" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "unknown default: ok:false"
+assert_eq "$(jqf "$out" .reason)" "default-branch-unknown" "unknown default: reason"
+assert_contains "$(jqf "$out" .display)" "no symbolic HEAD" "unknown default: says what origin advertised"
+[ -d "$repo/.claude/worktrees/$unkname" ] || fail_test "unknown default: a refused reap removed the worktree"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$unkname") \
+  || fail_test "unknown default: a refused reap deleted the branch"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
+
 finish

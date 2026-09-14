@@ -56,6 +56,9 @@ impl<S: Store> VerificationQueue<'_, S> {
             if !current.blocked_by.is_empty() {
                 return Ok(LandingAdmission::Held(current.blocked_by));
             }
+            if current.blocking_revision != candidate.blocking_revision {
+                return Ok(LandingAdmission::Superseded);
+            }
             let Some(generation) = current.verifying_generation else {
                 return Ok(LandingAdmission::Superseded);
             };

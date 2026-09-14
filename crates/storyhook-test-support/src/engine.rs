@@ -19,6 +19,12 @@ pub enum DispatcherStep {
     DispatchFailure(String),
     Unclaim(DispatchOutcome),
     UnclaimFailure(String),
+    /// The actuator proves all requested reset resources absent.
+    Reset,
+    /// The actuator refuses cleanup with a contextual diagnosis.
+    ResetFailure(String),
+    /// An arbitrary actuator answer for receipt rejection tests.
+    ResetReceipt(DispatchOutcome),
     /// A scripted answer from tmux: `alive` maps to [`WindowProbe::Alive`]
     /// with no pty stamp (the pane is live, its terminal channel unknown —
     /// the store-only judgement every pre-SH-657 fixture encodes), otherwise
@@ -50,6 +56,8 @@ pub enum DispatcherStep {
 pub enum DispatcherCall {
     Dispatch(DispatchRequest),
     Unclaim(UnclaimRequest),
+    /// An exact durable reset request.
+    Reset(storyhook::store::EngineReset),
     WindowAlive(String),
     KillWindow(String),
 }
@@ -131,6 +139,23 @@ impl Dispatcher for FakeDispatcher {
             DispatcherStep::Unclaim(outcome) => Ok(outcome),
             DispatcherStep::UnclaimFailure(detail) => Err(AppError::Storage(detail)),
             step => panic!("FakeDispatcher expected an unclaim step, got {step:?}"),
+        }
+    }
+
+    fn reset(
+        &self,
+        request: storyhook::store::EngineReset,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
+        match self.next(DispatcherCall::Reset(request.clone())) {
+            DispatcherStep::Reset => Ok(DispatchOutcome::from_payload(serde_json::json!({
+                "ok": true, "token": request.token, "lease": request.lease,
+                "postconditions": {"tmux_story_windows_absent":true, "worktree_registration_absent":true,
+                    "worktree_path_absent":true, "branch_absent":true}
+            }))),
+            DispatcherStep::ResetFailure(detail) => Err(AppError::Storage(detail)),
+            DispatcherStep::ResetReceipt(outcome) => Ok(outcome),
+            step => panic!("FakeDispatcher expected a reset step, got {step:?}"),
         }
     }
 

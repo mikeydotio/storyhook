@@ -157,6 +157,9 @@ pub struct HooksConfig {
     pub on_engine_lane_quarantined: Option<HookDef>,
     #[serde(default)]
     pub on_verification_halted: Option<HookDef>,
+    /// Runs when an infrastructure halt clears, including leave-stopped acknowledgement.
+    #[serde(default)]
+    pub on_verification_resumed: Option<HookDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,7 +204,7 @@ fn ceiling_violation(label: &str, secs: u64) -> Option<String> {
         .then(|| format!("{label} = {secs}s exceeds the {HOOK_TIMEOUT_CEILING_SECS}s ceiling"))
 }
 
-/// The first `timeout_seconds` — the project default or any of the eleven
+/// The first `timeout_seconds` — the project default or any of the
 /// per-hook overrides — that exceeds [`HOOK_TIMEOUT_CEILING_SECS`], named so
 /// the caller can say which field to fix rather than only that something is
 /// wrong.
@@ -211,7 +214,7 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
     {
         return Some(reason);
     }
-    let slots: [(&str, Option<&HookDef>); 11] = [
+    let slots: [(&str, Option<&HookDef>); 13] = [
         ("on_create", config.on_create.as_ref()),
         ("on_state_change", config.on_state_change.as_ref()),
         ("on_close", config.on_close.as_ref()),
@@ -234,6 +237,14 @@ fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
         (
             "on_engine_lane_quarantined",
             config.on_engine_lane_quarantined.as_ref(),
+        ),
+        (
+            "on_verification_halted",
+            config.on_verification_halted.as_ref(),
+        ),
+        (
+            "on_verification_resumed",
+            config.on_verification_resumed.as_ref(),
         ),
     ];
     slots.into_iter().find_map(|(name, hook)| {
@@ -278,6 +289,8 @@ pub enum HookEventType {
     EngineLaneQuarantined,
     /// The centralized verifier halted on infrastructure (SH-573).
     VerificationHalted,
+    /// Infrastructure halt cleared; payload states the resulting admission permission.
+    VerificationResumed,
 }
 
 impl HookEventType {
@@ -295,6 +308,7 @@ impl HookEventType {
             Self::EngineRunDrained => "engine_run_drained",
             Self::EngineLaneQuarantined => "engine_lane_quarantined",
             Self::VerificationHalted => "verification_halted",
+            Self::VerificationResumed => "verification_resumed",
         }
     }
 
@@ -314,6 +328,7 @@ impl HookEventType {
                 Some(Self::EngineLaneQuarantined)
             }
             "verification_halted" | "verification-halted" => Some(Self::VerificationHalted),
+            "verification_resumed" | "verification-resumed" => Some(Self::VerificationResumed),
             _ => None,
         }
     }
@@ -412,7 +427,7 @@ fn load_hooks_config_result(root: &Path) -> Result<Option<HooksConfig>, String> 
 pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
     let config = load_hooks_config(root)?;
     let default = config.settings.timeout_seconds;
-    let slots: [Option<&HookDef>; 12] = [
+    let slots: [Option<&HookDef>; 13] = [
         config.on_create.as_ref(),
         config.on_state_change.as_ref(),
         config.on_close.as_ref(),
@@ -425,6 +440,7 @@ pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
         config.on_engine_run_drained.as_ref(),
         config.on_engine_lane_quarantined.as_ref(),
         config.on_verification_halted.as_ref(),
+        config.on_verification_resumed.as_ref(),
     ];
     slots
         .into_iter()
@@ -475,6 +491,7 @@ fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&Hook
         HookEventType::EngineRunDrained => config.on_engine_run_drained.as_ref(),
         HookEventType::EngineLaneQuarantined => config.on_engine_lane_quarantined.as_ref(),
         HookEventType::VerificationHalted => config.on_verification_halted.as_ref(),
+        HookEventType::VerificationResumed => config.on_verification_resumed.as_ref(),
     }
 }
 
@@ -771,7 +788,7 @@ pub fn list_hooks(root: &Path) -> String {
         Ok(None) => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
         Ok(Some(config)) => {
             let mut lines = Vec::new();
-            let events: [(&str, &Option<HookDef>); 12] = [
+            let events: [(&str, &Option<HookDef>); 13] = [
                 ("on_create", &config.on_create),
                 ("on_state_change", &config.on_state_change),
                 ("on_close", &config.on_close),
@@ -787,6 +804,7 @@ pub fn list_hooks(root: &Path) -> String {
                     &config.on_engine_lane_quarantined,
                 ),
                 ("on_verification_halted", &config.on_verification_halted),
+                ("on_verification_resumed", &config.on_verification_resumed),
             ];
             for (name, hook) in events {
                 if let Some(h) = hook {
@@ -815,7 +833,7 @@ pub fn list_hooks(root: &Path) -> String {
 pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::error::AppError> {
     let event_type = HookEventType::parse(event_type_str).ok_or_else(|| {
         crate::error::AppError::Validation(format!(
-            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change, engine_run_started, engine_run_halted, engine_run_drained, engine_lane_quarantined, verification_halted)"
+            "unknown event type `{event_type_str}` (valid: create, state_change, close, comment, priority_change, label_change, relationship_change, engine_run_started, engine_run_halted, engine_run_drained, engine_lane_quarantined, verification_halted, verification_resumed)"
         ))
     })?;
 
@@ -1199,6 +1217,129 @@ mod tests {
         assert!(
             reason.contains(&HOOK_TIMEOUT_CEILING_SECS.to_string()),
             "must name the ceiling itself: {reason}"
+        );
+    }
+
+    /// Exercises both production loaders without borrowing the validator's roster.
+    fn assert_all_hook_timeout_boundaries(pointer: bool) {
+        let hooks = [
+            "on_create",
+            "on_state_change",
+            "on_close",
+            "on_comment",
+            "on_priority_change",
+            "on_label_change",
+            "on_relationship_change",
+            "on_engine_run_started",
+            "on_engine_run_halted",
+            "on_engine_run_drained",
+            "on_engine_lane_quarantined",
+            "on_verification_halted",
+            "on_verification_resumed",
+        ];
+        for hook in hooks {
+            for timeout in [None, Some(60), Some(61)] {
+                let dir = scratch();
+                let mut body =
+                    format!("[settings]\ntimeout_seconds = 7\n[{hook}]\ncommand = \"true\"\n");
+                if let Some(seconds) = timeout {
+                    body.push_str(&format!("timeout_seconds = {seconds}\n"));
+                }
+                write_timeout_fixture(dir.path(), &body, pointer);
+                let loaded = load_hooks_config_result(dir.path());
+                if timeout == Some(61) {
+                    let reason = loaded.expect_err(&format!(
+                        "{hook} at 61s must refuse the whole config (pointer={pointer})"
+                    ));
+                    assert!(
+                        reason.contains(&format!("{hook}.timeout_seconds")),
+                        "{reason}"
+                    );
+                    assert!(reason.contains("61s"), "{reason}");
+                    assert!(reason.contains("60s ceiling"), "{reason}");
+                    assert!(max_configured_timeout(dir.path()).is_none());
+                } else {
+                    assert!(loaded.expect("valid timeout").is_some(), "{hook}");
+                    assert_eq!(
+                        max_configured_timeout(dir.path()),
+                        Some(Duration::from_secs(timeout.unwrap_or(7))),
+                        "{hook} must retain its explicit or inherited timeout"
+                    );
+                }
+            }
+        }
+    }
+
+    fn write_timeout_fixture(dir: &Path, body: &str, pointer: bool) {
+        if pointer {
+            let mut config = crate::service::project::ProjectPointer::new(
+                "00000000-0000-0000-0000-000000000703".into(),
+                "SH".into(),
+            );
+            config.hooks = Some(toml::from_str(body).expect("hook table"));
+            std::fs::write(
+                dir.join(".storyhook.toml"),
+                toml::to_string(&config).expect("pointer"),
+            )
+            .expect("writing pointer");
+        } else {
+            write_hooks_toml(dir, body);
+        }
+    }
+
+    #[test]
+    fn every_pointer_hook_obeys_timeout_ceiling_and_inheritance() {
+        assert_all_hook_timeout_boundaries(true);
+    }
+
+    #[test]
+    fn every_legacy_hook_obeys_timeout_ceiling_and_inheritance() {
+        assert_all_hook_timeout_boundaries(false);
+    }
+
+    #[test]
+    fn halted_hook_timeout_ceiling_refusal_reaches_list_and_test() {
+        for pointer in [false, true] {
+            let dir = scratch();
+            write_timeout_fixture(
+                dir.path(),
+                "[on_verification_halted]\ncommand = \"true\"\ntimeout_seconds = 61\n",
+                pointer,
+            );
+            let listed = list_hooks(dir.path());
+            assert!(
+                listed.contains("on_verification_halted.timeout_seconds"),
+                "{listed}"
+            );
+            assert!(listed.contains("60s ceiling"), "{listed}");
+            assert!(!listed.contains("no hooks configured"), "{listed}");
+            let error = test_hook(dir.path(), "verification_halted")
+                .expect_err("an invalid timeout must prevent hook execution")
+                .to_string();
+            assert!(
+                error.contains("on_verification_halted.timeout_seconds"),
+                "{error}"
+            );
+            assert!(error.contains("60s ceiling"), "{error}");
+        }
+    }
+
+    #[test]
+    fn resumed_hook_obeys_the_existing_timeout_ceiling_and_round_trips_its_name() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[on_verification_resumed]\ncommand = \"true\"\ntimeout_seconds = 61\n",
+        );
+        let reason = load_hooks_config_result(dir.path()).expect_err("must refuse");
+        assert!(reason.contains("on_verification_resumed.timeout_seconds"));
+        assert_eq!(
+            HookEventType::parse("verification_resumed"),
+            Some(HookEventType::VerificationResumed)
+        );
+        assert_eq!(
+            HookEventType::VerificationResumed.as_str(),
+            "verification_resumed"
         );
     }
 

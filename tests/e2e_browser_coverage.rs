@@ -761,7 +761,7 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
         .0;
 
     for required in [
-        "data_root=\"$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)\"",
+        "data_root=\"$(mktemp -d /private/tmp/story-e2e.XXXXXX)\"",
         "export FAKE_TMUX_STATE=\"$data_root/faketmux\"",
         "seed_dir=\"$data_root/seed\"",
         "start_output=\"$(\"$story_bin\" daemon start 2>&1)\"",
@@ -1071,6 +1071,152 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
     );
 }
 
+/// Two reviewed SQLite-only commands, not a general interpreter exception.
+/// Full invocation text pins executable, literal Python payload, argument shape,
+/// and process bound. A body/argv edit needs a new audit; moving a command into
+/// a helper does not remove it from this inventory. Neither payload can invoke
+/// Story CLI: setup writes only its private test database, and the reader opens
+/// the mandatory isolated store with mode=ro and parameterized identity queries.
+const AUDITED_SQLITE_COMMANDS: [(&str, &str); 2] = [
+    (
+        "e2e/specs/cleanup-delivery-barrier.spec.ts",
+        r#"execFileSync("python3", ["-c", `
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.executescript("""
+        CREATE TABLE projects(id,uuid,slug,prefix,checkout_path);
+        CREATE TABLE stories(project_id,story_no,created_at);
+        CREATE TABLE block_deliveries(id,project_id,story_no,action,status);
+        INSERT INTO projects VALUES(1,'fixture-uuid','alpha-project','AA','/fixture'),(2,'other','beta-project','BB','/other');
+        INSERT INTO stories VALUES(1,171,'created'),(1,172,'neighbor'),(2,171,'other');
+        INSERT INTO block_deliveries VALUES(1,1,171,'interrupt','attempting'),(2,1,172,'interrupt','pending'),(3,2,171,'interrupt','pending');
+    """)
+`, path], { timeout: 5_000, stdio: "pipe" })"#,
+    ),
+    (
+        "e2e/block-delivery-barrier.cjs",
+        r#"execFileSync("python3", ["-c", `
+import json, pathlib, sqlite3, sys
+path, project, story = sys.argv[1:]
+with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
+    db.execute("BEGIN")
+    identities = db.execute("""
+        SELECT p.id,p.uuid,p.slug,p.prefix,p.checkout_path,s.story_no,s.created_at
+        FROM projects p JOIN stories s ON s.project_id=p.id
+        WHERE p.slug=? AND p.prefix || '-' || s.story_no=?
+    """, (project, story)).fetchall()
+    if len(identities) != 1:
+        raise RuntimeError("cleanup story identity is absent or ambiguous: " + project + "/" + story)
+    identity = identities[0]
+    deliveries = db.execute("""
+        SELECT id,action,status FROM block_deliveries
+        WHERE project_id=? AND story_no=? ORDER BY id
+    """, (identity[0], identity[5])).fetchall()
+    print(json.dumps({"identity": identity, "deliveries": deliveries}))
+`, storePath, project, story], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] })"#,
+    ),
+];
+
+/// The authority required by one browser-harness subprocess invocation.
+#[derive(Debug, PartialEq, Eq)]
+enum E2eSubprocessOwner {
+    StoryLease,
+    AuditedSqlite(usize),
+}
+
+/// Classify the exact call, never the mere presence of an approved interpreter.
+fn e2e_subprocess_owner(relative: &str, code: &str, offset: usize) -> Option<E2eSubprocessOwner> {
+    let invocation = code.get(offset..)?;
+    let rest = invocation.strip_prefix("execFileSync(")?;
+    let first_arg = rest.split(',').next()?.trim();
+    if first_arg == "storyBinary()" || code.contains(&format!("const {first_arg} = storyBinary();"))
+    {
+        return Some(E2eSubprocessOwner::StoryLease);
+    }
+    AUDITED_SQLITE_COMMANDS
+        .iter()
+        .position(|(path, approved)| *path == relative && invocation.starts_with(*approved))
+        .map(E2eSubprocessOwner::AuditedSqlite)
+}
+
+#[test]
+fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
+    for (index, (path, approved)) in AUDITED_SQLITE_COMMANDS.iter().enumerate() {
+        assert_eq!(
+            e2e_subprocess_owner(path, approved, 0),
+            Some(E2eSubprocessOwner::AuditedSqlite(index))
+        );
+        assert_eq!(
+            e2e_subprocess_owner("e2e/other-helper.cjs", approved, 0),
+            None
+        );
+        for changed in [
+            approved.replace("\"python3\"", "\"story\""),
+            approved.replace("5_000", "0"),
+            approved.replace("[\"-c\",", "[\"-m\","),
+            approved.replace(
+                "\nwith sqlite3.connect",
+                "\n__import__('subprocess').run(['story', 'daemon', 'stop'])\nwith sqlite3.connect",
+            ),
+            approved.replace("`\nimport", "`\n${unleasedStory()}\nimport"),
+            if index == 0 {
+                approved.replace("`, path]", "`, storyBinary()]")
+            } else {
+                approved.replace("?mode=ro", "?mode=rw")
+            },
+        ] {
+            assert_ne!(
+                changed.as_str(),
+                *approved,
+                "the counterexample must change the call"
+            );
+            assert_eq!(e2e_subprocess_owner(path, &changed, 0), None, "{changed}");
+        }
+    }
+}
+
+#[test]
+fn a_data_fixture_exception_cannot_authorize_another_subprocess() {
+    let (path, approved) = AUDITED_SQLITE_COMMANDS[0];
+    for unapproved in [
+        r#"execFileSync("story", ["daemon", "stop"]);"#,
+        r#"execFileSync("/Users/example/.local/bin/story", ["show", "SH-1"]);"#,
+        r#"execFileSync("python3", ["-c", "import subprocess; subprocess.run(['story'])"]);"#,
+        r#"execFileSync("python3", ["-c", "print('unreviewed')"]);"#,
+    ] {
+        let code = format!("{approved};\n{unapproved}");
+        let calls: Vec<_> = code
+            .match_indices("execFileSync(")
+            .map(|(offset, _)| e2e_subprocess_owner(path, &code, offset))
+            .collect();
+        assert_eq!(calls, [Some(E2eSubprocessOwner::AuditedSqlite(0)), None]);
+    }
+}
+
+#[test]
+fn story_cli_commands_still_require_the_lease_in_specs_and_helpers() {
+    for path in ["e2e/specs/example.spec.ts", "e2e/example-helper.cjs"] {
+        for code in [
+            "execFileSync(storyBinary(), args, options);",
+            "const STORY_BINARY = storyBinary();\nexecFileSync(STORY_BINARY, args, options);",
+        ] {
+            let offset = code.find("execFileSync(").unwrap();
+            assert_eq!(
+                e2e_subprocess_owner(path, code, offset),
+                Some(E2eSubprocessOwner::StoryLease)
+            );
+        }
+        for code in [
+            "execFileSync(STORY_BINARY, args, options);",
+            "const STORY_BINARY = installedStory();\nexecFileSync(STORY_BINARY, args, options);",
+            "execFileSync(process.env.DASHBOARD_STORY_BIN, args, options);",
+        ] {
+            let offset = code.find("execFileSync(").unwrap();
+            assert_eq!(e2e_subprocess_owner(path, code, offset), None);
+        }
+    }
+}
+
 #[test]
 fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_story_binary() {
     let root = repo_root();
@@ -1098,34 +1244,34 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
         "support.ts must define storyBinary() as the required-env read of DASHBOARD_STORY_BIN"
     );
 
-    // Every process a spec starts is the leased binary: the first argument of
-    // each `execFileSync(` is `storyBinary()` itself or a const bound to it in
-    // the same file.
+    // Story CLI calls require the lease. SQLite fixture commands require their
+    // entire audited invocation, not just an interpreter name. Include helpers
+    // outside specs/: moving an unleased call must not make it invisible.
     let mut checked = 0;
-    for (relative, text) in files.iter().filter(|(p, _)| p.starts_with("e2e/specs/")) {
+    let mut audited = [0; AUDITED_SQLITE_COMMANDS.len()];
+    for (relative, text) in &files {
         let code = without_comment_only_lines(text);
         for (offset, _) in code.match_indices("execFileSync(") {
-            let rest = &code[offset + "execFileSync(".len()..];
-            let first_arg = rest
-                .split(',')
-                .next()
-                .map(str::trim)
-                .unwrap_or_default()
-                .to_string();
-            let via_door = first_arg == "storyBinary()"
-                || code.contains(&format!("const {first_arg} = storyBinary();"));
-            assert!(
-                via_door,
-                "{relative}: execFileSync's first argument `{first_arg}` is not storyBinary() or a \
-                 const bound to it -- a spec may only ever run the leased binary (SH-635)"
-            );
-            checked += 1;
+            match e2e_subprocess_owner(relative, &code, offset) {
+                Some(E2eSubprocessOwner::StoryLease) => checked += 1,
+                Some(E2eSubprocessOwner::AuditedSqlite(index)) => audited[index] += 1,
+                None => panic!(
+                    "{relative}: unowned execFileSync invocation at byte {offset}; Story CLI calls \
+                     must use storyBinary() or a const bound to it. Only the exact reviewed \
+                     SQLite data-fixture commands have separate authority (SH-635/SH-718)"
+                ),
+            }
         }
     }
     assert!(
         checked >= 5,
         "expected at least the five spec call sites SH-635 migrated, found {checked}: the scan's \
          `execFileSync(` anchor has drifted"
+    );
+    assert_eq!(
+        audited,
+        [1, 1],
+        "both audited data-fixture commands must be present exactly once; re-audit changed sites"
     );
 }
 
@@ -1241,5 +1387,118 @@ fn the_placeholder_pane_lifetime_is_stated_before_the_snapshot_and_reaped_at_cle
     assert!(
         reap < removal,
         "the pid must be read and the placeholder killed before the file naming it is deleted"
+    );
+}
+
+/// Run the runner's actual environment statements without building or starting a browser.
+fn run_runner_environment(
+    block: &str,
+    environment: &[(&str, &str)],
+    probe: &str,
+) -> std::process::Output {
+    let mut command = std::process::Command::new("/bin/bash");
+    command.env_clear().env("PATH", "/usr/bin:/bin");
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.args(["-c", &format!("set -euo pipefail\n{block}\n{probe}")]);
+    ChildGuard::spawn_with_output(&mut command)
+        .expect("running the browser harness environment boundary")
+        .wait_with_output_within(UTILITY_DEADLINE, || {
+            "browser harness environment probe did not finish".to_string()
+        })
+}
+
+#[test]
+fn the_runner_routes_plugin_children_and_bare_story_calls_through_its_lease() {
+    let runner = read("scripts/run-e2e.sh");
+    let block = runner
+        .split_once("  export DASHBOARD_STORY_BIN=\"$story_bin\"")
+        .expect("the browser runner must hand the lease to specs")
+        .1
+        .split_once("  # This is not a store-isolation parameter")
+        .expect("the lease boundary must precede proxy setup")
+        .0;
+    let block = format!("export DASHBOARD_STORY_BIN=\"$story_bin\"\n{block}");
+    let fixture = storyhook_test_support::scratch_dir();
+    let lease_dir = fixture.path().join("lease with spaces");
+    let ambient_dir = fixture.path().join("ambient");
+    for directory in [&lease_dir, &ambient_dir] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", directory.join("story")).unwrap();
+    }
+    let lease = lease_dir.join("story");
+    let ambient = ambient_dir.join("story");
+    let path = format!("{}:/usr/bin:/bin", ambient_dir.display());
+    for poisoned_override in [false, true] {
+        let mut environment = vec![
+            ("story_bin", lease.to_str().unwrap()),
+            ("story_lease_dir", lease_dir.to_str().unwrap()),
+            ("PATH", path.as_str()),
+            ("DASHBOARD_STORY_BIN", ambient.to_str().unwrap()),
+        ];
+        if poisoned_override {
+            environment.push(("STORY_BIN", ambient.to_str().unwrap()));
+        }
+        let output = run_runner_environment(
+            &block,
+            &environment,
+            "/bin/bash -c 'printf \"%s\\n\" \"${STORY_BIN:-missing}\" \"$(command -v story)\" \"$DASHBOARD_STORY_BIN\"'",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected = format!("{0}\n{0}\n{0}\n", lease.display());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "plugin overrides, bare CLI calls, and browser specs must inherit the same lease"
+        );
+    }
+}
+
+#[test]
+fn the_runner_preserves_no_color_intent_without_exporting_conflicting_node_flags() {
+    let runner = read("scripts/run-e2e.sh");
+    let entry = runner
+        .split_once("set -euo pipefail\n")
+        .expect("the runner must establish strict shell mode")
+        .1
+        .split_once("\ncd \"$(dirname \"$0\")/..\"")
+        .expect("the runner entry must precede checkout setup")
+        .0;
+    for no_color in ["", "1"] {
+        let output = run_runner_environment(
+            entry,
+            &[
+                ("NO_COLOR", no_color),
+                ("FORCE_COLOR", "1"),
+                ("DEBUG_COLORS", "1"),
+            ],
+            "printf '%s\\n' \"${NO_COLOR+present}\" \"${FORCE_COLOR:-missing}\" \"${DEBUG_COLORS:-missing}\"",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "\n0\n0\n",
+            "NO_COLOR must become one unambiguous no-color setting before Node starts"
+        );
+    }
+    let output = run_runner_environment(
+        entry,
+        &[("FORCE_COLOR", "2"), ("DEBUG_COLORS", "1")],
+        "printf '%s\\n' \"${NO_COLOR+present}\" \"$FORCE_COLOR\" \"$DEBUG_COLORS\"",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "\n2\n1\n",
+        "an explicit color preference without NO_COLOR must remain unchanged"
     );
 }

@@ -69,7 +69,7 @@ is_core_rust_target_path() {
 # silently reused.
 is_gate_contract() {
     case "$1" in
-    (Makefile | scripts/leg.sh | scripts/gate-leg-fingerprint.sh) return 0 ;;
+    (Makefile | scripts/gate-legs.sh | scripts/leg.sh | scripts/gate-leg-fingerprint.sh | scripts/cargo_diagnostics.py) return 0 ;;
     (*) return 1 ;;
     esac
 }
@@ -79,7 +79,7 @@ is_gate_contract() {
 # without adding another arm here.
 is_production_rust() {
     case "$1" in
-    (Cargo.toml | Cargo.lock | build.rs | VERSION | clippy.toml | .cargo/*) return 0 ;;
+    (Cargo.toml | Cargo.lock | build.rs | scripts/tracked-tree.sh | VERSION | clippy.toml | .cargo/*) return 0 ;;
     (*Cargo.toml | src/* | crates/*) return 0 ;;
     (*) return 1 ;;
     esac

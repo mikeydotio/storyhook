@@ -569,41 +569,64 @@ fn a_gate_tier_postlude_does_not_downgrade_an_existing_full_receipt() {
 /// otherwise certify a mixture that no single run ever tested.
 #[test]
 fn content_that_changes_during_the_run_gets_no_receipt() {
-    let repo = GateRepo::new();
-    repo.write("f", "already dirty when the suite began\n");
-    assert_ok(&repo.gate("preflight"), "enrolling");
+    for (name, stage_before) in [("f", false), ("new staged", true), ("new staged", false)] {
+        let repo = GateRepo::new();
+        repo.write(name, "already dirty when the suite began\n");
+        if stage_before {
+            assert_ok(&repo.git(&["add", "--", name]), "staging before preflight");
+        }
+        assert_ok(&repo.gate("preflight"), "enrolling");
 
-    repo.write("f", "edited while the suite was running\n");
-    let out = repo.gate("postlude");
+        repo.write(name, "edited while the suite was running\n");
+        if name != "f" && !stage_before {
+            assert_ok(&repo.git(&["add", "--", name]), "staging during the run");
+        }
+        let out = repo.gate("postlude");
 
-    assert!(
-        !out.status.success(),
-        "the postlude must refuse to certify a tree that drifted mid-run"
-    );
-    let err = stderr(&out);
-    assert!(
-        err.contains('f'),
-        "the refusal must name what changed, got: {err}"
-    );
-    assert!(
-        repo.gate_artifacts().is_empty(),
-        "a drift refusal must clean its preflight state and private objects"
-    );
+        assert!(
+            !out.status.success(),
+            "the postlude must refuse drift for {name}, staged before: {stage_before}"
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains(name),
+            "the refusal must name what changed, got: {err}"
+        );
+        assert!(
+            repo.gate_artifacts().is_empty(),
+            "a drift refusal must clean its preflight state and private objects"
+        );
+        assert!(
+            !repo.path().join(".git/storyhook/gate-receipts").exists(),
+            "drift must not certify even the old tree that omitted the new file"
+        );
 
-    // And the refusal is not cosmetic: nothing may ship on the strength of it.
-    repo.git(&["add", "f"]);
-    repo.git(&["commit", "-qm", "the drifted content"]);
-    assert!(
-        !repo.push(&[]).status.success(),
-        "a run that refused to certify must leave the push refused"
-    );
-    assert_eq!(repo.remote_sha("main"), None);
+        // The remote must remain unchanged after the refused certification.
+        assert_ok(
+            &repo.git(&["add", "--", name]),
+            "staging the drifted content",
+        );
+        assert_ok(
+            &repo.git(&["commit", "-qm", "the drifted content"]),
+            "committing the drifted content",
+        );
+        assert!(
+            !repo.push(&[]).status.success(),
+            "a run that refused to certify must leave the push refused"
+        );
+        assert_eq!(repo.remote_sha("main"), None);
+    }
 }
 
 #[test]
 fn unchanged_dirty_content_is_certified_and_cleans_its_private_objects() {
     let repo = GateRepo::new();
     repo.write("f", "dirty content held constant across the run\n");
+    repo.write("new staged", "new content held constant across the run\n");
+    assert_ok(
+        &repo.git(&["add", "--", "new staged"]),
+        "staging a new path before certification",
+    );
 
     assert_ok(&repo.gate("preflight"), "recording a dirty preflight tree");
     assert!(

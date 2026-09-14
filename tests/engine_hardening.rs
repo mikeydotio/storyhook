@@ -548,9 +548,26 @@ fn graceful_stop_can_finish_after_its_epic_is_deleted() {
 #[test]
 fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
     use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
-    use storyhook::store::EngineRunState;
+    use storyhook::store::{EngineRunState, Store, WriteOps};
     use storyhook_test_support::DispatcherCall;
     let fixture = ServiceFixture::new();
+    let resources = storyhook_test_support::scratch_dir();
+    let original = resources.path().join("original");
+    let current = resources.path().join("current");
+    for repository in [&original, &current] {
+        std::fs::create_dir(repository).unwrap();
+        let initialized = storyhook::env::git_env::command(repository)
+            .args(["init", "--initial-branch=main"])
+            .output()
+            .unwrap();
+        assert!(initialized.status.success(), "{initialized:?}");
+    }
+    let original = original.canonicalize().unwrap();
+    let current = current.canonicalize().unwrap();
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&original)))
+        .unwrap();
     let ctx = fixture.ctx();
     let scope = epic(&ctx);
     let child = story(&ctx, "scoped work");
@@ -561,25 +578,28 @@ fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
         version: CLEANUP_LEASE_VERSION,
         project_slug: "fixture".into(),
         story_id: child.clone(),
-        repository_path: "/repos/original".into(),
-        worktree_path: "/tmp/preserved".into(),
+        repository_path: original.clone(),
+        worktree_path: original.join(".codex/worktrees").join(&child),
         branch: format!("worktree-{child}"),
         tmux: TmuxCleanupTarget {
-            socket_path: "/tmp/tmux-original/default".into(),
+            socket_path: resources.path().join("tmux-original.sock"),
         },
     };
     let fake = FakeDispatcher::new([
         DispatcherStep::Dispatch(DispatchOutcome::from_payload(
             serde_json::json!({"ok": true, "cleanup_lease": lease}),
         )),
-        DispatcherStep::Unclaim(DispatchOutcome::from_payload(
-            serde_json::json!({"ok": true}),
-        )),
+        DispatcherStep::Reset,
     ]);
     let run = start(&ctx, &fake, EngineScope::Epic(scope.clone()), 1);
     let engine = EngineService::new(&ctx, &fake);
     engine.reconcile(&run).unwrap();
     engine.pause(&run).unwrap();
+    // A later checkout selection cannot transfer the original cleanup lease.
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&current)))
+        .unwrap();
     StoryService::new(&ctx).delete(&scope).unwrap();
     assert_eq!(
         engine.reconcile_after_restart(&run).unwrap().run_state,
@@ -590,8 +610,9 @@ fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
         EngineRunState::Finished
     );
     let calls = fake.calls();
-    assert!(
-        matches!(&calls[1], DispatcherCall::Unclaim(request) if request.cleanup_lease == lease)
-    );
+    assert!(matches!(&calls[1], DispatcherCall::Reset(request) if request.lease == lease));
     assert_eq!(calls.len(), 2);
+    let workspace_lock = format!(".git/storyhook/workspace-locks/{child}.lock");
+    assert!(original.join(&workspace_lock).is_file());
+    assert!(!current.join(workspace_lock).exists());
 }

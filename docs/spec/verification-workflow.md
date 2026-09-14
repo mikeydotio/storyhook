@@ -46,12 +46,12 @@ What each step does today, and which child closes the gap:
 |---|---|---|---|
 | 1 | storyhook pushes and opens the PR | **done (SH-647):** the agent commits and moves the story to `verifying` from inside its worktree; the verifier runs `story.sh submit` from the lease — push over HTTPS, open or adopt the PR against the default branch, link it, comment — before it verifies | SH-647 (D-A) |
 | 2 | one verifier per project; suites serialize per project | **done** (SH-648): one worker per project (`VerificationActivity` is a per-project map, `ordered_for`), and `gate`/`merge` carry the project's canonical git common dir in their key — see "The queue" and "The locks" | done, SH-648 (D-B) |
-| 2 | order by priority then queue age | priority → `created_at` → project slug → story id (`sort_candidates`); `verifying_since` is carried on the candidate and never sorted on | SH-651 (D-F) |
+| 2 | order by priority then queue age | priority → `verifying_since` → project slug → story id (`sort_candidates`); missing entry timestamps follow known timestamps within equal priority | done, SH-651 (D-F) |
 | 2 | not mergeable → instruct the agent and hold the queue | as stated; a dead pane is re-dispatched in place and the hold continues (SH-650) — see "The conflict queue-hold" | done (SH-650, D-E) |
 | 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike | SH-650 (D-E) |
 | 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the required `done` and `reap-leased` accepts exactly that — one constant, `domain::COMPLETION_STATE_SLUG`, pinned equal to the helper's by `tests/plugin_contract.rs` (SH-652, **deviating from D-G**: see As built) | SH-652 (D-G) |
-| 4c | the verifier reaps | `story cleanup` (`workspace-cleanup.md`) is a second reaper with no story-state gate and wider authority (it deletes the remote branch) | SH-653 (D-H) |
+| 4c | the verifier reaps | `story cleanup` retries only CLOSED stories released by the latest verification generation; it never deletes remote branches | done, SH-653 (D-H) |
 | — | (unstated) the verifier serves any project | the verifier script family ships inside the binary and runs from the daemon's own state directory; the checkout contributes its `[verify] gate` and its receipt store | done, SH-654 (filed beside the epic, not in it); landing a foreign project still needs SH-665 |
 
 ## Decisions of record
@@ -64,12 +64,13 @@ repeated here so a reader does not have to open eight stories to see why.
 |---|---|---|---|---|
 | D-A | **The verifier submits.** For a candidate with no linked open close-on-merge PR, the verifier's first step is submission from the cleanup lease's worktree and branch: refuse a dirty worktree (return the story naming the files), push over HTTPS, create the PR against the project's integration branch or **adopt** the one already open for that head, `link-pr`, comment the URL. `MissingPullRequest` becomes a submit step; `MultiplePullRequests` still returns. | Matches the stated order. Submission is derived from store facts (lease + no linked PR), so a daemon restart or a skipped verb cannot lose it; resubmission after remediation needs no extra agent step; and it removes `git push` from the agent's toolchain entirely, which dissolves the push-hook contradiction (D-C) structurally rather than by exemption. Rejected: an agent-invoked submit verb. | SH-647 | open |
 | D-B | **Per-project queue and locks; cross-project suites may overlap.** Lock key = the canonical git common dir, hashed into the lock name, so every worktree of one clone still serializes with that clone's verifier and a different repository does not. One verifier worker per project, each with its own ordering, incident halt and conflict hold. | User determination: "project-wide (not machine-wide)". Trade-off stated, not hidden: two projects' suites now contend for CPU on one machine; SH-627's quiesce rule still governs the release tier; no machine-wide cap (YAGNI — D14's lane budget bounds agents). | SH-648 | done — see "SH-648" under As built |
-| D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected: other projects have no gate of their own. | done, **outside this repository** — the hook lives in no tracked file, its verdict token is `delegated`, and nothing in this suite fences it. Proven both ways on the day: this repository → delegated, exit 0; a plain repository with a red `make test` → blocked. | done |
+| D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected at that time: other projects had no gate of their own. | SH-681 corrected ownership: canonical source is Agentics `hooks/pre-push-tests.sh`; the original live delegation patch affected Claude only. See the evidence and subsequent retirement under As built. | superseded by SH-682 / AGE-102 retirement; SH-681 repair archived |
 | D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | done — see "SH-649" under As built for the receipt contract this put on the value |
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean |
-| D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | open |
+| D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | done — see "SH-651" under As built |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | done — **built with different semantics**: the resolver is `domain::completion_state`, answering the required `done`, never the first CLOSED state, and `STORY_DONE_STATE` is refused rather than honoured; a council decision recorded on the story (`story show SH-652`) and under As built |
-| D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | open |
+| D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | done — see "SH-653" under As built for the generation the marker is read from, and for the remote branch leaving cleanup's scope entirely |
+| D-I | **The base is asked of origin, and landing checks it.** The branch a story PR is opened against, dispatched from, reaped against and landed on is origin's own advertised default (`git ls-remote --symref origin HEAD`), never the local `origin/HEAD` cache alone and never a literal; an origin that cannot say is a refusal by name, not a guess. `verify-pr.sh` and `land-pr.sh` each check the PR's base against that answer, independently; `land-pr.sh --base <branch>` is the only way to land elsewhere and `release.sh` states it. | Five story PRs opened against `main` by a stale cache and a `main` literal were certified, merged and closed as green, and the divergence was found by hand (SH-306's shape one layer over: the check that never ran). SH-136: the cache is a copy of a fact with an authority. SH-372/SH-394: absence and a literal are not answers. Rejected: refreshing the cache with `set-head -a` (a second copy, and a race on a shared ref); a project setting (a copy that drifts); `gh repo view` (GitHub-only). | SH-691 | done — see "SH-691" under As built |
 
 A child that lands updates its row's status and adds an entry under "As
 built" below. A child that deviates from its row records the deviation there
@@ -86,10 +87,10 @@ not, and each row names one.
 |---|---|---|---|
 | Both charters tell the agent to push, open the PR and link it; nothing deterministic does | `PROMPT_TPL`, `AUTO_PROMPT_TAIL` (`plugins/story/bin/story.sh`) | 441, 504 | SH-647 — **closed** |
 | `link-pr` only records a URL; it never pushes or opens anything (the verifier now does, through `story.sh submit` and `record_generation_submitted`) | `PrLinkService::link` (`src/service/pr_link.rs`) | module doc | SH-647 — **closed** |
-| The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | `~/.claude/hooks/pre-push-tests.sh` (untracked) | — | done (D-C) |
+| The user-level PreToolUse push hook ran `make test` on every agent push and waited on the verifier's own lock | Agentics `hooks/pre-push-tests.sh`; installed Claude and Codex copies (ownership corrected by SH-681) | — | D-C covered Claude only; SH-682 / AGE-102 subsequently retired both live hooks |
 | One global worker; a queue spanning every project | `VerificationActivity::acquire` (`src/daemon/verification.rs`); `ordered_candidates` (`src/service/verification.rs`) | 88-110; 650 | done (SH-648): `acquire` asserts per project, `poll_verification` supervises one `poll_project_verification` per project, `ordered_candidates_for` |
 | `gate`/`merge` keyed by name only under `$HOME` | `scripts/machine-lock.sh` lock root | 219-225 | done (SH-648): `<name>.<hash of the canonical common dir>.lock`; `--held` |
-| Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | SH-651 |
+| Tiebreak is `created_at`; `verifying_since` exists and is not it | `sort_candidates`; `verifying_since`, `verifying_entry` | 742-750; 99-106, 632-644 | done (SH-651): verification sorts by latest entry time; cleanup retains creation order |
 | The conflict hold is released when the paste fails | `wait_for_reconciled_candidate`, `return_for_repair`; `tests/verification_queue.rs::a_failed_conflict_notification_releases_the_reservation` | 1246, 1190-1213; 1439 | done (SH-650) — the test is now `a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue` |
 | `make test` is a literal in the gate invocation and in the comment text | `run_verification_gate` call (`scripts/verify-pr.sh`); GREEN and RED format strings (`src/daemon/verification.rs`) | 673; 896, 996 | done (SH-649): `gate_command_for` (`src/service/gate_command.rs`), `verify-pr.sh <pr-url> -- <gate…>`, `{gate}` in both strings |
 | `scripts/verify-pr.sh` is a repo-relative literal in the daemon | `ShellVerificationActuator::verify` | 521 | SH-654 |
@@ -120,9 +121,11 @@ re-proves the lease, requires the story to be in `verifying`, refuses a dirty
 worktree naming the files, pushes the leased branch over HTTPS
 (`url.https://github.com/.insteadOf=git@github.com:`; no `--force` — a rewritten
 branch is returned to the agent as `push-rejected`), then opens one PR against
-the repository's default branch (`origin/HEAD`, `dev` here — the same fact
-dispatch based the worktree on) or **adopts** the one already open for that
-head. The helper records nothing on the story; it answers a typed
+the repository's default branch (asked of origin itself with `git ls-remote
+--symref origin HEAD`, `dev` here — the same fact dispatch based the worktree
+on; never the local `origin/HEAD` cache alone, and never a literal, since
+SH-691) or **adopts** the one already open for that head; one already open
+against any other base is refused by name (`wrong-base-pull-request`). The helper records nothing on the story; it answers a typed
 `SubmissionReceipt`, and the daemon records the `StoryPrLinked`
 (`close_on_merge`) and a marked `CENTRAL VERIFICATION SUBMITTED` comment in one
 generation-guarded write (`record_generation_submitted`), then proceeds into
@@ -158,12 +161,15 @@ submission.
 
 `VerificationQueue::ordered_for(project)` (`src/service/verification.rs`)
 folds one project's stories in `verifying` into candidates and sorts them with
-`sort_candidates`: priority rank, then `created_at`, then project slug, then
+`sort_candidates`: priority rank, then `verifying_since`, then project slug, then
 story id (`ordered()` concatenates every project's for the cross-project
 surfaces). `verifying_since` is computed by `verifying_entry` from the story's
 own `StoryStateChanged` history rather than `updated_at` — the progress
-checklist rewrites `updated_at` on every publish (SH-524) — and is reported,
-but not sorted on (SH-651). The daemon runs **one worker per project**
+checklist rewrites `updated_at` on every publish (SH-524). Resubmission resets
+queue age (SH-651). Missing entry timestamps follow known timestamps within
+equal priority; project and story identity still resolve ties. Completed-story
+cleanup uses a separate sorter that retains priority, creation time, project,
+and story order. The daemon runs **one worker per project**
 (SH-648): `poll_verification` (`src/daemon/verification.rs`) is a supervisor
 that spawns `poll_project_verification` for every registered project, on
 start and on every catalog change, and a worker whose project is deleted
@@ -319,6 +325,12 @@ its existing hook enrollment before delegating to the same portable core.
 Receipt format, shared project storage, private preflight state and objects,
 tree-drift refusal, tier ordering, and atomic publication are unchanged.
 
+SH-683 adds shared lifecycle ownership before verifier preflight and speculative
+execution. Interrupted recovery preserves the checkout, private index and
+objects together; ambiguous writers prevent repair and remain infrastructure
+failures. See [Shared verifier lifecycle](verifier-worktree-lifecycle.md) for
+the durable journal, canonical registration rules and operator limits.
+
 ### Red
 
 `VerificationOutcome::TestsFailed` carries the tree, the per-attempt log path
@@ -330,6 +342,15 @@ calls `return_for_repair` exactly as for a conflict — comment, pane paste or
 resume re-dispatch, `in-progress` — but without the hold: a red story
 re-enters the queue on resubmission and waits its turn (step 4a;
 `a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue`).
+
+The detail excerpt lists every failing case the log holds, and since SH-697 a
+Rust battery runs to completion after its first red test binary
+(`cargo test --no-fail-fast` in `scripts/run-tests.sh`), so one RED carries
+the failures across that battery. Since SH-701, independent gate legs also
+continue after ordinary failures. Confirmed shared compilation failures and
+failed builds skip their dependents with explicit reasons; the RED summary
+lists failed legs and dependency skips even when their output is outside its
+bounded tail (`test-tiers.md`, "independent gate legs finish after RED").
 
 ### Green: merge, done, reap
 
@@ -350,12 +371,19 @@ fault cannot starve the gate. Until SH-652 the helper accepted only the
 project's *first* CLOSED state or `$STORY_DONE_STATE`, so in a project that
 ordered another CLOSED state ahead of `done` every retry failed the same way.
 
-`story cleanup` (`workspace-cleanup.md`) is a second path to the same
-resources: daily from the daemon when `cleanup.auto` allows (a missing stamp
-counts as due), over every story with a lease, gated on git facts (clean,
-unlocked, tips reachable from the default branch, window closed) and on **no
-story state**, and deleting the remote branch as well as the local one. SH-653
-makes it the verifier's retry path and nothing more.
+`story cleanup` (`workspace-cleanup.md`) is the same reap's retry path by
+hand, and on the daemon's daily cadence when `cleanup.auto` allows (a missing
+stamp counts as due) — never an independent reaper (SH-653). Before any git
+work on a candidate it reads the store: the lease must name a story of this
+project, the story must be CLOSED, and the story's **latest verification
+generation** must carry the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED
+comment, read through the same `latest_generation` the verifier's own retry
+uses. Only then do the git gates run (clean, unlocked, window closed, worktree
+and local-branch tips reachable from the freshly fetched default branch), and
+what it removes is what `reap-leased` removes: the worktree and the local
+branch. It neither reads nor writes the remote branch, which `land-pr.sh`
+deleted at merge time. Every refusal is a skip with a reason, which is what
+`--dry-run` prints.
 
 ### The locks, and the one invariant every verification depends on
 
@@ -429,7 +457,7 @@ the SH-136 rule); the invariant here is only that it **survives**.
 | `test-tiers.md` | the tiers, receipts, `merge-preflight.sh`, the verifier worktree and its private objects, the gate lock's idle ceiling |
 | `selective-testing.md` | the `changed` tier and why a merge never accepts it |
 | `development-branch.md` | `dev` integrates, `main` releases; what a PR targets |
-| `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — subordinated by SH-653 |
+| `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — the reap's retry path since SH-653 |
 | `release-observer.md` | the third lock name and the observer that takes it |
 | `activity-log.md` | the verifier's tmux mirror and the daemon journal a stalled verification is diagnosed from |
 
@@ -438,6 +466,239 @@ the SH-136 rule); the invariant here is only that it **survives**.
 Deviations from this document are recorded here, one entry per child, rather
 than in a second file. Each child lands with its own `### SH-N — <what
 changed>` entry and a status update in the decisions table above.
+
+### SH-653 — `story cleanup` is the reap's retry path, and the marker it reads is generation-scoped
+
+Built as D-H states, with two decisions the row left open, two siblings
+adopted on the way, and three limits stated rather than glossed.
+
+**The marker is read from the story's latest verification generation, never
+from "any comment on the story".** A story that was landed, reaped and marked
+COMPLETE, then reopened, re-verified and landed again, still carries the first
+generation's COMPLETE; a gate that read comments flat would have released
+cleanup to reap the second generation's worktree in the window before the
+verifier's own reap ran, concurrently with it. `latest_generation`
+(`src/service/verification.rs`) is now the one reader of a generation's lease,
+its GREEN, operator override, and reap marker — ordered by event position, never by timestamp
+(SH-336), `Complete` outranking `Required`, a retracted comment counting as
+none. An operator override still requires a merged PR before cleanup is eligible
+(SH-692). Both per-project and cross-project `next_cleanup` use this reader,
+which is the adopted sibling:
+under the flat scan the daemon's own retry read the stale COMPLETE as this
+generation's and never retried a failed second reap. Cleanup's history-derived
+lease comes from that generation too, where it used to be the last lease
+anywhere in history; the on-disk marker dispatch wrote stays a second source,
+and is load-bearing — the verifier's `reap_leased` fails outright when a
+generation has no history lease and writes CLEANUP REQUIRED, and the marker
+is then the only lease anything can reap from.
+
+**The remote branch leaves cleanup's scope entirely.** D-H said "never a
+remote branch `land-pr.sh` has not already removed"; the first draft refused a
+candidate whose remote branch still existed. Rejected on the mechanism:
+`reap-leased` never consults the remote, so cleanup would have answered
+differently from the verifier's own retry for the same workspace — the D-H
+complaint itself — and the refusal would have been permanent, since nothing
+else ever deletes that branch. Cleanup now neither reads nor writes the
+story branch on origin: no story-branch `ls-remote`, no story-branch fetch, no `push --delete`, no
+`removed_remote_branch` on the report. Reachability from the freshly fetched
+default branch is still required of what cleanup *does* delete, the worktree
+HEAD and the local branch tip, so work committed after `done` is still refused
+as `unmerged-work`; a divergent remote-only commit no longer blocks the local
+reap, because nothing on the remote can be lost by a tool that never touches
+it.
+
+**CLOSED, not the completion state.** `reap-leased` also refuses
+`not-completion-state`. D-H says CLOSED, the marker already proves the
+verifier moved the story to `done`, a story later moved to another CLOSED
+state still has a disposable workspace, and SH-652 owns the resolver — so
+cleanup deliberately reads only `superstate`, and this is a stated deviation
+from `reap-leased`, not an oversight.
+
+**Adopted: an already-reaped lease is not a removal.** A candidate whose
+worktree and local branch were already gone was reported as a removal with
+every flag false, after paying the fetch — which, gated on the verifier's
+markers, would have listed every story ever reaped on every pass. Decided from
+local facts before the fetch: after a COMPLETE the absence is what the verifier
+verified and earns no line (a worktree recreated on the leased branch still
+does, which is why COMPLETE stays in scope); after a REQUIRED it is reported as
+`already-clean`, since a retry with nothing left to retry is worth saying.
+
+**Limits.**
+
+- A marker is a comment, and `StoryComment` carries no author: anyone can
+  write `CENTRAL VERIFICATION CLEANUP REQUIRED —` on a closed story and
+  release its workspace to cleanup. `next_cleanup` has the identical exposure
+  and always did; the gate is against a *state-blind* reaper, not a forged one.
+- A lease whose story the verifier never marked — every legacy lease from
+  before the verifier existed — is preserved forever and reported as
+  `not-verifier-released` on every pass. That is the decision, stated: the
+  verifier owns the first reap, and there is no second door.
+- A story whose latest generation carries no history lease is reachable only
+  through the on-disk marker; if that marker is gone too, nothing reaps it and
+  `story cleanup --dry-run` does not name it, because it has no lease to name.
+
+Tests: `tests/story_cleanup.rs` (the first end-to-end drive of
+`CleanupService::run` through the store — the gate precedes all git work, each
+refusal reason, the stale-generation case, the already-clean and
+verified-absent cases, and the daemon's `tick` running the one service),
+`src/service/cleanup.rs` (the `verifier_release` table; the remote branch
+surviving a local reap, as a positive control), `src/service/verification.rs`
+(`latest_generation`: adjacency, generation scoping, prefix-not-substring,
+precedence, retraction, `landed`), `tests/verification_queue.rs` (the
+reopen-and-land sequence `next_cleanup` used to misread). Mutation-checked:
+dropping the superstate clause, dropping the marker clause, and widening the
+generation scan to the whole log each fail their test.
+
+**Resumed 2026-09-13** after an unmerged PR was found on a story the web
+dashboard had marked done with no verifier merge event. Reconciling the
+branch onto current `dev` surfaced two adjacent defects, adopted into this
+story rather than filed separately (same file, same session):
+
+**`clean_candidate` compares the project's registered checkout, never the
+lease's own path.** The reconciliation merge's conflict resolution had taken
+`dev`'s call site (`clean_candidate(&lease.repository_path, ...)`) over this
+story's own (`clean_candidate(&repository, ...)`), making the
+`repository-mismatch` guard compare a value against itself — always true,
+never a refusal. Reproduced live: a lease naming a second, unregistered clone
+of the project's own origin (internally coherent — a worktree that genuinely
+exists there) passed `ResourceService::resolve`'s project-association check
+(by origin URL, not exact path) and was deleted. Restored the correct
+argument; regression in `tests/story_cleanup.rs`.
+
+**A post-verify repair return never promises a push it cannot make.** The
+verifier's `submission_due`/`UNLEASED_SUBMISSION` gate (SH-647) exempts an
+unleased candidate that already carries a linked pull request — legitimate,
+since an operator-linked submission needs no worktree. But if that candidate
+then reaches a CONFLICT, RED, or INVALID SUBMISSION return, the returned text
+said "commit, then move back to verifying; the verifier pushes" regardless —
+a promise an unleased generation cannot keep, since nothing pushes it either
+way. Observed live: SH-653's own resubmission livelocked exactly this way.
+Fixed narrower than a 3-seat council's initial unanimous recommendation
+(refuse any unleased candidate before verification runs at all): that broke
+28 of `tests/verification_queue.rs`'s own tests, because `submitted()` — the
+suite's standard operator-linked-submission fixture — is unleased by
+construction and is the exact SH-647 shape that must keep being verified.
+Shipped instead: `push_promise()` names, only in the three post-verify
+repair returns, whether this generation can actually push — unchanged
+wording when leased, an honest "no cleanup lease, so nothing will push it"
+when not. Regression in `tests/verification_queue.rs`.
+
+### SH-691 — the base is asked of origin, and landing checks it
+
+Five story pull requests (#734, #775, #776, #772, #782) were opened against
+`main`, certified, merged and closed as green; `dev` and `main` diverged by
+23 commits before anyone compared them by hand. Two faults, either sufficient:
+`default_branch()` in `plugins/story/lib/session.sh` read the LOCAL
+`refs/remotes/origin/HEAD` cache, which git writes at clone time and no fetch
+refreshes, so a checkout cloned before the default moved kept answering
+`main`; and where the cache was absent it printed the literal `main` (SH-394,
+SH-372). Nothing downstream asked whether a base was right: `verify-pr.sh`
+and `land-pr.sh` checked only that it did not CHANGE mid-flight.
+
+**The authority is origin, asked at the moment of need.** `git ls-remote
+--symref origin HEAD` advertises the remote's own HEAD — one read-only round
+trip, no `gh`, any host. The derivation exists three times, once per bundle
+(the plugin's `default_branch`, the bundled `scripts/origin-default-branch.sh`,
+and the binary's `origin_default_branch` in `src/service/cleanup.rs` for
+`story cleanup`); `tests/default_branch_contract.rs` pins the two shell
+copies to one answer on the same fixture remotes. Rejected: `git remote
+set-head origin -a` (writes a second copy of a fact that has an authority —
+SH-136 — and races other writers of the shared ref), `gh repo view`
+(GitHub-only), a project setting (a copy that would drift the way the cache
+did).
+
+**Unknown is unknown.** An origin that does not answer, or advertises no
+symbolic HEAD (unborn or detached — `ls-remote` prints no `ref:` line at exit
+0), makes the helper fail with the reason, and each verb decides: submit
+refuses `default-branch-unknown` (class infrastructure — the verifier's own
+retryable incident, nothing pushed); leased reap refuses
+`default-branch-unknown`; dispatch keeps its documented offline tiers and
+states the source (`base_source`: `origin`; `cache`, the local origin/HEAD
+cache, named in the warning with `git remote set-head origin -a` as the
+remedy; or `none`, the local checkout, which the e2e seeds need); complete
+plan/execute and the non-leased reap use origin, then the cache
+(`default_branch_source`, a warning line in the display), and fail only with
+neither — a stale default can only PRESERVE a branch there.
+`is_protected_branch <branch> <default>` takes the resolved default: a
+predicate does no network I/O and cannot classify a lookup failure for four
+different callers.
+
+**The detector, twice.** `verify-pr.sh` compares the PR's base with origin's
+default after the OPEN/MERGED checks and before refreshing refs: a mismatch
+is `invalid-submission` naming both branches, before any gate runs; an
+unanswerable origin is retryable. `land-pr.sh` re-derives independently under
+the merge lock, before any fetch, and refuses with its own exit code 3, which
+`classify_land` maps to the same verdict instead of the retryable
+`reconcile_land_refusal` path a generic exit 1 takes. `land-pr.sh [--base
+<branch>] <pr>` lets a caller STATE a different intent, forwarded to the
+locked phase only when given; `release.sh` passes it for both its landings
+from `branch-policy.sh` (the stable merge lands on `main`, which is not the
+default, deliberately), and `tests/branch_policy.rs` pins that. A PR already
+MERGED into the wrong base is recovered as merged — nothing left to prevent —
+and the script headers say so.
+
+**The adoption blind spot, adopted.** Submit listed open PRs by (head, base),
+so a PR already open for the head against another base was invisible and a
+second one was created beside it — the five incidents one step later. It
+lists by head now and refuses `wrong-base-pull-request` (class repair) naming
+the number, both branches and the remedy (`gh pr edit N --base <default>`, or
+close it); only PRs on the default remain adoption candidates; a fork's PR is
+still not judged.
+
+**Measured.** Restoring the `main` literal in `session.sh` fails the submit,
+dispatch, complete-plan and reap cases (base `main`, worktree on `main`'s tip,
+plan on `main`, a branch merged only into `dev` refused as unmerged);
+restoring the (head, base) listing makes the wrong-base case open a second
+PR beside the misdirected one.
+
+### SH-695 — an exited gate's orphans are reaped, never a halt
+
+A red rust-suite leg that tears the gate down while a hook test's deliberate
+`sleep 300 &` grandchild is alive used to be reported as an infrastructure
+halt, not RED, and the owner record then refused every further gate on the
+boot. `verifier-owner.py` now settles the survivors of an exited leader on the
+same TERM, grace, KILL ladder the cancellation path uses, records the gate
+leader's exit code in the owner record before any census, and admits a started
+gate on the same boot once that exit is recorded and its session census is
+empty. A started gate with no recorded exit is still an interrupted gate and
+still refused. The mechanism and its decisions are in
+`docs/spec/verifier-worktree-lifecycle.md`, "Exited-session reaping — SH-695",
+and `docs/rca/sh-695-exited-gate-orphan-halt.md`.
+
+### SH-651 — queue age follows the latest submission
+
+Verification uses priority, latest `verifying_since`, project slug, and story
+ID, in that order. Resubmission sends a story behind equal-priority peers
+that have waited longer. Comments do not change its position. Missing entry
+timestamps follow known timestamps within equal priority; identity resolves
+the remaining ties. Cleanup retains its separate creation-time order.
+
+`tests/verification_queue_order.rs` exercises reversed creation/submission
+order, repeated resubmission, comments, priority, equal-time identity ties,
+and cleanup through the store-backed service. Comparator unit tests cover
+missing timestamps and project/story ties in both input orders.
+
+### SH-681 — push-hook ownership, publication evidence, and retirement
+
+The D-C completion claim covered a local Claude patch. Agentics owned the
+canonical gate and its installer; the installed Codex copy matched the
+canonical source and lacked delegation. SH-665's retained logs identify
+840-second suites launched before shell execution, including for a diagnostic
+comment containing quoted push text. This was a pre-tool gate failure, not
+evidence of a GitHub transport failure. The
+[SH-681 RCA](../rca/remote-publication-hook-stalls.md) records timestamps,
+artifact digests, source commits, and the 140 targeted repair checks.
+
+Before SH-681 installed its tested repair, SH-682 completed a separate
+user-approved retirement of both live files and registrations. A unanimous
+council retained the repair in closed archival
+[Agentics PR #187](https://github.com/mikeydotio/agentics/pull/187), with no
+reinstallation. [Retirement PR #186](https://github.com/mikeydotio/agentics/pull/186)
+is the active source direction, owned by AGE-102 / SH-682; their central
+verification blocker is separate. Only this compatible evidence change enters
+SH-681 verification. The installed v2.4.2 dispatch prompt also still asks
+agents to publish although tracked source already implements SH-647; the RCA
+records that drift without changing the cache or release state.
 
 ### SH-649 — `[verify] gate`, and the receipt contract it put on the value
 
@@ -788,6 +1049,61 @@ as owned; a halt in one leaves the other draining and is acknowledged only
 through its own route; a conflict hold in one does not hold the other; queue
 position counts one project; the supervisor follows the catalog).
 
+### SH-692 — a hand completion is an override, and a killed gate is never a verdict
+
+PR #791 was merged by hand while its gate ran (leg 226/4058); its story was
+dragged to Done on the dashboard eleven seconds later; the SH-686 observer
+cancelled the gate and recorded nothing. The gate's log already showed a red
+that then reached `dev`. Full timeline and evidence:
+[SH-692 RCA](../rca/sh-692-hand-merge-under-a-running-gate.md). The rules
+since, each with its own regression test:
+
+- **Completing a `verifying` story by hand requires a reason.** `set_state`
+  refuses a bare move from `verifying` to `done` naming both ways out; with a
+  comment it records `CENTRAL VERIFICATION OVERRIDDEN — <reason>` in the same
+  transaction as the move. `story move <id> done "<why>"` is the CLI form; the
+  dashboard's Done drop and the drawer's state select open a required-reason
+  prompt; the TUI shows the refusal. A backstop in `append_and_fold`, the one
+  write path every service uses, refuses any other producer of that
+  transition (`story set --state`, REST PATCH, epic materialisation, catalog
+  migration) unless the batch carries GREEN or OVERRIDDEN, or a GREEN was
+  posted for the current stay in `verifying`.
+  (`tests/verification_override.rs`, `tests/web_test.rs`,
+  `e2e/specs/verify-override-drop.spec.ts`)
+- **The verifier records every withdrawal.** Authority loss — the story left
+  `verifying`, was resubmitted, or was blocked — writes
+  `CENTRAL VERIFICATION WITHDRAWN —` naming the pull request, the generation,
+  the leg and test counts from the attempt's own progress journal, the elapsed
+  time and the reason, retracting the stale PROGRESS "running" comment. An
+  operator stop or daemon shutdown rewrites PROGRESS as INTERRUPTED; the story
+  stays `verifying` and re-runs. (`tests/verification_queue.rs`,
+  `tests/verification_withdrawal.rs`)
+- **A signalled gate is infrastructure, retryable, named by signal.**
+  `merge-watch.sh` publishes its completion record only for a child that
+  exited (status < 128); `verify-pr.sh` classifies any gate status ≥ 128 as
+  infrastructure-failure/retryable before consulting the record, and traps
+  TERM/INT/HUP to remove its record and emit one JSON verdict naming the
+  phase (written to a saved copy of stdout — bash runs the deferred trap
+  while fd 1 is still the attempt log). The daemon classifies a verifier
+  killed by a signal before answering the same way, from the exit status it
+  already held, instead of "invalid JSON", permanent. (`tests/merge_gate.rs`)
+- **The poller never completes a `verifying` story.** A close-on-merge pull
+  request merged outside central verification is recorded as
+  `StoryPrMerged` plus `CENTRAL VERIFICATION UNCERTIFIED MERGE —`; the story
+  stays `verifying` for the verifier's own entry path (`recover_merged`:
+  receipt, or a named halt) or an operator's override.
+  (`tests/service_pr_check.rs`)
+- **An overridden story is reaped once its pull request is recorded merged**,
+  and not before: a reap deletes the branch and worktree, and an unmerged
+  override may be the only copy of the work.
+
+Direction (b) of the story — the merge must require a receipt for the exact
+tree — was already true: `land-pr.sh --certified-run` execs the merge only
+after `merge-preflight.sh` certifies it, and `recover_merged` refuses a merged
+pull request whose tree carries no receipt. GitHub-side prevention of a hand
+merge (a ruleset requiring a status check) is an operator decision outside
+this repository.
+
 ## Manual verifier controls — SH-668
 
 Each project stores admission permission separately from failure incidents.
@@ -821,3 +1137,72 @@ REST: `POST /api/repos/{project}/verification/control` accepts `action` of
 derived `state`. `/verification/ack` accepts optional `action`: `retry` or
 `leave-stopped`; omission retains the legacy acknowledgement contract. Mutations
 return confirmed state; the UI refreshes after failures or ambiguous transport.
+
+## Withdrawing active verification — SH-686
+
+An operator may move a story out of `verifying` while its gate runs. That
+withdraws the exact generation's authority: the verifier cancels its subprocess,
+finishes owned cleanup, discards its outcome, records the withdrawal on the
+story (SH-692, below) and proceeds to current queued work. A rapid departure and
+resubmission also invalidates the old generation. Ordinary comments, priority
+changes and another project's changes do not withdraw it.
+
+Monitoring belongs only around the blocking verification attempt. Subscribe
+before checking authority; recheck on project/catalog/resync notifications and
+an absolute recovery deadline that unrelated events cannot postpone. Stop and
+join the monitor before verifier-owned repair or completion transitions. An
+observation error cancels the attempt and reports context after cleanup.
+
+Each attempt has a fresh cancellation signal, separate from manual stop, which
+remains irreversible across reconciliation generations. State withdrawal does
+not disable project admission. Existing generation-guarded writes still fence
+completion races. Preserve the operator's state and any uncertain cleanup
+evidence; never classify withdrawal as failed tests or successful verification.
+
+The Python lifecycle owner must install signal handling before releasing its
+child handshake, settle its recorded lifecycle and gate sessions before the
+outer termination deadline, and retain ownership until cleanup is established.
+The design council's complete decision is recorded on SH-686.
+
+
+## SH-703 — queue visibility and explicit recovery
+
+Verifier status and CLI controls share the dashboard's ownership registry and
+atomic admission controls. Acknowledgement enables admission by default;
+`--leave-stopped` states the alternative. Durable recovery receipts distinguish
+scheduled requests from actual attempts and retain acknowledgement evidence.
+See [Verifier observability](verifier-observability.md) for the shared snapshot,
+notification payloads, progress warnings, and validation.
+
+## Completed verdicts survive cleanup failure — SH-702
+
+A completed gate answers independently of its cleanup. `tests-failed` and
+`merged` retain their wire results and can carry `cleanup_failure` with phase,
+diagnosis, retained owner/worktree paths and permanent disposition. `gate-passed`
+with cleanup metadata reports a normally completed command whose landing was
+not attempted; it does not claim a release-gate receipt or authorize Done.
+
+The daemon writes the completed verdict and infrastructure halt in one guarded
+transaction. The halt says cleanup failed after the recorded verdict, never
+that the code was unjudged. RED includes the existing named failure summary and
+attempt log; RED and unlanded passes stay verifying until recovery. A guarded
+merge that already landed still records GREEN, the merged link and Done; its
+cleanup incident continues to halt later ticks and suppresses reaping.
+
+Normal completion evidence is bound to the attempt, owner nonce and pinned
+parents, and published before cleanup. Preparation failures, failed launches,
+missing/malformed evidence and terminated gate commands remain infrastructure
+failures. Existing PR-head and verification-generation guards still discard
+superseded attempts. See `verifier-worktree-lifecycle.md` for the artifact and
+recovery contract.
+
+Cancellation and idle timeout still terminate and reap the wrapper group. The
+progress-aware capture retains any bounded answer published during termination
+alongside the process error. A validated completed result with cleanup metadata
+survives a late manual stop and records its halt; malformed or incomplete answers
+retain the original interruption outcome. Authority withdrawal still discards
+the obsolete attempt. No cancellation result alone authorizes a verdict.
+If a wrapper reports a complete bare answer and then fails to exit, the daemon
+adds the capture failure as a permanent cleanup halt. It reports the known source
+checkout and explicitly marks owner/shared-worktree paths unavailable when the
+wrapper did not supply them. It never derives guessed cleanup authority.

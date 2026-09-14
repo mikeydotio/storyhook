@@ -529,37 +529,49 @@ impl ProgressFeeder {
         let flag = Arc::clone(&stop);
         let journal = journal.to_path_buf();
         let pause = std::time::Duration::from_millis(lock_poll_secs() * 1000 / FEEDS_PER_POLL);
-        let thread = std::thread::spawn(move || {
-            let give_up_at = std::time::Instant::now() + poll_ceiling();
-            loop {
-                if flag.load(Ordering::SeqCst) {
-                    return FeederStop::RunEnded;
-                }
-                if sentinel() {
-                    return FeederStop::SentinelReached;
-                }
-                if std::time::Instant::now() >= give_up_at {
-                    return FeederStop::Patience;
-                }
-                match std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(false)
-                    .open(&journal)
-                {
-                    Ok(mut file) => file
-                        .write_all(FEEDER_LINE.as_bytes())
-                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}")),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return FeederStop::JournalGone;
-                    }
-                    Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
-                }
-                std::thread::sleep(pause);
-            }
-        });
+        let thread = std::thread::spawn(move || Self::feed(&journal, sentinel, &flag, pause));
         Self {
             stop,
             thread: Some(thread),
+        }
+    }
+
+    /// Observes the holder state and cancellation in the same loop used by
+    /// the thread. Direct calls can establish both facts before observation.
+    fn feed(
+        journal: &Path,
+        sentinel: impl Fn() -> bool,
+        flag: &AtomicBool,
+        pause: std::time::Duration,
+    ) -> FeederStop {
+        let give_up_at = std::time::Instant::now() + poll_ceiling();
+        loop {
+            if sentinel() {
+                return FeederStop::SentinelReached;
+            }
+            match std::fs::OpenOptions::new()
+                .append(true)
+                .create(false)
+                .open(journal)
+            {
+                Ok(mut file) => {
+                    // Finishing a run cannot erase journal loss or a reached
+                    // sentinel, but it must prevent any further progress writes.
+                    if flag.load(Ordering::SeqCst) {
+                        return FeederStop::RunEnded;
+                    }
+                    if std::time::Instant::now() >= give_up_at {
+                        return FeederStop::Patience;
+                    }
+                    file.write_all(FEEDER_LINE.as_bytes())
+                        .unwrap_or_else(|e| panic!("feeder: appending to the journal: {e}"));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return FeederStop::JournalGone;
+                }
+                Err(e) => panic!("feeder: opening {}: {e}", journal.display()),
+            }
+            std::thread::sleep(pause);
         }
     }
 
@@ -586,6 +598,33 @@ impl Drop for ProgressFeeder {
             let _ = thread.join();
         }
     }
+}
+
+/// Cancellation must not erase a completed subject or append after a run ends.
+#[test]
+fn progress_feeder_preserves_terminal_observations_when_cancellation_is_already_requested() {
+    let root = storyhook_test_support::scratch_dir();
+    let journal = root.path().join("journal");
+    let cancelled = AtomicBool::new(true);
+    let pause = std::time::Duration::ZERO;
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || false, &cancelled, pause),
+        FeederStop::JournalGone
+    );
+    assert!(!journal.exists(), "the feeder recreated a removed journal");
+    std::fs::write(&journal, "existing progress\n").unwrap();
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || false, &cancelled, pause),
+        FeederStop::RunEnded
+    );
+    assert_eq!(
+        std::fs::read_to_string(&journal).unwrap(),
+        "existing progress\n"
+    );
+    assert_eq!(
+        ProgressFeeder::feed(&journal, || true, &cancelled, pause),
+        FeederStop::SentinelReached
+    );
 }
 
 /// A sentinel: `journal` holds a line naming `needle`.
@@ -1210,20 +1249,59 @@ fn two_different_names_do_not_serialize() {
     let fixture = Fixture::new();
     let trace = fixture.path().join("trace");
     let trace_arg = trace.display().to_string();
+    let ready = fixture.path().join("ready");
 
     let slow = fixture.helper(
         "slow.sh",
-        "#!/bin/sh\nprintf 'A-in\\n' >> \"$1\"\nsleep 2\nprintf 'A-out\\n' >> \"$1\"\n",
+        "#!/bin/sh\n\
+         IFS= read -r start || exit 1\n\
+         printf 'A-in\\n' >> \"$1\"\n\
+         touch \"$2\"\n\
+         IFS= read -r release || exit 1\n\
+         printf 'A-out\\n' >> \"$1\"\n",
     );
     let quick = fixture.helper(
         "quick.sh",
         "#!/bin/sh\nprintf 'B-in\\n' >> \"$1\"\nprintf 'B-out\\n' >> \"$1\"\n",
     );
 
-    let mut first = fixture.spawn(&["gate", "--", &slow.display().to_string(), &trace_arg]);
+    let mut command = fixture.command(&[
+        "gate",
+        "--",
+        &slow.display().to_string(),
+        &trace_arg,
+        &ready.display().to_string(),
+    ]);
+    command.stdin(Stdio::piped());
+    let mut first =
+        ChildGuard::spawn_with_output(&mut command).expect("spawning the paused holder");
+    // Construct the startup gap from SH-705: the wrapper owns the lock before
+    // its child has entered. Only the child's marker establishes readiness.
     wait_for(&fixture.lock("gate").join("pid"));
+    assert!(!trace.exists(), "the holder must wait for its start signal");
+    first
+        .stdin()
+        .expect("the holder's stdin was piped")
+        .write_all(b"start\n")
+        .expect("starting the holder");
+    wait_for(&ready);
 
-    let second = fixture.run(&["merge", "--", &quick.display().to_string(), &trace_arg]);
+    // A remains inside until explicitly released, irrespective of load. A
+    // lock-name collision must fail immediately rather than deadlock the test.
+    let mut command = fixture.command(&[
+        "--max-wait",
+        NO_WAIT,
+        "merge",
+        "--",
+        &quick.display().to_string(),
+        &trace_arg,
+    ]);
+    command.stdin(Stdio::null());
+    let mut second =
+        ChildGuard::spawn_with_output(&mut command).expect("spawning the other-name command");
+    let second = second.wait_with_output_within(poll_ceiling(), || {
+        "the other-name command never exited while `gate` was held".to_string()
+    });
     assert_eq!(code(&second), 0, "the other name must not wait: {second:?}");
 
     let seen = std::fs::read_to_string(&trace).expect("reading the trace");
@@ -1231,9 +1309,24 @@ fn two_different_names_do_not_serialize() {
         seen, "A-in\nB-in\nB-out\n",
         "`merge` must run while `gate` is held -- it ran either before A entered or after A left, so the names are not independent"
     );
-    first.wait_within(poll_ceiling(), || {
+    first
+        .stdin()
+        .expect("the holder's stdin was piped")
+        .write_all(b"release\n")
+        .expect("releasing the holder");
+    let first = first.wait_with_output_within(poll_ceiling(), || {
         "the `gate` holder (slow.sh) never exited".to_string()
     });
+    assert_eq!(
+        code(&first),
+        0,
+        "the released holder must succeed: {first:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&trace).expect("reading the final trace"),
+        "A-in\nB-in\nB-out\nA-out\n",
+        "the first holder must leave only after the other name completed"
+    );
 }
 
 /// SH-306: a gate that goes quiet reads as an all-clear. A waiter must say
@@ -2216,4 +2309,26 @@ fn reentrancy_is_per_project() {
     assert!(stderr(&out).contains("already held by this process tree"));
 
     holder.release();
+}
+
+/// The watchdog must finish its actual timer before returning inherited authority.
+#[test]
+fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
+    let fixture = Fixture::new();
+    let mut command = Command::new("python3");
+    command
+        .arg(checkout().join("tests/support/machine_lock_workspace.py"))
+        .arg(fixture.script())
+        .arg(fixture.path());
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("starting the real watchdog lifetime regression")
+        .wait_with_output_within(2 * poll_ceiling(), || {
+            "watchdog or its timer retained workspace authority after completion".to_string()
+        });
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -7,6 +7,7 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
+use crate::local_time;
 use crate::service::CleanupReport;
 use crate::store::{
     EngineAgent, EngineLaneState, EngineQuarantineRecord, EngineRunState, EngineScope, PrLink,
@@ -132,6 +133,9 @@ pub struct EngineScopeView {
 /// One lane as presented by the engine control surfaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineLaneView {
+    /// Captured identity for an adopted manual lane; absent for engine-created work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_identity: Option<crate::store::AdoptedIdentity>,
     pub index: u32,
     pub state: EngineLaneState,
     pub story: Option<String>,
@@ -208,6 +212,7 @@ impl EngineRunView {
                 let elapsed_seconds = lane.dispatched_at.as_deref().and_then(seconds_since);
                 let quiet_seconds = lane.last_progress_at.as_deref().and_then(seconds_since);
                 EngineLaneView {
+                    adopted_identity: lane.adopted_identity,
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
@@ -838,6 +843,18 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
+    /// Shared verifier snapshot, rendered by the client.
+    VerifierStatus(Box<crate::daemon::verification::status::VerifierStatus>),
+    /// Existing command result with additive project-level verifier evidence.
+    WithVerifier {
+        /// Original response, preserving its JSON keys.
+        response: Box<Response>,
+        /// Shared verifier snapshot.
+        verifiers: Vec<crate::daemon::verification::status::VerifierStatus>,
+        /// Explicit diagnostic when the store-free caller cannot reach live status.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unavailable: Option<String>,
+    },
     Message(String),
     /// A plain-text result plus one or more non-fatal warnings about what it
     /// did **not** do.
@@ -888,9 +905,21 @@ pub enum Response {
     },
     /// One Full Auto engine run after a start, read, or control mutation.
     EngineRun(Box<EngineRunView>),
+    /// Internal cleanup authorization; reading it performs no mutation.
+    EngineReset(Box<crate::store::EngineReset>),
     /// Result of `story cleanup`.
     Cleanup(Box<CleanupReport>),
+    /// Read-only story resource identity and refusal evidence.
+    Resources(Box<crate::service::resources::ResourceReport>),
     Summary(Box<SummaryView>),
+    /// `story report --html`: the report's data, rendered into an HTML
+    /// document by the client (SH-679). The daemon used to compose the HTML
+    /// itself and ship it as a [`Message`](Self::Message), which put the
+    /// "Generated …" timestamp and the Updated column in the daemon's zone;
+    /// rendering is the client's job (`src/api/rpc.rs`), and the client's zone
+    /// is the one the reader is in. The `--json` form is unchanged: the same
+    /// document escaped into the envelope's `message`.
+    HtmlReport(Box<ReportData>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
     PhaseList(Vec<PhaseView>),
@@ -1012,6 +1041,11 @@ pub fn render_response(response: &Response, json: bool, quiet: bool) -> String {
         return format!("{raw}\n");
     }
 
+    if matches!(response, Response::WithVerifier { response, .. } if matches!(response.as_ref(), Response::RawJson(_)))
+    {
+        return render_json(response);
+    }
+
     if quiet {
         return String::new();
     }
@@ -1078,6 +1112,40 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::VerifierStatus(status) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "verifier":status}))
+        }
+        Response::WithVerifier {
+            response,
+            verifiers,
+            unavailable,
+        } => {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&render_response(response, true, false))
+                    .expect("response JSON");
+            if verifiers.len() == 1 {
+                value["verifier"] = serde_json::to_value(&verifiers[0]).expect("verifier JSON");
+            } else {
+                value["verifiers"] = serde_json::to_value(verifiers).expect("verifier JSON");
+            }
+            for warning in verifiers
+                .iter()
+                .filter_map(|v| v.warning.as_ref())
+                .chain(unavailable.iter())
+            {
+                if value.get("warnings").is_none() {
+                    value["warnings"] = serde_json::json!([]);
+                }
+                value["warnings"]
+                    .as_array_mut()
+                    .expect("response warning array")
+                    .push(warning.clone().into());
+            }
+            serde_json::to_string_pretty(&value)
+        }
+        Response::HtmlReport(data) => {
+            return render_json(&Response::Message(render_html_report_data(data)));
+        }
         Response::Message(message) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1198,10 +1266,16 @@ fn render_json(response: &Response) -> String {
             warnings,
             flagged_reasons: &[],
         }),
+        Response::EngineReset(reset) => {
+            serde_json::to_string_pretty(&serde_json::json!({ "result": "ok", "reset": reset }))
+        }
         Response::EngineRun(run) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "run": run,
         })),
+        Response::Resources(report) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "resources":report}))
+        }
         Response::Cleanup(report) => serde_json::to_string_pretty(&serde_json::json!({
             "result": "ok",
             "cleanup": report,
@@ -1361,6 +1435,23 @@ fn render_json(response: &Response) -> String {
 
 fn render_human(response: &Response) -> String {
     match response {
+        Response::VerifierStatus(status) => status.render_human(),
+        Response::WithVerifier {
+            response,
+            verifiers,
+            unavailable,
+        } => {
+            let mut body = render_response(response, false, false);
+            for warning in verifiers
+                .iter()
+                .filter_map(|v| v.warning.as_ref())
+                .chain(unavailable.iter())
+            {
+                body.push_str(&format!("warning: {warning}\n"));
+            }
+            body
+        }
+        Response::HtmlReport(data) => format!("{}\n", render_html_report_data(data)),
         Response::Message(message) => format!("{message}\n"),
         Response::MessageWithWarnings(message, warnings) => {
             let mut body = format!("{message}\n");
@@ -1492,7 +1583,17 @@ fn render_human(response: &Response) -> String {
             }
             body
         }
+        Response::EngineReset(reset) => format!(
+            "Reset {}: run {} lane {} story {}",
+            reset.token, reset.run_id, reset.lane_index, reset.lease.story_id
+        ),
         Response::EngineRun(run) => render_engine_run(run),
+        Response::Resources(report) => format!(
+            "resources {}: {}\n{}\n",
+            report.story_id,
+            report.status,
+            serde_json::to_string_pretty(report).expect("resource report serializes")
+        ),
         Response::Cleanup(report) => {
             let action = if report.dry_run {
                 "would remove"
@@ -1623,7 +1724,10 @@ fn render_engine_run(run: &EngineRunView) -> String {
         body.push_str(&format!("stop reason: {reason}\n"));
         body.push_str(&format!(
             "acknowledged: {}\n",
-            run.acknowledged_at.as_deref().unwrap_or("no")
+            run.acknowledged_at
+                .as_deref()
+                .map(local_time::stamp)
+                .unwrap_or_else(|| "no".to_string())
         ));
     }
     body.push_str("\nlane  state        story       elapsed     quiet\n");
@@ -1875,7 +1979,7 @@ fn render_story_log(id: &str, title: &str, entries: &[LogEntry]) -> String {
         let detail = entry.detail.as_deref().unwrap_or(&entry.kind);
         out.push_str(&format!(
             "{}  {:width$}  {}\n",
-            entry.at,
+            local_time::stamp(&entry.at),
             by,
             detail,
             width = width
@@ -2017,7 +2121,7 @@ fn render_story(view: &StoryView) -> String {
     }
 
     if let Some(closed_at) = &story.closed_at {
-        body.push_str(&format!("closed_at: {closed_at}\n"));
+        body.push_str(&format!("closed_at: {}\n", local_time::stamp(closed_at)));
     }
 
     // "archived", not "hidden": the internal fact is named `hidden` to stay
@@ -2025,7 +2129,7 @@ fn render_story(view: &StoryView) -> String {
     // (`closed_at`-is-set), but the word a user reads for this feature is
     // "Archive" everywhere — see `StoryEvent::StoryHidden`'s doc comment.
     if let Some(hidden_at) = &story.hidden_at {
-        body.push_str(&format!("archived: {hidden_at}\n"));
+        body.push_str(&format!("archived: {}\n", local_time::stamp(hidden_at)));
     }
 
     if view.flagged_reasons.is_empty() {
@@ -2062,7 +2166,11 @@ fn render_story(view: &StoryView) -> String {
     if !story.comments.is_empty() {
         body.push_str("comments:\n");
         for comment in &story.comments {
-            body.push_str(&format!("- {} {}\n", comment.at, comment.text));
+            body.push_str(&format!(
+                "- {} {}\n",
+                local_time::stamp(&comment.at),
+                comment.text
+            ));
         }
     }
 
@@ -2084,20 +2192,24 @@ fn render_story(view: &StoryView) -> String {
         for commit in &view.referenced_by.commits {
             body.push_str(&format!(
                 "- {} {}\n",
-                commit.at,
+                local_time::stamp(&commit.at),
                 crate::domain::git_link_comment(&commit.sha, &commit.subject)
             ));
         }
         for pr in &view.referenced_by.prs {
             body.push_str(&format!(
                 "- {} [pr] {} ({})\n",
-                pr.linked_at, pr.url, pr.status
+                local_time::stamp(&pr.linked_at),
+                pr.url,
+                pr.status
             ));
         }
         for mention in &view.referenced_by.comment_mentions {
             body.push_str(&format!(
                 "- {} [comment] {}: {}\n",
-                mention.at, mention.other_id, mention.snippet
+                local_time::stamp(&mention.at),
+                mention.other_id,
+                mention.snippet
             ));
         }
     }
@@ -2241,6 +2353,21 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
+/// [`render_html_report`] over a [`ReportData`], the shape that crosses the
+/// daemon wire inside [`Response::HtmlReport`].
+pub fn render_html_report_data(data: &ReportData) -> String {
+    let ready: std::collections::BTreeSet<&str> =
+        data.ready_ids.iter().map(String::as_str).collect();
+    let blocked: std::collections::BTreeSet<&str> =
+        data.blocked_ids.iter().map(String::as_str).collect();
+    render_html_report(
+        &data.summary,
+        &data.stories,
+        &|id| ready.contains(id),
+        &|id| blocked.contains(id),
+    )
+}
+
 pub fn render_html_report(
     summary: &SummaryView,
     stories: &[StoryView],
@@ -2382,7 +2509,7 @@ tbody tr:hover {{ background:var(--table-hover); }}
 </body>
 </html>
 "##,
-        generated_at = html_escape(&chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string()),
+        generated_at = html_escape(&local_time::now_stamp()),
         total = total,
         open = summary.total_open,
         closed = summary.total_closed,
@@ -2516,12 +2643,7 @@ fn build_table_rows(
             .map(html_escape)
             .unwrap_or_else(|| String::from("<span class=\"muted\">-</span>"));
 
-        let updated = &s.updated_at;
-        let updated_display = if updated.len() >= 10 {
-            html_escape(&updated[..10])
-        } else {
-            html_escape(updated)
-        };
+        let updated_display = html_escape(&local_time::day(&s.updated_at));
 
         html.push_str(&format!(
             "<tr{row_class}><td class=\"col-id\">{}</td><td>{}</td><td>{}</td><td><span class=\"priority-badge {priority_cls}\">{}</span></td><td>{labels_html}</td><td>{assignee}</td><td class=\"col-date\">{updated_display}</td></tr>\n",
@@ -2551,7 +2673,6 @@ mod cleanup_render_tests {
                 branch: "worktree-SH-7".into(),
                 removed_worktree: true,
                 removed_local_branch: true,
-                removed_remote_branch: true,
                 reclaimed_bytes: 4096,
             }],
             skipped: vec![CleanupSkip {

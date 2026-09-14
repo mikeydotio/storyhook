@@ -50,6 +50,14 @@ int main(int argc, char **argv) {
 ''')
         subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(cls.bin / "codex")], check=True)
         shutil.copy2(cls.bin / "codex", cls.bin / "claude")
+        repo = PLUGIN.parents[1]
+        artifact = Path(os.environ.get("CARGO_TARGET_DIR", repo / "target")) / "debug/story"
+        lease = subprocess.run(["bash", "-c",
+            'source "$1"; storyhook_lease_binary "$2" "$3"', "fixture",
+            str(repo / "scripts/binary-lease.sh"), str(artifact), str(os.getpid())],
+            capture_output=True, text=True, check=True)
+        cls.story = Path(lease.stdout.strip())
+        cls.addClassCleanup(shutil.rmtree, cls.story.parent)
         cls.tmux_bin = shutil.which("tmux")
         if not cls.tmux_bin:
             raise RuntimeError("native tmux is required")
@@ -68,12 +76,28 @@ int main(int argc, char **argv) {
         self.repo.mkdir()
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(("GIT_", "STORY_", "STORYHOOK_", "TMUX", "FAKE_TMUX"))}
-        self.env.update({"PATH": f"{self.bin}:{os.environ['PATH']}", "STORY_PASTE_SETTLE_DELAY": "0"})
+        isolation = subprocess.run(["bash", "-c",
+            'source "$1"; storyhook_isolate --home --parent-pid "$2" "$3"; '
+            'exec python3 -c "import json,os; print(json.dumps(dict(os.environ)))"',
+            "fixture", str(PLUGIN.parents[1] / "scripts/test-env.sh"), str(os.getpid()),
+            str(self.root / "isolation")], env=self.env, capture_output=True, text=True, check=True)
+        self.env = json.loads(isolation.stdout)
+        self.env.update({"PATH": f"{self.bin}:{self.story.parent}:{self.env['PATH']}",
+                         "STORY_PASTE_SETTLE_DELAY": "0", "TMUX_TMPDIR": str(self.root / "private-tmux")})
         self.git("init", "-q", "-b", "main")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "fixture")
+        self.addCleanup(self.stop_daemon)
+        self.run_command([str(self.story), "project", "new", "--prefix", "TST", "--name", "fixture"], check=True)
+        project = json.loads(self.run_command([str(self.story), "project", "show", "--json"], check=True).stdout)
+        self.project = project["project"]["slug"]
+        self.git("add", ".storyhook.toml")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "project pointer")
+        story = json.loads(self.run_command([str(self.story), "new", "Repair the fixture", "--json"], check=True).stdout)
+        self.assertEqual(story["story"]["story"]["id"], "TST-1")
         self.worktree = self.repo / ".codex/worktrees/TST-1"
-        self.git("worktree", "add", "-qb", "codex-TST-1", str(self.worktree))
+        self.git("worktree", "add", "-qb", "worktree-TST-1", str(self.worktree))
         self.socket = self.root / "tmux.sock"
         self.server = subprocess.Popen([self.tmux_bin, "-D", "-f", "/dev/null", "-S", str(self.socket)],
                                        env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -82,6 +106,10 @@ int main(int argc, char **argv) {
         self.tmux("new-session", "-d", "-s", "fixture", "sleep 600")
         self.env["TMUX"] = self.tmux("display-message", "-p", "#{socket_path},#{pid},0").strip()
         self.pane = self.launch()
+
+    def stop_daemon(self):
+        """Reap this case's isolated store owner before removing its home."""
+        self.run_command([str(self.story), "daemon", "stop", "--force"], check=True)
 
     def stop_server(self):
         """Terminate this private server and reap its process."""
@@ -132,7 +160,7 @@ int main(int argc, char **argv) {
         before = self.env.copy()
         self.env.update(env)
         try:
-            result = self.run_command(["bash", str(HELPER), "--project", "fixture", "notify", "TST-1", message])
+            result = self.run_command(["bash", str(HELPER), "--project", self.project, "notify", "TST-1", message])
         finally:
             self.env = before
         self.assertTrue(result.stdout.strip(), result.stderr)
@@ -152,6 +180,52 @@ int main(int argc, char **argv) {
         self.assertTrue(self.inputs[self.pane].read_bytes().endswith(b"\t"))
         self.assertEqual(pid, self.tmux("display-message", "-p", "-t", self.pane, "#{pane_pid}"))
         self.assertEqual(self.record()["provider"], "codex")
+
+    def test_c_locale_preserves_inventory_and_exact_pane_revalidation(self):
+        """An ASCII locale cannot erase inventory delimiters or pane authority."""
+        self.env["LC_ALL"] = "C"
+        registered = self.register()
+        self.assertTrue(registered["ok"], registered)
+        result = self.notify("C_LOCALE_DELIVERY")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["pane"], self.pane)
+        self.wait_for(lambda: b"C_LOCALE_DELIVERY" in self.inputs[self.pane].read_bytes(),
+                      "C locale remediation bytes")
+        self.assertTrue(self.inputs[self.pane].read_bytes().endswith(b"\t"))
+
+    def test_interrupt_never_adopts_an_unregistered_direct_provider(self):
+        """Delayed authority cannot bind itself to a later discovered session."""
+        result = self.notify("--interrupt")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-provider-unknown")
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
+
+    def test_resume_never_adopts_an_unregistered_direct_provider(self):
+        """A session-bound Resume cannot register a replacement on discovery."""
+        answer = self.run_command(["bash", str(HELPER), "--project", self.project,
+            "notify", "TST-1", "RESUME_FIXTURE", "--expected-target", "previous-session"])
+        result = json.loads(answer.stdout)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-provider-unknown")
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
+
+    def test_adoption_refuses_a_bad_revocation_receipt_before_registration_or_input(self):
+        """Only the durable endpoint is replaced; native identity and input are real."""
+        endpoint = self.root / "story-endpoint"
+        endpoint.write_text("#!/usr/bin/env python3\nimport os,sys\n"
+            "if 'supersede-block-deliveries' in sys.argv:\n"
+            " print('{\"protocol_version\":1,\"project\":\"foreign\",\"story_id\":\"TST-1\",\"superseded\":0}')\n"
+            " sys.exit(0)\n"
+            f"os.execv({str(self.story)!r}, [{str(self.story)!r}] + sys.argv[1:])\n")
+        endpoint.chmod(0o755)
+        result = self.notify(STORY_BIN=str(endpoint))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-query-failed")
+        self.assertIn("revocation receipt", result["display"])
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
 
     def test_claude_uses_its_submit_key(self):
         """Provider identity determines Enter versus Tab."""
@@ -196,7 +270,7 @@ int main(int argc, char **argv) {
         """Call the production registration boundary used by managed dispatch."""
         pane = pane or self.pane
         pid = self.tmux("display-message", "-p", "-t", pane, "#{pane_pid}").strip()
-        result = self.run_command(["python3", str(IDENTITY), "register", "fixture", "TST-1",
+        result = self.run_command(["python3", str(IDENTITY), "register", self.project, "TST-1",
                                    "TST-1", str(self.worktree), pane, pid, "codex"])
         return json.loads(result.stdout)
 
@@ -233,7 +307,7 @@ int main(int argc, char **argv) {
     def test_reused_pid_during_startup_cannot_register(self):
         """The PID must still have the incarnation captured before readiness."""
         pid = self.tmux("display-message", "-p", "-t", self.pane, "#{pane_pid}").strip()
-        result = self.run_command(["python3", str(IDENTITY), "register", "fixture", "TST-1",
+        result = self.run_command(["python3", str(IDENTITY), "register", self.project, "TST-1",
                                    "TST-1", str(self.worktree), self.pane, pid, "codex", "earlier-start"])
         receipt = json.loads(result.stdout)
         self.assertFalse(receipt["ok"], receipt)
@@ -359,9 +433,9 @@ int main(int argc, char **argv) {
 
     def test_lease_selects_its_socket_and_worktree(self):
         """The caller's ambient tmux server cannot redirect a leased callback."""
-        lease = dict(version=1, project_slug="fixture", story_id="TST-1",
-                     repository_path=str(self.repo), worktree_path=str(self.worktree),
-                     branch="codex-TST-1", tmux={"socket_path": str(self.socket)})
+        lease = dict(version=1, project_slug=self.project, story_id="TST-1",
+                     repository_path=str(self.repo.resolve()), worktree_path=str(self.worktree.resolve()),
+                     branch="worktree-TST-1", tmux={"socket_path": str(self.socket.resolve())})
         result = self.notify(TMUX="/nonexistent-story-fixture-socket,0,0",
                              STORYHOOK_NOTIFY_LEASE_V1=json.dumps(lease))
         self.assertTrue(result["ok"], result)
@@ -369,6 +443,57 @@ int main(int argc, char **argv) {
         before = self.inputs[self.pane].read_bytes()
         self.assertFalse(self.notify(STORYHOOK_NOTIFY_LEASE_V1=json.dumps(lease))["ok"])
         self.assertEqual(self.inputs[self.pane].read_bytes(), before)
+
+    def test_recorded_socket_routes_an_inactive_agent_from_an_unrelated_server(self):
+        """Canonical location and exact process ownership compose across servers."""
+        self.assertTrue(self.register()["ok"])
+        lease = dict(version=1, project_slug=self.project, story_id="TST-1",
+                     repository_path=str(self.repo.resolve()), worktree_path=str(self.worktree.resolve()),
+                     branch="worktree-TST-1", tmux={"socket_path": str(self.socket.resolve())})
+        gitdir = Path(self.git("-C", str(self.worktree), "rev-parse", "--absolute-git-dir").strip())
+        (gitdir / "storyhook-cleanup-lease-v1.json").write_text(json.dumps(lease))
+        sibling = self.tmux("split-window", "-d", "-t", self.pane, "-c", str(self.repo),
+                            "-P", "-F", "#{pane_id}", "sleep 600").strip()
+        self.tmux("select-pane", "-t", sibling)
+        caller_socket = self.root / "caller.sock"
+        self.run_command([self.tmux_bin, "-f", "/dev/null", "-S", str(caller_socket),
+                          "new-session", "-d", "-s", "caller", "-n", "TST-1", "sleep 600"], check=True)
+        self.addCleanup(lambda: self.run_command([self.tmux_bin, "-S", str(caller_socket), "kill-server"], check=True))
+        result = self.notify("OWNER_ONLY", TMUX=f"{caller_socket},0,0")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["pane"], self.pane)
+        self.wait_for(lambda: b"OWNER_ONLY" in self.inputs[self.pane].read_bytes(), "owner input")
+        self.assertNotIn("OWNER_ONLY", self.tmux("capture-pane", "-p", "-t", sibling))
+
+    def test_missing_recorded_server_is_absence_without_using_the_ambient_agent(self):
+        """A proved missing recorded socket cannot redirect to another live server."""
+        lease = dict(version=1, project_slug=self.project, story_id="TST-1",
+                     repository_path=str(self.repo.resolve()), worktree_path=str(self.worktree.resolve()),
+                     branch="worktree-TST-1", tmux={"socket_path": str(self.root / "missing.sock")})
+        result = self.notify(STORYHOOK_NOTIFY_LEASE_V1=json.dumps(lease))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-unavailable")
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+
+    def test_registration_changed_after_paste_prevents_submission(self):
+        """The final submit cannot reuse identity that changed after delivery."""
+        self.assertTrue(self.register()["ok"])
+        record = self.record()
+        record["process"]["start"] = "changed-after-paste"
+        adapter = self.root / "adapters"
+        adapter.mkdir()
+        wrapper = adapter / "tmux"
+        mutate = [self.tmux_bin, "-S", str(self.socket), "set-option", "-p", "-t",
+                  self.pane, OPTION, json.dumps(record)]
+        wrapper.write_text('#!/bin/sh\n' + shlex.quote(self.tmux_bin) + ' "$@" || exit $?\n'
+                           + 'case " $* " in *" paste-buffer "*) '
+                           + shlex.join(mutate) + ' ;; esac\n')
+        wrapper.chmod(0o755)
+        result = self.notify("PASTED_WITHOUT_SUBMIT", PATH=f"{adapter}:{self.env['PATH']}")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-changed")
+        self.wait_for(lambda: b"PASTED_WITHOUT_SUBMIT" in self.inputs[self.pane].read_bytes(), "pasted input")
+        self.assertFalse(self.inputs[self.pane].read_bytes().endswith(b"\t"))
 
     def test_failed_registration_readback_is_refused(self):
         """A successful write without trustworthy readback is not registration."""

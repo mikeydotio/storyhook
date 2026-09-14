@@ -180,7 +180,8 @@ git_with_lease() {
 }
 
 # The tree object id of every TRACKED file as it currently stands in this
-# worktree — HEAD's tree with any uncommitted edits to tracked files folded in.
+# worktree — the current index's tracked paths with worktree edits folded in,
+# including staged additions and deletions.
 # Untracked files are excluded on purpose: `target/`, `e2e/node_modules` and
 # the suite's own scratch output are not what is being certified, and `git add
 # -A` is forbidden here for the same reason.
