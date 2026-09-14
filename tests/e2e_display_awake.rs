@@ -35,10 +35,25 @@ const WRAPPER: &str = "keep_display_awake";
 /// Lines that launch a real Playwright run: every `npx playwright test`
 /// that is not the `--list` enumeration (which opens no browser).
 fn real_playwright_runs(script: &str) -> Vec<(usize, &str)> {
-    script
-        .lines()
+    let lines: Vec<_> = script.lines().collect();
+    lines
+        .iter()
+        .copied()
         .enumerate()
-        .filter(|(_, line)| line.contains("npx playwright test") && !line.contains("--list"))
+        .filter(|(index, line)| {
+            let listing_argument = index.checked_sub(1).is_some_and(|previous| {
+                let opener = lines[previous].trim();
+                opener.starts_with("list_output=\"$(e2e_list_selection ")
+                    && opener.ends_with('\\')
+                    && line.trim_start().starts_with("npx playwright test ")
+                    && line.trim_end().ends_with("\")\" || list_status=$?")
+                    && line.matches("npx playwright test").count() == 1
+                    && line.matches("||").count() == 1
+                    && !line.contains(';')
+                    && !line.contains("&&")
+            });
+            line.contains("npx playwright test") && !line.contains("--list") && !listing_argument
+        })
         .map(|(index, line)| (index + 1, line.trim()))
         .collect()
 }
@@ -116,5 +131,35 @@ fn the_scan_can_still_see_an_unwrapped_run() {
     assert!(
         is_wrapped(runs[1].1),
         "the wrapped form must read as wrapped"
+    );
+}
+
+#[test]
+fn the_listing_helper_exemption_requires_its_actual_envelope() {
+    let opener = r#"list_output="$(e2e_list_selection "$data_root/list.stderr" \"#;
+    let argument = r#"  npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?"#;
+    let listing = format!("{opener}\n{argument}\n");
+    assert!(real_playwright_runs(&listing).is_empty());
+    for altered in [
+        format!("# {opener}\n{argument}\n"),
+        format!("{}\n{argument}\n", opener.trim_end_matches('\\')),
+        format!("{opener}\n{argument}; npx playwright test\n"),
+        format!("{listing}npx playwright test --project=chromium\n"),
+    ] {
+        let runs = real_playwright_runs(&altered);
+        assert_eq!(
+            runs.len(),
+            1,
+            "the listing exemption hid an actual run: {altered}"
+        );
+        assert!(!is_wrapped(runs[0].1));
+    }
+    let helper = read("scripts/e2e-selection.sh");
+    assert!(
+        helper.lines().any(|line| {
+            !line.trim_start().starts_with('#')
+                && line.contains(r#""$@" --list --reporter=list --pass-with-no-tests"#)
+        }),
+        "the exempt helper must still force listing-only execution"
     );
 }

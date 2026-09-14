@@ -693,7 +693,7 @@ impl DispatchRegistry {
     /// installed (and vice versa). `try_start_for_agent` remains the atomic
     /// authority after resolution, closing the race between this advisory
     /// read and a concurrent first request.
-    fn running_handle(&self, story: &str) -> Option<String> {
+    pub(crate) fn running_handle(&self, story: &str) -> Option<String> {
         self.inner
             .lock()
             .expect("dispatch registry lock")
@@ -1589,7 +1589,7 @@ fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
-pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 4;
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 5;
 
 /// Locates `plugins/story/bin/story.sh`, in order:
 ///
@@ -3222,7 +3222,7 @@ mod tests {
     /// `check_dispatch_protocol` now requires, so these tests keep
     /// exercising resolution order rather than tripping the protocol check
     /// that has its own tests, below.
-    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=4\n";
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=5\n";
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {

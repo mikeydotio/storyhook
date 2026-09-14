@@ -761,7 +761,7 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
         .0;
 
     for required in [
-        "data_root=\"$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)\"",
+        "data_root=\"$(mktemp -d /private/tmp/story-e2e.XXXXXX)\"",
         "export FAKE_TMUX_STATE=\"$data_root/faketmux\"",
         "seed_dir=\"$data_root/seed\"",
         "start_output=\"$(\"$story_bin\" daemon start 2>&1)\"",
@@ -1241,5 +1241,118 @@ fn the_placeholder_pane_lifetime_is_stated_before_the_snapshot_and_reaped_at_cle
     assert!(
         reap < removal,
         "the pid must be read and the placeholder killed before the file naming it is deleted"
+    );
+}
+
+/// Run the runner's actual environment statements without building or starting a browser.
+fn run_runner_environment(
+    block: &str,
+    environment: &[(&str, &str)],
+    probe: &str,
+) -> std::process::Output {
+    let mut command = std::process::Command::new("/bin/bash");
+    command.env_clear().env("PATH", "/usr/bin:/bin");
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.args(["-c", &format!("set -euo pipefail\n{block}\n{probe}")]);
+    ChildGuard::spawn_with_output(&mut command)
+        .expect("running the browser harness environment boundary")
+        .wait_with_output_within(UTILITY_DEADLINE, || {
+            "browser harness environment probe did not finish".to_string()
+        })
+}
+
+#[test]
+fn the_runner_routes_plugin_children_and_bare_story_calls_through_its_lease() {
+    let runner = read("scripts/run-e2e.sh");
+    let block = runner
+        .split_once("  export DASHBOARD_STORY_BIN=\"$story_bin\"")
+        .expect("the browser runner must hand the lease to specs")
+        .1
+        .split_once("  # This is not a store-isolation parameter")
+        .expect("the lease boundary must precede proxy setup")
+        .0;
+    let block = format!("export DASHBOARD_STORY_BIN=\"$story_bin\"\n{block}");
+    let fixture = storyhook_test_support::scratch_dir();
+    let lease_dir = fixture.path().join("lease with spaces");
+    let ambient_dir = fixture.path().join("ambient");
+    for directory in [&lease_dir, &ambient_dir] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", directory.join("story")).unwrap();
+    }
+    let lease = lease_dir.join("story");
+    let ambient = ambient_dir.join("story");
+    let path = format!("{}:/usr/bin:/bin", ambient_dir.display());
+    for poisoned_override in [false, true] {
+        let mut environment = vec![
+            ("story_bin", lease.to_str().unwrap()),
+            ("story_lease_dir", lease_dir.to_str().unwrap()),
+            ("PATH", path.as_str()),
+            ("DASHBOARD_STORY_BIN", ambient.to_str().unwrap()),
+        ];
+        if poisoned_override {
+            environment.push(("STORY_BIN", ambient.to_str().unwrap()));
+        }
+        let output = run_runner_environment(
+            &block,
+            &environment,
+            "/bin/bash -c 'printf \"%s\\n\" \"${STORY_BIN:-missing}\" \"$(command -v story)\" \"$DASHBOARD_STORY_BIN\"'",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected = format!("{0}\n{0}\n{0}\n", lease.display());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "plugin overrides, bare CLI calls, and browser specs must inherit the same lease"
+        );
+    }
+}
+
+#[test]
+fn the_runner_preserves_no_color_intent_without_exporting_conflicting_node_flags() {
+    let runner = read("scripts/run-e2e.sh");
+    let entry = runner
+        .split_once("set -euo pipefail\n")
+        .expect("the runner must establish strict shell mode")
+        .1
+        .split_once("\ncd \"$(dirname \"$0\")/..\"")
+        .expect("the runner entry must precede checkout setup")
+        .0;
+    for no_color in ["", "1"] {
+        let output = run_runner_environment(
+            entry,
+            &[
+                ("NO_COLOR", no_color),
+                ("FORCE_COLOR", "1"),
+                ("DEBUG_COLORS", "1"),
+            ],
+            "printf '%s\\n' \"${NO_COLOR+present}\" \"${FORCE_COLOR:-missing}\" \"${DEBUG_COLORS:-missing}\"",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "\n0\n0\n",
+            "NO_COLOR must become one unambiguous no-color setting before Node starts"
+        );
+    }
+    let output = run_runner_environment(
+        entry,
+        &[("FORCE_COLOR", "2"), ("DEBUG_COLORS", "1")],
+        "printf '%s\\n' \"${NO_COLOR+present}\" \"$FORCE_COLOR\" \"$DEBUG_COLORS\"",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "\n2\n1\n",
+        "an explicit color preference without NO_COLOR must remain unchanged"
     );
 }

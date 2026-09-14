@@ -442,8 +442,13 @@ fn caller_owned_objects_keep_a_dirty_tracked_tree_resolvable_without_mutating_gi
         .expect("writing the file that will be modified");
     std::fs::write(repo.join("deleted"), "original deleted file\n")
         .expect("writing the file that will be deleted");
+    std::fs::write(
+        repo.join("cached-deleted"),
+        "retained after index deletion\n",
+    )
+    .expect("writing the file that will become untracked");
     assert_ok(
-        &git(&repo, &["add", "modified", "deleted"]),
+        &git(&repo, &["add", "modified", "deleted", "cached-deleted"]),
         "tracking fixture files",
     );
     assert_ok(
@@ -464,6 +469,14 @@ fn caller_owned_objects_keep_a_dirty_tracked_tree_resolvable_without_mutating_gi
 
     std::fs::write(repo.join("modified"), "new dirty content\n").expect("modifying a tracked file");
     std::fs::remove_file(repo.join("deleted")).expect("deleting a tracked file");
+    assert_ok(
+        &git(&repo, &["rm", "--cached", "cached-deleted"]),
+        "staging a deletion while retaining the file",
+    );
+    std::fs::write(repo.join("added"), "staged content\n").expect("writing a new tracked file");
+    assert_ok(&git(&repo, &["add", "added"]), "staging a new file");
+    std::fs::write(repo.join("added"), "current added content\n")
+        .expect("editing the staged addition");
     std::fs::write(repo.join("untracked"), "must not enter the identity\n")
         .expect("writing an untracked file");
 
@@ -514,8 +527,8 @@ fn caller_owned_objects_keep_a_dirty_tracked_tree_resolvable_without_mutating_gi
     assert_ok(&changed, "diffing the caller-owned dirty tree");
     assert_eq!(
         trimmed_stdout(&changed),
-        "deleted\nmodified",
-        "the dirty tree must include modified/deleted tracked paths and exclude untracked paths"
+        "added\ncached-deleted\ndeleted\nmodified",
+        "the dirty tree must include staged membership and current tracked edits"
     );
     assert_eq!(
         objects_before, objects_after,

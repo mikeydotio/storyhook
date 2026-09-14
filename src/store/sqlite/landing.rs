@@ -4,11 +4,11 @@ use crate::store::{LandingIntent, StoreError};
 use rusqlite::{Connection, params};
 
 pub(super) fn read(conn: &Connection) -> Result<Vec<LandingIntent>, StoreError> {
-    let version: u32 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|e| StoreError::from_sqlite(e, "reading landing schema version"))?;
-    // Old schema fixtures and read-only historical stores have no intents.
-    if version < 38 {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "landing_intents",
+        &["id", "project_id", "story_no", "payload"],
+    )? {
         return Ok(Vec::new());
     }
     let mut stmt = conn

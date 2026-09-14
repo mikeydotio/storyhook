@@ -40,6 +40,10 @@
 //! unreviewable and pins nothing the human form does not.
 
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+use storyhook::daemon::block_delivery::IDLE_POLL;
+use storyhook::store::{BlockAction, DeliveryStatus, ReadOps, Store};
 
 use storyhook_test_support::{Project, TestEnv, scratch_root};
 
@@ -66,7 +70,24 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 /// `blocks` relations, comments, assignees, two members, two archived (closed)
 /// stories, one explicitly closed story, an `awaiting` block, and two phases.
 fn build_corpus() -> Project<'static> {
-    let project = TestEnv::shared().project().build();
+    let env = TestEnv::shared();
+    // The active SH-3 interruption reaches a deterministic helper response.
+    // SH-9 and SH-6 remain todo: their interrupts are durably superseded without
+    // sending a helper command or inventing an acknowledgement comment. The
+    // daemon must inherit the stub before startup, and each exact outcome must
+    // settle before later mutations fix the corpus's global sequence.
+    let stub = env.home().join("golden-notify.sh");
+    std::fs::write(
+        &stub,
+        "DISPATCH_PROTOCOL=5\nprintf '%s' '{\"ok\":false,\"reason\":\"pane-unavailable\",\"display\":\"no agent reached: the golden corpus dispatches nothing\"}'\n",
+    )
+    .expect("writing the dispatch stub");
+    env.story(env.home())
+        .env("STORYHOOK_DISPATCH_SCRIPT", &stub)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let project = env.project().git().build();
     let run = |args: &[&str]| {
         project.run(args).success();
     };
@@ -189,10 +210,11 @@ fn build_corpus() -> Project<'static> {
     run(&["relate", "SH-1", "parent-of", "SH-3"]);
     run(&["relate", "SH-1", "parent-of", "SH-4"]);
     run(&["relate", "SH-5", "blocks", "SH-9"]);
-    // SH-656 permits adding a blocker after work starts. This order preserves
-    // the corpus's blocked, in-progress story through valid live commands.
+    settled(&project, "SH-9", 1, DeliveryStatus::Superseded);
+    // Add the blocker after work starts, preserving valid domain admission.
     run(&["move", "SH-3", "in-progress"]);
     run(&["relate", "SH-2", "blocks", "SH-3"]);
+    settled(&project, "SH-3", 2, DeliveryStatus::Unreached);
 
     run(&["assign", "SH-2", "ada-lovelace"]);
     run(&["assign", "SH-5", "grace-hopper"]);
@@ -214,6 +236,7 @@ fn build_corpus() -> Project<'static> {
     run(&["phase", "add", "SH-9", "2"]);
 
     run(&["block", "SH-6", "waiting on the benchmark harness"]);
+    settled(&project, "SH-6", 3, DeliveryStatus::Superseded);
 
     run(&["move", "SH-4", "review"]);
     run(&["move", "SH-8", "done"]);
@@ -245,6 +268,76 @@ fn build_corpus() -> Project<'static> {
     project
 }
 
+/// Waits for one exact durable outcome, then checks its public history.
+///
+/// A superseded intent has no helper acknowledgement. An unreached attempt
+/// must carry the stub's diagnosis and matching story comment. Reading the
+/// fixture's own store distinguishes these outcomes without fabricating events.
+/// The bound is ten worker fallback intervals; an unexpected terminal outcome
+/// fails immediately with the complete delivery record.
+fn settled(project: &Project<'_>, story: &str, delivery: i64, expected: DeliveryStatus) {
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    let story_no = project.story_no(&store, story);
+    let bound = IDLE_POLL * 10;
+    let deadline = Instant::now() + bound;
+    let record = loop {
+        let record = store
+            .read(|tx| tx.block_deliveries(project_id))
+            .expect("reading the golden corpus's block deliveries")
+            .into_iter()
+            .find(|record| record.id == delivery)
+            .unwrap_or_else(|| panic!("no block delivery #{delivery} for {story}"));
+        assert_eq!(record.story, story_no, "{record:?}");
+        assert_eq!(record.action, BlockAction::Interrupt, "{record:?}");
+        if !matches!(
+            record.status,
+            DeliveryStatus::Pending | DeliveryStatus::Attempting
+        ) {
+            break record;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "block delivery #{delivery} for {story} did not settle within {bound:?}; the corpus \
+             cannot be snapshotted while a delivery is in flight: {record:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(record.status, expected, "{record:?}");
+    assert!(record.target.is_none(), "{record:?}");
+    let shown = project.json(&["show", story]);
+    let comments = shown["story"]["story"]["comments"]
+        .as_array()
+        .expect("story show must expose its comments");
+    let marker = format!("AGENT BLOCK DELIVERY #{delivery} —");
+    match expected {
+        DeliveryStatus::Superseded => {
+            assert_eq!(record.detail, "story has no active execution to interrupt");
+            assert!(
+                comments.iter().all(|comment| !comment["text"]
+                    .as_str()
+                    .expect("a comment must contain text")
+                    .starts_with(&marker)),
+                "superseded delivery has an invented acknowledgement: {shown}"
+            );
+        }
+        DeliveryStatus::Unreached => {
+            assert_eq!(
+                record.detail,
+                "no agent reached: the golden corpus dispatches nothing"
+            );
+            let acknowledgement = format!("{marker} interrupt unreached\n\n> {}", record.detail);
+            assert!(
+                comments
+                    .iter()
+                    .any(|comment| comment["text"].as_str() == Some(acknowledgement.as_str())),
+                "the helper acknowledgement is missing from story history: {shown}"
+            );
+        }
+        _ => panic!("the golden fixture does not request {expected:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Redaction
 // ---------------------------------------------------------------------------
@@ -261,14 +354,12 @@ fn build_corpus() -> Project<'static> {
 /// one machine and green on another.
 fn filters() -> Vec<(String, &'static str)> {
     vec![
-        // 2026-07-28T15:06:14Z — every `at`, `created_at`, `closed_at`, …
+        // 2026-07-28T15:06:14Z in `--json` and `2026-07-28T08:06:14-07:00` in
+        // human text (SH-679: the CLI shows stored instants in the process's
+        // zone, so the offset is whatever this machine's `TZ` says) — every
+        // `at`, `created_at`, `closed_at`, `report --html`'s "Generated …".
         (
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z".to_string(),
-            "[timestamp]",
-        ),
-        // `report --html`: "Generated 2026-07-28 15:06 UTC"
-        (
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC".to_string(),
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})".to_string(),
             "[timestamp]",
         ),
         // `report --html`'s Updated column is a bare date. Scoped to that cell
@@ -285,6 +376,11 @@ fn filters() -> Vec<(String, &'static str)> {
         (
             format!("{}/[A-Za-z0-9._-]+", scratch_root().display()),
             "[fixture]",
+        ),
+        // Project identity is randomly generated by the corpus fixture.
+        (
+            r#""project": "storyhook-fixture-project-[a-z0-9]+""#.to_string(),
+            r#""project": "[project]""#,
         ),
         // Full git SHAs. Short SHAs are deliberately NOT filtered: a 7-hex
         // pattern also matches ordinary words, and over-redaction silently
@@ -327,6 +423,7 @@ macro_rules! assert_json_golden {
             ".**.last_activity_at" => "[timestamp]",
             ".**.days_stale" => "[days]",
             ".**.run.id" => "[run-id]",
+            ".**.verifier.project" => "[project]",
         })
     };
 }

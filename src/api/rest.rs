@@ -234,7 +234,6 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryDelete { .. } => "delete",
         ProjectRoute::StoryAttachmentUpload { .. } => "attachment",
         ProjectRoute::StoryAction { action, .. } => match action {
-            StoryAction::Reset => "reset",
             StoryAction::Move => "move",
             StoryAction::Comment => "comment",
             StoryAction::Priority => "set-priority",
@@ -252,6 +251,8 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryActionUnknown => "unknown-action",
         ProjectRoute::Dispatch { .. } => "dispatch",
         ProjectRoute::DispatchPoll => "dispatch-poll",
+        ProjectRoute::Reset => "reset",
+        ProjectRoute::ResetPoll => "reset-poll",
         ProjectRoute::Engine => "engine",
         ProjectRoute::EngineAction { .. } => "engine-action",
         ProjectRoute::EngineActionUnknown => "unknown-engine-action",
@@ -369,7 +370,8 @@ pub fn route_with_activity<S: Store>(
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
                 let ctx = Ctx::new(store, project, root, env.clone())
                     .no_hooks(hookless)
-                    .with_provenance(route_provenance(&route));
+                    .with_provenance(route_provenance(&route))
+                    .with_verification_activity(Some(verification_activity));
                 let reply = route_project(
                     &ctx,
                     verification_activity,
@@ -464,10 +466,10 @@ fn route_project<S: Store>(
                 .map_err(|error| {
                     AppError::Validation(format!("invalid verifier action: {error}"))
                 })?;
-                let state = verification_activity.control(ctx.store(), ctx.project(), action)?;
+                let (state, receipt) = verification_activity.control_with_receipt(ctx.store(), ctx.project(), action, &ctx.now())?;
                 Ok(json_reply(
                     200,
-                    serde_json::json!({"state": state}).to_string(),
+                    serde_json::json!({"state": state, "command_receipt": receipt, "verifier": verification_activity.status(ctx)?}).to_string(),
                 ))
             })()
             .unwrap_or_else(|error| error_reply(&error))
@@ -500,28 +502,6 @@ fn route_project<S: Store>(
             route_delete_story(ctx, id, b)
         }),
         ProjectRoute::StoryAction { id, action } => match action {
-            StoryAction::Reset => guarded(headers, trusted_hosts, body, |b| {
-                let result = (|| {
-                    let object = parse_json_object(b)?;
-                    let force = match object.get("force") {
-                        None => false,
-                        Some(serde_json::Value::Bool(value)) => *value,
-                        _ => return Err(AppError::Validation("force must be a boolean".into())),
-                    };
-                    dispatch(
-                        ctx,
-                        Invocation::Reset {
-                            id: id.to_owned(),
-                            force,
-                            caller: Default::default(),
-                        },
-                    )
-                })();
-                match result {
-                    Ok(response) => json_reply(200, render_response(&response, true, false)),
-                    Err(error) => error_reply(&error),
-                }
-            }),
             StoryAction::Move => guarded(headers, trusted_hosts, body, |b| {
                 route_move_story(ctx, id, b)
             }),
@@ -594,7 +574,10 @@ fn route_project<S: Store>(
         // so neither reaches the router in production. They are variants
         // rather than a fall-through because a route that spawns an agent
         // process has to be *nameable* by the authority table that refuses it.
-        ProjectRoute::Dispatch { .. } | ProjectRoute::DispatchPoll => text_reply(404, "Not found"),
+        ProjectRoute::Dispatch { .. }
+        | ProjectRoute::DispatchPoll
+        | ProjectRoute::Reset
+        | ProjectRoute::ResetPoll => text_reply(404, "Not found"),
         ProjectRoute::StoryActionUnknown => text_reply(404, "Not found"),
         ProjectRoute::MethodNotAllowed => text_reply(405, "Method not allowed"),
         ProjectRoute::NotFound => text_reply(404, "Not found"),
@@ -921,14 +904,9 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let incident = tx.verification_incident(project)?;
-            let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates_for(tx, project)?,
-                active,
-                incident.as_ref(),
-                ctx.env(),
-                &now,
-            );
+            let (verifier, verification) =
+                crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
+            let incident = verifier.incident.as_ref();
 
             // Drafts (SH-175) are excluded from `stories`: the board is a curated
             // "what's actionable" view,
@@ -1008,6 +986,7 @@ fn project_data_json<S: Store>(
                 "meta": meta_json(tx, project, &data)?,
                 "verification_incident": incident_json,
                 "verification_control": {"state": control},
+                "verifier": verifier,
             });
             to_json(&response)
         })())
@@ -1030,12 +1009,12 @@ fn route_ack_verification<S: Store>(
             .map_err(|error| {
                 AppError::Validation(format!("invalid acknowledgement action: {error}"))
             })?;
-        let acknowledged = activity.acknowledge(ctx, expected, action)?;
+        let (acknowledged, receipt) = activity.acknowledge_with_receipt(ctx, expected, action)?;
         let control =
             activity.read_project(ctx.store(), ctx.project(), |_, _, control| Ok(control))?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control})
+            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control, "command_receipt": receipt, "verifier": activity.status(ctx)?})
                 .to_string(),
         ))
     })()
@@ -1199,6 +1178,9 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
 /// `SetState`). An optional `reason` (SH-205) sets `awaiting` atomically with
 /// the move — the Blocked-column drop prompt's skippable field; omitted by
 /// every other drop, so no existing caller's payload shape needs to change.
+/// A move from `verifying` to `done` requires `comment` (SH-692): it is the
+/// operator's reason for overriding central verification, recorded on the
+/// story; without it the service answers 422 naming the rule.
 fn route_move_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;

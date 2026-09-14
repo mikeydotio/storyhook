@@ -1,0 +1,142 @@
+{
+  "story_id": "SH-707",
+  "status": "Agentics 3.9.2 installed, enabled and natively trusted; fresh-host smoke accepted; ready for central verification",
+  "tooling_commit": "567ef40e9",
+  "selector": {
+    "baseline": "7d8c74f5d3b2de80fe6e44c1db2e89ff4dd98247",
+    "selected": "ALL",
+    "reason": "missing coverage map",
+    "full_suite_run": false
+  },
+  "red_evidence": [
+    "Initial seven identity tests failed against stubs (NotImplementedError).",
+    "A real Git blob-replacement fixture exported wrong bytes before --no-replace-objects; the repaired exporter returns the original bytes.",
+    "First disposable source transition failed: marketplace 'sh707-install' is already added from a different source; remove it before adding this source. Supported remove/add resolves the fixture transition.",
+    "Baseline and rollback still emit Codex bare allow, while the candidate's corresponding manifest cases emit no decision fields.",
+    "Four metadata tests initially failed against unimplemented stubs.",
+    "Altered metadata sidecar reached the scaffold before the new staging preflight comparison; the regression now refuses it before writes."
+  ],
+  "limits": {
+    "active_host_validated": true,
+    "release_certified": false,
+    "live_greenlight_installed": true,
+    "no_source_version_changes": true,
+    "full_suites_verifier_owned": true,
+    "candidate_enabled": false,
+    "official_release_enabled": true,
+    "native_review_required": false,
+    "active_host_validation_scope": "Trusted native discovery and successful sttest pwd smoke; no separate per-handler success trace claimed."
+  },
+  "remaining_prerequisite": null,
+  "development_tooling_commit": "98e543fe3",
+  "development_artifact": {
+    "directory": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913",
+    "archive_sha256": "cd5c382dd492cbfa265a84d518d4e1e72392e78dc8accdf5d391fd7c22d9e7f3",
+    "version": "3.9.1+codex.20260913021137",
+    "only_source_delta": ".codex-plugin/plugin.json added",
+    "status": "historical; retained and disabled; do not activate"
+  },
+  "historical_source_commit": "af73549175847d158c5a59de772f6cfee7b256f5",
+  "source_commit": "da6db5643ef1a36f985078217e36174b17b2478c",
+  "historical_checks": [
+    {
+      "name": "identity regressions",
+      "passed": 10,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_packaging_evidence.py"
+    },
+    {
+      "name": "Greenlight directly impacted source suite",
+      "passed": 127,
+      "workdir": "/Volumes/Code/mikeyward/agentics/.codex/worktrees/AGE-103",
+      "command": "TMPDIR=/tmp bash tests/with-isolated-store.sh bash '/tmp/sh707-install-rehearsal-01/candidate marketplace/plugins/greenlight/tests/run-tests.sh'"
+    },
+    {
+      "name": "installed personal hook",
+      "passed": 5,
+      "command": "PYTHONDONTWRITEBYTECODE=1 PERSONAL_HOOK=/Users/mikey/.codex/hooks/git-readonly-allow.py python3 docs/rca/sh-707/test_personal_hook.py"
+    },
+    {
+      "name": "real installer and rollback",
+      "baseline_controls": 12,
+      "candidate_controls": 20,
+      "rollback_controls": 12,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/smoke_install.py --agentics-repo /Volumes/Code/mikeyward/agentics/.codex/worktrees/AGE-103 --output-directory /tmp/sh707-install-rehearsal-verified"
+    },
+    {
+      "name": "active installation preservation",
+      "result": "all Greenlight files/modes equal tagged baseline; registration, enabled state and native trust unchanged"
+    },
+    {
+      "name": "static checks",
+      "result": "Python syntax with warnings-as-errors, JSON parse, local document links, staged and unstaged whitespace passed"
+    },
+    {
+      "name": "development metadata regressions",
+      "passed": 4,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_development_artifact.py"
+    },
+    {
+      "name": "staging preflight regressions",
+      "passed": 5,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -W error docs/rca/sh-707/test_stage_personal.py"
+    },
+    {
+      "name": "native-style plugin selection and rollback",
+      "states": 5,
+      "installed_manifest_controls": 20,
+      "unrelated_enabled_plugins_preserved": 8,
+      "both_caches_preserved": true,
+      "native_trust_accepted": false,
+      "receipt": "development-native-toggle.json"
+    },
+    {
+      "name": "config optimistic concurrency",
+      "result": "configVersionConflict rejects stale expectedVersion and leaves fixture config byte-identical"
+    },
+    {
+      "name": "supervisor actual live installed-manifest controls",
+      "passed": 20,
+      "receipt": "installed-disabled-receipt.json",
+      "rerun_during_documentation_reconciliation": false
+    }
+  ],
+  "checks": [
+    {
+      "name": "installed released Greenlight identity",
+      "files": 21,
+      "result": "complete file-set, Git blob and executable mode equality with v3.9.2",
+      "receipt": "release-3.9.2-receipt.json"
+    },
+    {
+      "name": "installed released Greenlight suite",
+      "passed": 164,
+      "failed": 0,
+      "skipped": 0,
+      "log": "release-3.9.2-bats.log"
+    },
+    {
+      "name": "installed released manifest controls",
+      "passed": 20,
+      "receipt": "release-3.9.2-receipt.json"
+    },
+    {
+      "name": "native discovery and fresh-host smoke",
+      "result": "3.9.2 enabled/trusted; sttest pwd exits 0 with no hook diagnostic",
+      "receipt": "native-acceptance-receipt.json"
+    }
+  ],
+  "historical_live_installation": {
+    "receipt": "installed-disabled-receipt.json",
+    "observed_at": "2026-09-13T02:36:34.115512+00:00",
+    "actor": "root supervisor",
+    "native_host_validated": false,
+    "release_certified": false
+  },
+  "live_installation": {
+    "receipt": "release-3.9.2-receipt.json",
+    "actor": "Mikey deployed normal Agentics 3.9.2 release; this lane performed read-only verification",
+    "native_host_validated": true,
+    "installed_identity_verified": true,
+    "native_acceptance_receipt": "native-acceptance-receipt.json"
+  }
+}

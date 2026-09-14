@@ -41,8 +41,6 @@ use crate::daemon::http1::Method;
 /// the router cannot answer a fourteenth action without adding it here first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoryAction {
-    /// Reset an open ordinary story and its owned workspace.
-    Reset,
     Move,
     Comment,
     Priority,
@@ -62,7 +60,6 @@ impl StoryAction {
     /// The action `slug` names, if it names one.
     fn parse(slug: &str) -> Option<StoryAction> {
         Some(match slug {
-            "reset" => StoryAction::Reset,
             "move" => StoryAction::Move,
             "comment" => StoryAction::Comment,
             "priority" => StoryAction::Priority,
@@ -174,6 +171,10 @@ pub enum ProjectRoute<'a> {
     /// `GET .../story/{id}/dispatch/{handle}` — the poll beside it. Also
     /// answered by the accept loop; also named here for the same cross-check.
     DispatchPoll,
+    /// Starts a confirmed card reset.
+    Reset,
+    /// Polls a card reset operation.
+    ResetPoll,
     /// `GET .../states`
     States,
     /// `POST .../states`
@@ -352,6 +353,14 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             _ => ProjectRoute::MethodNotAllowed,
         },
         ["story", _id, "dispatch", _handle] => ProjectRoute::DispatchPoll,
+        ["story", _, "reset"] => match method {
+            Method::Post => ProjectRoute::Reset,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
+        ["story", _, "reset", _] => match method {
+            Method::Get => ProjectRoute::ResetPoll,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["story", id, action] => match (method, StoryAction::parse(action)) {
             (Method::Post, Some(action)) => ProjectRoute::StoryAction { id, action },
             // The asymmetry, deliberately: an unknown action on a `POST` is a
@@ -443,6 +452,8 @@ impl ProjectRoute<'_> {
             ProjectRoute::StoryActionUnknown => "StoryActionUnknown",
             ProjectRoute::Dispatch { .. } => "Dispatch",
             ProjectRoute::DispatchPoll => "DispatchPoll",
+            ProjectRoute::Reset => "Reset",
+            ProjectRoute::ResetPoll => "ResetPoll",
             ProjectRoute::States => "States",
             ProjectRoute::StateCreate => "StateCreate",
             ProjectRoute::StatesReorder => "StatesReorder",

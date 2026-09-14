@@ -521,7 +521,7 @@ pub(super) fn engine_lanes(
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
                     dispatched_at, last_observed_at, outcome, outcome_detail, \
                     last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
-                    probe_detail \
+                    probe_detail, adopted_identity_json \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -544,6 +544,7 @@ pub(super) fn engine_lanes(
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
             ))
         }),
         "reading engine lanes",
@@ -567,6 +568,7 @@ pub(super) fn engine_lanes(
                 pane_id,
                 cleanup_lease_json,
                 probe_detail,
+                adopted_identity_json,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -580,7 +582,17 @@ pub(super) fn engine_lanes(
                         })
                     })
                     .transpose()?;
+                let adopted_identity = adopted_identity_json
+                    .map(|encoded| {
+                        serde_json::from_str(&encoded).map_err(|error| {
+                            StoreError::Corrupt(format!(
+                                "invalid engine adoption identity: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?;
                 Ok(EngineLaneRecord {
+                    adopted_identity,
                     run_id,
                     lane_index: stored_u32(lane_index, "engine_lanes.lane_index")?,
                     state,
@@ -1426,15 +1438,31 @@ pub(super) fn story_resets(
     conn: &Connection,
     project: ProjectId,
 ) -> Result<BTreeMap<StoryNo, String>, StoreError> {
-    // Earlier migrations append real repair events through this same store.
-    // They cannot hold reservations before migration 39 creates the table.
-    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version < 39 {
+    let table = if crate::store::migrate::has_columns(
+        conn,
+        "story_reset_reservations",
+        &["project_id", "story_no", "reservation"],
+    )? {
+        "story_reset_reservations"
+    } else if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('story_resets') WHERE name='reservation')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        crate::store::migrate::has_columns(
+            conn,
+            "story_resets",
+            &["project_id", "story_no", "reservation"],
+        )?;
+        "story_resets"
+    } else {
         return Ok(BTreeMap::new());
-    }
+    };
     let mut statement = sql(
-        conn.prepare("SELECT story_no, reservation FROM story_resets WHERE project_id = ?1"),
-        "preparing reset read",
+        conn.prepare(&format!(
+            "SELECT story_no, reservation FROM {table} WHERE project_id = ?1"
+        )),
+        "preparing native reset read",
     )?;
     let rows = sql(
         statement.query_map([project.get()], |row| {
@@ -1448,4 +1476,30 @@ pub(super) fn story_resets(
     Ok(collect(rows, "decoding reset reservations")?
         .into_iter()
         .collect())
+}
+
+/// Reads typed recovery evidence; corrupt receipts fail with project context.
+pub(super) fn verification_recovery(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<crate::store::VerificationRecovery, StoreError> {
+    let receipt: Option<String> = sql(
+        conn.query_row(
+            "SELECT receipt FROM verification_recovery WHERE project_id = ?1",
+            [project.get()],
+            |row| row.get(0),
+        )
+        .optional(),
+        "reading verifier recovery",
+    )?;
+    receipt
+        .map(|body| {
+            serde_json::from_str(&body).map_err(|e| {
+                StoreError::from(crate::error::AppError::Storage(format!(
+                    "project {project} verifier recovery is invalid: {e}"
+                )))
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
 }

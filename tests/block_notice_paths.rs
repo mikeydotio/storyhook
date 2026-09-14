@@ -10,7 +10,7 @@
 //! arm, so a 65th variant is a compile error here until its author says
 //! whether it sets `awaiting`.
 
-use storyhook::cli::Invocation;
+use storyhook::cli::{ContinuationAction, Invocation};
 
 /// Whether dispatching `invocation` can write `StoryAwaitingSet` with a
 /// caller-supplied reason — the condition under which SH-398's nudge must
@@ -28,6 +28,10 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         Invocation::SetAwaiting { .. }
         | Invocation::SetState { .. }
         | Invocation::SetFields { .. } => true,
+
+        // Obviation administration uses a fixed reason and validated typed
+        // relationships, never a new caller-supplied prose blocking reason.
+        Invocation::Continuation { .. } => false,
 
         Invocation::Help
         | Invocation::Project { .. }
@@ -47,6 +51,10 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        // Native reset restores the existing reason; it accepts no new prose.
+        | Invocation::Reset { .. }
+        | Invocation::SupersedeBlockDeliveries { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -72,6 +80,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }
@@ -135,6 +144,13 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
     vec![
         ("Help", Invocation::Help),
         (
+            "Continuation",
+            Invocation::Continuation {
+                id: s(),
+                action: ContinuationAction::Request,
+            },
+        ),
+        (
             "SetAwaiting",
             Invocation::SetAwaiting {
                 id: s(),
@@ -176,6 +192,10 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
             },
         ),
         ("Show", Invocation::Show { id: s() }),
+        (
+            "SessionEligibility",
+            Invocation::SessionEligibility { id: s() },
+        ),
     ]
 }
 

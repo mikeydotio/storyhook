@@ -142,6 +142,108 @@ to the first must reuse its own result, and an identical pure-validation leg
 must still reuse the shared result. The fixture reaches the scripts by symlink,
 never by a copy that can drift from what ships.
 
+### As built: a battery finishes after its first red binary (SH-697)
+
+The verifier's RED comment lists every `test … FAILED` line the gate log
+holds (`scripts/verify-pr.sh`'s `verification_failure_detail`, read through
+`scripts/test_output.py`), so the reporting side was never the gap. The log
+was stopping early: `cargo test -p storyhook --test a --test b …` is
+fail-fast **across test binaries** by Cargo's default, so the first
+`tests/*.rs` binary with a red case ended the invocation and every later
+binary in the same battery never ran. The checklist showed the shape
+(`rust-suite (164/4074)`, then RED), `scripts/test-delta.sh`'s "not re-run
+since" bucket measured it on every red run (SH-607: one failure, 611
+unknowns), and `tests/store_isolation.rs` records three of four sibling
+defects hidden exactly this way. libtest already runs every case inside one
+binary; SH-697 applies the same rule one level up.
+
+The audit of every category the story could mean, since it named two:
+
+| Category | Runner | Finishes after a failure |
+|---|---|---|
+| `rust-suite`, `rust-contracts`, the `test-changed` subset | `scripts/run-tests.sh` | **Now** — `--no-fail-fast` on every executing `cargo test` |
+| `plugin` | `plugins/story/tests/run-tests.sh` | Already — loops every file, exits 1 at the end |
+| `e2e/<project>` (WebKit included) | `scripts/run-e2e.sh` | Already — no `maxFailures` (declined above), and the project loop continues past a red project |
+| the legs of `_test-body` | `Makefile` | No, on purpose — see below |
+
+The flag lives in `run-tests.sh` as one `cargo_test_flags` array applied to
+every executing invocation — workspace, `-p storyhook --test …`, per-lib
+`--lib`, `--workspace --doc` — and to none of the `--list` discoveries,
+which execute nothing. That file is the single choke point behind
+`run-rust-battery.sh`, `run-changed.sh` and a hand-typed run, so the flag
+cannot drift between doors. The exit status is unchanged: Cargo still exits
+nonzero naming every failed target, so `leg.sh` records nothing reusable and
+`make` still stops at that leg. `tests/battery_completion.rs` proves it with
+the real Cargo over a two-binary crate (first red, second green: the second
+must run and the run must still fail) and pins the argv of all four
+executing paths through a recording fake.
+
+**Cross-leg continuation was declined for this story, not overlooked.** A red
+`rust-suite` still stops `rust-contracts`, `build` and `plugin` from running.
+Continuing would mean restructuring `_test-body` into a driver that
+accumulates status — the receipt-last-line invariant `tests/push_gate.rs`,
+`tests/selective_gate.rs` and `tests/orphan_check.rs` pin rests on make's own
+fail-fast, and `tests/gate_tiers.rs` reads the legs out of `make -n` — plus
+dependency-aware skipping (`plugin` and `e2e` need `build`; a compile error
+in `rust-suite` would fail three legs with one diagnostic), and it holds the
+machine-wide `gate` lock longer on a tree already known red. Per-leg reuse
+above bounds the cost of the second round trip to the legs that were
+actually red. It is filed as its own story, related to SH-697.
+
+### As built: independent gate legs finish after RED (SH-701)
+
+SH-701 implements the cross-leg continuation deferred by SH-697. The private
+Make recipes source `scripts/gate-legs.sh` and run serially in one shell.
+Ordinary failures accumulate; `gate_finish` exits with the first failure.
+The public target still wraps the body in unconditional orphan cleanup and
+keeps the receipt as its final recipe line. Only a successful body AND cleanup
+can reach that line. Concrete commands remain visible in `make -n`; no global
+`.ONESHELL` or `make -k` behavior changes other targets.
+
+| Failure | Remaining work |
+|---|---|
+| fmt, clippy, executed tests | Continue independent legs in the original order |
+| Confirmed shared production compilation error in a Rust battery | Skip later contracts/build requiring it |
+| Integration compilation or cfg(test)-only error | Continue other batteries and production build |
+| build | Skip plugin and enabled browser execution |
+| plugin | Still run enabled browser execution |
+| Cancellation or invalid orchestration evidence | Stop; no receipt |
+
+Cargo compiler-message target identity does not distinguish a library's
+normal and cfg(test) compilations. Each Rust leg therefore gets a fresh private
+`STORYHOOK_GATE_BUILD_OUTCOME` file populated only by the existing build-only
+adapter. The adapter removes both diagnostic destination variables before
+starting Cargo or tests. It works without a verifier diagnostic destination;
+missing/corrupt evidence fails loudly, while empty evidence proves nothing.
+
+After a failed Rust leg, errors naming this checkout's src/lib.rs, src/main.rs
+or build.rs are candidates, not proof. One normal production `cargo build`
+confirms a shared error only if the failed build repeats the same structured
+source/code/message identity. Test-only compilation failures cannot suppress
+other batteries. Other target layouts/dependency errors remain unknown and
+continue conservatively. The confirmation runs only on ambiguous failures;
+the scheduled build retains its position, either skipped after confirmation
+or using the warmed build artifacts. No diagnostic prose or test output is
+used to infer a compilation dependency.
+
+Skipped dependents emit their reason in the log and progress journal and earn
+no reusable receipt. Failed legs and dependency skips appear in the RED summary
+independently of the bounded log tail. Successful legs retain reusable evidence
+even when the aggregate is red. Changes to the orchestration helper invalidate
+all leg fingerprints.
+
+The pre-change audit read 117 retained attempt logs: 10 completed rust-suite
+without reaching contracts; four later attempts for those PRs reached contracts,
+and three failed there. Their trees differed, so this is evidence of repeated
+round trips, not a simultaneous-failure frequency estimate. Ninety contracts
+executions took a median 420.5s (57–1148s). Serial continuation deliberately spends
+that time to collect independent failures; reuse and confirmed dependency skips
+bound repeated work. Whole-run locking remains the supervisor's responsibility.
+
+Regression coverage executes the production Make recipes and accumulator with
+controlled leaves, the Cargo adapter against real tiny Rust crates, and the
+existing verifier summary, receipt, orphan-cleanup, tier and reuse contracts.
+
 ## Merge commits reach the gate a different way (SH-396)
 
 Everything above assumes the gate is reached by a **push**: `.githooks/pre-
@@ -179,12 +281,12 @@ one store serves both rather than teaching every reader about a second one.
 **Reached through the store-backed `verifying` queue, not a broad PR poll
 (SH-521).** Agents run targeted tests, link exactly one close-on-merge PR,
 move their story to required OPEN state `verifying`, and stop. The daemon
-selects one candidate globally — one worker, one queue over every project —
-by priority, then story `created_at` (not time in the queue: `verifying_since`
-is carried and not sorted on), refreshes its current base and head, and runs
-the exact merge tree in one persistent verifier worktree. SH-648 makes the
-worker and the queue per project and SH-651 makes the tiebreak the time the
-story entered `verifying`; `docs/spec/verification-workflow.md` is the design
+selects one candidate per project (SH-648), ordered by priority, then the time
+the story most recently entered `verifying` (SH-651). Missing entry timestamps
+follow known timestamps within equal priority; project slug and story ID break
+remaining ties. It refreshes the current base and head, and runs the exact
+merge tree in one persistent verifier worktree per project.
+`docs/spec/verification-workflow.md` is the design
 of record for the whole lifecycle from submission to reap, this section for
 the gate it runs. A green run writes the same `gate-receipt.sh` receipt, lands through
 `land-pr.sh`, records `done`, and reaps. Conflict or red returns the story to

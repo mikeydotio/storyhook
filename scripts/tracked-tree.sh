@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Prints the git tree object id of every TRACKED file as it currently stands
-# in this worktree -- HEAD's tree with any uncommitted edits to tracked files
-# folded in. Untracked files are excluded on purpose: `target/`,
+# in this worktree -- the current index's tracked paths with worktree edits
+# folded in, including staged additions and deletions. Untracked files are
+# excluded on purpose: `target/`,
 # `e2e/node_modules` and any scratch output are not part of the identity, and
 # `git add -A` is deliberately never used here.
 #
@@ -39,9 +40,9 @@
 # alternates the caller needs to resolve HEAD, remain alternates: identity
 # generation never inserts objects into the checkout it is inspecting.
 #
-# Measured cost on this repo (2026-08-18, warm, this checkout's tree size):
-# ~130ms per invocation -- three git subprocess spawns plus a full
-# tracked-file walk via `git add -u`. `build.rs` pays this whenever
+# The original HEAD-seeded implementation measured ~130ms per invocation on
+# 2026-08-18 (warm). Current index enumeration adds Git work to that baseline,
+# alongside the full tracked-file walk via `git add -u`. `build.rs` pays this when
 # cargo's default no-`rerun-if-*` policy reruns the build script, which is
 # broader than "on a release build": any changed file in the crate can
 # trigger it, including under an editor's `cargo check` on save. Measured
@@ -53,6 +54,9 @@
 set -uo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+# Ask Git to resolve inherited GIT_INDEX_FILE and linked-worktree index paths.
+source_index="$(git rev-parse --path-format=absolute --git-path index 2>/dev/null)" \
+    || exit 1
 cd "$root" || exit 1
 
 common_dir="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd -P)" \
@@ -125,10 +129,16 @@ git_private() {
     GIT_INDEX_FILE="$idx" \
         GIT_OBJECT_DIRECTORY="$objects" \
         GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_alternates" \
-        git "$@"
+        git -c core.splitIndex=false "$@"
 }
 
-git_private read-tree HEAD 2>/dev/null || exit 1
+# Enumerate the logical source index so split indexes stay readable without
+# copying their dependencies. NUL records preserve every Git path. Rebuilding
+# a non-split private index cannot create a shared index in the source git dir.
+# HEAD cannot supply membership: it omits staged additions and restores staged
+# deletions whose now-untracked files remain on disk.
+GIT_INDEX_FILE="$source_index" git ls-files --stage -z 2>/dev/null \
+    | git_private update-index -z --index-info 2>/dev/null || exit 1
 git_private add -u 2>/dev/null || exit 1
 tree="$(git_private write-tree 2>/dev/null)" || exit 1
 

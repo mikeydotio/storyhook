@@ -81,7 +81,14 @@ fn reset_migration_preserves_the_landed_version_38_schema() {
     use storyhook::store::{NewProject, WriteOps};
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
-    store.migrate_with(&migrate::MIGRATIONS[..38]).unwrap();
+    let mut main = migrate::MIGRATIONS[..37].to_vec();
+    main.push(Migration {
+        version: 38,
+        name: "landing_intents",
+        sql: include_str!("../src/store/schema/0038_landing_intents.sql"),
+        foreign_keys_off: false,
+    });
+    store.migrate_with(&main).unwrap();
     let project = store
         .write(|tx| {
             tx.create_project(&NewProject {
@@ -99,7 +106,13 @@ fn reset_migration_preserves_the_landed_version_38_schema() {
             .unwrap()
             .is_empty()
     );
-    let report = store.migrate_with(&migrate::MIGRATIONS[..39]).unwrap();
+    main.push(Migration {
+        version: 39,
+        name: "story_reset",
+        sql: include_str!("../src/store/schema/0039_story_reset.sql"),
+        foreign_keys_off: false,
+    });
+    let report = store.migrate_with(&main).unwrap();
     assert_eq!(report.from_version, 38);
     assert_eq!(report.to_version, 39);
     assert_eq!(report.applied, ["story_reset"]);

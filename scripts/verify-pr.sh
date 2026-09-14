@@ -17,19 +17,29 @@ fi
 # shellcheck source=activity-log.sh
 . "$script_dir/activity-log.sh"
 
+# Every verdict is exactly one JSON document on stdout. A verdict already on
+# its way out disarms the signal trap installed below first, so a signal that
+# lands while jq is printing cannot append a second document after it.
+disarm_verification_signal_trap() {
+    trap - TERM INT HUP
+}
+
 die_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" \
         '{result:"infrastructure-failure", disposition:"permanent", detail:$detail}'
     exit 0
 }
 
 retry_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" \
         '{result:"infrastructure-failure", disposition:"retryable", detail:$detail}'
     exit 0
 }
 
 invalid_json() {
+    disarm_verification_signal_trap
     jq -n --arg detail "$1" '{result:"invalid-submission", detail:$detail}'
     exit 0
 }
@@ -55,55 +65,95 @@ command -v jq >/dev/null 2>&1 || die_json "jq is required"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
     || die_json "could not resolve the shared git directory"
 verifier_wt="$common_dir/storyhook/verification-worktree"
-verifier_format="$common_dir/storyhook/verification-worktree.format"
-readonly VERIFIER_FORMAT_VERSION="private-gitdir-v1"
+# Every mutating entry takes gate ownership before the lifecycle supervisor.
+# Metadata-only seams remain read-only. The supervisor validates reentrancy
+# against its exact recorded session, rather than trusting an environment flag.
+owner_wt="$verifier_wt"
+case "${1:-}" in
+--run-gate) owner_wt="${6:-$verifier_wt}" ;;
+--validate-metadata | --refresh-submission | --reconcile-land-refusal) owner_wt="" ;;
+esac
+if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$owner_wt"; then
+    # The lock wrapper must remain the PID supervised by Rust. Its deadline
+    # encloses both session owners, leaving the final quarter for outer reap.
+    cleanup_budget="${STORYHOOK_VERIFIER_CLEANUP_GRACE_MS:-30000}"
+    case "$cleanup_budget" in
+    '' | *[!0-9]*) die_json "invalid verifier cleanup budget: $cleanup_budget" ;;
+    esac
+    [ "${#cleanup_budget}" -le 8 ] && [ "$cleanup_budget" -ge 4000 ] \
+        || die_json "verifier cleanup budget must be 4000..99999999 milliseconds"
+    cleanup_budget="$((10#$cleanup_budget))"
+    export STORYHOOK_VERIFIER_CLEANUP_GRACE_MS="$cleanup_budget"
+    export STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate"
+    exec bash "$script_dir/machine-lock.sh" --termination-grace "$((cleanup_budget * 3 / 4000))" gate -- \
+        python3 "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
+        bash "$script_dir/verify-pr.sh" "$@"
+fi
+
+# A signal is the one exit that is neither green nor red (SH-692). Without a
+# trap, bash's default action on TERM ends this script between merge-watch's
+# return and the `rm -f "$gate_result"` in run_verification_gate: the
+# completion record survives as forensic noise and the daemon receives no
+# verdict at all — exactly the shape PR #791 left behind. Bash defers a trap
+# until the foreground command returns, so by the time this runs the gate has
+# already been terminated and the poller restored by merge-watch's own trap;
+# this only reports. Exit 0 with a JSON verdict is the wire contract every
+# refusal above already honours: the daemon reads stdout, never the status.
+# `verification_phase` names where the attempt was when the signal arrived.
+#
+# The verdict is written to fd 9, a copy of this script's own stdout taken
+# here, not to fd 1: bash runs the pending trap while still inside the
+# `activity_run … >"$log" 2>&1` call the gate ran under, so fd 1 at that
+# moment is the attempt log, and a verdict written there is a verdict the
+# daemon never sees. (A fixed descriptor because macOS ships bash 3.2, which
+# has no `{fd}>&1` allocation.)
+exec 9>&1
+verification_phase="starting"
+on_verification_signal() {
+    signal="$1"
+    trap - TERM INT HUP
+    if [ -n "${gate_result:-}" ]; then
+        rm -f "$gate_result" 2>/dev/null || true
+    fi
+    # A signal during restoration does not undo a normal command completion.
+    # The saved descriptor bypasses the gate-log redirection active in this trap.
+    if [ "$verification_phase" = "release gate" ] && [ -n "${execution_file:-}" ]; then
+        execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+            "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
+        if [ "$?" -eq 0 ]; then
+            exec 1>&9
+            gate_status="$execution_status"
+            gate_progress_emit_item "release gate" "$([ "$gate_status" -eq 0 ] && printf passed || printf failed)"
+            gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+                "interrupted post-gate cleanup" "Gate exited $gate_status before SIG$signal interrupted cleanup. Retained execution evidence: $execution_file")" \
+                || die_json "could not describe interrupted cleanup after completed gate"
+            if [ -n "${pr:-}" ]; then
+                confirm_judged_head "$pr" "$base" "$head" completed "Gate log of the superseded attempt: $log"
+            fi
+            [ "$gate_status" -eq 0 ] || emit_tests_failed
+            emit_gate_passed
+        fi
+    fi
+    signal_pr="${gate_pr:-${pr:-}}"
+    signal_tree="${gate_tree:-${tree:-}}"
+    signal_log="${log:-}"
+    jq -n --arg detail "Verification attempt terminated by SIG$signal during $verification_phase${signal_pr:+ (PR #$signal_pr)}${signal_tree:+, merge tree $signal_tree}. The gate judged nothing: this is not a test failure and no receipt was written for the tree. The verifier retries on its own cadence.${signal_log:+ Gate log of the terminated attempt: $signal_log}" \
+        '{result:"infrastructure-failure", disposition:"retryable", detail:$detail}' >&9
+    exit 0
+}
+trap 'on_verification_signal TERM' TERM
+trap 'on_verification_signal INT' INT
+trap 'on_verification_signal HUP' HUP
 
 ensure_verifier_worktree() {
     fallback="$1"
     git cat-file -e "$fallback^{commit}" 2>/dev/null \
         || die_json "cannot repair the verifier worktree from unavailable commit $fallback"
-    mkdir -p "$(dirname "$verifier_wt")" \
-        || die_json "could not create private verifier state"
-
-    rebuild=0
-    if [ -e "$verifier_wt/.git" ]; then
-        [ -f "$verifier_wt/.git" ] && [ ! -L "$verifier_wt/.git" ] \
-            || die_json "the verifier worktree has an invalid .git entry at $verifier_wt/.git"
-        installed_format="$(cat "$verifier_format" 2>/dev/null || true)"
-        if [ "$installed_format" != "$VERIFIER_FORMAT_VERSION" ]; then
-            rebuild=1
-        elif ! git -C "$verifier_wt" cat-file -e 'HEAD^{commit}' 2>/dev/null \
-            || ! git -C "$verifier_wt" reflog show --format='%H' HEAD >/dev/null 2>&1; then
-            rebuild=1
-        fi
-    elif [ -e "$verifier_wt" ]; then
-        die_json "the verifier path $verifier_wt exists without a registered worktree; refusing to overwrite unclassified evidence"
-    fi
-
-    if [ "$rebuild" -eq 1 ]; then
-        remove_output="$(git worktree remove --force "$verifier_wt" 2>&1)"
-        remove_status=$?
-        registration_survives=0
-        git worktree list --porcelain 2>/dev/null \
-            | awk -v target="$verifier_wt" \
-                '$1 == "worktree" && substr($0, 10) == target { found = 1 } END { exit !found }' \
-            && registration_survives=1
-        if [ -e "$verifier_wt" ] || [ "$registration_survives" -eq 1 ]; then
-            remove_detail="${remove_output:-git worktree remove exited $remove_status without a diagnostic}"
-            die_json "could not remove invalid verifier worktree metadata at $verifier_wt: $remove_detail"
-        fi
-    fi
-    if [ ! -e "$verifier_wt/.git" ]; then
-        git worktree add -q --detach "$verifier_wt" "$fallback" \
-            || die_json "could not create the persistent verifier worktree at $fallback"
-    fi
-
-    marker_tmp="$(mktemp "$verifier_format.XXXXXX")" \
-        || die_json "could not stage the verifier worktree format marker"
-    if ! printf '%s\n' "$VERIFIER_FORMAT_VERSION" > "$marker_tmp" \
-        || ! mv -f "$marker_tmp" "$verifier_format"; then
-        rm -f "$marker_tmp"
-        die_json "could not record the verifier worktree format"
+    lifecycle_detail="$(python3 "$script_dir/verifier-worktree.py" ensure \
+        "$common_dir" "$verifier_wt" "$fallback" 2>&1)" \
+        || die_json "$lifecycle_detail"
+    if [ -n "$lifecycle_detail" ]; then
+        printf '%s\n' "$lifecycle_detail" >&2
     fi
 }
 
@@ -149,11 +199,14 @@ verification_failure_detail() {
     failed_count="$(printf '%s\n' "$failed_tests" \
         | awk 'NF { count += 1 } END { print count + 0 }')"
 
-    compiler_diagnostics="$(awk '
-        /^error(\[[^]]+\])?: / || /^error: / {
-            if ($0 !~ /^error: (test|doctest) failed/) print
-        }
-    ' "$failure_log" | awk 'NF && !seen[$0]++')"
+    # Test stdout/stderr may print any error text, even Cargo-shaped JSON.
+    # Only the build-only adapter owns this per-attempt evidence (SH-685).
+    compiler_problem=""
+    compiler_diagnostics="$(python3 "$script_dir/cargo_diagnostics.py" \
+        --summarize "$failure_log.compiler.jsonl" 2>&1)" || {
+        compiler_problem="$compiler_diagnostics"
+        compiler_diagnostics=""
+    }
     compiler_count="$(printf '%s\n' "$compiler_diagnostics" \
         | awk 'NF { count += 1 } END { print count + 0 }')"
 
@@ -171,6 +224,22 @@ verification_failure_detail() {
 
     printf 'Verification failure summary\n'
     printf 'The completed gate failed with exit status %s.\n' "$failure_status"
+    # Leg outcomes remain visible when their detailed output exceeds the tail.
+    awk '
+        /^leg (fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e): FAILED — exit [0-9]+$/ {
+            if (!heading++) print "Failed legs:"
+            if (!seen[$2]++) print "  - " substr($0, 5)
+        }
+    ' "$failure_log"
+    awk '
+        /^leg (fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e): SKIPPED — dependency (rust-suite|rust-contracts|build) failed$/ {
+            if (!heading++) print "Dependency skips:"
+            if (!seen[$2]++) print "  - " substr($0, 5)
+        }
+    ' "$failure_log"
+    if [ -n "$compiler_problem" ]; then
+        printf 'Compiler diagnostic collection unavailable: %.500s\n' "$compiler_problem"
+    fi
     if [ "$failed_count" -gt 0 ]; then
         if [ "$failed_count" -gt 20 ]; then
             printf 'Failed tests (%s; showing first 20):\n' "$failed_count"
@@ -232,7 +301,14 @@ verification_infrastructure_detail() {
     infrastructure_log="$3"
 
     printf 'Verification infrastructure failure\n'
-    printf 'Gate process exit status: %s.\n' "$infrastructure_status"
+    if [ "$infrastructure_status" -ge 128 ] 2>/dev/null; then
+        signal_number=$((infrastructure_status - 128))
+        signal_name="$(kill -l "$signal_number" 2>/dev/null || true)"
+        printf 'Gate process exit status: %s (terminated by signal %s%s) — the gate was killed before it completed and judged nothing.\n' \
+            "$infrastructure_status" "$signal_number" "${signal_name:+, SIG$signal_name}"
+    else
+        printf 'Gate process exit status: %s.\n' "$infrastructure_status"
+    fi
     if [ -z "$infrastructure_completed_status" ]; then
         printf 'Completion record: missing.\n'
     else
@@ -255,25 +331,52 @@ run_verification_gate() {
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
         || die_json "could not create per-attempt verification log"
+    gate_progress_emit_output "$log" \
+        || die_json "could not register current-attempt output log $log"
+    : >"$log.compiler.jsonl" \
+        || die_json "could not create compiler diagnostic artifact for $log"
     gate_result="$(mktemp "$logs/pr-$gate_pr-result.XXXXXX")" \
         || die_json "could not create gate completion record"
+    executions="$common_dir/storyhook/verification-executions"
+    mkdir -p "$executions" || die_json "could not create gate execution evidence directory"
+    execution_file="$executions/${log##*/}.json"
+    python3 "$script_dir/verifier_result.py" init "$execution_file" "$gate_tree" "$gate_base" "$gate_head" \
+        || die_json "could not initialize gate execution evidence $execution_file"
+    gate_cleanup='null'
     verifier_window_tail "$log"
-    STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate" \
+    verification_phase="release gate"
+    gate_progress_emit_item "release gate" running
+    STORYHOOK_GATE_EXECUTION_FILE="$execution_file" \
+        STORYHOOK_COMPILER_DIAGNOSTICS="$log.compiler.jsonl" \
         STORYHOOK_GATE_RESULT_FILE="$gate_result" \
-        activity_run "machine-lock.sh/merge-watch.sh" bash "$script_dir/machine-lock.sh" gate -- \
-        bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
+        activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
     completed_status="$(cat "$gate_result")" || completed_status=""
-    rm -f "$gate_result" || die_json "could not remove gate completion record $gate_result"
-    # Only a completed gate with successful restoration can blame tests.
-    # Preparation failures, signals and cleanup failures leave no record.
-    if [ "$completed_status" != "$gate_status" ]; then
+    result_removal_error=""
+    rm -f "$gate_result" || result_removal_error="could not remove gate completion record $gate_result"
+    # Execution is observed by the owner before cleanup (SH-702). The old
+    # completion record still proves restoration; disagreement affects cleanup,
+    # never the independently observed command answer.
+    execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+        "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
+    if [ "$?" -ne 0 ]; then
+        disarm_verification_signal_trap
         detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
-        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-            '{result:"infrastructure-failure", disposition:"permanent", tree:$tree, log:$log, detail:$detail}'
+        disposition=permanent
+        [ "$gate_status" -lt 128 ] || disposition=retryable
+        jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg disposition "$disposition" \
+            '{result:"infrastructure-failure", disposition:$disposition, tree:$tree, log:$log, detail:$detail}'
         exit 0
     fi
+    gate_progress_emit_item "release gate" "$([ "$execution_status" -eq 0 ] && printf passed || printf failed)"
+    if [ "$completed_status" != "$execution_status" ] || [ "$gate_status" != "$execution_status" ] || [ -n "$result_removal_error" ]; then
+        cleanup_detail="Gate command exited $execution_status; post-gate cleanup/restoration failed (supervisor exit $gate_status, restoration record ${completed_status:-missing}). Execution evidence: $execution_file. $result_removal_error $(bounded_log_context "$log")"
+        gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+            "gate cleanup/restoration" "$cleanup_detail")" \
+            || die_json "could not describe retained gate ownership: $cleanup_detail"
+    fi
+    gate_status="$execution_status"
     # A completed red is reported through the return status rather than
     # posted here, so the caller can confirm the head it judged is still the
     # PR's head before anything is written (SH-637): `$gate_status`,
@@ -305,7 +408,7 @@ require_certified_by_gate() {
     if [ "$recheck_status" -eq 0 ] && [ "$recheck_tree" = "$certified_tree" ]; then
         return 0
     fi
-    gate_progress_emit_item "release gate" failed
+    gate_progress_emit_item "gate certification receipt" failed
     die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
 }
 
@@ -313,9 +416,21 @@ require_certified_by_gate() {
 # failed. The wire shape is exactly the one it used to emit itself; only the
 # moment moved, to after the caller's head confirmation.
 emit_tests_failed() {
+    disarm_verification_signal_trap
     detail="$(verification_failure_detail "$gate_status" "$log")"
     jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
-        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
+        --argjson status "$gate_status" --argjson cleanup "$gate_cleanup" \
+        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, exit_status:$status}
+         + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
+    exit 0
+}
+
+emit_gate_passed() {
+    disarm_verification_signal_trap
+    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" \
+        '{result:"gate-passed", tree:$tree, log:$log, exit_status:0,
+          detail:"Gate command completed successfully; no pull request was landed."}
+         + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
 }
 
@@ -326,6 +441,7 @@ classify_land() {
     landed_tree="$4"
     landed_base="$5"
     landed_head="$6"
+    disarm_verification_signal_trap
     case "$land_status" in
     (0)
         jq -n --arg tree "$landed_tree" --arg detail "$land_output" \
@@ -333,6 +449,12 @@ classify_land() {
         ;;
     (2)
         jq -n --arg detail "$land_output" '{result:"conflict", detail:$detail}'
+        ;;
+    (3)
+        # land-pr.sh's own wrong-base refusal (SH-691): the PR's shape is
+        # wrong, not the landing's luck, so it is the submission that is
+        # invalid — never a retryable refusal to reconcile.
+        invalid_json "PR #$landed_pr targets a branch it must not land on: $land_output"
         ;;
     (*)
         refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)"
@@ -367,6 +489,7 @@ recover_merged() {
     if [ "$recovery_context" = "after landing refusal" ]; then
         gate_progress_emit_item "land pull request" passed
     fi
+    disarm_verification_signal_trap
     if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
         jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
         exit 0
@@ -580,8 +703,7 @@ if [ "${1:-}" = --run-gate ]; then
     gate_args=("$1" "$2" "$3" "$4" "$5")
     shift 6
     run_verification_gate "${gate_args[@]}" "$@" || emit_tests_failed
-    jq -n '{result:"gate-passed"}'
-    exit 0
+    emit_gate_passed
 fi
 
 # Metadata-validation seam. The production path supplies GitHub's JSON; tests
@@ -655,6 +777,7 @@ gate_command=("$@")
 gate_display="$*"
 command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
 
+verification_phase="pull request metadata"
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
@@ -677,6 +800,17 @@ if [ "$state" = MERGED ]; then
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
+# The base must be the repository's integration branch — origin's own default,
+# asked of origin (SH-691). Until SH-691 the base was only checked for
+# stability, and five PRs opened against `main` by a stale local cache were
+# certified, merged and closed as green. Checked before any gate runs, and
+# again independently by land-pr.sh under the merge lock. A PR already MERGED
+# into the wrong base was recovered above as merged: nothing left to prevent.
+expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
+    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
+[ "$base" = "$expected_base" ] \
+    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
+verification_phase="pull request refs"
 gate_progress_emit_item "pull request refs" running
 _refs_start=$(date +%s)
 # Every exit inside the refresh is a JSON verdict at exit 0, so a row left
@@ -700,6 +834,7 @@ base_commit="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" \
 head_commit="$(git rev-parse --verify "$head_ref^{commit}" 2>/dev/null)" \
     || die_json "could not resolve $head_ref to a commit after refreshing PR #$pr"
 
+verification_phase="merge preflight"
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
@@ -725,6 +860,10 @@ case "$preflight_status" in
         confirm_judged_head "$pr" "$base" "$head" red "Gate log of the superseded attempt: $log"
         emit_tests_failed
     }
+    if [ "$gate_cleanup" != null ]; then
+        confirm_judged_head "$pr" "$base" "$head" green "Gate log of the superseded attempt: $log"
+        emit_gate_passed
+    fi
     require_certified_by_gate "$tree" "$base_commit" "$head_commit"
     ;;
 (*)
@@ -734,10 +873,12 @@ case "$preflight_status" in
 esac
 
 if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+    disarm_verification_signal_trap
     jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
     exit 0
 fi
 
+verification_phase="landing"
 verifier_window_banner "PR #$pr — merge tree $tree passed; landing pull request"
 gate_progress_emit_item "land pull request" running
 _land_start=$(date +%s)

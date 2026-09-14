@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::UnclaimComment;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, VERIFYING_STATE_SLUG,
-    active_state, is_epic, normalize_labels, undefined_state_error,
+    COMPLETION_STATE_SLUG, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState,
+    VERIFYING_STATE_SLUG, active_state, is_epic, normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
@@ -28,6 +28,9 @@ use crate::store::{
     WriteOps,
 };
 
+use super::verification::{
+    VERIFICATION_OVERRIDDEN_PREFIX, certified_for_current_stay, override_refusal,
+};
 use super::{
     Ctx, Intent, ReadyQueueFilters, append_and_fold, project_prefix, resolve_open_story,
     resolve_story,
@@ -99,7 +102,7 @@ pub const UNCLAIM_FALLBACK_STATE: &str = "todo";
 /// Pure, and separate from the two service methods for exactly that reason:
 /// the real release and its dry run must not be able to disagree about where
 /// the story is going.
-fn resolve_unclaim_destination(
+pub(crate) fn resolve_unclaim_destination(
     id: &str,
     events: &[StoryEvent],
     active: &str,
@@ -277,7 +280,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn create(&self, input: &NewStoryInput) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let snapshot = self.ctx.store().write(|tx| {
+        let snapshot = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
@@ -346,7 +349,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn assign(&self, id: &str, member: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
@@ -517,7 +520,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 }
             })
             .transpose()?;
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let project_record = tx.project(project)?.ok_or_else(|| {
@@ -564,6 +567,29 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 )
                 .into());
             }
+            // Completing a story the central verifier owns is an override
+            // (SH-692): allowed, but only with the operator's reason, which is
+            // recorded as the marked comment the verifier's own GREEN would
+            // have been. A bare move is refused naming both ways out.
+            // A story already certified for this stay — the verifier's own
+            // GREEN is on it — is not being overridden, and completes as any
+            // other story does.
+            let overriding = row.state == VERIFYING_STATE_SLUG
+                && target.slug == COMPLETION_STATE_SLUG
+                && !certified_for_current_stay(&*tx, project, story_no, &row)?;
+            let comment: Option<String> = if overriding {
+                match comment.map(str::trim).filter(|reason| !reason.is_empty()) {
+                    Some(reason) => Some(format!("{VERIFICATION_OVERRIDDEN_PREFIX} {reason}")),
+                    None => {
+                        return Err(AppError::Validation(override_refusal(
+                            &story_no.to_id(&prefix),
+                        ))
+                        .into());
+                    }
+                }
+            } else {
+                comment.map(str::to_string)
+            };
             let mut extra = Vec::new();
             if let Some(lease) = cleanup_lease.clone() {
                 extra.push(StoryEvent::StoryCleanupLeaseRecorded {
@@ -573,7 +599,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }
             extra.extend(comment.map(|text| StoryEvent::StoryCommentAdded {
                     at: now.clone(),
-                    text: text.to_string(),
+                    text,
                 })
                 .into_iter()
                 .chain(awaiting.clone().map(|reason| StoryEvent::StoryAwaitingSet {
@@ -656,7 +682,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let claimed = self.ctx.store().write(|tx| {
+        let claimed = self.ctx.write_stories(|tx| {
             if !eligible(&*tx)? {
                 return Ok(None);
             }
@@ -750,11 +776,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<(StorySnapshot, StorySnapshot), AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             if row.state == active.slug {
                 return Err(
                     AppError::StateConflict(UNCLAIMED.to_string(), row.state.clone()).into(),
@@ -841,7 +868,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ) -> Result<(StorySnapshot, StorySnapshot, UnclaimOutcome), AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (before, snapshot, outcome) = self.ctx.store().write(|tx| {
+        let (before, snapshot, outcome) = self.ctx.write_stories(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let prefix = project_prefix(&*tx, project)?;
@@ -994,7 +1021,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn set_fields(&self, id: &str, edits: &FieldEdits) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (plan, before, snapshot) = self.ctx.store().write(|tx| {
+        let (plan, before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
@@ -1128,9 +1155,10 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn delete(&self, id: &str) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let (canonical, title, retracted, removed) = self.ctx.store().write(|tx| {
+        let (canonical, title, retracted, removed) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             let canonical = story_no.to_id(&prefix);
             let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
             let states = tx.state_map(project)?;
@@ -1181,7 +1209,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let now = self.ctx.now();
         let project = self.ctx.project();
 
-        let (before, snapshot) = self.ctx.store().write(|tx| {
+        let (before, snapshot) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
@@ -1233,7 +1261,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn hide(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1264,7 +1292,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn unhide(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1292,7 +1320,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn publish(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
@@ -1346,7 +1374,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn hide_state(&self, state_slug: &str) -> Result<String, AppError> {
         let project = self.ctx.project();
         let now = self.ctx.now();
-        let archived = self.ctx.store().write(|tx| {
+        let archived = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let rows = archivable_occupants(&*tx, project, state_slug)?;
@@ -1386,7 +1414,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         F: FnOnce(&StoryRow, &BTreeMap<String, StateDef>) -> Result<Vec<StoryEvent>, AppError>,
     {
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = intent.resolve(&*tx, project, &prefix, id)?;
@@ -1409,7 +1437,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
     /// Fires the hooks a state change owes: always `state_change`, plus
     /// `close` when the story ended up closed.
-    pub(super) fn fire_transition_hooks(
+    pub(crate) fn fire_transition_hooks(
         &self,
         id: &str,
         title: &str,

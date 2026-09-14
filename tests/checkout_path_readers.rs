@@ -43,6 +43,10 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/block_delivery.rs",
+        "block delivery chooses a helper working directory after selecting its project by durable id",
+    ),
+    (
         "src/invoke.rs",
         "`project list` and `project show` report it; `project show` is dispatch's lookup",
     ),
@@ -81,12 +85,36 @@ const ALLOWED: &[(&str, &str)] = &[
         "engine start refuses repo-side work when the already-selected project has no checkout",
     ),
     (
+        "src/service/engine/adoption.rs",
+        "adoption uses the already-selected project's checkout for Git inspection and revalidates it before binding lanes",
+    ),
+    (
         "src/service/verification.rs",
         "the verifier chooses the registered checkout only after selecting a project from the store",
     ),
     (
+        "src/daemon/verification.rs",
+        "incident retirement uses the already-selected project's checkout for resumed-hook configuration and working directory",
+    ),
+    (
         "src/daemon/engine.rs",
         "the reconcile tick chooses a working directory only after resolving the run's project by slug",
+    ),
+    (
+        "src/service/resources/mod.rs",
+        "resource discovery chooses a repository inventory directory after selecting the project; pointer UUIDs and registered origins independently verify association",
+    ),
+    (
+        "src/service/reset.rs",
+        "native reset uses the selected project's checkout for resource cleanup and rejects preflight retargeting",
+    ),
+    (
+        "src/service/reset/tests.rs",
+        "the preflight regression seeds and changes the selected project's checkout to prove retargeting is refused",
+    ),
+    (
+        "src/service/story_reset/executor_tests.rs",
+        "controller regressions seed the selected project directory and prove live effect ownership rejects checkout transfer",
     ),
     (
         "src/service/cleanup.rs",
@@ -95,6 +123,10 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/daemon/cleanup.rs",
         "scheduled cleanup chooses a working directory only after enumerating the store project by id",
+    ),
+    (
+        "src/daemon/engine/wait_tests.rs",
+        "a wait fixture writes the column to give its temporary project a directory; it never reads it to resolve one",
     ),
 ];
 

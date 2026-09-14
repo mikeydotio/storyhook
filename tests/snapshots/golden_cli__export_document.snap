@@ -1,5 +1,6 @@
 ---
 source: tests/golden_cli.rs
+assertion_line: 775
 ---
 {
   "members": [
@@ -331,6 +332,11 @@ source: tests/golden_cli.rs
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-2",
           "relation": "blocked-by"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
         },
         {
           "at": "[timestamp]",

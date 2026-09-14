@@ -51,6 +51,19 @@ fn stable_release_uses_guarded_merges_and_stops_before_tagging_if_dev_sync_fails
     assert!(release.contains("[ \"$branch\" = \"$STORYHOOK_INTEGRATION_BRANCH\" ]"));
     assert!(release.contains("--base \"$STORYHOOK_STABLE_BRANCH\""));
     assert!(release.contains("--base \"$STORYHOOK_INTEGRATION_BRANCH\""));
+    // SH-691: land-pr.sh requires origin's default unless the caller states
+    // its intent; the stable merge lands on `main` deliberately, and the sync
+    // merge states `dev` for the same reason rather than relying on the default.
+    assert!(
+        release.contains("scripts/land-pr.sh --base \"$STORYHOOK_STABLE_BRANCH\" \"$stable_pr\""),
+        "the stable landing must state its intended base"
+    );
+    assert!(
+        release.contains(
+            "scripts/land-pr.sh --base \"$STORYHOOK_INTEGRATION_BRANCH\" \"$integration_pr\""
+        ),
+        "the integration landing must state its intended base"
+    );
     assert!(
         release.matches("scripts/land-pr.sh").count() >= 2,
         "both long-lived branches must use the guarded merge path"

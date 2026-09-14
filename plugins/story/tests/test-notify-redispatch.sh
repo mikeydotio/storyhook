@@ -104,7 +104,9 @@ out=$(
 assert_eq "$(jqf "$out" .ok)" "true" "window gone: the original dispatch succeeds"
 worktree=$(jqf "$out" .worktree_path)
 window=$(jqf "$out" .window_name)
-# Someone killed the window; nothing named after the story is listed.
+# Remove the fixture-owned window from both persisted and legacy inventories.
+window_id=$("$FAKE_TMUX_DIR/tmux" display-message -p -t "$(jqf "$out" .pane)" '#{window_id}')
+"$FAKE_TMUX_DIR/tmux" kill-window -t "$window_id"
 unset FAKE_TMUX_PANES
 rm -f "$FAKE_TMUX_STATE/new_window_args.log"
 

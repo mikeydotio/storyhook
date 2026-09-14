@@ -15,6 +15,9 @@ pub enum HooksAction {
     Test { event_type: String },
 }
 
+mod continuation;
+pub use continuation::ContinuationAction;
+
 /// `story github-auth login|status|logout` — SH-212's durable GitHub
 /// credential for unattended `pr-check` polling.
 ///
@@ -128,12 +131,37 @@ pub enum EpicAction {
     Add { epic_id: String, story_id: String },
 }
 
-/// The six controls under `story engine` (SH-467).
+/// Controls under `story engine`.
 ///
-/// Run ids are opaque engine identities, not story ids. Only `Start::epic`
-/// participates in story-id canonicalization.
+/// Run ids are opaque engine identities. Epic and adoption selectors are story ids.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineAction {
+    /// Refuse dispatch of a story owned by an unfinished reset.
+    ResetCheck {
+        /// Story whose resource ownership is being checked.
+        story: String,
+    },
+    /// Read one current reset reservation; internal cleanup-helper protocol.
+    ResetTarget {
+        /// Exact run owning the reservation.
+        run: String,
+        /// Exact operation identity, never a request to create a reset.
+        token: String,
+    },
+    /// Bind manually dispatched stories to existing run capacity.
+    Adopt {
+        /// Current run when omitted.
+        run: Option<String>,
+        /// Story selectors, canonicalized before dispatch.
+        ids: Vec<String>,
+    },
+    /// Patch the future-dispatch settings of a live run.
+    Configure {
+        /// Explicit run selector, or the current live run.
+        run: Option<String>,
+        /// Only settings explicitly supplied by the caller.
+        patch: crate::service::engine::ConfigurePatch,
+    },
     Start {
         /// Optional epic subtree; absent means the whole project.
         epic: Option<String>,
@@ -169,6 +197,19 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Read durable permission, incidents, recovery and live ownership.
+    Status,
+    /// Enable admission without clearing a halt.
+    Start,
+    /// Disable admission and cancel owned work.
+    Stop,
+    /// Disable admission and finish owned work.
+    Drain,
+    /// Clear an exact incident and keep admission disabled.
+    AckLeaveStopped {
+        /// Exact current incident identity.
+        incident_id: String,
+    },
     /// Acknowledge one exact halted infrastructure incident so the verifier
     /// queue may run again. The id is the one the halt comment prints.
     Ack {
@@ -234,11 +275,15 @@ Usage:
                      [--dry-run]                    (hand it back where it came from)
   story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
                      [--model <id>] [--effort <id>] [--speed standard|fast]
+  story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+  story engine adopt <id> [<id> ...] [--run <id>]
   story engine status [--run <id>]
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
-  story verifier ack <incident-id>                  (release a halted verifier queue)
-  story cleanup [--dry-run]                         (remove merged inactive story workspaces)
+  story verifier status | start | stop | drain
+  story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
+  story resources <id> [--json]                    (inspect existing resource identity)
+  story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
   story summary
   story report [--html]
   story search <query>
@@ -251,6 +296,7 @@ Usage:
   story store new <path>                           (create an empty store beside the default one)
   story store backup [--label <text>]              (safe, on-demand backup of the ambient store)
   story load-context [--format markdown|json] [--story <id>]
+  story session-eligibility <id>                 (structured active-session check)
   story handoff [--since <duration>]
   story phase list
   story phase show <N>
@@ -463,6 +509,13 @@ pub enum UnclaimComment {
 /// `u16`, `PathBuf` or a collection of those.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Invocation {
+    /// Durable autonomous context and administrative handoffs.
+    Continuation {
+        /// Canonical target story, empty only for capabilities.
+        id: String,
+        /// Lifecycle operation.
+        action: ContinuationAction,
+    },
     Help,
     Project {
         action: ProjectAction,
@@ -577,13 +630,26 @@ pub enum Invocation {
         /// Explicit permission to discard dirty or locked worktree contents.
         force: bool,
     },
+    /// Revokes unattempted terminal effects before a managed session replacement.
+    /// The caller holds workspace exclusion through the replacement itself.
+    SupersedeBlockDeliveries {
+        /// Canonical or project-relative story identifier.
+        id: String,
+    },
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
         action: EngineAction,
     },
-    /// `story verifier ack <incident-id>` (SH-666).
+    /// Project verifier status and operator controls (SH-703).
     Verifier {
         action: VerifierAction,
+    },
+    /// Read-only identity inventory for one story's existing resources.
+    Resources {
+        /// Canonical or abbreviated story identifier.
+        id: String,
+        /// Explicit evidence and additional legacy discovery hints.
+        options: crate::service::resources::ResourceOptions,
     },
     /// `story cleanup [--dry-run]` — safely reclaim StoryHook-owned workspaces.
     Cleanup {
@@ -610,8 +676,8 @@ pub enum Invocation {
     /// needed the store first could never deliver its own headline.
     DoctorInstall,
     /// `story lane-budget` — an informational census of live agent
-    /// windows (SH-672). Store-free and daemon-free so the operator reads
-    /// their own tmux server, which the daemon may not share.
+    /// windows (SH-672). Measures the caller's own tmux server and adds verifier
+    /// notices from an existing daemon without starting one or opening a store.
     LaneBudget,
     DoctorAbandoned {
         action: AbandonedAction,
@@ -748,6 +814,11 @@ pub enum Invocation {
         path: Option<String>,
         /// Report what would be imported and write nothing.
         dry_run: bool,
+    },
+    /// Read the tracker facts authorizing an existing autonomous session to continue.
+    SessionEligibility {
+        /// The story whose active, unblocked state is being checked.
+        id: String,
     },
     Context {
         /// Output format; omission preserves the ordinary Markdown briefing.
@@ -960,9 +1031,11 @@ impl Invocation {
             | Self::Next { .. }
             | Self::Claim { .. }
             | Self::Unclaim { .. }
+            | Self::SupersedeBlockDeliveries { .. }
             | Self::Engine { .. }
             | Self::Verifier { .. }
             | Self::Cleanup { .. }
+            | Self::Resources { .. }
             | Self::Summary
             | Self::Report { .. }
             | Self::Doctor { .. }
@@ -988,6 +1061,8 @@ impl Invocation {
             | Self::Export
             | Self::ImportProject { .. }
             | Self::Migrate { .. }
+            | Self::Continuation { .. }
+            | Self::SessionEligibility { .. }
             | Self::Context { .. }
             | Self::Handoff { .. }
             | Self::Phase { .. }
@@ -1782,6 +1857,17 @@ struct VerbFlags {
 /// names no flags at all — see `UNDISCOVERABLE` in `tests/unknown_flag_sweep.rs`.
 static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
+        verb: "continuation",
+        subcommand: None,
+        flags: &[
+            bare("stdin"),
+            value("reviewed-seq"),
+            value("head"),
+            value("provider"),
+            value("session-id"),
+        ],
+    },
+    VerbFlags {
         verb: "new",
         subcommand: None,
         flags: &[
@@ -1853,6 +1939,22 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     VerbFlags {
         verb: "engine",
+        subcommand: Some("adopt"),
+        flags: &[value("run")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("configure"),
+        flags: &[
+            value("run"),
+            value("lanes"),
+            value("model"),
+            value("effort"),
+            value("speed"),
+        ],
+    },
+    VerbFlags {
+        verb: "engine",
         subcommand: Some("start"),
         flags: &[
             value("epic"),
@@ -1862,6 +1964,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("effort"),
             value("speed"),
         ],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("reset-target"),
+        flags: &[value("run"), value("token")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("reset-check"),
+        flags: &[],
     },
     VerbFlags {
         verb: "engine",
@@ -1891,7 +2003,18 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "verifier",
         subcommand: Some("ack"),
-        flags: &[],
+        flags: &[bare("leave-stopped")],
+    },
+    VerbFlags {
+        verb: "resources",
+        subcommand: None,
+        flags: &[
+            bare("location-only"),
+            value("lease-json"),
+            value("window-name"),
+            value("worktree-root"),
+            value("tmux-socket"),
+        ],
     },
     VerbFlags {
         verb: "cleanup",
@@ -2347,6 +2470,22 @@ fn strip_terminator(args: &[String]) -> Vec<String> {
     }
 }
 
+/// Parses the narrow protocol used while shell dispatch owns workspace exclusion.
+fn parse_internal(args: &[String]) -> Result<Invocation, AppError> {
+    match args {
+        [_, operation, id]
+            if operation == "supersede-block-deliveries"
+                && !id.is_empty()
+                && !id.starts_with('-') =>
+        {
+            Ok(Invocation::SupersedeBlockDeliveries { id: id.clone() })
+        }
+        _ => Err(AppError::Usage(
+            "usage: story internal supersede-block-deliveries <id> --json".into(),
+        )),
+    }
+}
+
 /// Routes an invocation to its verb's parser. Pure: it inspects `args` and
 /// builds an [`Invocation`], which is what lets [`verb_help_request`] use it
 /// to ask whether a verb exists.
@@ -2391,9 +2530,11 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
                 force,
             })
         }
+        "internal" => parse_internal(args),
         "engine" => parse_engine(args),
         "verifier" => parse_verifier(args),
         "cleanup" => parse_cleanup(args),
+        "resources" => parse_resources(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -2444,6 +2585,17 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "token" => parse_token(args),
         "daemon" => parse_daemon(args),
         "store" => parse_store(args),
+        "continuation" => continuation::parse(args),
+        "session-eligibility" => {
+            if args.len() != 2 {
+                return Err(AppError::Usage(
+                    "usage: story session-eligibility <id>".into(),
+                ));
+            }
+            Ok(Invocation::SessionEligibility {
+                id: args[1].clone(),
+            })
+        }
         "show" => parse_show(args),
         "log" => parse_log(args),
         "comment" => parse_comment(args),
@@ -2474,6 +2626,73 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
             args[0]
         ))),
     }
+}
+
+fn parse_resources(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story resources <id> [--lease-json JSON] [--window-name NAME] [--worktree-root PATH] [--tmux-socket PATH] [--location-only]";
+    // The client owns its terminal locator; the daemon must not supply its own.
+    let tmux_socket = match std::env::var("TMUX") {
+        Ok(value) => value
+            .split(',')
+            .next()
+            .filter(|s| std::path::Path::new(s).is_absolute())
+            .map(Into::into),
+        Err(_) => {
+            // SAFETY: geteuid has no preconditions and does not modify process state.
+            let uid = unsafe { libc::geteuid() };
+            Some(
+                std::path::PathBuf::from(
+                    std::env::var_os("TMUX_TMPDIR").unwrap_or_else(|| "/tmp".into()),
+                )
+                .join(format!("tmux-{uid}/default")),
+            )
+        }
+    };
+    let mut options = crate::service::resources::ResourceOptions {
+        tmux_socket,
+        ..Default::default()
+    };
+    let mut socket_seen = false;
+    let mut id = None;
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--location-only" => {
+                if std::mem::replace(&mut options.location_only, true) {
+                    return Err(AppError::Usage(usage.into()));
+                }
+            }
+            "--lease-json" | "--window-name" | "--worktree-root" | "--tmux-socket" => {
+                let value = iter
+                    .next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| AppError::Usage(usage.into()))?;
+                let duplicate = match arg.as_str() {
+                    "--lease-json" => options.lease_json.replace(value.clone()).is_some(),
+                    "--window-name" => options.window_name.replace(value.clone()).is_some(),
+                    "--worktree-root" => options.worktree_root.replace(value.into()).is_some(),
+                    _ => {
+                        if !std::path::Path::new(value).is_absolute() {
+                            return Err(AppError::Usage(
+                                "tmux socket path must be absolute".into(),
+                            ));
+                        }
+                        options.tmux_socket = Some(value.into());
+                        std::mem::replace(&mut socket_seen, true)
+                    }
+                };
+                if duplicate {
+                    return Err(AppError::Usage(usage.into()));
+                }
+            }
+            value if !value.starts_with('-') && id.is_none() => id = Some(value.to_string()),
+            _ => return Err(AppError::Usage(usage.into())),
+        }
+    }
+    Ok(Invocation::Resources {
+        id: id.ok_or_else(|| AppError::Usage(usage.into()))?,
+        options,
+    })
 }
 
 fn parse_cleanup(args: &[String]) -> Result<Invocation, AppError> {
@@ -3530,11 +3749,32 @@ const ENGINE_ACK_USAGE: &str = "usage: story engine ack [--run <id>]";
 fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story engine <start|status|pause|resume|stop|ack>".to_string(),
+            "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>".to_string(),
         ));
     };
     let action = match action {
+        "reset-check" => {
+            let usage = "usage: story engine reset-check <story-id>";
+            if args.len() != 3 {
+                return Err(AppError::Usage(usage.into()));
+            }
+            EngineAction::ResetCheck {
+                story: args[2].clone(),
+            }
+        }
+        "reset-target" => {
+            let usage = "usage: story engine reset-target --run <id> --token <token>";
+            if args.len() != 6 || args[2] != "--run" || args[4] != "--token" {
+                return Err(AppError::Usage(usage.into()));
+            }
+            EngineAction::ResetTarget {
+                run: args[3].clone(),
+                token: args[5].clone(),
+            }
+        }
         "start" => parse_engine_start(args)?,
+        "configure" => parse_engine_configure(args)?,
+        "adopt" => parse_engine_adopt(args)?,
         "status" => EngineAction::Status {
             run: parse_engine_run(args, ENGINE_STATUS_USAGE)?,
         },
@@ -3550,11 +3790,96 @@ fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
         },
         _ => {
             return Err(AppError::Usage(
-                "usage: story engine <start|status|pause|resume|stop|ack>".to_string(),
+                "usage: story engine <start|configure|adopt|status|pause|resume|stop|ack>"
+                    .to_string(),
             ));
         }
     };
     Ok(Invocation::Engine { action })
+}
+
+const ENGINE_ADOPT_USAGE: &str = "usage: story engine adopt <id> [<id> ...] [--run <id>]";
+
+fn parse_engine_adopt(args: &[String]) -> Result<EngineAction, AppError> {
+    let mut run = None;
+    let mut ids = Vec::new();
+    let mut index = 2;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--run" && run.is_none() {
+            run = Some(
+                args.get(index + 1)
+                    .filter(|v| !v.starts_with("--"))
+                    .ok_or_else(|| AppError::Usage(ENGINE_ADOPT_USAGE.into()))?
+                    .clone(),
+            );
+            index += 2;
+        } else if arg.starts_with('-') {
+            return Err(AppError::Usage(ENGINE_ADOPT_USAGE.into()));
+        } else {
+            ids.push(arg.clone());
+            index += 1;
+        }
+    }
+    if ids.is_empty() {
+        return Err(AppError::Usage(ENGINE_ADOPT_USAGE.into()));
+    }
+    Ok(EngineAction::Adopt { run, ids })
+}
+
+const ENGINE_CONFIGURE_USAGE: &str = "usage: story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]";
+
+fn parse_engine_configure(args: &[String]) -> Result<EngineAction, AppError> {
+    use crate::service::engine::ConfigurePatch;
+    let mut patch = ConfigurePatch::default();
+    let mut run = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut index = 2;
+    while index < args.len() {
+        let name = args[index].as_str();
+        if !seen.insert(name) {
+            return Err(AppError::Usage(ENGINE_CONFIGURE_USAGE.into()));
+        }
+        let raw = args
+            .get(index + 1)
+            .filter(|v| !v.starts_with("--"))
+            .ok_or_else(|| AppError::Usage(ENGINE_CONFIGURE_USAGE.into()))?;
+        match name {
+            "--run" => run = Some(raw.clone()),
+            "--lanes" => {
+                let lanes = raw
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (1..=MAX_ENGINE_LANES).contains(n))
+                    .ok_or_else(|| {
+                        AppError::Usage(format!(
+                            "--lanes must be an integer from 1 through {MAX_ENGINE_LANES}"
+                        ))
+                    })?;
+                patch.lanes = Some(lanes);
+            }
+            "--model" | "--effort" => {
+                validate_dispatch_option_token(raw)
+                    .map_err(|reason| AppError::Usage(format!("{name} {reason}")))?;
+                if name == "--model" {
+                    patch.model = Some(raw.clone());
+                } else {
+                    patch.effort = Some(raw.clone());
+                }
+            }
+            "--speed" => {
+                patch.speed = Some(EngineSpeed::parse(raw).ok_or_else(|| {
+                    AppError::Usage("--speed must be `standard` or `fast`".into())
+                })?)
+            }
+            _ => return Err(AppError::Usage(ENGINE_CONFIGURE_USAGE.into())),
+        }
+        index += 2;
+    }
+    if patch == ConfigurePatch::default() {
+        return Err(AppError::Usage(ENGINE_CONFIGURE_USAGE.into()));
+    }
+    Ok(EngineAction::Configure { run, patch })
 }
 
 fn parse_engine_start(args: &[String]) -> Result<EngineAction, AppError> {
@@ -3658,7 +3983,7 @@ fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppE
     Ok(run)
 }
 
-const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
+const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--leave-stopped]";
 
 /// `story verifier ack <incident-id>` (SH-666).
 ///
@@ -3669,22 +3994,45 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id>";
 /// complete arm ends in [`expect_no_more`] with its own usage string.
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
-        return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+        ));
     };
     let action = match action {
+        "status" | "start" | "stop" | "drain" => {
+            expect_no_more(
+                &args[2..],
+                "usage: story verifier <status|start|stop|drain>",
+            )?;
+            match action {
+                "status" => VerifierAction::Status,
+                "start" => VerifierAction::Start,
+                "stop" => VerifierAction::Stop,
+                _ => VerifierAction::Drain,
+            }
+        }
         "ack" => {
             let Some(incident_id) = args.get(2).filter(|word| !is_flag_shaped(word)) else {
                 return Err(AppError::Usage(format!(
                     "`story verifier ack` needs the incident id the halt comment printed\n{VERIFIER_ACK_USAGE}"
                 )));
             };
-            expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
-            VerifierAction::Ack {
-                incident_id: incident_id.clone(),
+            if args.get(3).map(String::as_str) == Some("--leave-stopped") {
+                expect_no_more(&args[4..], VERIFIER_ACK_USAGE)?;
+                VerifierAction::AckLeaveStopped {
+                    incident_id: incident_id.clone(),
+                }
+            } else {
+                expect_no_more(&args[3..], VERIFIER_ACK_USAGE)?;
+                VerifierAction::Ack {
+                    incident_id: incident_id.clone(),
+                }
             }
         }
         _ => {
-            return Err(AppError::Usage("usage: story verifier <ack>".to_string()));
+            return Err(AppError::Usage(
+                "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+            ));
         }
     };
     Ok(Invocation::Verifier { action })

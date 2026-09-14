@@ -179,6 +179,7 @@ struct Serving<'a, S: Store> {
     /// fixed store-dispatch pool. This controller owns the persistent store
     /// handle those `'static` workers require.
     engine: Arc<crate::api::engine::EngineController>,
+    reset: Arc<crate::api::reset::ResetController>,
     /// Every handoff coupon this daemon has armed and not yet spent (SH-251).
     /// An `Arc` for the same reason `dispatch_registry` is one: redemption
     /// needs nothing from the store, so it is answered on the `worker` thread
@@ -267,7 +268,9 @@ where
     // its own reason, so a write that landed before this daemon started is
     // history, never news.
     let watcher = crate::daemon::watch::ChangeWatcher::new(store);
-    let verification_activity = crate::daemon::verification::VerificationActivity::new();
+    let verification_activity =
+        crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
+    let inflight = Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone()));
     let serving = Serving {
         store,
         env: env.clone(),
@@ -284,10 +287,15 @@ where
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         verification_activity: verification_activity.clone(),
         engine: Arc::new(crate::api::engine::EngineController::open(env)?),
+        reset: Arc::new(crate::api::reset::ResetController::open(
+            env,
+            verification_activity.clone(),
+            Arc::clone(&inflight),
+        )?),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         cookie_name: crate::api::tokens::cookie_name(env),
-        inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
+        inflight,
         draining: AtomicBool::new(false),
     };
     // Before `ready()`, so no listener has accepted a request a client could
@@ -339,6 +347,18 @@ where
             let stop = Arc::clone(&stop);
             let env = env.clone();
             scope.spawn(move || watch_parent(&env, &stop));
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::block_delivery::poll(store, &env, &bus, &stop));
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::continuation::poll(store, &env, &bus, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-pr` feature, the same way `pr_check::run_check`, the
@@ -996,6 +1016,7 @@ fn accept_loop<S: Store>(
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let engine = Arc::clone(&serving.engine);
+    let reset = Arc::clone(&serving.reset);
     let inflight = Arc::clone(&serving.inflight);
     let handoff = Arc::clone(&serving.handoff);
     let tokens = Arc::clone(&serving.tokens);
@@ -1039,6 +1060,7 @@ fn accept_loop<S: Store>(
             &env,
             &dispatch_registry,
             &engine,
+            &reset,
             &inflight,
             &handoff,
             &tokens,
@@ -1118,6 +1140,7 @@ fn worker(
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     engine: &Arc<crate::api::engine::EngineController>,
+    reset: &Arc<crate::api::reset::ResetController>,
     inflight: &Arc<crate::daemon::lifecycle::InFlight>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
     tokens: &Arc<crate::api::tokens::TokenRegistry>,
@@ -1283,6 +1306,25 @@ fn worker(
     } else {
         RequestBody::Text(String::new())
     };
+
+    if let RequestBody::Text(text) = &body
+        && let Some(reply) = crate::api::reset::intercept(
+            &segments,
+            &method,
+            &headers,
+            text,
+            trusted_hosts,
+            token,
+            reset,
+            dispatch_registry,
+            &bus,
+            tokens,
+            cookie_name,
+        )
+    {
+        finish(request, reply);
+        return;
+    }
 
     // Engine controls can synchronously run `story.sh unclaim`, whose own
     // `story` calls return through `/api/v1/invoke`. Intercept after admission
@@ -1470,6 +1512,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let entry = serving.inflight.enter();
     let surface = rpc::Surface {
         store: serving.store,
+        verification_activity: &serving.verification_activity,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,

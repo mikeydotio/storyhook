@@ -1,0 +1,245 @@
+{
+  "description": "Original independent entrypoint replay. Authored contract assertions, not captured host diagnostics. Child cwd is a now-deleted isolated fixture.",
+  "records": [
+    {
+      "emitter": "greenlight",
+      "sha256": "8b9bff8459c452fd74b4bf659a26112060abcf2b9431f2bc6709e4c55be2db23",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "pwd"
+        },
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "greenlight",
+      "sha256": "8b9bff8459c452fd74b4bf659a26112060abcf2b9431f2bc6709e4c55be2db23",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "pwd"
+        },
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "personal",
+      "sha256": "26ad58eaf61558678b2ea625872b3af246a5c505211e11d655c515a9b895ce7c",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "pwd"
+        },
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\", \"permissionDecisionReason\": \"Read-only operation\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "personal",
+      "sha256": "26ad58eaf61558678b2ea625872b3af246a5c505211e11d655c515a9b895ce7c",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "pwd"
+        },
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\", \"permissionDecisionReason\": \"Read-only operation\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "ExitPlanMode",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "ExitPlanMode",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\", \"permissionDecisionReason\": \"Autonomous Storyhook session SH-707: nobody is at the prompt, so this plan is approved automatically. Post it as a comment on SH-707 before you start implementing.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "request_user_input",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-checkout",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "request_user_input",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "ExitPlanMode",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "ExitPlanMode",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\", \"permissionDecisionReason\": \"Autonomous Storyhook session SH-707: nobody is at the prompt, so this plan is approved automatically. Post it as a comment on SH-707 before you start implementing.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "codex",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "request_user_input",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59",
+        "turn_id": "test-turn"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    },
+    {
+      "emitter": "storyhook-installed",
+      "sha256": "e3a5175eb77d9c070772494e12fa2d1252aa8b0d43f9a7995bcd95827def2a54",
+      "provider": "claude",
+      "input": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "request_user_input",
+        "tool_input": {},
+        "cwd": "/tmp/sh-707-hooks-sszhbq59"
+      },
+      "stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research current best practice and decide it yourself. If two or more are genuinely defensible, convene /council-vote instead of asking. If /council-vote is unavailable to you, or the council aborts without a decision, do not stall: choose the one you can best defend. Either way, record the decision as a comment on SH-707 the moment you make it, before you resume the work. Include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files.\"}}",
+      "stderr": "",
+      "exit_status": 0
+    }
+  ]
+}

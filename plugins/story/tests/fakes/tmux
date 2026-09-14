@@ -166,6 +166,13 @@
 #                                paste_text's own `|| return 1` is reachable.
 #                                Exercises only the TYPED form (doctor) — the
 #                                EXEC form never calls send-keys for its launch.
+#   $FAKE_TMUX_CODEX_SPARKLE=1   A Codex occupant renders its idle placeholder
+#                                the way Codex 0.154.0 does for an Astra model:
+#                                Braille dots before AND after the text, a
+#                                different frame every capture (SH-694). The
+#                                field failure: input_state read that row as
+#                                text, so a confirmed submission was reported
+#                                as bootstrap-submit-unconfirmed.
 #
 # THE PANE'S PID AND DISPATCH SENTINEL (SH-231). `wait_ready_sentinel` — the
 # readiness gate `cmd_dispatch` now polls instead of `wait_ready`'s screen
@@ -214,6 +221,16 @@
 # decided where its state lives, and inventing a shared path on its behalf is
 # the silent failure this whole harness exists to avoid. lib.sh mints one for
 # every test in this suite, so no test file has to remember to.
+# A native reader crosses the daemon allowlist with a socket, not fake env.
+# Endpoint state therefore lives beside that exact test-owned socket.
+[ "${1:-}" != -u ] || shift
+if [ "${1:-}" = -S ]; then
+  case "${2:-}" in /tmp/story-*/*|/private/tmp/story-*/*)
+    export FAKE_TMUX_STATE="${2%/*}"
+    shift 2
+    ;; *) printf 'fake tmux: unowned socket\n' >&2; exit 64 ;;
+  esac
+fi
 if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   printf 'fake tmux: $FAKE_TMUX_STATE is unset — refusing to invent a shared state directory (SH-263). Source tests/lib.sh, which mints one per test.\n' >&2
   exit 64
@@ -222,7 +239,8 @@ if [ ! -d "$FAKE_TMUX_STATE" ]; then
   printf 'fake tmux: $FAKE_TMUX_STATE [%s] is not a directory — the caller mints it (`mktemp -d`), this fake never does.\n' "$FAKE_TMUX_STATE" >&2
   exit 64
 fi
-STATE="$FAKE_TMUX_STATE"
+# A server has one socket identity across /tmp and /private/tmp callers.
+STATE="$(cd "$FAKE_TMUX_STATE" && pwd -P)" || exit 1
 # Explicit sockets used by pane-identity receipts must stay inside this fake.
 if [ "${1:-}" = -S ]; then
   [ "${2:-}" = "$STATE/tmux.sock" ] || { printf 'unknown fixture socket\n' >&2; exit 1; }
@@ -445,13 +463,13 @@ case "${1:-}" in
           "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" "$STATE/pid_reads" \
           "$STATE/pane_identity" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
-          "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
+          "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" "$STATE/sparkle_frame" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
     printf '%s' "$nw_bootstrap" > "$STATE/bootstrap_file"
     printf '%s' "$nw_cwd" > "$STATE/pane_cwd"
-    printf '%%1' > "$STATE/pane_id"
+    printf '%s' "${FAKE_TMUX_PANE_ID:-%1}" > "$STATE/pane_id"
     printf '%s' "$launch_line" > "$STATE/pane_launch"
     printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
     if [ -n "$launch_line" ]; then
@@ -501,6 +519,7 @@ case "${1:-}" in
       else
         ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
       fi
+      printf '%s' "$nw_cwd" > "$STATE/window_cwd"
       printf '%s' "$nw_name" > "$STATE/window_name" 2>/dev/null || true
       printf '%s' "$nw_session" > "$STATE/session_name" 2>/dev/null || true
       # The dispatch sentinel a real SessionStart hook would publish, written
@@ -686,10 +705,12 @@ case "${1:-}" in
     # when nothing was ever spawned, so a mismatch is observable rather than
     # silently matching by coincidence.
     dm_fmt=""
+    dm_target=""
     shift || true
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        -p|-t) [ "$1" = -t ] && shift ;;
+        -p) ;;
+        -t) shift; dm_target="${1:-}" ;;
         *) dm_fmt="$1" ;;
       esac
       shift || true
@@ -735,13 +756,32 @@ case "${1:-}" in
         dm_pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
         reads=$(cat "$STATE/pid_reads" 2>/dev/null || printf 0)
         printf '%s' "$((reads + 1))" > "$STATE/pid_reads"
+        if [ "${FAKE_TMUX_EXIT_ON_REPROBE:-}" = 1 ] && [ "$reads" -gt 0 ]; then
+          # End the owned process after launch-token capture, at readiness's
+          # next OS observation; machine load cannot move this death earlier.
+          kill -9 "$dm_pid" 2>/dev/null || true
+          for _attempt in {1..20}; do
+            kill -0 "$dm_pid" 2>/dev/null || break
+            sleep 0.05
+          done
+          if kill -0 "$dm_pid" 2>/dev/null; then
+            printf 'fixture pane did not exit after readiness reprobe\n' >&2
+            exit 1
+          fi
+        fi
         if [ "${FAKE_TMUX_PID_MISMATCH:-}" = 1 ] && [ "$reads" -gt 0 ]; then
           printf '%s\n' "$((dm_pid + 1))"
         else
           printf '%s\n' "$dm_pid"
         fi
         ;;
-      *'#{socket_path}'*) printf '%s\n' "$STATE/tmux.sock" ;;
+      *'#{socket_path}'*)
+        : > "$STATE/tmux.sock"
+        printf '%b' "${FAKE_TMUX_PANES:-}" > "$STATE/resource_panes"
+        # Record endpoint cwd data before crossing the daemon environment fence.
+        git worktree list --porcelain -z > "$STATE/resource_worktrees" 2>/dev/null || :
+        printf '%s\n' "$STATE/tmux.sock" ;;
+
       *'#{pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
       *'#{session_name}'*)
         if [ "${FAKE_TMUX_NO_SESSION:-}" = 1 ]; then
@@ -751,7 +791,11 @@ case "${1:-}" in
         fi
         ;;
       *'#{window_name}'*) printf '%s\n' "$(cat "$STATE/window_name" 2>/dev/null || printf 'story-window')" ;;
-      ''|*'#{window_id}'*) printf '@1\n' ;;
+      ''|*'#{window_id}'*)
+        case "$dm_target" in
+          %*) printf '@%s\n' "${dm_target#%}" ;;
+          *) printf '@1\n' ;;
+        esac ;;
       *) printf '\n' ;;
     esac
     ;;
@@ -974,6 +1018,36 @@ case "${1:-}" in
     esac
     ;;
   list-panes)
+    case "$*" in
+      *'#{window_id}'*'#{pane_current_path}'*)
+        python3 - "$STATE" <<'PY_ENDPOINT'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+def read(name, default=""):
+    try: return (p / name).read_text()
+    except FileNotFoundError: return default
+rows = read("resource_panes")
+if not rows:
+    rows = "\n".join(name + "\t1\t%" + window[1:] for window, name in (line.split("\t") for line in read("windows").splitlines()))
+if read("killed_window", "__none__").replace("\\t", "\t") == rows:
+    sys.exit(0)
+paths = {}
+for record in read("resource_worktrees").split("\0\0"):
+    fields = record.split("\0")
+    path = next((f[9:] for f in fields if f.startswith("worktree ")), "")
+    branch = next((f[27:] for f in fields if f.startswith("branch refs/heads/worktree-")), "")
+    if branch: paths[branch] = path
+previous = json.loads(read("resource_cwds", "{}"))
+for line in rows.splitlines():
+    name, active, pane = line.split("\t")
+    cwd = paths.get(name) or previous.get(name) or read("window_cwd")
+    if not cwd: cwd = "/unowned-test-pane"
+    previous[name] = cwd
+    print("\t".join([name, "@"+pane[1:], pane, read("pane_pid", "1"), "0", read("storyhook_agent"), active, cwd]))
+(p / "resource_cwds").write_text(json.dumps(previous))
+PY_ENDPOINT
+        exit $? ;;
+    esac
     # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit
     # the seeded FAKE_TMUX_PANES (lines of "name<TAB>active<TAB>pane"), or nothing
     # (→ no matching window found).
@@ -1002,7 +1076,25 @@ case "${1:-}" in
     fi
     pane_agent="$(cat "$STATE/pane_command" 2>/dev/null || printf '')"
     if [ "$pane_agent" = codex ]; then
-      printf '\342\200\272 Ask Codex to do anything\n'
+      if [ "${FAKE_TMUX_CODEX_SPARKLE:-}" = 1 ]; then
+        # SH-694: Codex 0.154.0's Astra "sparkle" — Braille dots before AND after
+        # the idle placeholder, redrawn every 150ms. Rotated per capture from a
+        # counter so no two consecutive frames are byte-identical, exactly as the
+        # recorded field pane was; frame 1 carries the block's last code point
+        # (U+28FF) and frame 2 its first (U+2800, blank), so the reader's byte
+        # range is exercised at both ends. Only the EMPTY composer is decorated:
+        # the real one hides the placeholder once text is in the box.
+        sparkle_frame="$(cat "$STATE/sparkle_frame" 2>/dev/null || printf '0')"
+        case "$sparkle_frame" in *[!0-9]*|'') sparkle_frame=0 ;; esac
+        printf '%s' "$((sparkle_frame + 1))" > "$STATE/sparkle_frame" 2>/dev/null || true
+        case "$((sparkle_frame % 3))" in
+          0) printf '\342\200\272\342\240\201Ask Codex to do anything   \342\240\210       \342\240\202  \342\240\201     \342\240\204    \342\240\202         \342\240\220\n' ;;
+          1) printf '\342\200\272\342\240\202Ask Codex to do anything \342\240\204   \342\240\220     \342\240\240  \342\241\200   \342\242\200 \342\243\277\n' ;;
+          2) printf '\342\200\272 Ask Codex to do anything\342\240\200        \342\240\210\n' ;;
+        esac
+      else
+        printf '\342\200\272 Ask Codex to do anything\n'
+      fi
       if [ -f "$STATE/codex_loading" ]; then
         loading_polls="$(cat "$STATE/codex_loading" 2>/dev/null || printf '0')"
         case "$loading_polls" in *[!0-9]*|'') loading_polls=0 ;; esac
