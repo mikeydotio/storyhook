@@ -391,9 +391,7 @@ fn dispatch_inner<S: Store>(
                 draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
-            Ok(crate::text_lint::with_story_advice(
-                ctx.story_view(&story.id)?,
-            ))
+            ctx.story_view(&story.id)
         }
         Invocation::Publish { id } => {
             StoryService::new(ctx).publish(&id)?;
@@ -401,10 +399,7 @@ fn dispatch_inner<S: Store>(
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
-            Ok(crate::text_lint::with_advice(
-                ctx.story_view(&id)?,
-                &[("comment", &text)],
-            ))
+            ctx.story_view(&id)
         }
         Invocation::Assign { id, member } => {
             StoryService::new(ctx).assign(&id, &member)?;
@@ -513,7 +508,7 @@ fn dispatch_inner<S: Store>(
                         )
                 });
             let message = StoryService::new(ctx).set_fields(&id, &edits)?;
-            let mut warnings = if touches_awaiting {
+            let warnings = if touches_awaiting {
                 match ctx.story_view(&id)? {
                     Response::Story(view) => crate::block_notice::warnings(
                         ctx,
@@ -526,16 +521,6 @@ fn dispatch_inner<S: Store>(
             } else {
                 Vec::new()
             };
-            let touches_text = edits.title.is_some()
-                || edits.description.is_some()
-                || edits.json.as_deref().is_some_and(|raw| {
-                    serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|value| {
-                        value.get("title").is_some() || value.get("description").is_some()
-                    })
-                });
-            if touches_text && let Response::Story(view) = ctx.story_view(&id)? {
-                warnings.extend(crate::text_lint::story_advice(&view.story));
-            }
             Ok(if warnings.is_empty() {
                 Response::Message(message)
             } else {
@@ -990,11 +975,11 @@ fn dispatch_inner<S: Store>(
                 return Ok(Response::Message("no stories to import".to_string()));
             }
             let batch = TransferService::new(ctx).import(&stories)?;
-            Ok(crate::text_lint::with_story_advice(Response::Stories {
+            Ok(Response::Stories {
                 views: batch.views,
                 message: None,
                 warnings: Vec::new(),
-            }))
+            })
         }
         Invocation::Decompose {
             file,
@@ -1011,11 +996,11 @@ fn dispatch_inner<S: Store>(
             }
             let batch = TransferService::new(ctx).import(&stories)?;
             let summary = decompose_summary(&batch);
-            Ok(crate::text_lint::with_story_advice(Response::Stories {
+            Ok(Response::Stories {
                 views: batch.views,
                 message: Some(summary),
                 warnings: Vec::new(),
-            }))
+            })
         }
         // The `project` arms that name a project rather than creating,
         // destroying or enumerating them, so the only ones answered here.

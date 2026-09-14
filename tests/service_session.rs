@@ -704,3 +704,26 @@ mod undo {
         assert_eq!(show(&fixture, &id).state, "in-progress");
     }
 }
+
+#[test]
+fn ste_guidance_includes_plans_without_lint_requirements() {
+    let fixture = ServiceFixture::new();
+    let context = context(&fixture);
+    for text in [
+        context.as_str(),
+        include_str!("../plugins/story/skills/story/SKILL.md"),
+        include_str!("../plugins/story/references/story-new.md"),
+        include_str!("../src/help/ste.txt"),
+    ] {
+        assert!(text.contains("ASD-STE100"));
+        assert!(text.contains("plans"), "{text}");
+        assert!(!text.contains("text_lint"), "{text}");
+        assert!(!text.contains("supported checks"), "{text}");
+    }
+    for topic in ["ste", "comment", "move"] {
+        let text = storyhook::help_topics::get_help_topic(topic).unwrap();
+        assert!(text.contains("ASD-STE100"));
+        assert!(!text.contains("must pass"), "{topic}: {text}");
+        assert!(!text.contains("repair the text"), "{topic}: {text}");
+    }
+}
