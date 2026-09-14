@@ -146,6 +146,9 @@ selective_gate	:(glob)**/*
 selective_gate	tests/support/selective_receipt.py
 semver_hook_test	:(glob)**/*
 service_git	:(glob)**/*
+service_session	plugins/story/references/story-new.md
+service_session	plugins/story/skills/story/SKILL.md
+service_session	src/help/ste.txt
 session_start_hook	:(glob)**/*
 shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
