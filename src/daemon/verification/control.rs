@@ -188,7 +188,16 @@ impl VerificationActivity {
         let attempt_id = uuid::Uuid::new_v4().to_string();
         let (allowed, request_id, retry_origin) = store.write(|tx| {
             let incident = tx.verification_incident(candidate.project)?;
-            let allowed = tx.verification_enabled(candidate.project)?
+            let prefix = tx
+                .project(candidate.project)?
+                .ok_or_else(|| crate::store::StoreError::NotFound("project".into()))?
+                .prefix;
+            let no = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)
+                .map_err(|_| crate::store::StoreError::NotFound(candidate.story_id.clone()))?;
+            let allowed = !tx
+                .story_reset(candidate.project, no)?
+                .is_some_and(|reset| !reset.completed)
+                && tx.verification_enabled(candidate.project)?
                 && !incident.as_ref().is_some_and(|incident| incident.halted);
             let retry_origin = incident
                 .filter(|incident| incident_matches(incident, candidate))
@@ -342,6 +351,50 @@ mod tests {
     use super::*;
     use crate::service::NewStoryInput;
     use storyhook_test_support::ServiceFixture;
+
+    #[test]
+    fn card_reset_cancels_only_its_story_and_prevents_readmission() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let candidate = candidate(&store, &env, project);
+        let ctx = Ctx::new(&store, project, env.home().to_path_buf(), env.clone()).no_hooks(true);
+        let activity = VerificationActivity::new();
+        let guard = activity.acquire(&candidate, env.now());
+        activity
+            .cancel_story_and_wait(project, "SH-999", Instant::now())
+            .unwrap();
+        assert!(!guard.is_cancelled());
+        crate::service::story_reset::StoryResetService::new(&ctx)
+            .reserve(&candidate.story_id, &candidate.story_id)
+            .unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !guard.is_cancelled() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                drop(guard);
+            });
+            activity
+                .cancel_story_and_wait(
+                    project,
+                    &candidate.story_id,
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .unwrap();
+        });
+        assert!(activity.active_for(project).is_none());
+        assert!(
+            activity
+                .try_acquire(&store, &candidate, env.now())
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.read(|tx| tx.verification_enabled(project)).unwrap());
+    }
 
     #[test]
     fn status_and_interruption_reject_a_previous_attempts_same_generation_journal() {

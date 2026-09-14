@@ -420,6 +420,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0042_engine_resets.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 43,
+        name: "story_resets",
+        sql: include_str!("schema/0043_story_resets.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

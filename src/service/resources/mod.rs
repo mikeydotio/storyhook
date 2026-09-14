@@ -373,9 +373,7 @@ fn resolve(
         repositories.insert(lease.repository_path.clone());
     }
     if repositories.is_empty() {
-        return Err(AppError::Validation(format!(
-            "project {project} has no recorded repository"
-        )));
+        return Ok(report);
     }
     let mut candidates = BTreeMap::<(PathBuf, Option<PathBuf>, String), ResourceCandidate>::new();
     for repository in repositories {

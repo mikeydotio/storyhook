@@ -144,6 +144,18 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     // Explicit reset uses the same bounded file-backed capture and child environment.
     ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
+    // The shared installed-artifact guard also uses bounded file-backed capture.
+    (
+        "src/service/story_reset/cleanup.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    // Card reset uses bounded file-backed capture for the exact tmux window.
+    (
+        "src/service/story_reset/cleanup.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
     ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded

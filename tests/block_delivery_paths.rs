@@ -28,6 +28,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "pr_check",
         "relation",
         "story",
+        "story_reset",
         "transfer",
         "verification",
     ];

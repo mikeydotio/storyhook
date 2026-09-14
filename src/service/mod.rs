@@ -60,6 +60,7 @@ pub mod session;
 pub mod settings;
 mod state_set;
 pub mod story;
+pub mod story_reset;
 pub mod system;
 pub mod templates;
 pub mod transfer;
@@ -516,6 +517,12 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
+    if events
+        .iter()
+        .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
+    {
+        story_reset::refuse_reserved(tx, project, story)?;
+    }
     // Every producer of a `StoryLabelsSet` is expected to normalize through
     // `domain::normalize_labels` before it gets here; this is the backstop
     // for the one that forgets, so a comma-bearing or blank label (SH-164)

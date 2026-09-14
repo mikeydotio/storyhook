@@ -1009,6 +1009,13 @@ fn candidate_is_latest_generation(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
+    if tx
+        .story_reset(candidate.project, row.story_no)?
+        .is_some_and(|reset| !reset.completed)
+    {
+        return Ok(false);
+    }
+
     Ok(
         verifying_entry(tx, candidate.project, row.story_no)?.map(|(_, generation)| generation)
             == candidate.verifying_generation,
@@ -1106,7 +1113,11 @@ pub(crate) fn ordered_candidates_for(
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let stories = super::query::story_map(tx, project.id)?;
         for row in rows {
-            if crate::domain::is_blocked(&row.snapshot, &stories) {
+            if tx
+                .story_reset(project.id, row.story_no)?
+                .is_some_and(|reset| !reset.completed)
+                || crate::domain::is_blocked(&row.snapshot, &stories)
+            {
                 continue;
             }
             let links = tx

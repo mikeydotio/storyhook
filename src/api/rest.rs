@@ -251,6 +251,8 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryActionUnknown => "unknown-action",
         ProjectRoute::Dispatch { .. } => "dispatch",
         ProjectRoute::DispatchPoll => "dispatch-poll",
+        ProjectRoute::Reset => "reset",
+        ProjectRoute::ResetPoll => "reset-poll",
         ProjectRoute::Engine => "engine",
         ProjectRoute::EngineAction { .. } => "engine-action",
         ProjectRoute::EngineActionUnknown => "unknown-engine-action",
@@ -572,7 +574,10 @@ fn route_project<S: Store>(
         // so neither reaches the router in production. They are variants
         // rather than a fall-through because a route that spawns an agent
         // process has to be *nameable* by the authority table that refuses it.
-        ProjectRoute::Dispatch { .. } | ProjectRoute::DispatchPoll => text_reply(404, "Not found"),
+        ProjectRoute::Dispatch { .. }
+        | ProjectRoute::DispatchPoll
+        | ProjectRoute::Reset
+        | ProjectRoute::ResetPoll => text_reply(404, "Not found"),
         ProjectRoute::StoryActionUnknown => text_reply(404, "Not found"),
         ProjectRoute::MethodNotAllowed => text_reply(405, "Method not allowed"),
         ProjectRoute::NotFound => text_reply(404, "Not found"),
