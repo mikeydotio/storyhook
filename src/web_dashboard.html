@@ -1814,7 +1814,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   <p class="empty" id="empty-msg" hidden>No stories match the current filters.</p>
 
-  <div class="footer" id="footer">Updated just now</div>
+  <div class="footer" id="footer">
+    <div id="footer-updated">Updated just now</div>
+    <div id="footer-version">Storyhook v__STORYHOOK_VERSION__</div>
+  </div>
   </div>
 
   <aside class="drawer" id="drawer" tabindex="-1" aria-label="Story details" aria-hidden="true" inert>
@@ -13107,8 +13110,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Read-only build identity for support and upgrade conversations. The
-   * server replaces the lone placeholder from its own CARGO_PKG_VERSION, so
-   * this screen does not need an API request or a second version source. */
+   * server fills the footer from its own CARGO_PKG_VERSION. Reuse that text
+   * here to keep one version source without another API request. */
   function buildAbout() {
     return el("section", {
       class: "settings-about",
@@ -13120,7 +13123,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }, ["About"]),
       el("dl", { class: "settings-about-list" }, [
         el("dt", {}, ["Version"]),
-        el("dd", { id: "settings-version" }, ["Storyhook v__STORYHOOK_VERSION__"])
+        el("dd", { id: "settings-version" }, [$("footer-version").textContent])
       ])
     ]);
   }
@@ -15627,7 +15630,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var at = activePollState().at;
     if (!at) return;
     var ago = Math.round((Date.now() - at) / 1000);
-    $("footer").textContent = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
+    $("footer-updated").textContent = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
     updateConnection();
   }
 
