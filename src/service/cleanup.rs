@@ -197,7 +197,15 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 super::resources::ResourceService::new(self.ctx).resolve(&lease.story_id, &options);
             let result = match observed {
                 Ok(report) if report.status == "resolved" && report.pane.is_none() => {
-                    clean_candidate(&lease.repository_path, &lease, dry_run)
+                    // Not `&lease.repository_path`: `resolve` above only
+                    // established that this repository is *associated* with
+                    // the project (by origin URL or UUID pointer), which a
+                    // second, unregistered clone of the same origin also
+                    // satisfies. `clean_candidate`'s own repository-mismatch
+                    // guard exists to refuse exactly that clone; passing the
+                    // lease's own path here would make the guard compare a
+                    // value against itself (SH-653).
+                    clean_candidate(&repository, &lease, dry_run)
                 }
                 Ok(report) => Err(CleanupSkip {
                     story_id: lease.story_id.clone(),

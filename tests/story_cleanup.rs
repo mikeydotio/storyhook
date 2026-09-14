@@ -350,3 +350,103 @@ fn the_daemon_runs_the_same_gate() {
     assert!(leased.workspace.worktree.exists());
     assert!(leased.workspace.local_branch_exists());
 }
+
+/// A lease whose `repository_path`/`worktree_path` pair is internally
+/// coherent (a worktree that genuinely exists and is registered there) but
+/// names a different, unregistered clone of the project's own origin — never
+/// the project's own registered checkout — must never reach git work.
+/// `ResourceService::resolve` only distinguishes "this repository is
+/// associated with the project" (by origin URL); the exact-path check against
+/// the project's registered checkout is `clean_candidate`'s alone, and a
+/// vacuous self-comparison there (comparing the lease's own repository_path
+/// against itself) lets exactly this candidate through. Reproduced against
+/// `27f5a55f0`'s reconciliation, which took dev's call site
+/// (`clean_candidate(&lease.repository_path, ...)`) over this story's own
+/// (`clean_candidate(&repository, ...)`) while resolving a merge conflict.
+#[test]
+fn a_lease_naming_a_different_registered_clone_of_the_origin_is_refused() {
+    let leased = Leased::new();
+    let origin_url = leased.workspace.origin.to_string_lossy().into_owned();
+    leased.fixture.link_origin(&origin_url);
+
+    let other = leased.workspace.root.path().join("other-checkout");
+    let clone = storyhook::env::git_env::command(leased.workspace.root.path())
+        .args(["clone", &origin_url])
+        .arg(&other)
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    // A worktree genuinely registered under `other`, on the SAME branch, so
+    // the lease is internally coherent (worktree_path really does belong to
+    // repository_path) — the only mismatch is against the PROJECT's own
+    // registered checkout, which is what `clean_candidate` must catch.
+    let other_worktree = other.join(".claude/worktrees").join(&leased.id);
+    let add = storyhook::env::git_env::command(&other)
+        .args(["worktree", "add"])
+        .arg(&other_worktree)
+        .arg(&leased.workspace.branch)
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    // Remove the real worktree from the project's own checkout, so the
+    // ONLY registered candidate left for this story lives under `other` —
+    // isolating the mismatch, rather than producing "ambiguous" from two
+    // simultaneously valid candidates.
+    let removed = storyhook::env::git_env::command(&leased.workspace.checkout)
+        .args(["worktree", "remove", "--force"])
+        .arg(&leased.workspace.worktree)
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let branch_deleted = storyhook::env::git_env::command(&leased.workspace.checkout)
+        .args(["branch", "-D"])
+        .arg(&leased.workspace.branch)
+        .output()
+        .unwrap();
+    assert!(
+        branch_deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&branch_deleted.stderr)
+    );
+
+    // The disk marker `Leased::new()` wrote went with the removed worktree,
+    // so the only surviving lease for this story comes from history.
+    leased.move_to("done");
+    StoryService::new(&leased.fixture.ctx())
+        .reopen(&leased.id)
+        .unwrap();
+    leased.move_to("verifying");
+    let mut mismatched = leased.lease();
+    mismatched.repository_path = std::fs::canonicalize(&other).unwrap();
+    mismatched.worktree_path = std::fs::canonicalize(&other_worktree).unwrap();
+    leased.fixture.append_cleanup_lease(&leased.id, mismatched);
+    leased.move_to("done");
+    leased.comment(&format!(
+        "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} exact leased worktree, branch, and agent window were verified absent."
+    ));
+
+    let report = leased.run(false);
+
+    assert_eq!(
+        skip_reasons(&report),
+        vec![(leased.id.clone(), "repository-mismatch".to_string())],
+        "{report:?}"
+    );
+    assert!(
+        other_worktree.exists(),
+        "a mismatched lease must not touch a repository that is not the project's own checkout"
+    );
+    assert!(report.removed.is_empty(), "{report:?}");
+}
