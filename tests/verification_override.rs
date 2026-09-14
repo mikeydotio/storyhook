@@ -355,3 +355,51 @@ fn an_overridden_story_whose_pull_request_merged_is_reap_eligible() {
         .expect("an overridden story with a merged pull request is owed a reap");
     assert_eq!(candidate.story_id, id);
 }
+
+#[test]
+fn a_second_overridden_generation_is_not_hidden_by_earlier_cleanup() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "override, reap, reopen, override");
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_state(&id, "done", Some("merged by hand"), Some("verifying"), None)
+        .unwrap();
+    mark_merged(&fixture, &id);
+    service
+        .comment(
+            &id,
+            &format!(
+                "{} verified absent.",
+                storyhook::service::VERIFICATION_CLEANUP_COMPLETE_PREFIX
+            ),
+        )
+        .unwrap();
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next_cleanup_for(fixture.project())
+            .unwrap()
+            .is_none()
+    );
+
+    service.reopen(&id).unwrap();
+    service
+        .set_state(&id, "verifying", None, None, None)
+        .unwrap();
+    service
+        .set_state(
+            &id,
+            "done",
+            Some("confirmed merge for this submission"),
+            Some("verifying"),
+            None,
+        )
+        .unwrap();
+
+    let candidate = VerificationQueue::new(fixture.store())
+        .next_cleanup_for(fixture.project())
+        .unwrap()
+        .expect("the old cleanup marker must not hide this generation's authorized reap");
+    assert_eq!(candidate.story_id, id);
+}

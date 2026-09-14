@@ -282,7 +282,7 @@ Usage:
   story verifier status | start | stop | drain
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
   story resources <id> [--json]                    (inspect existing resource identity)
-  story cleanup [--dry-run]                         (remove merged inactive story workspaces)
+  story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
   story summary
   story report [--html]
   story search <query>

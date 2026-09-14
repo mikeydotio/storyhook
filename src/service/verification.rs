@@ -14,8 +14,8 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
-    StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
+    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoredEvent, StoryNo,
+    StoryQuery, StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
 use super::gate_progress::GATE_PROGRESS_PREFIX;
@@ -62,6 +62,14 @@ pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
 /// Durable comment prefix proving post-merge resources were reclaimed.
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
+
+/// Durable comment prefix recording that the PR landed but the reap failed.
+///
+/// The verifier retries the reap itself (`next_cleanup`), and `story cleanup`
+/// is the same retry by hand or on the daemon's daily cadence (SH-653): both
+/// read this marker through [`latest_generation`], so the two never disagree
+/// about what "the verifier owns this workspace" means.
+pub const VERIFICATION_CLEANUP_REQUIRED_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP REQUIRED —";
 
 /// Durable comment prefix for verifier infrastructure failures.
 pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
@@ -839,21 +847,12 @@ fn cleanup_candidates_for(
         let links = tx.pr_links(project.id)?;
         let rows = tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
         for row in rows {
-            let passed = row
-                .snapshot
-                .comments
-                .iter()
-                .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-            let overridden = row
-                .snapshot
-                .comments
-                .iter()
-                .any(|comment| comment.text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX));
-            let reaped = row.snapshot.comments.iter().any(|comment| {
-                comment
-                    .text
-                    .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-            });
+            // Completion and cleanup evidence belongs to this submission,
+            // including the operator override path added after SH-653.
+            let events = tx.events_for(project.id, row.story_no)?;
+            let Some(generation) = latest_generation(&events) else {
+                continue;
+            };
             let pull_request = links
                 .iter()
                 .find(|(story_no, link)| {
@@ -861,8 +860,10 @@ fn cleanup_candidates_for(
                 })
                 .map(|(_, link)| link.clone())
                 .ok_or(VerificationProblem::MissingPullRequest);
-            let landed_by_override = overridden && pull_request.is_ok();
-            if !(passed || landed_by_override) || reaped {
+            let landed_by_override = generation.overridden && pull_request.is_ok();
+            if !(generation.landed || landed_by_override)
+                || generation.reap_marker == Some(ReapMarker::Complete)
+            {
                 continue;
             }
             candidates.push(VerificationCandidate {
@@ -878,7 +879,7 @@ fn cleanup_candidates_for(
                 verifying_generation: None,
                 blocking_revision: None,
                 checkout: checkout.clone(),
-                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                cleanup_lease: generation.lease,
                 pull_request,
             });
         }
@@ -1162,33 +1163,122 @@ pub(crate) fn ordered_candidates_for(
     Ok(candidates)
 }
 
-/// The lease paired with the story's latest entry into verification.
+/// The verifier's durable verdict on a generation's post-merge resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReapMarker {
+    /// `CENTRAL VERIFICATION CLEANUP COMPLETE —`: every leased resource was
+    /// verified absent.
+    Complete,
+    /// `CENTRAL VERIFICATION CLEANUP REQUIRED —`: the PR landed and the story
+    /// closed, but the reap failed and is owed a retry.
+    Required,
+}
+
+/// What the story's latest entry into verification left behind.
 ///
-/// The service writes the lease immediately after `StoryStateChanged`, in the
-/// same event batch. Requiring that adjacency means a later legacy/manual
-/// unleased submission shadows every older lease by construction rather than
-/// accidentally reusing stale resource ownership.
+/// Read from the story's event log by [`latest_generation`], in event order
+/// and never by timestamp (SH-336): storyhook timestamps have one-second
+/// precision and a verification writes several events inside one second.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerificationGeneration {
+    /// The lease paired with this generation, when the transition carried one.
+    ///
+    /// The service writes the lease immediately after `StoryStateChanged`, in
+    /// the same event batch. Requiring that adjacency means a later
+    /// legacy/manual unleased submission shadows every older lease by
+    /// construction rather than accidentally reusing stale resource ownership.
+    pub lease: Option<StoryCleanupLease>,
+    /// Whether the verifier landed **this** generation's PR (a GREEN comment
+    /// after the transition), as opposed to an earlier verification of a
+    /// story since reopened.
+    pub landed: bool,
+    /// Whether this generation carries an unretracted operator override.
+    /// Cleanup additionally requires its pull request to be recorded merged.
+    pub overridden: bool,
+    /// The reap marker the verifier wrote for **this** generation — a marker
+    /// from an earlier verification of the same story does not count, since a
+    /// reopened story's resources are a new lease's, not the old marker's.
+    /// `Complete` outranks `Required`; a marker retracted later is not one.
+    pub reap_marker: Option<ReapMarker>,
+}
+
+/// The story's latest verification generation, or `None` for a story that
+/// never entered `verifying`.
+///
+/// This is the one reader of a generation's lease and reap marker, shared by
+/// the verifier's own retry (`next_cleanup`) and by `story cleanup` (SH-653),
+/// so the two cannot disagree about which workspace the verifier owns.
+#[must_use]
+pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneration> {
+    let verifying_index = events.iter().rposition(|event| {
+        matches!(
+            event.known(),
+            Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE
+        )
+    })?;
+    let lease = events
+        .get(verifying_index + 1)
+        .and_then(|event| event.known())
+        .and_then(|event| match event {
+            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
+            _ => None,
+        });
+    let after = &events[verifying_index + 1..];
+    let retracted = |comment_at: &str, comment_text: &str| {
+        after.iter().any(|event| {
+            matches!(
+                event.known(),
+                Some(StoryEvent::StoryCommentRetracted { comment_at: at, text, .. })
+                    if at == comment_at && text == comment_text
+            )
+        })
+    };
+    let mut landed = false;
+    let mut overridden = false;
+    let mut reap_marker = None;
+    for event in after {
+        let Some(StoryEvent::StoryCommentAdded { at, text }) = event.known() else {
+            continue;
+        };
+        if retracted(at, text) {
+            continue;
+        }
+        if text.starts_with(VERIFICATION_GREEN_PREFIX) {
+            landed = true;
+            continue;
+        }
+        if text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX) {
+            overridden = true;
+            continue;
+        }
+        let marker = if text.starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX) {
+            ReapMarker::Complete
+        } else if text.starts_with(VERIFICATION_CLEANUP_REQUIRED_PREFIX) {
+            ReapMarker::Required
+        } else {
+            continue;
+        };
+        if marker == ReapMarker::Complete || reap_marker.is_none() {
+            reap_marker = Some(marker);
+        }
+    }
+    Some(VerificationGeneration {
+        lease,
+        landed,
+        overridden,
+        reap_marker,
+    })
+}
+
+/// The lease paired with the story's latest entry into verification — see
+/// [`VerificationGeneration::lease`].
 fn latest_cleanup_lease(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
 ) -> Result<Option<StoryCleanupLease>, AppError> {
     let events = tx.events_for(project, story)?;
-    let Some(verifying_index) = events.iter().rposition(|event| {
-        matches!(
-            event.known(),
-            Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE
-        )
-    }) else {
-        return Ok(None);
-    };
-    Ok(events
-        .get(verifying_index + 1)
-        .and_then(|event| event.known())
-        .and_then(|event| match event {
-            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
-            _ => None,
-        }))
+    Ok(latest_generation(&events).and_then(|generation| generation.lease))
 }
 
 fn sort_candidates(candidates: &mut [VerificationCandidate]) {
@@ -1221,6 +1311,197 @@ fn sort_cleanup_candidates(candidates: &mut [VerificationCandidate]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::domain::provenance::Provenance;
+    use crate::domain::{CLEANUP_LEASE_VERSION, TmuxCleanupTarget};
+    use crate::store::{EventSeq, GlobalSeq, StoredEvent, StoredPayload};
+
+    fn stored(seq: i64, event: StoryEvent) -> StoredEvent {
+        StoredEvent {
+            seq: EventSeq::new(seq),
+            global_seq: GlobalSeq::ZERO,
+            kind: crate::domain::event_kind(&event).to_string(),
+            at: "2026-09-10T00:00:00Z".into(),
+            payload: StoredPayload::Known(event),
+            provenance: Provenance::unrecorded(),
+        }
+    }
+
+    fn state(seq: i64, state: &str) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryStateChanged {
+                at: "2026-09-10T00:00:00Z".into(),
+                state: state.into(),
+            },
+        )
+    }
+
+    fn comment(seq: i64, text: &str) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryCommentAdded {
+                at: "2026-09-10T00:00:00Z".into(),
+                text: text.into(),
+            },
+        )
+    }
+
+    fn lease_event(seq: i64) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryCleanupLeaseRecorded {
+                at: "2026-09-10T00:00:00Z".into(),
+                lease: Box::new(fixture_lease()),
+            },
+        )
+    }
+
+    fn fixture_lease() -> StoryCleanupLease {
+        StoryCleanupLease {
+            version: CLEANUP_LEASE_VERSION,
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            repository_path: "/repo".into(),
+            worktree_path: "/repo/.codex/worktrees/SH-1".into(),
+            branch: "worktree-SH-1".into(),
+            tmux: TmuxCleanupTarget {
+                socket_path: "/repo/tmux.sock".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_story_that_never_entered_verifying_has_no_generation() {
+        let events = [
+            state(1, "todo"),
+            comment(2, VERIFICATION_CLEANUP_COMPLETE_PREFIX),
+        ];
+        assert!(latest_generation(&events).is_none());
+    }
+
+    #[test]
+    fn the_lease_must_sit_immediately_after_the_latest_verifying_transition() {
+        let adjacent = [state(1, VERIFYING_STATE), lease_event(2)];
+        assert_eq!(
+            latest_generation(&adjacent).unwrap().lease,
+            Some(fixture_lease())
+        );
+
+        let separated = [
+            state(1, VERIFYING_STATE),
+            comment(2, "note"),
+            lease_event(3),
+        ];
+        assert_eq!(latest_generation(&separated).unwrap().lease, None);
+
+        let shadowed = [
+            state(1, VERIFYING_STATE),
+            lease_event(2),
+            state(3, "in-progress"),
+            state(4, VERIFYING_STATE),
+        ];
+        assert_eq!(
+            latest_generation(&shadowed).unwrap().lease,
+            None,
+            "a later unleased verification must not reuse an older generation's lease"
+        );
+    }
+
+    #[test]
+    fn a_reap_marker_counts_only_after_the_latest_verifying_transition() {
+        let stale = [
+            state(1, VERIFYING_STATE),
+            state(2, "done"),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+            ),
+            state(4, "in-progress"),
+            state(5, VERIFYING_STATE),
+            state(6, "done"),
+        ];
+        assert_eq!(latest_generation(&stale).unwrap().reap_marker, None);
+
+        let current = [
+            state(1, VERIFYING_STATE),
+            state(2, "done"),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_REQUIRED_PREFIX} reap failed: x"),
+            ),
+        ];
+        assert_eq!(
+            latest_generation(&current).unwrap().reap_marker,
+            Some(ReapMarker::Required)
+        );
+    }
+
+    #[test]
+    fn landed_is_a_fact_about_the_latest_generation_only() {
+        let green = format!("{VERIFICATION_GREEN_PREFIX} merge tree `abc` passed `make test`.");
+        let earlier = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+            state(4, "in-progress"),
+            state(5, VERIFYING_STATE),
+        ];
+        assert!(!latest_generation(&earlier).unwrap().landed);
+
+        let current = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+        ];
+        assert!(latest_generation(&current).unwrap().landed);
+    }
+
+    #[test]
+    fn complete_outranks_required_and_a_marker_is_a_prefix_never_a_substring() {
+        let both = [
+            state(1, VERIFYING_STATE),
+            comment(
+                2,
+                &format!("{VERIFICATION_CLEANUP_REQUIRED_PREFIX} reap failed: x"),
+            ),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+            ),
+        ];
+        assert_eq!(
+            latest_generation(&both).unwrap().reap_marker,
+            Some(ReapMarker::Complete)
+        );
+
+        let quoted = [
+            state(1, VERIFYING_STATE),
+            comment(
+                2,
+                &format!("the verifier wrote {VERIFICATION_CLEANUP_COMPLETE_PREFIX} earlier"),
+            ),
+        ];
+        assert_eq!(latest_generation(&quoted).unwrap().reap_marker, None);
+    }
+
+    #[test]
+    fn a_retracted_marker_no_longer_releases_the_generation() {
+        let text = format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent.");
+        let events = [
+            state(1, VERIFYING_STATE),
+            comment(2, &text),
+            stored(
+                3,
+                StoryEvent::StoryCommentRetracted {
+                    at: "2026-09-10T00:00:01Z".into(),
+                    comment_at: "2026-09-10T00:00:00Z".into(),
+                    text: text.clone(),
+                },
+            ),
+        ];
+        assert_eq!(latest_generation(&events).unwrap().reap_marker, None);
+    }
 
     #[test]
     fn real_submission_receipts_report_verified_heads_in_central_comments() {
