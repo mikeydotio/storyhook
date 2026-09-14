@@ -79,7 +79,7 @@ is_gate_contract() {
 # without adding another arm here.
 is_production_rust() {
     case "$1" in
-    (Cargo.toml | Cargo.lock | build.rs | VERSION | clippy.toml | .cargo/*) return 0 ;;
+    (Cargo.toml | Cargo.lock | build.rs | scripts/tracked-tree.sh | VERSION | clippy.toml | .cargo/*) return 0 ;;
     (*Cargo.toml | src/* | crates/*) return 0 ;;
     (*) return 1 ;;
     esac

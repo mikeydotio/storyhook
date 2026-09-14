@@ -6,11 +6,11 @@ use storyhook::daemon::verification::VerificationCancellation;
 #[test]
 fn interrupted_capture_preserves_completed_cleanup_results() {
     for with_cleanup in [false, true] {
-        for result in ["tests-failed", "gate-passed", "merged", "incomplete"] {
+        for result in ["tests-failed", "gate-passed", "certified", "incomplete"] {
             let (checkout, tools) = recording_checkout();
             let (candidate, pr) = shell_actuator_candidate(checkout.path());
             let mut payload = serde_json::json!({
-                "result": result, "tree": "judged-tree", "log": "/tmp/attempt.log",
+                "result": result, "head": "judged-head", "tree": "judged-tree", "log": "/tmp/attempt.log",
                 "detail": "named_failure FAILED", "cleanup_failure": {
                     "phase": "restoration", "detail": "retained writers",
                     "owner": "/tmp/owner", "worktree": "/tmp/verifier",
@@ -66,6 +66,22 @@ struct StopAfterCompletion<'a> {
 }
 
 impl VerificationActuator for StopAfterCompletion<'_> {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("cleanup uncertainty prohibits landing")
+    }
+
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("cleanup uncertainty prohibits landing recovery")
+    }
+
     fn submit(
         &self,
         candidate: &VerificationCandidate,

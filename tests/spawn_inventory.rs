@@ -87,6 +87,21 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // Controller probes join ChildGuard and use a bounded control socket,
+    // without reading a child stdout/stderr pipe to EOF.
+    (
+        "src/service/story_reset/executor_tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
+    // The lock regression waits for its pipe-gated child to exit.
+    (
+        "src/service/workspace_lock/tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
+    // Reset uses bounded, file-backed process capture.
+    ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
     // Out-of-line process tests are visible to this file-based census.
     // ChildGuard bounds/drains the isolated probe; its shell children use
     // production file-backed capture and whole-group deadline cleanup.

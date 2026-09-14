@@ -3,8 +3,10 @@
 use super::*;
 use crate::domain::{StoryEvent, active_state};
 use crate::service::StoryService;
+use crate::service::executor_lock::ExecutorLock;
+use crate::service::workspace_lock::WorkspaceLock;
 use crate::store::{EngineReset, ExpectedSeq, ProjectId, StoryNo};
-use fs4::FileExt;
+use std::os::fd::{AsRawFd, BorrowedFd};
 
 /// Rejects mutations that would transfer a story while reset owns its work.
 pub(crate) fn refuse_reserved(
@@ -82,7 +84,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .map_err(|e| {
                 AppError::Storage(format!("opening reset lock {}: {e}", lock_path.display()))
             })?;
-        lock.try_lock_exclusive().map_err(|e| {
+        let _executor = ExecutorLock::acquire(&lock, &lock_path).map_err(|e| {
             AppError::Validation(format!(
                 "engine run `{run_id}` reset already in progress or lock unavailable: {e}"
             ))
@@ -151,10 +153,39 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 let Some(reset) = reset else {
                     return Ok(());
                 };
-                let result = self.dispatcher.reset(reset.clone()).and_then(|outcome| {
+                let result = (|| {
+                    let workspace = WorkspaceLock::acquire(
+                        &reset.lease.repository_path,
+                        &reset.lease.story_id,
+                    )?;
+                    self.ctx.store().write(|tx| {
+                        let current =
+                            tx.engine_reset(reset.project, reset.story)?
+                                .ok_or_else(|| {
+                                    StoreError::Invariant(
+                                        "reset reservation disappeared before workspace admission"
+                                            .into(),
+                                    )
+                                })?;
+                        if current.token != reset.token || current.lease != reset.lease {
+                            return Err(StoreError::Invariant(
+                                "reset ownership changed before workspace admission".into(),
+                            ));
+                        }
+                        crate::service::block_delivery::supersede_pending(
+                            tx,
+                            reset.project,
+                            reset.story,
+                            "engine reset owns workspace replacement",
+                        )?;
+                        Ok(())
+                    })?;
+                    let outcome = self
+                        .dispatcher
+                        .reset(reset.clone(), workspace.descriptor())?;
                     validate_receipt(&reset, &outcome)?;
-                    self.finish_reset(&reset, &outcome.payload)
-                });
+                    self.finish_reset(&reset, &outcome.payload, workspace)
+                })();
                 if let Err(error) = &result {
                     let mut failed = reset;
                     failed.failure = Some(error.to_string());
@@ -283,6 +314,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         &self,
         reset: &EngineReset,
         receipt: &serde_json::Value,
+        workspace: WorkspaceLock,
     ) -> Result<(), AppError> {
         let now = self.ctx.now();
         let (before, snapshot) = self.ctx.write_stories(|tx| {
@@ -311,14 +343,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 StoryEvent::StoryCommentAdded {
                     at: now.clone(),
                     text: format!(
-                        "Full Auto Stop Now: discarded unfinished work for run `{}` lane {}; \
-                         restored to `{}` after exact window, worktree and local branch cleanup (reset {}).",
+                        "Full Auto Stop Now discarded unfinished work for run `{}` lane {}. \
+                         Removed the exact window, worktree, and local branch. Restored state `{}`. Reset {} completed.",
                         reset.run_id, reset.lane_index, target.slug, reset.token,
                     ),
                 },
             ];
             // Removing the reservation and releasing the claim share this
             // transaction; no caller can observe an unguarded active story.
+            crate::service::block_delivery::supersede_pending(tx, reset.project, reset.story, "engine reset completed; prior session authority retired")?;
             tx.remove_engine_reset(reset)?;
             let snapshot = super::super::append_and_fold(
                 tx, reset.project, reset.story, &prefix, &states,
@@ -330,6 +363,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             put_or_retire_idle_lane(tx, &idle)?;
             Ok((row.snapshot, snapshot))
         })?;
+        drop(workspace);
         StoryService::new(self.ctx).fire_transition_hooks(
             &before.id,
             &before.title,
@@ -378,6 +412,7 @@ pub(super) fn run_shell_reset(
     script: &Path,
     reset: &EngineReset,
     env: &Environment,
+    workspace: BorrowedFd<'_>,
 ) -> Result<DispatchOutcome, AppError> {
     let encoded = serde_json::to_string(reset)
         .map_err(|e| AppError::Storage(format!("encoding reset request: {e}")))?;
@@ -399,7 +434,13 @@ pub(super) fn run_shell_reset(
         )
         .env("STORYHOOK_ENGINE_RESET_V1", encoded)
         .env("GIT_TERMINAL_PROMPT", "0");
-    let captured = run_captured(command, DISPATCH_TIMEOUT)
-        .map_err(|e| AppError::Storage(format!("reset helper failed: {}", e.detail())))?;
+    crate::service::workspace_lock::inherit_descriptor(workspace, &mut command);
+    command.env("STORY_WORKSPACE_LOCK_FD", workspace.as_raw_fd().to_string());
+    let captured = crate::process::run_captured_quiescent(
+        command,
+        DISPATCH_TIMEOUT,
+        crate::process::TerminationPolicy::Kill,
+    )
+    .map_err(|e| AppError::Storage(format!("reset helper failed: {}", e.detail())))?;
     classify_dispatch_capture(&captured)
 }

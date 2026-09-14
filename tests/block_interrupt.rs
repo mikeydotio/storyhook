@@ -28,6 +28,7 @@ fn native_interrupt_quiesces_gate_and_preserves_session() {
         .arg(root.join("tests/support/block_interrupt.py"))
         .arg(root)
         .arg(&worktree)
+        .arg(project.slug())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()
         .unwrap();

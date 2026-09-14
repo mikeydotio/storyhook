@@ -23,7 +23,7 @@ fn new_with_description_sets_description() {
         .success();
 
     story(dir.path())
-        .args(["new", "Login crash", "--description", "Users can't log in"])
+        .args(["new", "Login crash", "--description", "Users cannot log in"])
         .assert()
         .success();
 
@@ -31,7 +31,7 @@ fn new_with_description_sets_description() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("description: Users can't log in"));
+        .stdout(predicate::str::contains("description: Users cannot log in"));
 }
 
 #[test]

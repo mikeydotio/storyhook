@@ -1639,50 +1639,61 @@ fn populate_card_preserves_classes_owned_by_transient_lifecycles() {
     }
 }
 
-/// `populateListRow()` follows the output-derived reconciliation rule SH-399
-/// established for cards (SH-425): a `/data` reply that changes nothing the
-/// row renders must not discard its cells or a focused `.row-actions-btn`.
-/// The comparison is the detached candidate row's actual serialization, not
-/// a hand-maintained list of inputs, because the row renderer reaches through
-/// helpers into metadata, ranking, and related state its `v` argument does not
-/// wholly carry. Children move into the live row with their listeners intact;
-/// the stored serialization is never parsed back as markup.
+/// Lists reconcile each generated child slot independently. Runtime changes
+/// such as roving tabindex must not make an unchanged control look different.
+/// The reference is a detached deep DOM snapshot, and equality never parses or
+/// serializes markup. Actual candidate nodes retain their listeners on insertion.
 ///
-/// The action handler independently reads the current story at activation.
-/// That is required even when a changed row will shortly rebuild: SH-401
-/// deliberately lands `state.data` while a primary press is live and defers
-/// only paint, so the old button can receive its click after newer state has
-/// arrived. The mobile browser witness proves both dynamic claims; this test
-/// pins the source wiring cheaply in the ordinary Rust gate.
+/// Both action handlers read current state because SH-401 may defer paint after
+/// state.data changes. The mobile browser test proves node identity and focus;
+/// this test pins the shared slot comparison and both activation paths.
 #[test]
 fn populate_list_row_skips_noop_rebuilds_and_actions_read_current_story() {
     let html = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
     )
     .expect("reading src/web_dashboard.html");
-    let body = function_body(script(&html), "populateListRow");
-
+    let source = script(&html);
+    for (name, detached, reconcile, current, activate) in [
+        (
+            "populateListRow",
+            "var next = el(\"tr\", {}, []);",
+            "reconcileListSlots(row, next);",
+            "var current = findStory(st.id);",
+            "if (current) openStoryMenu(e, current, rowActionsBtn);",
+        ),
+        (
+            "populateMobileListItem",
+            "var next = el(\"li\", {}, []);",
+            "reconcileListSlots(item, next);",
+            "var current = findStory(id);",
+            "if (current) openStoryMenu(e, current, actions);",
+        ),
+    ] {
+        let body = function_body(source, name);
+        assert!(
+            body.contains(detached) && body.contains(reconcile),
+            "{name} must build detached slots and reconcile through the shared helper: {body}"
+        );
+        assert!(
+            !body.contains("clear("),
+            "{name} must not discard unchanged slots: {body}"
+        );
+        assert!(
+            body.contains(current) && body.contains(activate),
+            "{name} actions must read current story state at activation: {body}"
+        );
+    }
+    let slots = function_body(source, "reconcileListSlots");
     assert!(
-        body.contains("var next = el(\"tr\", {}, []);")
-            && body.contains("var rendered = next.innerHTML;")
-            && body.contains("if (row.dataset.rendered !== rendered)"),
-        "expected populateListRow() to build a detached candidate row and compare its actual \
-         rendered output with the live row's last-committed serialization (SH-425), rather \
-         than clearing unchanged cells on every render. Body: {body}"
+        slots.contains(".isEqualNode(")
+            && !slots.contains("innerHTML")
+            && !slots.contains("outerHTML"),
+        "shared list reconciliation must compare DOM without markup strings: {slots}"
     );
     assert!(
-        body.contains("while (next.firstChild) row.appendChild(next.firstChild);")
-            && !body.contains("row.innerHTML"),
-        "expected populateListRow() to move detached children into the live row with \
-         appendChild, preserving their listeners and never parsing the stored serialization \
-         back through row.innerHTML. Body: {body}"
-    );
-    assert!(
-        body.contains("var current = findStory(st.id);")
-            && body.contains("if (current) openStoryMenu(e, current, rowActionsBtn);"),
-        "expected row-actions-btn to resolve the CURRENT story at activation time (SH-425), \
-         because SH-401 can land newer state while its old rendered button remains under a \
-         press. Body: {body}"
+        !slots.contains("clear("),
+        "shared list reconciliation must not clear every slot: {slots}"
     );
 }
 

@@ -502,6 +502,22 @@ impl ActivityObservingActuator {
 }
 
 impl VerificationActuator for ActivityObservingActuator {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -559,8 +575,9 @@ impl VerificationActuator for ActivityObservingActuator {
 fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
     let cases = [
         (
-            VerificationOutcome::Merged {
-                tree: "abc123".into(),
+            VerificationOutcome::Certified {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
                 detail: "landed".into(),
                 gate: GateCommand::DEFAULT.into(),
             },
@@ -797,8 +814,9 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         Err(VerificationProblem::MissingCheckout)
     );
 
-    let actuator = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "must-not-run".into(),
+    let actuator = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "must-not-run".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -1003,6 +1021,22 @@ impl FakeActuator {
 }
 
 impl VerificationActuator for FakeActuator {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1356,6 +1390,22 @@ struct DepartingActuator<'a> {
 }
 
 impl VerificationActuator for DepartingActuator<'_> {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a withdrawn attempt never lands")
+    }
+
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a withdrawn attempt never acquires landing authority")
+    }
+
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1419,6 +1469,22 @@ struct StoppingActuator<'a> {
 }
 
 impl VerificationActuator for StoppingActuator<'_> {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a stopped attempt never lands")
+    }
+
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a stopped attempt never acquires landing authority")
+    }
+
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1471,6 +1537,22 @@ struct ResubmittingActuator<'a> {
 }
 
 impl VerificationActuator for ResubmittingActuator<'_> {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1541,8 +1623,9 @@ impl VerificationActuator for ResubmittingActuator<'_> {
 #[test]
 fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
     let stale_outcomes = [
-        VerificationOutcome::Merged {
-            tree: "stale-tree".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "stale-merged".into(),
             gate: GateCommand::DEFAULT.into(),
         },
@@ -1675,6 +1758,22 @@ impl WebMutationActuator<'_> {
 }
 
 impl VerificationActuator for WebMutationActuator<'_> {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1738,8 +1837,9 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
         ),
         (
             false,
-            VerificationOutcome::Merged {
-                tree: "stale-tree".into(),
+            VerificationOutcome::Certified {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
                 detail: "stale-after-ui-done".into(),
                 gate: GateCommand::DEFAULT.into(),
             },
@@ -1891,6 +1991,22 @@ struct SequencedActuator {
 }
 
 impl VerificationActuator for SequencedActuator {
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test does not leave unresolved landing authority")
+    }
     fn submit(
         &self,
         candidate: &VerificationCandidate,
@@ -1961,8 +2077,9 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
             VerificationOutcome::Conflict {
                 detail: "main advanced again".into(),
             },
-            VerificationOutcome::Merged {
-                tree: "abc123".into(),
+            VerificationOutcome::Certified {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
                 detail: "landed after reconciliation".into(),
                 gate: GateCommand::DEFAULT.into(),
             },
@@ -2250,7 +2367,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
         detail: "both modified src/lib.rs".into(),
     })
     .with_notify_script([
-        NotifyScript::Absent("pane-changed"),
+        NotifyScript::Absent("pane-dead"),
         NotifyScript::Fail("tmux refused the submit key"),
     ]);
     let entered = Mutex::new(false);
@@ -2367,6 +2484,8 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
             .unwrap();
         assert!(origin.status.success());
         let candidate = VerificationCandidate {
+            blocked_by: Vec::new(),
+            landing_pending: false,
             project: fixture.project(),
             project_slug: "fixture".into(),
             story_id: "SH-1".into(),
@@ -2426,6 +2545,8 @@ wait
     .unwrap();
 
     let candidate = VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -2512,6 +2633,8 @@ fn cleanup_candidate(
     repository: &std::path::Path,
 ) -> VerificationCandidate {
     VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -2825,6 +2948,40 @@ fn shell_cleanup_requires_a_latest_generation_lease_before_spawning() {
 }
 
 #[test]
+fn shell_notification_passes_its_own_lease_to_the_helper() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let mut candidate = cleanup_candidate(&fixture, root.path());
+    let helper = root.path().join("notify-helper.sh");
+    let captured = root.path().join("lease.json");
+    std::fs::write(&helper, format!(
+        "#!/bin/bash\nprintf '%s' \"${{STORYHOOK_NOTIFY_LEASE_V1:-null}}\" > '{}'\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+        captured.display()
+    )).unwrap();
+    let actuator = ShellVerificationActuator::with_paths(
+        Environment::at(root.path()),
+        helper,
+        PathBuf::from("/usr/bin/true"),
+    );
+    assert_eq!(
+        actuator.notify(&candidate, "diagnosis").unwrap(),
+        NotifyDelivery::Delivered
+    );
+    let observed: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&captured).unwrap()).unwrap();
+    assert_eq!(
+        observed,
+        serde_json::to_value(&candidate.cleanup_lease).unwrap()
+    );
+    candidate.cleanup_lease = None;
+    assert_eq!(
+        actuator.notify(&candidate, "diagnosis").unwrap(),
+        NotifyDelivery::Delivered
+    );
+    assert_eq!(std::fs::read_to_string(captured).unwrap(), "null");
+}
+
+#[test]
 fn shell_notification_rejects_success_json_from_a_failed_process() {
     let fixture = ServiceFixture::new();
     let root = scratch_dir();
@@ -2907,6 +3064,12 @@ fn shell_notification_classifies_absence_by_the_helpers_reason_slug() {
     .unwrap();
     assert!(actuator.notify(&candidate, "diagnosis").is_err());
     assert_eq!(agent_presence(None), AgentPresence::NotAbsent);
+    // A live process replacement is conflicting ownership, never permission
+    // to resume over that process (SH-677).
+    assert_eq!(
+        agent_presence(Some("pane-changed")),
+        AgentPresence::NotAbsent
+    );
     assert_eq!(
         agent_presence(Some("pane-vaporised")),
         AgentPresence::NotAbsent
@@ -3589,8 +3752,9 @@ fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() 
     StoryService::new(&ctx)
         .set_state(&id, "verifying", None, None, None)
         .expect("resubmitting after remediation");
-    let actuator = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "cafef00d".into(),
+    let actuator = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "merged".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -4092,6 +4256,84 @@ fn submitted_pr(url: &str, number: u64, adopted: bool) -> SubmittedPullRequest {
     }
 }
 
+#[test]
+fn a_blocker_added_during_submission_holds_the_generation_before_testing() {
+    struct BlockOnSubmit<'a> {
+        fixture: &'a ServiceFixture,
+        blocker: String,
+    }
+    impl VerificationActuator for BlockOnSubmit<'_> {
+        fn submit(
+            &self,
+            candidate: &VerificationCandidate,
+        ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+            storyhook::service::RelationService::new(&self.fixture.ctx())
+                .relate(&candidate.story_id, "blocked-by", &self.blocker, false)
+                .unwrap();
+            Ok(submitted_pr(PR_ONE, 1, false))
+        }
+        fn verify(&self, _: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {
+            panic!("the new open blocker must hold verification")
+        }
+        fn land(
+            &self,
+            _: &VerificationCandidate,
+            _: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            panic!("a held submission must not land")
+        }
+        fn recover_landing(
+            &self,
+            _: &VerificationCandidate,
+            _: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            panic!("nothing was admitted")
+        }
+        fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {
+            panic!("held work stays submitted")
+        }
+        fn redispatch(&self, _: &VerificationCandidate, _: &ResumePlan) -> Result<(), AppError> {
+            panic!("held work stays submitted")
+        }
+        fn reap(&self, _: &VerificationCandidate) -> Result<(), AppError> {
+            panic!("nothing landed")
+        }
+    }
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "blocked during submit", None);
+    let blocker = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "dependency".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let actuator = BlockOnSubmit {
+        fixture: &fixture,
+        blocker: blocker.clone(),
+    };
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
+        TickResult::Returned
+    );
+    let candidate = VerificationQueue::new(fixture.store())
+        .ordered_for(fixture.project())
+        .unwrap()
+        .remove(0);
+    assert_eq!(candidate.story_id, id);
+    assert_eq!(candidate.blocked_by, [blocker]);
+    assert_eq!(candidate.pull_request.unwrap().url, PR_ONE);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn submitting_actuator(
     outcome: VerificationOutcome,
     submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
@@ -4113,8 +4355,9 @@ fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick(
     let root = scratch_dir();
     let (id, lease) = leased_submission(&fixture, root.path(), "submit me", None);
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "abc123".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "landed".into(),
             gate: "make test".into(),
         },
@@ -4181,8 +4424,9 @@ fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verif
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "fixed", Some(PR_ONE));
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "abc123".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "landed".into(),
             gate: "make test".into(),
         },
@@ -4239,8 +4483,9 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
         .unwrap();
     let root = scratch_dir();
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "must-not-run".into(),
             gate: "make test".into(),
         },
@@ -4263,7 +4508,7 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
     assert_eq!(row.state, "in-progress");
     let notified = actuator.notified.lock().unwrap();
     assert_eq!(notified.len(), 1);
-    assert!(notified[0].contains("no cleanup lease"), "{}", notified[0]);
+    assert!(notified[0].contains("No cleanup lease"), "{}", notified[0]);
     assert!(
         notified[0].contains("story move <id> verifying"),
         "{}",
@@ -4280,8 +4525,9 @@ fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "must-not-run".into(),
             gate: "make test".into(),
         },
@@ -4333,8 +4579,9 @@ fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retrie
     let env = Environment::at(root.path());
     let (id, _) = leased_submission(&fixture, root.path(), "flaky github", None);
     let failing = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "must-not-run".into(),
             gate: "make test".into(),
         },
@@ -4369,8 +4616,9 @@ fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retrie
     // GitHub came back: the crashed attempt's pull request is adopted and the
     // story proceeds to verification.
     let recovered = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "abc123".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "landed".into(),
             gate: "make test".into(),
         },
@@ -4399,8 +4647,9 @@ fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "two PRs", Some(PR_ONE));
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "must-not-run".into(),
             gate: "make test".into(),
         },
@@ -4437,8 +4686,9 @@ fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "elsewhere", None);
     let actuator = submitting_actuator(
-        VerificationOutcome::Merged {
-            tree: "must-not-run".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "must-not-run".into(),
             gate: "make test".into(),
         },
@@ -4489,6 +4739,21 @@ struct MovingActuator<'a> {
 }
 
 impl VerificationActuator for MovingActuator<'_> {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("a superseded submission must not land")
+    }
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test leaves no unresolved landing authority")
+    }
+
     fn submit(
         &self,
         _candidate: &VerificationCandidate,
@@ -4577,8 +4842,9 @@ fn a_green_attempt_closes_then_reaps_the_story() {
     let id = submitted(&fixture, "green", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "abc123".into(),
+    let actuator = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "landed".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -4638,8 +4904,9 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
     let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "abc123".into(),
+    let actuator = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "landed".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -5041,8 +5308,9 @@ fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
 
     let root = scratch_dir();
     let env = Environment::at(root.path());
-    let actuator = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "abc123".into(),
+    let actuator = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "landed".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -5104,7 +5372,7 @@ fn recording_checkout() -> (tempfile::TempDir, tempfile::TempDir) {
     std::fs::write(
         tools.path().join("verify-pr.sh"),
         "#!/bin/bash\nprintf '%s\\n' \"$@\" > argv\n\
-         printf '{\"result\":\"merged\",\"tree\":\"t\",\"detail\":\"landed\"}\\n'\n",
+         printf '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"detail\":\"landed\"}\\n'\n",
     )
     .unwrap();
     (checkout, tools)
@@ -5113,6 +5381,8 @@ fn recording_checkout() -> (tempfile::TempDir, tempfile::TempDir) {
 fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhook::store::PrLink) {
     let fixture = ServiceFixture::new();
     let candidate = VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -5175,8 +5445,9 @@ fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() 
     let outcome = actuator.verify(&candidate, &pull_request);
     assert_eq!(
         outcome,
-        VerificationOutcome::Merged {
-            tree: "t".into(),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "landed".into(),
             gate: "cargo test --workspace".into(),
         }
@@ -5204,7 +5475,7 @@ fn a_checkout_without_a_pointer_runs_the_default_gate() {
 
     let outcome = actuator.verify(&candidate, &pull_request);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { ref gate, .. } if gate == GateCommand::DEFAULT),
+        matches!(outcome, VerificationOutcome::Certified { ref gate, .. } if gate == GateCommand::DEFAULT),
         "{outcome:?}"
     );
     let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
@@ -5262,13 +5533,14 @@ fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
 fn green_and_red_comments_name_the_gate_the_verdict_carries() {
     for (outcome, prefix, expected) in [
         (
-            VerificationOutcome::Merged {
-                tree: "abc123".into(),
+            VerificationOutcome::Certified {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
                 detail: "landed".into(),
                 gate: "cargo test --workspace".into(),
             },
             VERIFICATION_GREEN_PREFIX,
-            "merge tree `abc123` passed `cargo test --workspace`",
+            "merge tree `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` passed `cargo test --workspace`",
         ),
         (
             VerificationOutcome::TestsFailed {
@@ -5309,6 +5581,42 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
     }
 }
 
+#[test]
+fn a_dependency_hold_does_not_clear_an_existing_infrastructure_halt() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "infrastructure victim", Priority::High, PR_ONE);
+    let failure = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "permanent environment failure".into(),
+        disposition: VerificationFailureDisposition::Permanent,
+    });
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
+        TickResult::Halted
+    );
+    let blocker = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "dependency".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    storyhook::service::RelationService::new(&fixture.ctx())
+        .relate(&id, "blocked-by", &blocker, false)
+        .unwrap();
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
+        TickResult::Halted
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(fixture.project()))
+            .unwrap()
+            .unwrap()
+            .halted
+    );
+}
 // ---------------------------------------------------------------------------
 // One verifier per project (SH-648)
 // ---------------------------------------------------------------------------
@@ -5358,6 +5666,23 @@ struct ProjectGateActuator {
 }
 
 impl VerificationActuator for ProjectGateActuator {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("this test leaves no unresolved landing authority")
+    }
+
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -5373,8 +5698,9 @@ impl VerificationActuator for ProjectGateActuator {
                 .recv_timeout(lifecycle::CONTROL_DEADLINE)
                 .expect("the test must release the held verifier");
         }
-        VerificationOutcome::Merged {
-            tree: format!("tree-{}", candidate.project_slug),
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
             detail: "landed".into(),
             gate: GateCommand::DEFAULT.into(),
         }
@@ -5604,8 +5930,9 @@ fn a_halt_in_one_project_leaves_the_other_draining() {
         detail: "not inside a git worktree".into(),
         disposition: VerificationFailureDisposition::Permanent,
     });
-    let landing = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "gadgets-tree".into(),
+    let landing = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "landed".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -5735,8 +6062,9 @@ fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
     let conflicting = FakeActuator::new(VerificationOutcome::Conflict {
         detail: "base moved".into(),
     });
-    let landing = FakeActuator::new(VerificationOutcome::Merged {
-        tree: "gadgets-tree".into(),
+    let landing = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
         detail: "landed".into(),
         gate: GateCommand::DEFAULT.into(),
     });
@@ -5979,7 +6307,7 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
 #[test]
 fn completed_verdict_and_cleanup_halt_are_recorded_together() {
     use storyhook::daemon::verification::{CompletedVerification, VerificationCleanupFailure};
-    for kind in ["red", "passed", "merged"] {
+    for kind in ["red", "passed", "certified"] {
         let fixture = ServiceFixture::new();
         fixture.link_origin("https://github.com/acme/widgets");
         fixture
@@ -6005,9 +6333,10 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
                 detail: "command exited 0".into(),
                 gate: "custom gate".into(),
             },
-            _ => CompletedVerification::Merged {
+            _ => CompletedVerification::Certified {
+                head: "a".repeat(40),
                 tree: "judged-tree".into(),
-                detail: "landed".into(),
+                detail: "certified".into(),
                 gate: "custom gate".into(),
             },
         };
@@ -6027,12 +6356,15 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
         );
         let row = story_row(&fixture, &id);
         assert_eq!(
-            row.state,
-            if kind == "merged" {
-                "done"
-            } else {
-                "verifying"
-            }
+            row.state, "verifying",
+            "cleanup failure never authorizes landing"
+        );
+        assert!(
+            fixture
+                .store()
+                .read(|tx| tx.landing_intents())
+                .unwrap()
+                .is_empty()
         );
         let comments = row
             .snapshot
@@ -6044,7 +6376,7 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
         let prefix = match kind {
             "red" => "CENTRAL VERIFICATION RED",
             "passed" => "CENTRAL VERIFICATION GATE PASSED",
-            _ => VERIFICATION_GREEN_PREFIX,
+            _ => "CENTRAL VERIFICATION CERTIFIED",
         };
         assert!(comments.contains(prefix), "{comments}");
         assert!(
@@ -6062,9 +6394,10 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
         if kind == "red" {
             assert!(comments.contains("sh702_named_failure"));
         }
-        if kind == "passed" {
-            assert!(!comments.contains(VERIFICATION_GREEN_PREFIX));
-        }
+        assert!(
+            !comments.contains(VERIFICATION_GREEN_PREFIX),
+            "no merge completed: {comments}"
+        );
         let incident = fixture
             .store()
             .read(|tx| tx.verification_incident(fixture.project()))
@@ -6072,11 +6405,7 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
             .unwrap();
         assert!(incident.halted);
         assert_eq!(incident.attempts, 1);
-        let expected_held = if kind == "merged" {
-            vec![waiting]
-        } else {
-            vec![id.clone(), waiting]
-        };
+        let expected_held = vec![id.clone(), waiting];
         let halted_log = std::fs::read_to_string(fixture.cwd().join("halted.log")).unwrap();
         let notifications: Vec<serde_json::Value> = halted_log
             .lines()
@@ -6118,4 +6447,78 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
             "cleanup has not recovered"
         );
     }
+}
+
+#[test]
+fn a_dependency_hold_preserves_the_retrying_incident_and_its_failure_budget() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "Infrastructure recovery", Priority::High, PR_ONE);
+    let next = submitted(&fixture, "Next queued work", Priority::Low, PR_TWO);
+    let failure = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "GitHub unavailable".into(),
+        disposition: VerificationFailureDisposition::Retryable,
+    });
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    let incident = fixture
+        .store()
+        .read(|tx| tx.verification_incident(fixture.project()))
+        .unwrap()
+        .unwrap();
+    let blocker = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "Repair prerequisite".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let ctx = fixture.ctx();
+    let relations = storyhook::service::RelationService::new(&ctx);
+    relations
+        .relate(&id, "blocked-by", &blocker, false)
+        .unwrap();
+    let healthy = FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        detail: "certified".into(),
+        gate: GateCommand::DEFAULT.into(),
+    });
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &healthy, fixture.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.verification_incident(fixture.project()))
+            .unwrap(),
+        Some(incident)
+    );
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
+    assert_eq!(story_row(&fixture, &next).state, "verifying");
+    assert!(healthy.reaped.lock().unwrap().is_empty());
+
+    relations
+        .unblock_from(&id, std::slice::from_ref(&blocker))
+        .unwrap();
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    let retried = fixture
+        .store()
+        .read(|tx| tx.verification_incident(fixture.project()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retried.attempts, 2,
+        "unblocking does not reset the failure budget"
+    );
+    assert_eq!(
+        tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
+        TickResult::Halted
+    );
 }

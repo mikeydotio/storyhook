@@ -2310,3 +2310,25 @@ fn reentrancy_is_per_project() {
 
     holder.release();
 }
+
+/// The watchdog must finish its actual timer before returning inherited authority.
+#[test]
+fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
+    let fixture = Fixture::new();
+    let mut command = Command::new("python3");
+    command
+        .arg(checkout().join("tests/support/machine_lock_workspace.py"))
+        .arg(fixture.script())
+        .arg(fixture.path());
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("starting the real watchdog lifetime regression")
+        .wait_with_output_within(2 * poll_ceiling(), || {
+            "watchdog or its timer retained workspace authority after completion".to_string()
+        });
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

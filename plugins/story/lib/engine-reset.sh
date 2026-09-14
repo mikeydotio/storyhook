@@ -22,6 +22,8 @@ cmd_engine_reset() {
   [ -z "$DRY_RUN" ] || refuse "engine-reset-dry-run" "engine reset requires a live reservation, not a dry run"
   lease=$(printf '%s' "$request" | jq -ce '.lease') || refuse "invalid-reset" "engine reset request has no lease"
   validate_cleanup_lease reset "$id" "$lease"
+  id="$LEASE_CANONICAL_ID"
+  reserve_story_workspace "$id"
   auth_error=$(engine_reset_authorized "$request" 2>&1) || refuse "reset-ownership" "engine reset reservation no longer matches this story, run and lease: $auth_error"
 
   local worktree="$LEASED_WORKTREE" branch="$LEASED_BRANCH" repository="$LEASED_REPO"
@@ -58,6 +60,9 @@ cmd_engine_reset() {
     fi
   fi
   auth_error=$(engine_reset_authorized "$request" 2>&1) || refuse "reset-ownership" "engine reset lost ownership before closing its window: $auth_error"
+  if ! supersede_block_deliveries "$id"; then
+    refuse "reset-ownership" "$BLOCK_DELIVERY_ERROR. Reset resources were preserved."
+  fi
   if [ -n "$windows" ]; then
     while IFS= read -r window; do
       # Never reacquire a replacement by name after preflight.

@@ -43,6 +43,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::block_delivery::IDLE_POLL;
+use storyhook::store::{BlockAction, DeliveryStatus, ReadOps, Store};
 
 use storyhook_test_support::{Project, TestEnv, scratch_root};
 
@@ -70,20 +71,11 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 /// stories, one explicitly closed story, an `awaiting` block, and two phases.
 fn build_corpus() -> Project<'static> {
     let env = TestEnv::shared();
-    // Block delivery, stubbed (SH-693). Three operations below make a story
-    // blocked, and each enqueues an interrupt that the daemon's block-delivery
-    // worker (SH-690) attempts against the agent helper and records on the
-    // story as a comment. Left to the machine, that comment reads "could not
-    // find plugins/story/bin/story.sh for agent `codex`" — or, with the plugin
-    // installed, "pane-unavailable" — and lands whenever the worker's thread
-    // reaches it, so both its text and its place in the global sequence would
-    // differ from one machine and run to the next. The stub is how every test
-    // in this tree points dispatch at a known answer (`STORYHOOK_DISPATCH_SCRIPT`,
-    // src/api/dispatch.rs). It has to be in the daemon's own environment,
-    // which is the client's at the moment the daemon is spawned — hence the
-    // explicit `daemon start` before the project exists, the same door
-    // tests/block_delivery.rs uses. [`settled`] then pins where each delivery
-    // lands.
+    // The active SH-3 interruption reaches a deterministic helper response.
+    // SH-9 and SH-6 remain todo: their interrupts are durably superseded without
+    // sending a helper command or inventing an acknowledgement comment. The
+    // daemon must inherit the stub before startup, and each exact outcome must
+    // settle before later mutations fix the corpus's global sequence.
     let stub = env.home().join("golden-notify.sh");
     std::fs::write(
         &stub,
@@ -95,7 +87,7 @@ fn build_corpus() -> Project<'static> {
         .args(["daemon", "start"])
         .assert()
         .success();
-    let project = env.project().build();
+    let project = env.project().git().build();
     let run = |args: &[&str]| {
         project.run(args).success();
     };
@@ -218,9 +210,11 @@ fn build_corpus() -> Project<'static> {
     run(&["relate", "SH-1", "parent-of", "SH-3"]);
     run(&["relate", "SH-1", "parent-of", "SH-4"]);
     run(&["relate", "SH-5", "blocks", "SH-9"]);
-    settled(&project, "SH-9", 1);
+    settled(&project, "SH-9", 1, DeliveryStatus::Superseded);
+    // Add the blocker after work starts, preserving valid domain admission.
+    run(&["move", "SH-3", "in-progress"]);
     run(&["relate", "SH-2", "blocks", "SH-3"]);
-    settled(&project, "SH-3", 2);
+    settled(&project, "SH-3", 2, DeliveryStatus::Unreached);
 
     run(&["assign", "SH-2", "ada-lovelace"]);
     run(&["assign", "SH-5", "grace-hopper"]);
@@ -242,9 +236,8 @@ fn build_corpus() -> Project<'static> {
     run(&["phase", "add", "SH-9", "2"]);
 
     run(&["block", "SH-6", "waiting on the benchmark harness"]);
-    settled(&project, "SH-6", 3);
+    settled(&project, "SH-6", 3, DeliveryStatus::Superseded);
 
-    run(&["move", "SH-3", "in-progress"]);
     run(&["move", "SH-4", "review"]);
     run(&["move", "SH-8", "done"]);
     run(&["move", "SH-14", "done"]);
@@ -275,32 +268,73 @@ fn build_corpus() -> Project<'static> {
     project
 }
 
-/// Waits until `story` carries the block-delivery comment numbered `delivery`.
+/// Waits for one exact durable outcome, then checks its public history.
 ///
-/// The worker wakes on the change bus, so this normally returns on its first
-/// poll. The bound is ten of the worker's own fallback cadence — derived from
-/// it rather than picked (SH-394) — which is the difference between "slow" and
-/// "never": a corpus that trips it fails naming the delivery in flight rather
-/// than snapshotting a story whose next event has not landed.
-fn settled(project: &Project<'_>, story: &str, delivery: u32) {
-    let marker = format!("AGENT BLOCK DELIVERY #{delivery} — interrupt unreached");
+/// A superseded intent has no helper acknowledgement. An unreached attempt
+/// must carry the stub's diagnosis and matching story comment. Reading the
+/// fixture's own store distinguishes these outcomes without fabricating events.
+/// The bound is ten worker fallback intervals; an unexpected terminal outcome
+/// fails immediately with the complete delivery record.
+fn settled(project: &Project<'_>, story: &str, delivery: i64, expected: DeliveryStatus) {
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    let story_no = project.story_no(&store, story);
     let bound = IDLE_POLL * 10;
     let deadline = Instant::now() + bound;
-    loop {
-        let out = project
-            .story()
-            .args(["show", story, "--json"])
-            .output()
-            .unwrap_or_else(|e| panic!("running `story show {story} --json`: {e}"));
-        if String::from_utf8_lossy(&out.stdout).contains(&marker) {
-            return;
+    let record = loop {
+        let record = store
+            .read(|tx| tx.block_deliveries(project_id))
+            .expect("reading the golden corpus's block deliveries")
+            .into_iter()
+            .find(|record| record.id == delivery)
+            .unwrap_or_else(|| panic!("no block delivery #{delivery} for {story}"));
+        assert_eq!(record.story, story_no, "{record:?}");
+        assert_eq!(record.action, BlockAction::Interrupt, "{record:?}");
+        if !matches!(
+            record.status,
+            DeliveryStatus::Pending | DeliveryStatus::Attempting
+        ) {
+            break record;
         }
         assert!(
             Instant::now() < deadline,
             "block delivery #{delivery} for {story} did not settle within {bound:?}; the corpus \
-             cannot be snapshotted while a delivery is in flight"
+             cannot be snapshotted while a delivery is in flight: {record:?}"
         );
         std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(record.status, expected, "{record:?}");
+    assert!(record.target.is_none(), "{record:?}");
+    let shown = project.json(&["show", story]);
+    let comments = shown["story"]["story"]["comments"]
+        .as_array()
+        .expect("story show must expose its comments");
+    let marker = format!("AGENT BLOCK DELIVERY #{delivery} —");
+    match expected {
+        DeliveryStatus::Superseded => {
+            assert_eq!(record.detail, "story has no active execution to interrupt");
+            assert!(
+                comments.iter().all(|comment| !comment["text"]
+                    .as_str()
+                    .expect("a comment must contain text")
+                    .starts_with(&marker)),
+                "superseded delivery has an invented acknowledgement: {shown}"
+            );
+        }
+        DeliveryStatus::Unreached => {
+            assert_eq!(
+                record.detail,
+                "no agent reached: the golden corpus dispatches nothing"
+            );
+            let acknowledgement = format!("{marker} interrupt unreached\n\n> {}", record.detail);
+            assert!(
+                comments
+                    .iter()
+                    .any(|comment| comment["text"].as_str() == Some(acknowledgement.as_str())),
+                "the helper acknowledgement is missing from story history: {shown}"
+            );
+        }
+        _ => panic!("the golden fixture does not request {expected:?}"),
     }
 }
 

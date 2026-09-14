@@ -18,6 +18,8 @@
 //! reaches only the integration path and the flag has to survive on the
 //! workspace, lib and doctest paths too, while the `--list` discovery calls —
 //! which execute nothing — must stay exactly as they are.
+//!
+//! The workspace regressions cover package resolution and ambiguous target names.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -26,6 +28,9 @@ use std::process::{Command, Output};
 
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
+
+#[path = "battery_completion/workspace.rs"]
+mod workspace;
 
 fn checkout() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -212,7 +217,7 @@ fn every_executing_cargo_test_invocation_asks_cargo_not_to_stop() {
 printf '%s\n' "$*" >> "{record}"
 case " $* " in
 (*" metadata "*)
-    printf '%s\n' '{{"packages":[{{"name":"storyhook-test-support","targets":[{{"kind":["lib"],"name":"storyhook_test_support"}}]}}]}}'
+    printf '%s\n' '{{"packages":[{{"name":"storyhook-test-support","targets":[{{"kind":["lib"],"name":"storyhook_test_support"}}]}},{{"name":"auxiliary-checks","targets":[{{"kind":["test"],"name":"lint"}}]}}]}}'
     ;;
 (*" --list "*)
     case " $* " in
@@ -231,9 +236,9 @@ esac
     ));
     let journal = fixture.path().join("gate-progress.ndjson");
 
-    // The integration, lib and doctest paths of `--only`.
+    // Both integration packages, libraries and doctests must run after a failure.
     let targeted = fixture
-        .run_tests(&["--only", "first", "storyhook_test_support"])
+        .run_tests(&["--only", "first", "lint", "storyhook_test_support"])
         .output()
         .expect("running the targeted battery");
     assert!(!targeted.status.success(), "{}", combined(&targeted));
@@ -269,13 +274,21 @@ esac
         .collect();
     assert_eq!(
         executing.len(),
-        5,
-        "expected the integration, lib, doctest, workspace and journalled executions\n{calls}"
+        6,
+        "expected both integrations, lib, doctest, workspace and journalled executions\n{calls}"
     );
     assert!(
         discovering.len() >= 2,
         "expected at least the journalled run's default and --ignored discoveries\n{calls}"
     );
+    for phase in [&executing, &discovering] {
+        assert!(
+            phase
+                .iter()
+                .any(|line| line.contains("-p auxiliary-checks --test lint")),
+            "discovery and execution must select the integration test's owning package\n{calls}"
+        );
+    }
     for line in &executing {
         let cargo_options = line.split(" -- ").next().unwrap_or(line);
         assert!(

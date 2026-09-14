@@ -138,7 +138,7 @@ fn both_deadline_modes_record_output_and_timeouts() {
         ("stdout", "progressing-out"),
         ("stderr", "progressing-err"),
         ("stderr", "stalled-err"),
-        ("event", "process timed out; group terminated"),
+        ("event", "process timed out; group cleanup requested"),
     ] {
         assert!(
             records.iter().any(|record| record["source"] == "sh"

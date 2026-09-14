@@ -8,22 +8,33 @@ pub(super) fn read(
     story: StoryNo,
 ) -> Result<Option<StoryReset>, StoreError> {
     // Historical migration fixtures legitimately predate standalone reservations.
-    if crate::store::migrate::schema_version(conn)? < 43 {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "story_resets",
+        &["project_id", "story_no", "token", "record_json"],
+    )? {
         return Ok(None);
     }
-    let json: Option<String> = conn
+    let stored: Option<(String, String)> = conn
         .query_row(
-            "SELECT record_json FROM story_resets WHERE project_id=?1 AND story_no=?2",
+            "SELECT token,record_json FROM story_resets WHERE project_id=?1 AND story_no=?2",
             params![project.get(), story.get()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| StoreError::from_sqlite(e, "reading story reset"))?;
-    json.map(|json| {
-        serde_json::from_str(&json)
-            .map_err(|e| StoreError::Corrupt(format!("invalid story reset: {e}")))
-    })
-    .transpose()
+    stored
+        .map(|(token, json)| {
+            let reset: StoryReset = serde_json::from_str(&json)
+                .map_err(|e| StoreError::Corrupt(format!("invalid story reset: {e}")))?;
+            if reset.project != project || reset.story != story || reset.token != token {
+                return Err(StoreError::Corrupt(
+                    "story reset identity disagrees with its storage key".into(),
+                ));
+            }
+            Ok(reset)
+        })
+        .transpose()
 }
 
 pub(super) fn put(conn: &Connection, reset: &StoryReset) -> Result<(), StoreError> {
@@ -54,7 +65,11 @@ pub(super) fn put(conn: &Connection, reset: &StoryReset) -> Result<(), StoreErro
 
 /// Prevents project identity transfer while reset owns any of its resources.
 pub(super) fn refuse_project(conn: &Connection, project: ProjectId) -> Result<(), StoreError> {
-    if crate::store::migrate::schema_version(conn)? < 43 {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "story_resets",
+        &["project_id", "story_no", "token", "record_json"],
+    )? {
         return Ok(());
     }
     let story: Option<String> = conn.query_row(

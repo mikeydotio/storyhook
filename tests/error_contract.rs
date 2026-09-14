@@ -99,6 +99,20 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            variant: "TextLint",
+            exit_code: 2,
+            message: "STE text checks failed",
+            provoke: |env, json| {
+                let project = env.project().seed_story("A story").build();
+                run(
+                    project.path(),
+                    env,
+                    &["comment", "SH-1", "Do not utilize it."],
+                    json,
+                )
+            },
+        },
+        Case {
             variant: "NotFound",
             exit_code: 3,
             message: "not found",
@@ -433,7 +447,16 @@ fn every_error_variant_holds_its_contract() {
             case.message
         );
 
-        let expected_keys: Vec<&str> = if case.variant == "StateConflict" {
+        let expected_keys: Vec<&str> = if case.variant == "TextLint" {
+            vec![
+                "error",
+                "exit_code",
+                "findings",
+                "kind",
+                "result",
+                "story_id",
+            ]
+        } else if case.variant == "StateConflict" {
             // A lost compare-and-swap is a *result*, not a failure: `story.sh`
             // reads `actual` to report who won the claim.
             assert_eq!(
@@ -530,6 +553,7 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
     let expected = [
         (AppError::Usage(String::new()), 2),
         (AppError::Validation(String::new()), 2),
+        (text_lint_error(), 2),
         (AppError::NotFound(String::new()), 3),
         (AppError::LockTimeout(String::new()), 4),
         (AppError::DeadlineExceeded(String::new()), 12),
@@ -565,6 +589,7 @@ fn the_table_covers_every_variant() {
     let all = [
         AppError::Usage(String::new()),
         AppError::Validation(String::new()),
+        text_lint_error(),
         AppError::NotFound(String::new()),
         AppError::LockTimeout(String::new()),
         AppError::DeadlineExceeded(String::new()),
@@ -590,6 +615,21 @@ fn the_table_covers_every_variant() {
     }
 }
 
+fn text_lint_error() -> AppError {
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = storyhook::service::StoryService::new(&ctx);
+    let story = service
+        .create(&storyhook::service::NewStoryInput {
+            title: "Test text checks".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    service
+        .comment(&story.id, "Do not utilize it.")
+        .unwrap_err()
+}
+
 /// Exhaustive over `AppError` **on purpose**: adding a variant breaks this
 /// match, which is what forces the new variant into the table above rather than
 /// letting it ship with an unpinned exit code.
@@ -597,6 +637,7 @@ fn variant_name(error: &AppError) -> &'static str {
     match error {
         AppError::Usage(_) => "Usage",
         AppError::Validation(_) => "Validation",
+        AppError::TextLint(_) => "TextLint",
         AppError::NotFound(_) => "NotFound",
         AppError::LockTimeout(_) => "LockTimeout",
         AppError::DeadlineExceeded(_) => "DeadlineExceeded",

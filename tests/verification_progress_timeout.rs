@@ -21,6 +21,22 @@ fn verify_with_preparation(
     idle: Duration,
     prepare: impl FnOnce(&Path, &Path),
 ) -> VerificationOutcome {
+    exercise(script, idle, prepare, |actuator, candidate, pr, _| {
+        actuator.verify(candidate, pr)
+    })
+}
+
+fn exercise<T>(
+    script: &str,
+    idle: Duration,
+    prepare: impl FnOnce(&Path, &Path),
+    action: impl FnOnce(
+        ShellVerificationActuator,
+        &VerificationCandidate,
+        &PrLink,
+        &ServiceFixture,
+    ) -> T,
+) -> T {
     let fixture = ServiceFixture::new();
     let checkout = scratch_dir();
     for args in [
@@ -55,6 +71,8 @@ fn verify_with_preparation(
     }
     assert!(!checkout.path().join("scripts").exists());
     let candidate = VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -82,7 +100,7 @@ fn verify_with_preparation(
         checkout.path(),
         &storyhook::daemon::verification::journal_path(fixture.env(), &candidate),
     );
-    let outcome = ShellVerificationActuator::with_paths_and_timing(
+    let actuator = ShellVerificationActuator::with_paths_and_timing(
         fixture.env().clone(),
         checkout.path().join("unused-helper"),
         PathBuf::from("/usr/bin/true"),
@@ -90,8 +108,8 @@ fn verify_with_preparation(
         idle,
         idle / 4,
     )
-    .with_verifier_script(tools.path().join("verify-pr.sh"))
-    .verify(&candidate, &pull_request);
+    .with_verifier_script(tools.path().join("verify-pr.sh"));
+    let outcome = action(actuator, &candidate, &pull_request, &fixture);
     assert!(!checkout.path().join("must-not-run").exists());
     outcome
 }
@@ -100,18 +118,17 @@ const IDLE: Duration = Duration::from_secs(1);
 /// How a fake reaches the real sibling beside it — the shape the shipped
 /// family uses, since the fake's directory is the bundle's stand-in.
 const SIBLING: &str = r#""$(dirname "${BASH_SOURCE[0]}")""#;
-const MERGED: &str =
-    r#"printf '%s\n' '{"result":"merged","tree":"verified-tree","detail":"completed"}'"#;
+const CERTIFIED: &str = r#"printf '%s\n' '{"result":"certified","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
 
 #[test]
 fn progressing_verification_can_outlive_its_idle_budget() {
     let script = format!(
-        "set -eu\n. {SIBLING}/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\nfor i in {{1..12}}; do\n gate_progress_emit_case 'release gate/plugin' pass\n sleep {}\ndone\n{CERTIFIED}\n",
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { .. }),
+        matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
     );
 }
@@ -119,7 +136,7 @@ fn progressing_verification_can_outlive_its_idle_budget() {
 #[test]
 fn silence_after_progress_still_times_out() {
     let script = format!(
-        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{MERGED}\n",
+        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{CERTIFIED}\n",
         (IDLE * 4).as_secs()
     );
     let outcome = verify_script(&script, IDLE);
@@ -132,7 +149,7 @@ fn silence_after_progress_still_times_out() {
 #[test]
 fn output_chatter_does_not_keep_a_stalled_verifier_alive() {
     let script = format!(
-        "for i in {{1..12}}; do echo waiting >&2; sleep {}; done\n{MERGED}\n",
+        "for i in {{1..12}}; do echo waiting >&2; sleep {}; done\n{CERTIFIED}\n",
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
@@ -153,12 +170,12 @@ fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
          bash {SIBLING}/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
          for i in {{1..100}}; do [ ! -f \"$lock/pid\" ] || break; sleep 0.01; done\n\
          test -f \"$lock/pid\"\n\
-         bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{MERGED}\n",
+         bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{CERTIFIED}\n",
         (idle * 2).as_secs()
     );
     let outcome = verify_script(&script, idle);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { .. }),
+        matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
     );
 }
@@ -200,15 +217,16 @@ fn replacing_a_journal_cannot_renew_the_deadline() {
 fn assert_journal_damage(damage: &str, diagnosis: &str) {
     for completed in [false, true] {
         // Publish before damage so failure observation cannot race verdict output.
-        let answer = if completed { MERGED } else { "" };
+        let answer = if completed { CERTIFIED } else { "" };
         let outcome = verify_script(&format!("set -eu\n{answer}\n{damage}\n"), IDLE);
         if completed {
             let VerificationOutcome::CleanupFailed { verdict, cleanup } = outcome else {
-                panic!("completed merge lost after {diagnosis}: {outcome:?}");
+                panic!("completed certification lost after {diagnosis}: {outcome:?}");
             };
             assert_eq!(
                 verdict,
-                CompletedVerification::Merged {
+                CompletedVerification::Certified {
+                    head: "a".repeat(40),
                     tree: "verified-tree".into(),
                     detail: "completed".into(),
                     gate: "make test".into(),
@@ -227,6 +245,64 @@ fn assert_journal_damage(damage: &str, diagnosis: &str) {
             assert!(
                 matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains(diagnosis)),
                 "uncompleted command after {diagnosis}: {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn progressing_landing_outlives_the_control_budget_but_silence_keeps_authority_uncertain() {
+    use storyhook::daemon::verification::{LandingOutcome, journal_path};
+    use storyhook::domain::landing::VerifiedSubmission;
+    use storyhook::store::{GlobalSeq, LandingIntent, StoryNo};
+    for progressing in [true, false] {
+        let work = if progressing {
+            "for i in {1..12}; do gate_progress_emit_case 'landing/lock' pass; sleep 0.25; done"
+        } else {
+            "sleep 4"
+        };
+        let script = format!(
+            "set -eu\n. {SIBLING}/gate-progress.sh\n{work}\nprintf '%s\\n' '{{\"result\":\"merged\",\"detail\":\"confirmed\"}}'\n"
+        );
+        let outcome = exercise(
+            &script,
+            IDLE,
+            |_, journal| {
+                std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+                std::fs::write(journal, "").unwrap();
+            },
+            |actuator, candidate, pr, f| {
+                let mut candidate = candidate.clone();
+                candidate.pull_request = Ok(pr.clone());
+                assert!(journal_path(f.env(), &candidate).exists());
+                let intent = LandingIntent {
+                    id: "test-attempt".into(),
+                    project: candidate.project,
+                    story: StoryNo::parse_id("SH", "SH-1").unwrap(),
+                    story_id: candidate.story_id.clone(),
+                    project_slug: candidate.project_slug.clone(),
+                    generation: GlobalSeq::new(1),
+                    pull_request: pr.url.clone(),
+                    checkout: candidate.checkout.clone(),
+                    certification: VerifiedSubmission {
+                        head: "a".repeat(40),
+                        tree: "b".repeat(40),
+                        gate: "test gate".into(),
+                    },
+                    created_at: FIXTURE_NOW.into(),
+                };
+                actuator.land(&candidate, &intent)
+            },
+        );
+        if progressing {
+            assert!(
+                matches!(outcome, LandingOutcome::Merged { .. }),
+                "{outcome:?}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, LandingOutcome::Uncertain { .. }),
+                "{outcome:?}"
             );
         }
     }

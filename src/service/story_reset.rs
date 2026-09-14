@@ -2,13 +2,14 @@
 mod cleanup;
 mod identity;
 
+use super::executor_lock::ExecutorLock;
+use super::workspace_lock::WorkspaceLock;
 use super::{Ctx, StoryService, append_and_fold, project_prefix, resolve_open_story};
 use crate::domain::{StoryEvent, SuperState};
 use crate::error::AppError;
 use crate::store::{
     ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryReset, WriteOps,
 };
-use fs4::FileExt;
 
 /// Rejects lifecycle changes while an unfinished reset owns a story.
 pub(crate) fn refuse_reserved(
@@ -148,7 +149,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             .map_err(|e| {
                 AppError::Storage(format!("opening reset lock {}: {e}", lock_path.display()))
             })?;
-        lock.try_lock_exclusive().map_err(|e| {
+        let _executor = ExecutorLock::acquire(&lock, &lock_path).map_err(|e| {
             AppError::Validation(format!(
                 "reset {} already running or lock unavailable: {e}",
                 reset.token
@@ -162,21 +163,41 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         self.ctx.store().write(|tx| tx.put_story_reset(&reset))?;
         let result = (|| {
             quiesce()?;
+            let report = match &reset.resources {
+                Some(report) => report.clone(),
+                None => super::resources::ResourceService::new(self.ctx)
+                    .resolve(id, &Default::default())?,
+            };
+            // Dispatch and verification release the shared workspace before we
+            // acquire it; surviving cleanup children retain this same ownership.
+            let workspace = report
+                .repository
+                .as_ref()
+                .map(|repository| WorkspaceLock::acquire(repository, &reset.story_id))
+                .transpose()?;
             if reset.resources.is_none() {
-                let report = super::resources::ResourceService::new(self.ctx)
-                    .resolve(id, &Default::default())?;
                 cleanup::validate(&report, self.ctx.cwd(), self.ctx.env())?;
                 reset.paths = identity::capture(&report)?;
                 reset.resources = Some(report);
                 self.ctx.store().write(|tx| tx.put_story_reset(&reset))?;
             }
+            self.ctx.store().write(|tx| {
+                super::block_delivery::supersede_pending(
+                    tx,
+                    reset.project,
+                    reset.story,
+                    "card reset owns workspace replacement",
+                )?;
+                Ok(())
+            })?;
             cleanup::remove(
                 reset.resources.as_ref().expect("pinned resources"),
                 &reset.paths,
                 self.ctx.cwd(),
                 self.ctx.env(),
+                workspace.as_ref(),
             )?;
-            self.finish(&reset)
+            self.finish(&reset, workspace)
         })();
         match result {
             Ok(done) => Ok(done),
@@ -188,7 +209,11 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         }
     }
 
-    fn finish(&self, reset: &StoryReset) -> Result<StoryReset, AppError> {
+    fn finish(
+        &self,
+        reset: &StoryReset,
+        workspace: Option<WorkspaceLock>,
+    ) -> Result<StoryReset, AppError> {
         let now = self.ctx.now();
         let (before, snapshot, done) = self.ctx.write_stories(|tx| {
             let current = tx.story_reset(reset.project, reset.story)?.ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
@@ -199,6 +224,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             let mut done = current;
             done.completed = true;
             done.failure = None;
+            super::block_delivery::supersede_pending(tx, reset.project, reset.story, "card reset completed; prior session authority retired")?;
             tx.put_story_reset(&done)?;
             if let Some(incident) = tx.verification_incident(reset.project)? && incident.story == reset.story {
                 tx.clear_verification_incident(&incident.incident_id)?;
@@ -213,10 +239,12 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                     super::engine::put_or_retire_idle_lane(tx, &idle)?;
                 }
             }
-            let events = [StoryEvent::StoryStateChanged { at: now.clone(), state: "todo".into() }, StoryEvent::StoryAwaitingCleared { at: now.clone() }, StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("Reset {}: stopped the story worker, removed its worktree and local branch, released ownership, and returned to todo. Remote branches and pull requests were preserved.", reset.token) }];
+            let events = [StoryEvent::StoryStateChanged { at: now.clone(), state: "todo".into() }, StoryEvent::StoryAwaitingCleared { at: now.clone() }, StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("Reset {} completed. Stopped the story worker. Removed its worktree and local branch. Released ownership and returned to todo. Preserved remote branches and pull requests.", reset.token) }];
             let snapshot = append_and_fold(tx, reset.project, reset.story, &prefix, &states, ExpectedSeq::Exact(row.head_seq), &events, self.ctx.provenance())?;
             Ok((row.snapshot, snapshot, done))
         })?;
+        // Transition hooks may dispatch the now-ready story.
+        drop(workspace);
         StoryService::new(self.ctx).fire_transition_hooks(
             &before.id,
             &before.title,
@@ -228,3 +256,6 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         Ok(done)
     }
 }
+
+#[cfg(test)]
+mod executor_tests;

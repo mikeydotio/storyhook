@@ -110,9 +110,10 @@ fn a_block_cleared_between_observer_reads_still_withdraws_the_attempt() {
 #[test]
 fn completed_outcomes_are_rechecked_even_without_a_notification() {
     for outcome in [
-        VerificationOutcome::Merged {
+        VerificationOutcome::Certified {
+            head: "a".repeat(40),
             tree: "tree".into(),
-            detail: "landed".into(),
+            detail: "certified".into(),
             gate: "gate".into(),
         },
         VerificationOutcome::TestsFailed {

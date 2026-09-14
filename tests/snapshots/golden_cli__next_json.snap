@@ -1,5 +1,6 @@
 ---
 source: tests/golden_cli.rs
+assertion_line: 487
 ---
 [
   {
@@ -275,7 +276,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -303,12 +304,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -381,7 +377,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],

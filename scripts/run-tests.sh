@@ -26,12 +26,9 @@
 # test binaries rather than the whole workspace — `scripts/select-tests.sh`'s
 # own output, for `make test-changed`. A name is resolved against
 # `tests/<name>.rs` first (an ordinary integration test binary); anything
-# that is not one is looked up as a LIB target's own name via `cargo
-# metadata` (never hardcoded — this workspace has exactly two lib crates
-# today, and a name resolved from the workspace's own metadata cannot drift
-# from what actually exists the way a hand-copied pair of package names
-# could). A name that resolves to neither is refused (SH-357's doctrine: an
-# argument that lands nowhere is refused, not silently dropped). `--only`
+# that is not one is resolved through Cargo metadata to its owning package
+# and integration or library target. Missing or ambiguous names are refused.
+# Package names are not inferred from target names or directory layout. `--only`
 # with NO names at all means a deliberately empty selection — nothing to
 # run — never "no filter, so run everything": that silent fallback is
 # exactly the shape `select-tests.sh`'s own contract is built to avoid.
@@ -222,25 +219,34 @@ run_leg() {
     "${observer[@]}"
 }
 
-# Resolves a lib target's own name (e.g. storyhook_test_support) to the
-# PACKAGE name `cargo test -p` needs (storyhook-test-support) by asking cargo,
-# never by guessing the hyphen/underscore convention or hardcoding the pair.
-resolve_lib_package() {
-    cargo metadata --no-deps --format-version=1 2>/dev/null | python3 -c '
+# Cargo target names and package names differ, including hyphens and underscores.
+# Resolve both integration and library targets from the same metadata as the classifier.
+resolve_workspace_target() {
+    cargo metadata --no-deps --format-version=1 | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 name = sys.argv[1]
+matches = []
 for pkg in d["packages"]:
     for t in pkg["targets"]:
-        if "lib" in t["kind"] and t["name"] == name:
-            print(pkg["name"])
-            sys.exit(0)
-sys.exit(1)
+        for kind in ("lib", "test"):
+            if kind in t["kind"] and t["name"] == name:
+                matches.append((pkg["name"], kind))
+if len(matches) != 1:
+    if matches:
+        owners = ", ".join(f"{package} ({kind})" for package, kind in matches)
+        print(f"run-tests.sh: ambiguous workspace target {name!r}: {owners}", file=sys.stderr)
+    else:
+        print(f"run-tests.sh: no workspace integration or library target named {name!r}", file=sys.stderr)
+    sys.exit(1)
+print("\t".join(matches[0]))
 ' "$1"
 }
 
 storyhook_test_args=()
 lib_packages=()
+workspace_test_packages=()
+workspace_test_names=()
 discovery_activity="discovering tests"
 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" running
 if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
@@ -249,14 +255,18 @@ if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
             storyhook_test_args+=(--test "$name")
             continue
         fi
-        pkg="$(resolve_lib_package "$name")" || {
-            echo "run-tests.sh: --only names '$name', which is neither a \
-tests/*.rs binary nor a workspace lib target -- refusing rather than silently \
-skipping it" >&2
+        resolved="$(resolve_workspace_target "$name")" || {
+            echo "run-tests.sh: cannot resolve --only target '$name'; refusing an incomplete battery" >&2
             gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
             exit 1
         }
-        lib_packages+=("$pkg")
+        IFS=$'\t' read -r pkg kind <<<"$resolved"
+        if [ "$kind" = test ]; then
+            workspace_test_packages+=("$pkg")
+            workspace_test_names+=("$name")
+        else
+            lib_packages+=("$pkg")
+        fi
     done
 fi
 
@@ -356,6 +366,14 @@ if [ -n "$(gate_progress_journal)" ]; then
             }
         fi
         i=0
+        while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
+            add_to_exact_total cargo test -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || {
+                gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+                exit 1
+            }
+            i=$((i + 1))
+        done
+        i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
             add_to_exact_total cargo test -p "${lib_packages[$i]}" --lib "$@" || {
                 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
@@ -390,9 +408,8 @@ gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" pas
 # already read every FAILED line, so they gain the extra failures for free.
 #
 # Applied to every EXECUTING invocation below and to none of the `--list`
-# discoveries above, which execute nothing. One array rather than four
-# literals, so no path can drop it alone (`tests/battery_completion.rs` pins
-# all four).
+# discoveries above, which execute nothing. One array supplies every path.
+# `tests/battery_completion.rs` covers each executing and discovery path.
 cargo_test_flags=(--no-fail-fast)
 
 status=0
@@ -407,12 +424,12 @@ else
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
             run_leg cargo test "${cargo_test_flags[@]}" -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?
         fi
-        # `[ "${#lib_packages[@]}" -gt 0 ] && for` rather than a bare
-        # `for pkg in "${lib_packages[@]}"`: bash < 4.4 (macOS's system bash
-        # is 3.2, frozen there by the GPLv3) raises "unbound variable" under
-        # `set -u` when expanding an EMPTY array's `[@]`, not zero iterations
-        # -- a fixed, well-known portability gap, not a bug in this script's
-        # own logic.
+        # Indexed loops avoid expanding empty arrays under macOS Bash 3.2 and set -u.
+        i=0
+        while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
+            run_leg cargo test "${cargo_test_flags[@]}" -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || status=$?
+            i=$((i + 1))
+        done
         i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
             pkg="${lib_packages[$i]}"

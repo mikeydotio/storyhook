@@ -1,5 +1,6 @@
 ---
 source: tests/golden_cli.rs
+assertion_line: 487
 ---
 [
   {
@@ -81,13 +82,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -116,7 +117,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -177,15 +178,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -219,12 +215,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -297,7 +288,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -324,7 +315,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -430,15 +421,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -472,12 +458,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -550,7 +531,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -577,7 +558,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -610,7 +591,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -644,7 +625,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -662,7 +643,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 75,
+          "head_global_seq": 73,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -733,15 +714,10 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -842,13 +818,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -981,13 +957,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -1016,7 +992,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1188,13 +1164,13 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -1224,15 +1200,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -1249,12 +1220,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -1321,7 +1287,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1449,7 +1415,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1519,13 +1485,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -1649,13 +1615,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -1684,7 +1650,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1745,15 +1711,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -1787,12 +1748,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -1865,7 +1821,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -1892,7 +1848,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2005,13 +1961,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -2040,7 +1996,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2101,15 +2057,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -2143,12 +2094,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -2221,7 +2167,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -2248,7 +2194,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2361,13 +2307,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -2396,7 +2342,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2501,13 +2447,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -2536,7 +2482,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2597,15 +2543,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -2636,7 +2577,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2657,12 +2598,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -2735,7 +2671,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 78,
+          "head_global_seq": 76,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2758,7 +2694,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 75,
+          "head_global_seq": 73,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2776,7 +2712,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -2803,7 +2739,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2908,13 +2844,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -2943,7 +2879,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3004,15 +2940,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -3043,7 +2974,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3064,12 +2995,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -3142,7 +3068,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 78,
+          "head_global_seq": 76,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3165,7 +3091,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 75,
+          "head_global_seq": 73,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3183,7 +3109,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -3210,7 +3136,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3315,13 +3241,13 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -3350,7 +3276,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3411,15 +3337,10 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 69,
+          "head_global_seq": 68,
           "story": {
             "awaiting": "waiting on the benchmark harness",
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -3450,7 +3371,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3471,12 +3392,7 @@ source: tests/golden_cli.rs
           "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
+            "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -3549,7 +3465,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 78,
+          "head_global_seq": 76,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3572,7 +3488,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 75,
+          "head_global_seq": 73,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3590,7 +3506,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 88,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -3617,7 +3533,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "story": {
             "awaiting": null,
             "comments": [],

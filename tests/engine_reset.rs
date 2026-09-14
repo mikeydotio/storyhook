@@ -10,6 +10,16 @@ use storyhook_test_support::{
 };
 
 fn setup(fixture: &ServiceFixture, fake: &FakeDispatcher, initial: &str) -> String {
+    let repo = fixture.cwd().canonicalize().unwrap();
+    let init = storyhook::env::git_env::command(&repo)
+        .args(["init", "--initial-branch=main"])
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&repo)))
+        .unwrap();
     let ctx = fixture.ctx();
     let story = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -46,8 +56,8 @@ fn setup(fixture: &ServiceFixture, fake: &FakeDispatcher, initial: &str) -> Stri
                 version: CLEANUP_LEASE_VERSION,
                 project_slug: "fixture".into(),
                 story_id: story.id,
-                repository_path: "/owned/repo".into(),
-                worktree_path: "/owned/repo/lane".into(),
+                repository_path: repo.clone(),
+                worktree_path: repo.join("lane"),
                 branch: "worktree-SH-1".into(),
                 tmux: TmuxCleanupTarget {
                     socket_path: "/owned/socket".into(),
@@ -107,6 +117,11 @@ fn restart_retains_explicit_reset_then_steady_pass_finishes_it_without_quarantin
         .unwrap();
     assert_eq!(row.state, "todo");
     assert!(row.awaiting.is_none());
+    let completion = row.snapshot.comments.last().unwrap();
+    assert!(completion.text.contains(&run));
+    assert!(completion.text.contains(&before.unwrap().token));
+    assert!(completion.text.contains("lane 0"));
+    assert!(completion.text.contains("`todo`"));
     assert!(
         !row.snapshot
             .comments
@@ -305,7 +320,11 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
                 detail: "old observation: agent exited".into(),
             }
         }
-        fn reset(&self, request: EngineReset) -> Result<DispatchOutcome, AppError> {
+        fn reset(
+            &self,
+            request: EngineReset,
+            _workspace: std::os::fd::BorrowedFd<'_>,
+        ) -> Result<DispatchOutcome, AppError> {
             self.reset_entered.send(()).unwrap();
             self.reset_release
                 .lock()
@@ -541,3 +560,47 @@ fn closed_lane_detaches_without_story_mutation_or_helper_cleanup() {
     );
     assert!(fake.calls().is_empty());
 }
+
+#[test]
+fn stop_now_retries_after_workspace_delivery_and_retires_old_pending_authority() {
+    use fs4::FileExt;
+    use storyhook::store::DeliveryStatus;
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::Reset]);
+    let run = setup(&fixture, &fake, "todo");
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .set_awaiting("SH-1", "Current delivery owns the workspace")
+        .unwrap();
+    let directory = fixture.cwd().join(".git/storyhook/workspace-locks");
+    std::fs::create_dir_all(&directory).unwrap();
+    let owner = std::fs::File::create(directory.join("SH-1.lock")).unwrap();
+    owner.lock_exclusive().unwrap();
+    let engine = EngineService::new(&ctx, &fake);
+    let error = engine.stop(&run, true).unwrap_err();
+    assert!(error.to_string().contains("workspace is busy"), "{error}");
+    assert!(
+        fake.calls().is_empty(),
+        "a contended reset must not call its actuator"
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_some()
+    );
+    drop(owner);
+    engine.stop(&run, true).unwrap();
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.block_deliveries(fixture.project()))
+            .unwrap()
+            .iter()
+            .all(|d| d.status == DeliveryStatus::Superseded)
+    );
+}
+
+#[path = "engine_reset/quiescent.rs"]
+mod quiescent;

@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 
+from workspace_ownership import inherited_fds
+
 MAX_BYTES = 64 * 1024 * 1024
 OPTION = '@storyhook-continuation'
 MARKER = 'storyhook-cleanup-lease-v1.json'
@@ -26,7 +28,7 @@ def command(argv, cwd=None, timeout=2, env=None):
     """Bound subprocess lifetime and output without an in-memory output pipe."""
     with tempfile.TemporaryFile(dir='/tmp') as out, tempfile.TemporaryFile(dir='/tmp') as err:
         result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                timeout=timeout, check=False)
+                                timeout=timeout, check=False, pass_fds=inherited_fds())
         require(out.tell() <= MAX_BYTES and err.tell() <= MAX_BYTES,
                 'continuation subprocess output exceeds 64 MiB: ' + argv[0])
         out.seek(0)

@@ -44,6 +44,14 @@
 # without this file changing.
 set -euo pipefail
 
+# Playwright forces FORCE_COLOR=1 in workers. Translate NO_COLOR before Node
+# starts: DEBUG_COLORS=0 makes Playwright strip ANSI from worker output, while
+# dropping the conflicting flag prevents Node's warning in every new worker.
+if [ "${NO_COLOR+x}" = x ]; then
+  export FORCE_COLOR=0 DEBUG_COLORS=0
+  unset NO_COLOR
+fi
+
 cd "$(dirname "$0")/.."
 repo_root="$PWD"
 # shellcheck source=gate-progress.sh
@@ -155,6 +163,25 @@ if [ ! -d "$repo_root/e2e/node_modules" ] || ! (cd "$repo_root/e2e" && npx --no-
   exit 1
 fi
 
+# --- Keep the display awake for the whole run (SH-628). -------------------
+#
+# WindowServer retains every IOSurface headless WebKit commits while all
+# displays are asleep, and aborts the console session -- every agent session,
+# every GUI app, this gate -- once the system-wide count reaches 65,535.
+# Measured 2026-09-08/09, not assumed: 411 webkit tests with the display on
+# peaked at 448 live surfaces; 103,753 surfaces created in thirteen dark
+# minutes ended in the 01:31 crash. A display wake releases them, so the
+# condition to avoid is simply "Playwright running while the display sleeps".
+# `-u` turns the display on if it is already off, `-d` holds it on for the
+# run, `-i` keeps the machine from idling under it. Chromium's headless shell
+# never touches WindowServer, but wrapping every project keeps the rule one
+# line rather than a per-engine table. Absent `caffeinate` (not macOS) the
+# array is empty and expands to nothing.
+keep_display_awake=()
+if command -v caffeinate >/dev/null 2>&1; then
+  keep_display_awake=(caffeinate -d -u -i)
+fi
+
 # --- One fully isolated run per project. ---------------------------------
 #
 # Everything from here down used to be this whole script's top level, run
@@ -219,6 +246,11 @@ run_one_project() {
   # that replaces this run's daemon -- `untrusted-origin-cookie.spec.ts`
   # restarts it on purpose, and would restart it from the wrong build.
   export DASHBOARD_STORY_BIN="$story_bin"
+  # Notification and hook children also invoke the CLI. Their allowlisted
+  # environment retains STORY_BIN and PATH, so both must name this same lease.
+  # Otherwise an ambient installed CLI replaces the fixture daemon on first use.
+  export STORY_BIN="$story_bin"
+  export PATH="$story_lease_dir:$PATH"
 
   # This is not a store-isolation parameter, so test-env.sh deliberately does
   # not own it. It is still a browser-fixture input: an ambient proxy allowlist
@@ -668,7 +700,7 @@ WRAPPER
   # refusal that names the machine, not one launch timeout per test.
   export E2E_PROJECT="$project"
   status=0
-  npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
+  "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
 
   # --- Was the run's binary rebuilt under it? Informational either way

@@ -606,6 +606,10 @@ watchdog=""
 if [ -n "$max_idle" ]; then
     stalled="$lock/stalled"
     (
+        # A default TERM exits this shell while its foreground timer/probe
+        # retains inherited workspace locks. Bash defers this trap until that
+        # child exits; the parent's wait then observes the complete watchdog.
+        trap 'exit 0' TERM INT HUP
         last_size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
             note "lost access to the progress journal at $journal before the watchdog could observe it"
             printf 'journal unreadable\n' > "$stalled"

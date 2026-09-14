@@ -1124,6 +1124,7 @@ fn resources_grammar_carries_explicit_inputs_and_rejects_duplicate_or_missing_va
     let args = [
         "resources",
         "7",
+        "--location-only",
         "--window-name",
         "custom",
         "--worktree-root",
@@ -1137,6 +1138,7 @@ fn resources_grammar_carries_explicit_inputs_and_rejects_duplicate_or_missing_va
     };
     assert_eq!(id, "7");
     assert_eq!(options.window_name.as_deref(), Some("custom"));
+    assert!(options.location_only);
     assert_eq!(
         options.tmux_socket.unwrap(),
         std::path::Path::new("/tmp/owned")
@@ -1144,6 +1146,7 @@ fn resources_grammar_carries_explicit_inputs_and_rejects_duplicate_or_missing_va
     for values in [
         vec!["resources"],
         vec!["resources", "7", "--lease-json"],
+        vec!["resources", "7", "--location-only", "--location-only"],
         vec!["resources", "7", "--tmux-socket", "relative"],
         vec![
             "resources",

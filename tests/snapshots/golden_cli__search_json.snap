@@ -43,7 +43,7 @@ source: tests/golden_cli.rs
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -185,7 +185,7 @@ source: tests/golden_cli.rs
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",
@@ -281,7 +281,7 @@ source: tests/golden_cli.rs
             "comments": [
               {
                 "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
             "created_at": "[timestamp]",

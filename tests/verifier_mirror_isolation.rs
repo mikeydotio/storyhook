@@ -9,12 +9,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use storyhook::daemon::verification::{
-    ShellVerificationActuator, VerificationActuator, VerificationOutcome,
+    LandingOutcome, ShellVerificationActuator, VerificationActuator, VerificationOutcome,
 };
+use storyhook::domain::landing::VerifiedSubmission;
 use storyhook::domain::{CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::env::{Environment, spawn_env::apply_verification_allowlist};
 use storyhook::service::verification::{VerificationCandidate, VerificationProblem};
-use storyhook::store::PrLink;
+use storyhook::store::{GlobalSeq, LandingIntent, PrLink, StoryNo};
 use storyhook_test_support::{
     ChildGuard, FIXTURE_NOW, STORY_COMMAND_DEADLINE, ServiceFixture, daemon_containment,
     scratch_dir,
@@ -48,6 +49,8 @@ fn mirror_value(bytes: &[u8]) -> Option<String> {
 
 fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate {
     VerificationCandidate {
+        blocked_by: Vec::new(),
+        landing_pending: false,
         project: fixture.project(),
         project_slug: "fixture".into(),
         story_id: "SH-1".into(),
@@ -87,7 +90,7 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
     ] {
         output(storyhook::env::git_env::command(checkout.path()).args(args));
     }
-    let candidate = candidate(&fixture, checkout.path());
+    let mut candidate = candidate(&fixture, checkout.path());
     let lease = candidate.cleanup_lease.as_ref().unwrap();
     let reap_receipt = serde_json::json!({
         "ok": true,
@@ -133,8 +136,11 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
     let verifier = scripts.path().join("record-verifier.sh");
     std::fs::write(
         &verifier,
-        "#!/bin/bash\n/usr/bin/env > verify.env\n\
-         printf '%s\\n' '{\"result\":\"merged\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\n",
+        "#!/bin/bash\nif [ \"${1:-}\" = --landing ]; then\n\
+         /usr/bin/env > \"$2.env\"\n\
+         printf '%s\\n' '{\"result\":\"merged\",\"detail\":\"environment recorded\"}'\n\
+         else\n/usr/bin/env > verify.env\n\
+         printf '%s\\n' '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
     )
     .expect("write environment-recording verification helper");
     let actuator =
@@ -159,10 +165,36 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
     };
     let outcome = actuator.verify(&candidate, &pr);
     assert!(
-        matches!(outcome, VerificationOutcome::Merged { .. }),
+        matches!(outcome, VerificationOutcome::Certified { .. }),
         "verification receipt was not accepted: {outcome:?}"
     );
-    ["notify", "reap", "submit", "verify"]
+    candidate.pull_request = Ok(pr.clone());
+    let intent = LandingIntent {
+        id: "mirror-isolation".into(),
+        project: candidate.project,
+        story: StoryNo::new(1),
+        story_id: candidate.story_id.clone(),
+        project_slug: candidate.project_slug.clone(),
+        generation: GlobalSeq::new(1),
+        pull_request: pr.url.clone(),
+        checkout: checkout.path().to_path_buf(),
+        certification: VerifiedSubmission {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            gate: "test gate".into(),
+        },
+        created_at: FIXTURE_NOW.into(),
+    };
+    for outcome in [
+        actuator.land(&candidate, &intent),
+        actuator.recover_landing(&candidate, &intent),
+    ] {
+        assert!(
+            matches!(outcome, LandingOutcome::Merged { .. }),
+            "{outcome:?}"
+        );
+    }
+    ["notify", "reap", "submit", "verify", "attempt", "recover"]
         .into_iter()
         .map(|door| {
             let bytes = std::fs::read(checkout.path().join(format!("{door}.env")))
@@ -246,7 +278,7 @@ fn fixture_mirror_policy_survives_every_verifier_child() {
             &observed["process_vars"],
             Some(process_policy),
         );
-        for door in ["notify", "reap", "submit", "verify"] {
+        for door in ["notify", "reap", "submit", "verify", "attempt", "recover"] {
             expect(
                 &format!("fixture {door} child"),
                 &observed["fixture_doors"][door],

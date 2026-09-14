@@ -234,7 +234,7 @@ test-changed: check-no-orphan-servers
 	@bash scripts/with-orphan-postlude.sh $(if $(STORYHOOK_MAKE_NO_EXEC),--make-no-exec) -- $(MAKE) --no-print-directory _test-changed-body
 	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
 	 tier_args="$$(cat "$$state_file" 2>/dev/null)"; \
-	 [ -n "$$tier_args" ] || tier_args=gate; \
+	 [ -n "$$tier_args" ] || { echo "test-changed: missing selection tier; nothing certified" >&2; exit 1; }; \
 	 rm -f "$$state_file"; \
 	 bash scripts/gate-receipt.sh postlude $$tier_args
 
@@ -243,7 +243,7 @@ _test-changed-body:
 	@. scripts/gate-legs.sh; gate_init; \
 	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
 	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
-	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh; \
+	gate_run rust-suite bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
 	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \

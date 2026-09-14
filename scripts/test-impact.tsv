@@ -16,6 +16,7 @@ block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
 build_identity	:(glob)**/*
+build_identity	tests/build_identity/index.rs
 build_slots	.cargo/config.toml
 build_slots	scripts/machine-lock.sh
 build_slots	scripts/rustc-slot.py
@@ -42,6 +43,7 @@ dashboard_error_reporting	:(glob)**/*
 dashboard_focus_coverage	:(glob)**/*
 dashboard_icon_glyphs	:(glob)**/*
 dashboard_local_time	src/web_dashboard.html
+dashboard_merge_contract	src/web_dashboard.html
 dashboard_mutation_deadline	:(glob)**/*
 dashboard_reserved_labels	:(glob)**/*
 dead_public_surface	:(glob)**/*
@@ -55,6 +57,8 @@ dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
 e2e_browser_coverage	:(glob)**/*
 e2e_daemon_check	scripts/e2e-daemon-check.sh
+e2e_display_awake	scripts/e2e-selection.sh
+e2e_display_awake	scripts/run-e2e.sh
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
@@ -132,11 +136,13 @@ remote_identity	:(glob)**/*
 retired_next_claim	:(glob)**/*
 retired_work_verb	:(glob)**/*
 route_authority	:(glob)**/*
+schema_lineage	:(glob)src/store/**
 scope_rubric	:(glob)**/*
 scope_rubric	AGENTS.md
 scope_rubric	src/service/templates.rs
 scratch_env	:(glob)**/*
 selective_gate	:(glob)**/*
+selective_gate	tests/support/selective_receipt.py
 semver_hook_test	:(glob)**/*
 service_git	:(glob)**/*
 session_start_hook	:(glob)**/*
@@ -148,6 +154,7 @@ store_isolation	:(glob)**/*
 store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
 store_isolation	:(glob)scripts/**/*.sh
 store_isolation	:(glob)tests/**/*.rs
+store_migrations	:(glob)src/store/**
 store_schema_fixture	:(glob)**/*
 story_reset	src/service/query.rs
 story_reset	src/service/resources/mod.rs

@@ -557,8 +557,12 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
-    /// Deletes only resources owned by an explicit durable reset reservation.
-    fn reset(&self, _request: crate::store::EngineReset) -> Result<DispatchOutcome, AppError> {
+    /// Deletes resources owned by a durable reset while inheriting the supplied workspace exclusion into destructive children.
+    fn reset(
+        &self,
+        _request: crate::store::EngineReset,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
         Err(AppError::Storage(
             "this dispatcher does not support leased reset".into(),
         ))
@@ -754,8 +758,12 @@ impl ShellDispatcher {
 }
 
 impl Dispatcher for ShellDispatcher {
-    fn reset(&self, request: crate::store::EngineReset) -> Result<DispatchOutcome, AppError> {
-        reset::run_shell_reset(&self.story_sh_path, &request, &self.env)
+    fn reset(
+        &self,
+        request: crate::store::EngineReset,
+        workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
+        reset::run_shell_reset(&self.story_sh_path, &request, &self.env, workspace)
     }
 
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
@@ -1387,7 +1395,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             let _ = run_for_project(tx, slug, run_id)?;
             let prefix = project_prefix(tx, project)?;
             let mut facts = Vec::new();
+            let resets = tx.story_resets(project)?;
             for lane in tx.engine_lanes(run_id)? {
+                if lane
+                    .story_id
+                    .as_deref()
+                    .and_then(|id| crate::store::StoryNo::parse_id(&prefix, id).ok())
+                    .is_some_and(|number| resets.contains_key(&number))
+                {
+                    continue;
+                }
                 if lane.state == EngineLaneState::Idle || lane.state == EngineLaneState::Quarantined
                 {
                     continue;
@@ -2604,7 +2621,7 @@ pub(crate) fn run_shell_dispatch(
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
     run_shell_dispatch_cancellable(
-        script, project, story, agent, auto, full_auto, options, env, None,
+        script, project, story, agent, auto, full_auto, options, env, None, None,
     )
 }
 
@@ -2620,6 +2637,7 @@ pub(crate) fn run_shell_dispatch_cancellable(
     options: &DispatchOptions,
     env: &Environment,
     cancellation: Option<&crate::process::Cancellation>,
+    workspace: Option<&super::workspace_lock::WorkspaceLock>,
 ) -> Result<DispatchOutcome, AppError> {
     let [
         story_prompt,
@@ -2688,6 +2706,9 @@ pub(crate) fn run_shell_dispatch_cancellable(
         command.arg("--speed=fast");
     }
     apply_dispatch_allowlist(&mut command);
+    if let Some(workspace) = workspace {
+        workspace.dispatch_command(&mut command);
+    }
     command
         .current_dir(env.home())
         .env("STORY_BIN", exe)
@@ -2734,6 +2755,9 @@ pub(crate) fn run_shell_dispatch_cancellable(
         }
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the dispatch process: {detail}"))
+        }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("dispatch cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
@@ -2788,6 +2812,9 @@ fn run_shell_unclaim(
         }
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the unclaim helper: {detail}"))
+        }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("unclaim cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
@@ -2888,6 +2915,9 @@ pub(crate) fn run_shell_capabilities(
         )),
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the capabilities helper: {detail}"))
+        }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("capabilities cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "capabilities did not finish within {}s and was terminated",
@@ -3140,6 +3170,28 @@ fn is_executable(path: &Path) -> bool {
     {
         true
     }
+}
+
+/// Retires the exact lanes whose story reset just completed.
+pub(crate) fn release_reset_lanes(
+    tx: &mut impl WriteOps,
+    slug: &str,
+    id: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    for run in tx.live_engine_runs()? {
+        if run.project_slug != slug {
+            continue;
+        }
+        for lane in tx.engine_lanes(&run.id)? {
+            if lane.story_id.as_deref() == Some(id) {
+                let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
+                idle.outcome = Some("story-reset".into());
+                put_or_retire_idle_lane(tx, &idle)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

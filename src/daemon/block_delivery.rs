@@ -12,7 +12,8 @@ use crate::domain::{StoryEvent, SuperState, is_blocked};
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
-use crate::process::{TerminationPolicy, run_captured_with_termination};
+use crate::process::{CaptureError, TerminationPolicy, run_captured_quiescent};
+use crate::service::workspace_lock::WorkspaceLock;
 use crate::service::{Ctx, block_delivery::UNBLOCK_PROMPT};
 use crate::store::{
     BlockAction, BlockDelivery, DeliveryStatus, ExpectedSeq, ReadOps, Store, WriteOps,
@@ -46,11 +47,13 @@ fn finish(
         &[StoryEvent::StoryCommentAdded {
             at: ctx.now(),
             text: format!(
-                "AGENT BLOCK DELIVERY #{} — {} {}: {}",
+                "AGENT BLOCK DELIVERY #{} — {} {}
+
+{}",
                 delivery.id,
                 delivery.action.as_str(),
                 delivery.status.as_str(),
-                delivery.detail
+                crate::text_lint::quote_evidence(&delivery.detail)
             ),
         }],
         ctx.provenance(),
@@ -87,17 +90,52 @@ fn deliveries_in(
 /// Read first, write only for the deliveries actually interrupted: a fresh
 /// daemon with nothing to recover opens no write transaction at all (SH-693).
 pub fn recover(store: &impl Store, env: &Environment) -> Result<(), AppError> {
-    let interrupted = deliveries_in(store, DeliveryStatus::Attempting)?;
-    if interrupted.is_empty() {
-        return Ok(());
-    }
-    store.write(|tx| {
-        for mut delivery in interrupted {
-            let ctx = Ctx::new(store, delivery.project, env.home(), env.clone()).no_hooks(true);
-            delivery.status = DeliveryStatus::Uncertain;
-            delivery.detail = "daemon stopped before acknowledgement; the agent may have been reached; no automatic replay".into();
-            finish(tx, &ctx, &delivery, DeliveryStatus::Attempting)?;
+    let mut failures = Vec::new();
+    for delivery in deliveries_in(store, DeliveryStatus::Attempting)? {
+        if let Err(error) = recover_one(store, env, &delivery) {
+            failures.push(format!("delivery #{}: {error}", delivery.id));
         }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Storage(format!(
+            "block delivery recovery remains pending: {}",
+            failures.join("; ")
+        )))
+    }
+}
+
+fn recover_one(
+    store: &impl Store,
+    env: &Environment,
+    delivery: &BlockDelivery,
+) -> Result<(), AppError> {
+    let (project, checkout) = store.read(|tx| {
+        let project = tx
+            .project(delivery.project)?
+            .ok_or_else(|| AppError::Storage("attempted delivery project disappeared".into()))?;
+        let checkout = tx.checkout_path(delivery.project)?.ok_or_else(|| {
+            AppError::Storage("attempted delivery lost its linked checkout".into())
+        })?;
+        Ok((project, checkout))
+    })?;
+    let id = delivery.story.to_id(&project.prefix);
+    let Some(_workspace) = WorkspaceLock::try_acquire(&checkout, &id)? else {
+        // An old helper may still hold an inherited descriptor after daemon death.
+        return Ok(());
+    };
+    store.write(|tx| {
+        let Some(current) = tx.project(delivery.project)? else { return Ok(()); };
+        if current.uuid != project.uuid || current.slug != project.slug || current.prefix != project.prefix
+            || tx.checkout_path(delivery.project)?.as_ref() != Some(&checkout) {
+            return Ok(());
+        }
+        let mut recovered = delivery.clone();
+        recovered.status = DeliveryStatus::Uncertain;
+        recovered.detail = "daemon stopped before acknowledgement; the agent may have been reached; no automatic replay".into();
+        let ctx = Ctx::new(store, delivery.project, &checkout, env.clone()).no_hooks(true);
+        finish(tx, &ctx, &recovered, DeliveryStatus::Attempting)?;
         Ok(())
     })?;
     Ok(())
@@ -110,35 +148,103 @@ pub fn process_one(
     env: &Environment,
     script: Option<&Path>,
 ) -> Result<bool, AppError> {
-    // The gate, not the decision: the write below re-scans under the lock and
-    // is the claim. An idle pass ends here, without a transaction (SH-693).
-    if deliveries_in(store, DeliveryStatus::Pending)?.is_empty() {
-        return Ok(false);
-    }
-    let work = store.write(|tx| {
-        let mut pending = Vec::new();
-        for project in tx.projects()? {
-            pending.extend(
-                tx.block_deliveries(project.id)?
-                    .into_iter()
-                    .filter(|d| d.status == DeliveryStatus::Pending),
-            );
+    // Busy recovery is retried on every pass; another workspace may still progress.
+    let recovery = recover(store, env);
+    let mut pending = deliveries_in(store, DeliveryStatus::Pending)?;
+    pending.sort_by_key(|delivery| delivery.id);
+    for delivery in pending {
+        // A busy workspace does not own other stories' queue progress.
+        if process_candidate(store, env, script, &delivery)? {
+            if let Err(error) = recovery {
+                eprintln!("storyhook: {error}");
+            }
+            return Ok(true);
         }
-        pending.sort_by_key(|d| d.id);
-        let Some(mut delivery) = pending.into_iter().next() else {
+    }
+    recovery.map(|()| false)
+}
+
+fn process_candidate(
+    store: &impl Store,
+    env: &Environment,
+    script: Option<&Path>,
+    observed_delivery: &BlockDelivery,
+) -> Result<bool, AppError> {
+    let Some((observed_project, observed_checkout)) = store.read(|tx| {
+        let Some(project) = tx.project(observed_delivery.project)? else {
             return Ok(None);
         };
-        let project = tx
-            .project(delivery.project)?
-            .ok_or_else(|| AppError::Storage("delivery project disappeared".into()))?;
+        let checkout = tx.checkout_path(project.id)?;
+        Ok(Some((project, checkout)))
+    })?
+    else {
+        return Ok(false);
+    };
+    let observed_id = observed_delivery.story.to_id(&observed_project.prefix);
+    // Git discovery and the nonblocking OS lock occur before the SQL writer.
+    let (workspace, lock_failure) = if let Some(checkout) = observed_checkout.as_deref() {
+        match WorkspaceLock::try_acquire(checkout, &observed_id) {
+            Ok(Some(lock)) => (Some(lock), None),
+            Ok(None) => return Ok(false),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let work = store.write(|tx| {
+        let history = tx.block_deliveries(observed_delivery.project)?;
+        let Some(mut delivery) = history
+            .iter()
+            .find(|delivery| {
+                delivery.id == observed_delivery.id && delivery.status == DeliveryStatus::Pending
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Some(project) = tx.project(delivery.project)? else {
+            return Ok(None);
+        };
         let checkout = tx.checkout_path(delivery.project)?;
+        if project.uuid != observed_project.uuid
+            || project.slug != observed_project.slug
+            || project.prefix != observed_project.prefix
+            || checkout != observed_checkout
+        {
+            return Ok(None);
+        }
+        if let Some(error) = lock_failure.as_ref() {
+            delivery.status = DeliveryStatus::Unreached;
+            delivery.detail =
+                format!("no agent reached: workspace exclusion could not be acquired: {error}");
+            let ctx = Ctx::new(store, project.id, env.home(), env.clone()).no_hooks(true);
+            finish(tx, &ctx, &delivery, DeliveryStatus::Pending)?;
+            return Ok(Some((
+                delivery,
+                project.slug,
+                observed_id.clone(),
+                checkout,
+            )));
+        }
         let stories = crate::service::query::story_map(tx, delivery.project)?;
         let id = delivery.story.to_id(&project.prefix);
-        let applicable = stories.get(&id).is_some_and(|s| {
-            s.superstate == SuperState::Open
-                && (delivery.action == BlockAction::Interrupt
-                    || s.state == "in-progress" && !is_blocked(s, &stories))
-        });
+        let current_episode = !history
+            .iter()
+            .any(|later| later.story == delivery.story && later.id > delivery.id);
+        let applicable = current_episode
+            && stories.get(&id).is_some_and(|s| {
+                s.superstate == SuperState::Open
+                    && match delivery.action {
+                        BlockAction::Interrupt => {
+                            is_blocked(s, &stories)
+                                && matches!(
+                                    s.state.as_str(),
+                                    "in-progress" | "blocked" | "verifying"
+                                )
+                        }
+                        BlockAction::Resume => s.state == "in-progress" && !is_blocked(s, &stories),
+                    }
+            });
         if delivery.action == BlockAction::Resume {
             delivery.target = tx
                 .block_deliveries(delivery.project)?
@@ -223,6 +329,11 @@ pub fn process_one(
             }
         },
     };
+    let story_binary = std::env::current_exe().map_err(|error| {
+        AppError::Storage(format!(
+            "locating the daemon executable for block delivery: {error}"
+        ))
+    })?;
     let mut command = Command::new("bash");
     apply_dispatch_allowlist(&mut command);
     command
@@ -231,6 +342,8 @@ pub fn process_one(
         .current_dir(checkout.expect("checked before claiming delivery"))
         .env_remove("STORY_AGENT")
         .envs(env.child_vars())
+        // An ambient CLI can replace this daemon while its helper queries the store.
+        .env("STORY_BIN", story_binary)
         .stdin(Stdio::null());
     match delivery.action {
         BlockAction::Interrupt => {
@@ -243,7 +356,11 @@ pub fn process_one(
                 .arg(delivery.target.as_deref().expect("resume target checked"));
         }
     }
-    let result = run_captured_with_termination(
+    workspace
+        .as_ref()
+        .expect("a claimed delivery owns its workspace")
+        .dispatch_command(&mut command);
+    let result = run_captured_quiescent(
         command,
         Duration::from_secs(45),
         TerminationPolicy::TerminateThenKill {
@@ -253,6 +370,9 @@ pub fn process_one(
     delivery.status = DeliveryStatus::Uncertain;
     match result {
         Err(error) => {
+            if matches!(error, CaptureError::Unsettled(_)) {
+                delivery.status = DeliveryStatus::Attempting;
+            }
             delivery.detail = format!("agent delivery was not acknowledged: {}", error.detail())
         }
         Ok(output) => match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
@@ -317,21 +437,12 @@ pub const IDLE_POLL: Duration = Duration::from_secs(1);
 /// Drain ordered intents on committed changes, with fixed recovery and bounded shutdown.
 pub(crate) fn poll(store: &impl Store, env: &Environment, bus: &ChangeBus, stop: &AtomicBool) {
     let subscription = bus.subscribe();
-    let mut needs_recovery = true;
     while !stop.load(Ordering::Relaxed) {
-        let outcome = if needs_recovery {
-            recover(store, env).and_then(|()| {
-                needs_recovery = false;
-                process_one(store, env, None)
-            })
-        } else {
-            process_one(store, env, None)
-        };
+        let outcome = process_one(store, env, None);
         match outcome {
             Ok(true) => continue,
             Err(error) => {
                 eprintln!("storyhook: block delivery failed: {error}");
-                needs_recovery = true;
             }
             Ok(false) => {}
         }

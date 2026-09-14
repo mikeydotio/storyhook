@@ -6,6 +6,7 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
+  waitForDisplayedStoryBlockDeliveries,
 } from "./support";
 
 /**
@@ -64,6 +65,7 @@ async function deleteStory(
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
+  await waitForDisplayedStoryBlockDeliveries(page, (await card.getAttribute("data-id"))!);
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();

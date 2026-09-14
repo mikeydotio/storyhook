@@ -445,7 +445,7 @@ fn relationship_block_interrupts_verification_and_advances_queue() {
             })
             .unwrap();
         storyhook::service::RelationService::new(&f.ctx())
-            .block_on(&first.story_id, &[blocker.id], None)
+            .block_on(&first.story_id, std::slice::from_ref(&blocker.id), None)
             .unwrap();
         bus.publish(Change::Project(first.project_slug.clone()));
         wait_for("relationship-blocked gate was not terminated", || {
@@ -454,5 +454,26 @@ fn relationship_block_interrupts_verification_and_advances_queue() {
         wait_for("queue did not advance past relationship block", || {
             marker(f, second, "started").exists()
         });
+        let held = VerificationQueue::new(f.store())
+            .ordered_for(f.project())
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.story_id == first.story_id)
+            .expect("the dependency-held submission remains visible");
+        assert_eq!(held.verifying_generation, first.verifying_generation);
+        assert_eq!(held.blocked_by, [blocker.id]);
+        assert!(!held.landing_pending);
+        let row = f
+            .store()
+            .read(|tx| {
+                tx.story(
+                    f.project(),
+                    StoryNo::parse_id("SH", &first.story_id).unwrap(),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "verifying");
+        assert!(row.awaiting.is_none());
     });
 }

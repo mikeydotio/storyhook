@@ -37,6 +37,7 @@ mod cleanup_lease;
 pub mod config;
 pub mod continuation;
 pub mod engine;
+pub(crate) mod executor_lock;
 pub mod gate_command;
 pub mod gate_output;
 pub mod gate_progress;
@@ -47,6 +48,7 @@ pub mod github;
 pub mod grouping;
 pub mod history;
 pub mod integrity;
+pub mod landing;
 pub mod migrate;
 #[cfg(feature = "github-pr")]
 pub mod pr_check;
@@ -55,6 +57,7 @@ pub mod project;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub mod reset;
 pub mod resources;
 pub mod session;
 pub mod settings;
@@ -66,6 +69,7 @@ pub mod templates;
 pub mod transfer;
 pub mod verification;
 pub mod verification_control;
+pub(crate) mod workspace_lock;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -517,12 +521,62 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
+    crate::text_lint::validate_events(&story.to_id(prefix), events)?;
+    append_restored_and_fold(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Appends historical compensation without applying new authoring policy.
+/// Undo restores old text, but its new transitions still obey blocker admission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_restored_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
     if events
         .iter()
         .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
     {
         story_reset::refuse_reserved(tx, project, story)?;
     }
+    let stored = tx.events_for(project, story)?;
+    let (known, _) = partition_known(story, &stored);
+    let index = query::story_map(tx, project)?;
+    crate::domain::transition::validate_append(
+        &story.to_id(prefix),
+        &known,
+        events,
+        &tx.states(project)?,
+        &index,
+    )?;
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Folds deterministic maintenance without applying new workflow policy to history.
+///
+/// Only catalog migration and integrity repair may call this directly; the
+/// architectural admission regression enforces that boundary. Label validation
+/// and transactional storage still apply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_and_fold_maintenance(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
     // Every producer of a `StoryLabelsSet` is expected to normalize through
     // `domain::normalize_labels` before it gets here; this is the backstop
     // for the one that forgets, so a comma-bearing or blank label (SH-164)

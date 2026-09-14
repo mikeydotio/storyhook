@@ -105,6 +105,18 @@ const ALLOWED: &[(&str, &str)] = &[
         "resource discovery chooses a repository inventory directory after selecting the project; pointer UUIDs and registered origins independently verify association",
     ),
     (
+        "src/service/reset.rs",
+        "native reset uses the selected project's checkout for resource cleanup and rejects preflight retargeting",
+    ),
+    (
+        "src/service/reset/tests.rs",
+        "the preflight regression seeds and changes the selected project's checkout to prove retargeting is refused",
+    ),
+    (
+        "src/service/story_reset/executor_tests.rs",
+        "controller regressions seed the selected project directory and prove live effect ownership rejects checkout transfer",
+    ),
+    (
         "src/service/cleanup.rs",
         "manual cleanup chooses a working directory only after resolving the selected project",
     ),

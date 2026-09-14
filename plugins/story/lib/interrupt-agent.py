@@ -45,7 +45,7 @@ def target(pane, provider):
     if proc.run("tmux", "show-options", "-w", "-v", "-t", pane, "@storyhook-agent") != provider:
         raise proc.CleanupError("pane provider changed during capture")
     return json.dumps([proc.run("tmux", "display-message", "-p", "-t", pane, "#{socket_path}"),
-                       pane, pid, table[pid][1], provider], separators=(",", ":"))
+                       pane, pid, proc.process_identity(pid)["start"], provider], separators=(",", ":"))
 
 
 def signal_known(owned, sig):
@@ -70,7 +70,7 @@ def freeze(owned, roots):
         if not new:
             return
         for pid in new:
-            identity = table[pid]
+            identity = (*table[pid], proc.process_identity(pid)["start"])
             try:
                 os.kill(pid, signal.SIGSTOP)
                 owned[pid] = identity
@@ -100,9 +100,9 @@ def interrupt(pane, provider, expected):
             # Old gate implementations cannot promise to honor our ownership guard.
             if not (lock / "interrupt-protocol").exists():
                 raise proc.CleanupError(f"gate {lock} predates interruption-safe ownership; no native key sent")
-            holders[pid] = table[pid]
-            freeze(owned, {pid: table[pid]})
-            if not proc.same_process(processes(), pid, table[pid]):
+            holders[pid] = (*table[pid], proc.process_identity(pid)["start"])
+            freeze(owned, {pid: holders[pid]})
+            if not proc.same_process(processes(), pid, holders[pid]):
                 raise proc.CleanupError(f"gate owner {pid} exited during capture; cleanup uncertain")
             if (lock / "pid").read_text().strip() != str(pid) or (lock / "started").read_text().strip() != started:
                 raise proc.CleanupError(f"gate {lock} changed owner during capture")

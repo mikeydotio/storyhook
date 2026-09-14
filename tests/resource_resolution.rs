@@ -673,3 +673,163 @@ fn configured_checkout_cannot_override_another_projects_pointer() {
         .failure()
         .stdout(predicates::str::contains("configured repository"));
 }
+
+#[test]
+fn notification_location_keeps_recorded_server_without_selecting_the_active_pane() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let id = project.new_story("notification location");
+    let path = project.path().join("custom-agent-worktree");
+    let branch = format!("worktree-{id}");
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let owner = PrivateTmux::new();
+    let pane = owner.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "owned",
+        "-n",
+        &id,
+        "-c",
+        path.to_str().unwrap(),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep 120",
+    ]);
+    owner.run(&["set-window-option", "-t", &pane, "automatic-rename", "off"]);
+    let sibling = owner.run(&[
+        "split-window",
+        "-d",
+        "-t",
+        &pane,
+        "-c",
+        project.path().to_str().unwrap(),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep 120",
+    ]);
+    owner.run(&["select-pane", "-t", &sibling]);
+    let lease = lease(&project, &id, &path, &branch, &owner.socket());
+    let ordinary = report(&project, &[&id, "--lease-json", &lease]);
+    assert_eq!(
+        ordinary["status"], "invalid",
+        "cleanup selection remains unchanged: {ordinary}"
+    );
+    assert_eq!(ordinary["location_only"], false);
+    let found = report(
+        &project,
+        &[
+            &id,
+            "--lease-json",
+            &lease,
+            "--location-only",
+            "--tmux-socket",
+            "/tmp/storyhook-unused-notify-caller.sock",
+        ],
+    );
+    assert_eq!(found["status"], "resolved", "{found}");
+    assert_eq!(found["location_only"], true);
+    assert_eq!(found["socket_path"], owner.socket().to_str().unwrap());
+    assert_eq!(found["worktree"], path.to_str().unwrap());
+    assert_eq!(found["window_name"], id);
+    assert!(
+        found["pane"].is_null(),
+        "location is not target authority: {found}"
+    );
+    // A second Git owner still makes even location-only discovery ambiguous.
+    let duplicate = project.path().join(".codex/worktrees").join(&id);
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "second-owner",
+            duplicate.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert_ne!(
+        report(&project, &[&id, "--location-only"])["status"],
+        "resolved"
+    );
+    project
+        .story()
+        .args(["resources", &id, "--location-only", "--location-only"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn c_locale_preserves_native_tmux_inventory_fields() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let id = project.new_story("locale-independent pane identity");
+    let path = project.path().join("owned-worktree");
+    let branch = format!("worktree-{id}");
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let owner = PrivateTmux::new();
+    let pane = owner.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "owned",
+        "-n",
+        &id,
+        "-c",
+        path.to_str().unwrap(),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep 120",
+    ]);
+    owner.run(&["set-window-option", "-t", &pane, "automatic-rename", "off"]);
+    owner.run(&[
+        "set-window-option",
+        "-t",
+        &pane,
+        "@storyhook-agent",
+        "codex",
+    ]);
+    let lease = lease(&project, &id, &path, &branch, &owner.socket());
+    let output = project
+        .story()
+        .env("LC_ALL", "C")
+        .args(["resources", &id, "--lease-json", &lease, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let found = &output["resources"];
+    assert_eq!(found["status"], "resolved", "{found}");
+    assert_eq!(found["provider"], "codex", "{found}");
+    assert_eq!(found["pane"]["pane_id"], pane, "{found}");
+    assert_eq!(found["pane"]["cwd"], path.to_str().unwrap(), "{found}");
+}

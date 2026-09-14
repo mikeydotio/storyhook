@@ -1,7 +1,9 @@
 //! Effective transitions are derived once per complete service transaction.
 use super::Ctx;
 use crate::domain::{SuperState, is_blocked};
-use crate::store::{BlockAction, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps};
+use crate::store::{
+    BlockAction, DeliveryStatus, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps,
+};
 use std::collections::BTreeMap;
 
 /// The exact operator-supplied prompt, never synthesized or paraphrased.
@@ -10,6 +12,7 @@ pub const UNBLOCK_PROMPT: &str = "Your story experienced a temporary block, whic
 struct State {
     blocked: bool,
     active: bool,
+    interruptible: bool,
     verifying: bool,
     sequence: i64,
 }
@@ -33,6 +36,11 @@ fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, S
                         .head_global_seq
                         .get(),
                     active: story.superstate == SuperState::Open && story.state == "in-progress",
+                    interruptible: story.superstate == SuperState::Open
+                        && matches!(
+                            story.state.as_str(),
+                            "in-progress" | "blocked" | "verifying"
+                        ),
                 },
             ))
         })
@@ -71,6 +79,11 @@ impl<S: Store> Ctx<'_, S> {
                         submission_head.as_ref(),
                     )?;
                 }
+                // Pending authority belongs to one effective block episode. A
+                // replacement or retired execution cannot inherit an old prompt.
+                if previous.blocked != next.blocked || !next.interruptible {
+                    supersede_pending(tx, self.project(), story, "effective block episode ended")?;
+                }
                 let action = if !previous.blocked && next.blocked {
                     Some(BlockAction::Interrupt)
                 } else if previous.blocked && !next.blocked && next.active {
@@ -80,9 +93,41 @@ impl<S: Store> Ctx<'_, S> {
                 };
                 if let Some(action) = action {
                     tx.enqueue_block_delivery(self.project(), story, action)?;
+                    if !next.interruptible {
+                        supersede_pending(
+                            tx,
+                            self.project(),
+                            story,
+                            "story has no active execution to interrupt",
+                        )?;
+                    }
                 }
             }
             Ok(result)
         })
     }
 }
+
+/// Revokes effects that have not started before a block episode or session ends.
+/// Replacement callers must hold WorkspaceLock through this transaction and handoff.
+/// An Attempting effect retains its ordered acknowledgement and cannot be replayed.
+pub(crate) fn supersede_pending(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    reason: &str,
+) -> Result<usize, StoreError> {
+    let mut superseded = 0;
+    for mut delivery in tx.block_deliveries(project)? {
+        if delivery.story == story && delivery.status == DeliveryStatus::Pending {
+            delivery.status = DeliveryStatus::Superseded;
+            delivery.detail = reason.into();
+            superseded +=
+                usize::from(tx.update_block_delivery(&delivery, DeliveryStatus::Pending)?);
+        }
+    }
+    Ok(superseded)
+}
+
+#[cfg(test)]
+mod tests;

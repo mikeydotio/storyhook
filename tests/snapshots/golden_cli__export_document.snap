@@ -1,5 +1,6 @@
 ---
 source: tests/golden_cli.rs
+assertion_line: 775
 ---
 {
   "members": [
@@ -323,6 +324,11 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "in-progress"
+        },
+        {
+          "at": "[timestamp]",
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-2",
           "relation": "blocked-by"
@@ -330,7 +336,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryCommentAdded",
-          "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+          "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
         },
         {
           "at": "[timestamp]",
@@ -339,11 +345,6 @@ source: tests/golden_cli.rs
             "backend",
             "phase:1"
           ]
-        },
-        {
-          "at": "[timestamp]",
-          "kind": "StoryStateChanged",
-          "state": "in-progress"
         }
       ],
       "id": "SH-3"
@@ -461,11 +462,6 @@ source: tests/golden_cli.rs
           "at": "[timestamp]",
           "awaiting": "waiting on the benchmark harness",
           "kind": "StoryAwaitingSet"
-        },
-        {
-          "at": "[timestamp]",
-          "kind": "StoryCommentAdded",
-          "text": "AGENT BLOCK DELIVERY #3 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
         }
       ],
       "id": "SH-6"
@@ -516,11 +512,6 @@ source: tests/golden_cli.rs
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-5",
           "relation": "blocked-by"
-        },
-        {
-          "at": "[timestamp]",
-          "kind": "StoryCommentAdded",
-          "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
         },
         {
           "at": "[timestamp]",

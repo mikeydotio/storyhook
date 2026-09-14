@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test, expect, cleanUpCreatedStories, openProject, seedToken, requiredEnv } from "./support";
+import { test, expect, cleanUpCreatedStories, openProject, seedToken, requiredEnv, projectSlug } from "./support";
 
 cleanUpCreatedStories("Alpha Project");
 
@@ -24,6 +24,7 @@ test("Reset requires typed confirmation; Escape cancels without changing the sto
   let resets = 0;
   page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/reset")) resets++; });
   await card.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /^Reset(?:…)?$/ })).toHaveCount(1);
   const action = page.getByRole("menuitem", { name: "Reset…", exact: true });
   await expect(action).toHaveClass(/danger/);
   await action.click();
@@ -52,6 +53,7 @@ test("Reset supports keyboard menu navigation and list menus", async ({ page }) 
   await page.locator('#view-toggle button[data-view="list"]').click();
   const row = page.locator("#list-body tr", { hasText: title });
   await row.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /^Reset(?:…)?$/ })).toHaveCount(1);
   await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
   await expect(page.locator("#reset-modal-summary")).toContainText(title);
   await page.locator("#reset-modal-cancel").click();
@@ -147,4 +149,25 @@ test("an outstanding reset cannot be submitted twice or dismissed before its res
     release();
   }
   await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: 20_000 });
+});
+
+test("a story closed by another client remains an actionable reset error", async ({ page }) => {
+  const card = await create(page, "SH-718 concurrent closure during reset confirmation");
+  const id = (await card.getAttribute("data-id"))!;
+  await card.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
+  await page.locator("#reset-confirmation").fill(id);
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const closed = await page.request.post(`/api/repos/${slug}/story/${id}/move`, {
+    headers: { "X-Storyhook": "1" }, data: { state: "done" },
+  });
+  expect(closed.ok()).toBeTruthy();
+  const request = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith(`/story/${id}/reset`));
+  await page.locator("#reset-modal-submit").click();
+  expect((await request).postDataJSON()).toEqual({ confirmation: id });
+  await expect(page.locator("#reset-modal-error")).toContainText("closed");
+  await expect(page.locator("#reset-modal")).toHaveClass(/open/);
+  await expect(page.locator("#reset-modal-cancel")).toBeEnabled();
+  await page.locator("#reset-modal-cancel").click();
+  await expect(page.locator("#reset-modal")).not.toHaveClass(/open/);
 });

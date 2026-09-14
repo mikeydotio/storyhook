@@ -8,6 +8,13 @@ pub(super) fn read(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<Option<EngineReset>, StoreError> {
+    if !crate::store::migrate::has_columns(
+        conn,
+        "engine_resets",
+        &["project_id", "story_no", "token", "record_json"],
+    )? {
+        return Ok(None);
+    }
     let json: Option<String> = conn
         .query_row(
             "SELECT record_json FROM engine_resets WHERE project_id=?1 AND story_no=?2",

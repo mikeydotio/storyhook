@@ -391,7 +391,9 @@ fn dispatch_inner<S: Store>(
                 draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
-            ctx.story_view(&story.id)
+            Ok(crate::text_lint::with_story_advice(
+                ctx.story_view(&story.id)?,
+            ))
         }
         Invocation::Publish { id } => {
             StoryService::new(ctx).publish(&id)?;
@@ -399,7 +401,10 @@ fn dispatch_inner<S: Store>(
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
-            ctx.story_view(&id)
+            Ok(crate::text_lint::with_advice(
+                ctx.story_view(&id)?,
+                &[("comment", &text)],
+            ))
         }
         Invocation::Assign { id, member } => {
             StoryService::new(ctx).assign(&id, &member)?;
@@ -508,7 +513,7 @@ fn dispatch_inner<S: Store>(
                         )
                 });
             let message = StoryService::new(ctx).set_fields(&id, &edits)?;
-            let warnings = if touches_awaiting {
+            let mut warnings = if touches_awaiting {
                 match ctx.story_view(&id)? {
                     Response::Story(view) => crate::block_notice::warnings(
                         ctx,
@@ -521,6 +526,16 @@ fn dispatch_inner<S: Store>(
             } else {
                 Vec::new()
             };
+            let touches_text = edits.title.is_some()
+                || edits.description.is_some()
+                || edits.json.as_deref().is_some_and(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|value| {
+                        value.get("title").is_some() || value.get("description").is_some()
+                    })
+                });
+            if touches_text && let Response::Story(view) = ctx.story_view(&id)? {
+                warnings.extend(crate::text_lint::story_advice(&view.story));
+            }
             Ok(if warnings.is_empty() {
                 Response::Message(message)
             } else {
@@ -696,6 +711,36 @@ fn dispatch_inner<S: Store>(
             comment,
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
+        Invocation::Reset { id, force, caller } => {
+            crate::service::reset::reset_story(ctx, &id, force, &caller)?;
+            ctx.story_view(&id)
+        }
+        Invocation::SupersedeBlockDeliveries { id } => {
+            let receipt = ctx.store().write(|tx| {
+                let project = tx.project(ctx.project())?.ok_or_else(|| {
+                    crate::store::StoreError::NotFound("selected project no longer exists".into())
+                })?;
+                let story = crate::store::StoryNo::parse_id(&project.prefix, &id)?;
+                if tx.story(project.id, story)?.is_none() {
+                    return Err(crate::store::StoreError::NotFound(format!(
+                        "story `{id}` not found"
+                    )));
+                }
+                let superseded = crate::service::block_delivery::supersede_pending(
+                    tx,
+                    project.id,
+                    story,
+                    "Pending terminal effects revoked before managed session replacement",
+                )?;
+                Ok(serde_json::json!({
+                    "protocol_version": 1,
+                    "project": project.slug,
+                    "story_id": story.to_id(&project.prefix),
+                    "superseded": superseded,
+                }))
+            })?;
+            Ok(Response::RawJson(receipt.to_string()))
+        }
         Invocation::Engine { action } => dispatch_engine(ctx, action),
         Invocation::Verifier { action } => dispatch_verifier(ctx, action),
         Invocation::Resources { id, options } => {
@@ -945,11 +990,11 @@ fn dispatch_inner<S: Store>(
                 return Ok(Response::Message("no stories to import".to_string()));
             }
             let batch = TransferService::new(ctx).import(&stories)?;
-            Ok(Response::Stories {
+            Ok(crate::text_lint::with_story_advice(Response::Stories {
                 views: batch.views,
                 message: None,
                 warnings: Vec::new(),
-            })
+            }))
         }
         Invocation::Decompose {
             file,
@@ -966,11 +1011,11 @@ fn dispatch_inner<S: Store>(
             }
             let batch = TransferService::new(ctx).import(&stories)?;
             let summary = decompose_summary(&batch);
-            Ok(Response::Stories {
+            Ok(crate::text_lint::with_story_advice(Response::Stories {
                 views: batch.views,
                 message: Some(summary),
                 warnings: Vec::new(),
-            })
+            }))
         }
         // The `project` arms that name a project rather than creating,
         // destroying or enumerating them, so the only ones answered here.
@@ -2931,6 +2976,8 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Reset { .. }
+        | Invocation::SupersedeBlockDeliveries { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
@@ -3143,6 +3190,8 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
+        Invocation::Reset { .. } => "reset",
+        Invocation::SupersedeBlockDeliveries { .. } => "supersede-block-deliveries",
         Invocation::Engine { .. } => "engine",
         Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
@@ -4283,6 +4332,8 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Reset { .. }
+        | Invocation::SupersedeBlockDeliveries { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
