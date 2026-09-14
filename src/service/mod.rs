@@ -106,11 +106,11 @@ pub use story::{FieldEdits, NewStoryInput, StoryService, default_unclaim_comment
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 pub use verification::{
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX,
-    VERIFICATION_OVERRIDDEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
+    ReapMarker, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
+    VERIFICATION_GREEN_PREFIX, VERIFICATION_OVERRIDDEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
     VERIFICATION_UNCERTIFIED_MERGE_PREFIX, VERIFICATION_WITHDRAWN_PREFIX, VERIFYING_STATE,
-    VerificationCandidate, VerificationProblem, VerificationQueue,
-    acknowledge_verification_incident,
+    VerificationCandidate, VerificationGeneration, VerificationProblem, VerificationQueue,
+    acknowledge_verification_incident, latest_generation,
 };
 
 /// Where a service reads "now" from.
