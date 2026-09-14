@@ -549,6 +549,40 @@ reopen-and-land sequence `next_cleanup` used to misread). Mutation-checked:
 dropping the superstate clause, dropping the marker clause, and widening the
 generation scan to the whole log each fail their test.
 
+**Resumed 2026-09-13** after an unmerged PR was found on a story the web
+dashboard had marked done with no verifier merge event. Reconciling the
+branch onto current `dev` surfaced two adjacent defects, adopted into this
+story rather than filed separately (same file, same session):
+
+**`clean_candidate` compares the project's registered checkout, never the
+lease's own path.** The reconciliation merge's conflict resolution had taken
+`dev`'s call site (`clean_candidate(&lease.repository_path, ...)`) over this
+story's own (`clean_candidate(&repository, ...)`), making the
+`repository-mismatch` guard compare a value against itself — always true,
+never a refusal. Reproduced live: a lease naming a second, unregistered clone
+of the project's own origin (internally coherent — a worktree that genuinely
+exists there) passed `ResourceService::resolve`'s project-association check
+(by origin URL, not exact path) and was deleted. Restored the correct
+argument; regression in `tests/story_cleanup.rs`.
+
+**A post-verify repair return never promises a push it cannot make.** The
+verifier's `submission_due`/`UNLEASED_SUBMISSION` gate (SH-647) exempts an
+unleased candidate that already carries a linked pull request — legitimate,
+since an operator-linked submission needs no worktree. But if that candidate
+then reaches a CONFLICT, RED, or INVALID SUBMISSION return, the returned text
+said "commit, then move back to verifying; the verifier pushes" regardless —
+a promise an unleased generation cannot keep, since nothing pushes it either
+way. Observed live: SH-653's own resubmission livelocked exactly this way.
+Fixed narrower than a 3-seat council's initial unanimous recommendation
+(refuse any unleased candidate before verification runs at all): that broke
+28 of `tests/verification_queue.rs`'s own tests, because `submitted()` — the
+suite's standard operator-linked-submission fixture — is unleased by
+construction and is the exact SH-647 shape that must keep being verified.
+Shipped instead: `push_promise()` names, only in the three post-verify
+repair returns, whether this generation can actually push — unchanged
+wording when leased, an honest "no cleanup lease, so nothing will push it"
+when not. Regression in `tests/verification_queue.rs`.
+
 ### SH-691 — the base is asked of origin, and landing checks it
 
 Five story pull requests (#734, #775, #776, #772, #782) were opened against
