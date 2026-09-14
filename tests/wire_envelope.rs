@@ -1149,18 +1149,25 @@ fn error_corpus() -> Vec<AppError> {
 }
 
 fn text_lint_error() -> AppError {
-    let fixture = storyhook_test_support::ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = storyhook::service::StoryService::new(&ctx);
-    let story = service
-        .create(&storyhook::service::NewStoryInput {
-            title: "Test text checks".into(),
-            ..Default::default()
-        })
-        .unwrap();
-    service
-        .comment(&story.id, "Do not utilize it.")
-        .unwrap_err()
+    // This legacy wire variant remains decodable after live writes stop linting.
+    let findings = ste_lint::lint(
+        "Do not utilize it.",
+        ste_lint::Options {
+            format: ste_lint::Format::Markdown,
+            sentence_limit: std::num::NonZeroUsize::new(20).unwrap(),
+        },
+    )
+    .into_iter()
+    .map(|diagnostic| storyhook::text_lint::TextFinding {
+        field: "comment".into(),
+        diagnostic,
+    })
+    .collect();
+    AppError::TextLint(storyhook::text_lint::TextLintReport {
+        context: None,
+        story: "SH-1".into(),
+        findings,
+    })
 }
 
 /// An exhaustive `match`, so a further `AppError` variant stops this file

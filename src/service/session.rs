@@ -105,7 +105,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         let mut message = String::new();
         message.push_str("Before implementation of each assigned story, run `story help obviation-review` and `story load-context --story <id>`.\n\n");
         message.push_str(help_topics::compact_reference());
-        message.push_str("Write comments, titles, and descriptions in ASD-STE100. Read `story help ste`. Repair text_lint failures and retry the command.\n");
+        message.push_str("Write titles, descriptions, plans, and comments in ASD-STE100. Read `story help ste` for writing guidance. StoryHook does not run STE lint validation.\n");
         message.push_str("PROJECT STATE\n");
 
         let project = self.ctx.project();
