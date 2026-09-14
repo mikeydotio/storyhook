@@ -40,7 +40,8 @@ pub fn panes(socket: &Path, names: &BTreeSet<String>) -> Result<Vec<ResourcePane
     }
     let mut command = Command::new("tmux");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
-    command.arg("-S").arg(socket).args(["list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
+    // ASCII locales make tmux replace tabs with underscores unless UTF-8 is explicit.
+    command.args(["-u", "-S"]).arg(socket).args(["list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
     let output = run_captured(command, super::super::engine::TMUX_TIMEOUT)
         .map_err(|e| AppError::Validation(format!("tmux {}: {}", socket.display(), e.detail())))?;
     if !output.status.success() {

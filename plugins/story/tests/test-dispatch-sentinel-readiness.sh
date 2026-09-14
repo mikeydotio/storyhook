@@ -23,7 +23,7 @@ dispatch_run() {
   unset FAKE_TMUX_SESSIONS FAKE_TMUX_FAIL_NEW_SESSION FAKE_TMUX_DROP_PASTE \
         FAKE_TMUX_ENTER_ABSORB FAKE_TMUX_LAUNCH_MANGLE FAKE_TMUX_PANE_COMMAND \
         FAKE_TMUX_FAIL_SEND_KEYS FAKE_TMUX_CAPTURE FAKE_TMUX_SUPPRESS_SENTINEL \
-        FAKE_TMUX_PANE_LIFETIME FAKE_TMUX_SENTINEL_DELAY_SECS
+        FAKE_TMUX_PANE_LIFETIME FAKE_TMUX_SENTINEL_DELAY_SECS FAKE_TMUX_EXIT_ON_REPROBE
   RUN_REPO=$(mk_story_repo)
   RUN_ID=$(new_story "$RUN_REPO" "Sentinel readiness case")
   out=$(
@@ -55,20 +55,26 @@ case "$(cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0)" in
   *) fail_test "no-sentinel: nothing may be typed into an unconfirmed pane" ;;
 esac
 
-# ---- pid-exited: the launched process dies mid-poll. A near-instant
-#      placeholder lifetime (FAKE_TMUX_PANE_LIFETIME) plus a suppressed
-#      sentinel and a real STORY_READY_DELAY between polls is what makes this
-#      deterministic rather than a race against an external kill: by the
-#      second poll the placeholder has already exited on its own. --------
+# ---- pid-exited: terminate the owned process at readiness's first PID
+#      reprobe, after dispatch captured its incarnation. A short wall-clock
+#      lifetime can instead expire before capture under machine load. -------
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SUPPRESS_SENTINEL=1 \
-        FAKE_TMUX_PANE_LIFETIME=0.1 \
+        FAKE_TMUX_EXIT_ON_REPROBE=1 \
         STORY_READY_DELAY=0.3 STORY_READY_ATTEMPTS=5
 assert_eq "$(jqf "$out" .ok)" "false" "pid-exited: a process that dies mid-poll is refused"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "pid-exited" \
   "pid-exited: named as the process having died, not a timeout"
 assert_eq "$(state_of)" "in-progress" "pid-exited: uncertain descendant ownership preserves the claim"
-assert_contains "$(jqf "$out" .display)" "surviving descendants cannot be identified safely" \
+# The launch-token check now refuses before an ancestry census can run. Its
+# OS-specific process-read error varies, but the preserved authority must not.
+assert_contains "$(jqf "$out" .display)" "startup cleanup could not be confirmed" \
+  "pid-exited: unverified cleanup is reported"
+assert_contains "$(jqf "$out" .display)" "claim and Git resources were preserved" \
   "pid-exited: explains why resources remain"
+[ -d "$RUN_REPO/.claude/worktrees/$RUN_ID" ] \
+  || fail_test "pid-exited: an unverified process tree must retain its worktree"
+assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0)" "0" \
+  "pid-exited: no charter was sent after the process exited"
 
 # ---- the happy path this whole mechanism exists to confirm, isolated from
 #      Families A-E's regression framing: a real sentinel, a real live pid,

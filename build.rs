@@ -172,6 +172,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "cargo_diagnostics.py",
     "gate-progress.sh",
     "land-pr.sh",
+    "landing-intent.sh",
     "machine-lock.sh",
     "merge-preflight.sh",
     "merge-watch.sh",

@@ -370,6 +370,12 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
                 .ok_or_else(|| StoreError::from(refusal("project has no registered checkout")))?;
             Ok((slug, checkout, eligible(tx, project, &run, ids)?))
         })?;
+        let mut lock_ids: Vec<_> = before.iter().map(|row| row.snapshot.id.as_str()).collect();
+        lock_ids.sort_unstable();
+        let workspaces: Vec<_> = lock_ids
+            .into_iter()
+            .map(|id| crate::service::workspace_lock::WorkspaceLock::acquire(&checkout, id))
+            .collect::<Result<_, _>>()?;
         let mut found = Vec::new();
         for row in &before {
             found.push(inspector.inspect(&checkout, &slug, &row.snapshot.id)?);
@@ -430,12 +436,14 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
                 lane.dispatched_at = Some(now.clone());
                 lane.last_progress_at = Some(now.clone());
                 lane.last_progress_seq = Some(row.head_global_seq);
+                crate::service::block_delivery::supersede_pending(tx, project, row.story_no, "engine adoption replaces prior lane authority")?;
                 tx.put_engine_lane(&lane)?;
                 adopted.push((slot.lane_index, row.snapshot.id.clone()));
             }
             if !adopted.is_empty() { run.updated_at = now.clone(); tx.update_engine_run(&run)?; }
             Ok(adopted)
         })?;
+        drop(workspaces);
         for (lane, story) in adopted {
             crate::daemon::activity::emit(
                 "INFO",

@@ -1,0 +1,20 @@
+--- a/src/service/reset.rs
++++ b/src/service/reset.rs
+@@ -146,7 +146,7 @@
+         caller,
+         &lock,
+     )?;
+-    ctx.store().write(|tx| {
++    ctx.write_stories(|tx| {
+         if !preflight_project_unchanged(tx, &project, &checkout)? {
+             return Err(AppError::Validation(
+                 "project identity or checkout changed during reset preflight; retry".into(),
+@@ -241,7 +241,7 @@
+     number: StoryNo,
+     reservation: &ResetReservation,
+ ) -> Result<StorySnapshot, AppError> {
+-    Ok(ctx.store().write(|tx| {
++    Ok(ctx.write_stories(|tx| {
+         let prefix = project_prefix(tx, ctx.project())?;
+         let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
+         let stored = tx.story_resets(ctx.project())?.remove(&number)

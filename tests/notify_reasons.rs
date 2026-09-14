@@ -4,7 +4,7 @@
 //! `return_for_repair` (`src/daemon/verification.rs`) re-dispatches a returned
 //! story into its own window when — and only when — `notify` refused with a
 //! slug that means "no live dispatched agent is there" (`pane-dead`,
-//! `pane-unavailable`, `pane-changed`); every other slug parks the story,
+//! `pane-unavailable`); every other slug parks the story,
 //! because a `dispatch --resume` respawns over whatever the pane holds and a
 //! respawn over a live agent kills it. That decision is a table,
 //! `NOTIFY_REFUSALS`, keyed by the exact slugs `cmd_notify` emits. A slug the

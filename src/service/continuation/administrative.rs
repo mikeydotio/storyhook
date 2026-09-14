@@ -48,8 +48,10 @@ pub(super) fn record(
     let mut events = vec![StoryEvent::StoryCommentAdded {
         at: ctx.now(),
         text: format!(
-            "POSSIBLE OBVIATION {}\nOriginal state: {}\nEvidence: {}\nHuman determination remains required; no implementation approval granted.",
-            record.id, row.state, evidence
+            "POSSIBLE OBVIATION {}\n\nOriginal state: {}\n\nEvidence:\n\n{}\n\nHuman determination remains required; no implementation approval granted.",
+            record.id,
+            row.state,
+            crate::text_lint::quote_evidence(&evidence.to_string())
         ),
     }];
     for (id, (number, candidate)) in rows {

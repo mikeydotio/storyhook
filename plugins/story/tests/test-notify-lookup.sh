@@ -6,6 +6,7 @@ fake_bin=$(mktemp -d /tmp/story-test.XXXXXX)
 _register_tmp "$fake_bin"
 cat >"$fake_bin/tmux" <<'TMUX'
 #!/usr/bin/env bash
+[ "${1:-}" != -u ] || shift
 [ "${1:-}" = -S ] || exit 64
 socket="$2"
 shift 2
@@ -25,7 +26,7 @@ touch "$fake_bin/error.sock" "$fake_bin/empty.sock"
 out=$(cd "$repo" && TMUX="$fake_bin/error.sock,12,0" \
   bash "$SCRIPT" notify "$id" 'must not be delivered' 2>&1)
 assert_eq "$(jqf "$out" .ok)" false 'lookup failure refuses delivery'
-assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe 'lookup failure is not a missing pane'
+assert_eq "$(jqf "$out" .reason)" pane-query-failed 'lookup failure is not a missing pane'
 assert_contains "$(jqf "$out" .display)" error.sock 'failure identifies queried server'
 assert_contains "$(jqf "$out" .display)" 'Permission denied' 'failure preserves tmux diagnostic'
 

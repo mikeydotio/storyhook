@@ -29,6 +29,22 @@ struct RetryObserver<'a> {
 }
 
 impl VerificationActuator for RetryObserver<'_> {
+    fn land(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("retryable infrastructure has no certificate to land")
+    }
+
+    fn recover_landing(
+        &self,
+        _: &VerificationCandidate,
+        _: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        panic!("retryable infrastructure never acquires landing authority")
+    }
+
     fn submit(&self, _: &VerificationCandidate) -> Result<SubmittedPullRequest, SubmissionFailure> {
         panic!("linked, unleased fixture must not submit")
     }

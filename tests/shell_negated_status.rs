@@ -76,6 +76,8 @@ fn ends_the_current_branch(word: &str) -> bool {
 /// then-block — up to its next `elif`/`else`/`fi` at the same nesting depth —
 /// reads `$?`.
 fn negated_conditionals_reading_exit_status(lines: &[String]) -> Vec<usize> {
+    let projected = shell_lines(lines);
+    let lines = &projected;
     let mut findings = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         if !opens_a_negated_conditional(line) {
@@ -182,4 +184,121 @@ fn a_status_read_in_a_sibling_elif_branch_does_not_count() {
     // Only the second (`elif !`) branch reads its own status — the first
     // (`if !`) branch never does, and the two must not be conflated.
     assert_eq!(negated_conditionals_reading_exit_status(&lines), vec![3]);
+}
+
+/// Locate only unquoted shell redirections with a wholly quoted literal delimiter.
+/// Unknown delimiter syntax remains visible to the conservative status scan.
+fn literal_heredocs(line: &str) -> Vec<(String, bool)> {
+    let bytes = line.as_bytes();
+    let mut quoted = None;
+    let mut index = 0;
+    let mut found = Vec::new();
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' && quoted != Some(b'\'') {
+            index += 2;
+            continue;
+        }
+        if let Some(quote) = quoted {
+            if byte == quote {
+                quoted = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'#' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
+            break;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quoted = Some(byte);
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"<<") && !bytes[index..].starts_with(b"<<<") {
+            let mut start = index + 2;
+            let tabs = bytes.get(start) == Some(&b'-');
+            start += usize::from(tabs);
+            while bytes.get(start).is_some_and(u8::is_ascii_whitespace) {
+                start += 1;
+            }
+            if let Some(&quote @ (b'\'' | b'"')) = bytes.get(start) {
+                let end = start
+                    + 1
+                    + bytes[start + 1..]
+                        .iter()
+                        .position(|byte| *byte == quote)
+                        .unwrap_or(0);
+                let delimiter = &bytes[start + 1..end];
+                if !delimiter.is_empty()
+                    && delimiter
+                        .iter()
+                        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
+                    found.push((String::from_utf8(delimiter.to_vec()).unwrap(), tabs));
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+        index += 1;
+    }
+    found
+}
+
+/// Literal here-documents contain data, not shell branches or status expansions.
+/// Blank their bodies while preserving physical line numbers; refuse an open body.
+fn shell_lines(lines: &[String]) -> Vec<String> {
+    let mut pending = std::collections::VecDeque::new();
+    let mut projected = Vec::with_capacity(lines.len());
+    for line in lines {
+        if let Some((delimiter, tabs)) = pending.front() {
+            let candidate = if *tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line.as_str()
+            };
+            if candidate == delimiter {
+                pending.pop_front();
+            }
+            projected.push(String::new());
+        } else {
+            pending.extend(literal_heredocs(line));
+            projected.push(line.clone());
+        }
+    }
+    assert!(
+        pending.is_empty(),
+        "unterminated literal heredoc; status scan cannot establish shell scope: {pending:?}"
+    );
+    projected
+}
+
+#[test]
+fn literal_heredoc_conditionals_cannot_extend_the_shell_branch() {
+    let source = "if ! value=$(python3 <<'PY'\nif not valid:\n    print('$?')\nPY\n); then\n  fail \"$value\"\nfi\ncmd || status=$?\n";
+    let lines: Vec<_> = source.lines().map(str::to_owned).collect();
+    assert!(negated_conditionals_reading_exit_status(&lines).is_empty());
+    let faulty = source.replace("fail \"$value\"", "status=$?");
+    let lines: Vec<_> = faulty.lines().map(str::to_owned).collect();
+    assert_eq!(negated_conditionals_reading_exit_status(&lines), vec![1]);
+}
+
+#[test]
+fn heredoc_text_in_quotes_or_comments_cannot_hide_shell_status_reads() {
+    for prefix in ["# cat <<'EOF'", "echo \"cat <<'EOF'\""] {
+        let source = format!("{prefix}\nif ! command; then\n  status=$?\nfi\nEOF\n");
+        let lines: Vec<_> = source.lines().map(str::to_owned).collect();
+        assert_eq!(negated_conditionals_reading_exit_status(&lines), vec![2]);
+    }
+}
+
+#[test]
+fn quoted_heredocs_preserve_nested_shell_and_tab_stripped_delimiters() {
+    let source = "if ! command; then\n  cat <<-\"EOF\"\n\tif this is data:\n\t  $?\n\tEOF\n  if nested; then\n    status=$?\n  fi\nfi\n";
+    let lines: Vec<_> = source.lines().map(str::to_owned).collect();
+    assert_eq!(negated_conditionals_reading_exit_status(&lines), vec![1]);
+    assert_eq!(
+        literal_heredocs("cat <<'ONE' <<\"TWO\""),
+        vec![("ONE".into(), false), ("TWO".into(), false)]
+    );
 }

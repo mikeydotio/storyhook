@@ -712,6 +712,15 @@ fn engine_restart_preserves_continuation_lane_before_missing_pane_classification
 fn generic_unblock_delivery_yields_to_outstanding_continuation_owner() {
     use storyhook::store::{DeliveryStatus, ReadOps, Store, WriteOps};
     let (f, id) = setup();
+    let output = storyhook::env::git_env::command(f.cwd())
+        .args(["init", "-b", "main"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+
     let ctx = f.ctx();
     ContinuationService::new(&ctx, &Runtime)
         .request(&id, input(&id))
@@ -897,4 +906,32 @@ fn explicitly_closed_story_supersedes_delivery_without_observing_provider() {
     storyhook::daemon::continuation::process_one(f.store(), f.env(), &runtime).unwrap();
     assert_eq!(requests(&f)[0].status, ContinuationStatus::Superseded);
     assert_eq!(runtime.calls.borrow().as_slice(), ["capture"]);
+}
+
+#[test]
+fn handoff_preserves_literal_evidence_without_treating_it_as_new_prose() {
+    for administrative in [false, true] {
+        let (f, id) = setup();
+        let ctx = f.ctx();
+        let mut request = input(&id);
+        let evidence = "The tool couldn't proceed because the previous command returned an unexpected response while the provider was still waiting for its recorded terminal session to become ready.";
+        request["handoff"]["evidence"]["context"] = json!(evidence);
+        if administrative {
+            let candidate = StoryService::new(&ctx)
+                .create(&NewStoryInput {
+                    title: "Already implemented".into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .id;
+            request["handoff"]["kind"] = json!("obviation-review");
+            request["handoff"]["evidence"]["original_state"] = json!("in-progress");
+            request["handoff"]["evidence"]["candidates"] = json!([candidate]);
+        }
+        let record = ContinuationService::new(&ctx, &Runtime)
+            .request(&id, request)
+            .unwrap();
+        assert_eq!(record.handoff["evidence"]["context"], evidence);
+        assert_eq!(requests(&f)[0].handoff, record.handoff);
+    }
 }

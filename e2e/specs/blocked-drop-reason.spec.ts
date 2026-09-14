@@ -1,5 +1,10 @@
 import { test, expect } from "./support";
-import { cleanUpCreatedStories, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  openProject,
+  seedToken,
+  waitForDisplayedStoryBlockDeliveries,
+} from "./support";
 
 /**
  * Exercises SH-205: dragging a card into the Blocked column opens a
@@ -54,6 +59,7 @@ async function deleteStory(
   const card = page.locator(`.column[data-state="${column}"] .card`, {
     hasText: title,
   });
+  await waitForDisplayedStoryBlockDeliveries(page, (await card.getAttribute("data-id"))!);
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();

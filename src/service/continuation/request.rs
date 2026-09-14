@@ -102,7 +102,7 @@ impl<S: Store> ContinuationService<'_, S> {
                 let states=tx.state_map(project_id)?;
                 let comment=StoryEvent::StoryCommentAdded {
                     at:self.ctx.now(),
-                    text:format!("CONTEXT HANDOFF {}\n{}\nRuntime evidence: {}",record.id,record.handoff,record.capture),
+                    text:format!("CONTEXT HANDOFF {}\n\n{}\n\nRuntime evidence:\n\n{}",record.id,crate::text_lint::quote_evidence(&record.handoff.to_string()),crate::text_lint::quote_evidence(&record.capture.to_string())),
                 };
                 append_and_fold(tx,project_id,number,&prefix,&states,ExpectedSeq::Exact(row.head_seq),&[comment],self.ctx.provenance())?;
             }

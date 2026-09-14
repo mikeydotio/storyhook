@@ -25,6 +25,41 @@ struct Repo {
 }
 
 #[test]
+fn tracked_tree_changes_invalidate_binary_consumers_but_preserve_fmt_and_clippy() {
+    let repo = Repo::new();
+    repo.write("scripts/tracked-tree.sh", "# initial build identity\n");
+    repo.git(&["add", "scripts/tracked-tree.sh"]);
+    for leg in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ] {
+        assert!(repo.run_leg(leg, true).status.success());
+        assert!(repo.run_leg(leg, true).status.success());
+        assert_eq!(repo.executions(leg), 1, "unchanged {leg} must reuse");
+    }
+
+    repo.write("scripts/tracked-tree.sh", "# changed build identity\n");
+    for (leg, expected) in [
+        ("fmt", 1),
+        ("clippy", 1),
+        ("rust-suite", 2),
+        ("rust-contracts", 2),
+        ("build", 2),
+        ("plugin", 2),
+        ("e2e", 2),
+    ] {
+        let result = repo.run_leg(leg, true);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(repo.executions(leg), expected, "{leg} dependency mismatch");
+    }
+}
+
+#[test]
 fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
     let repo = Repo::new();
     repo.write(
@@ -489,6 +524,8 @@ fn rust_battery_classifier_is_disjoint_and_exhaustive() {
     );
     assert!(core.contains("storyhook"));
     assert!(core.contains("storyhook_test_support"));
+    assert!(core.contains("ste_lint"));
+    assert!(core.contains("lint"));
     assert!(contracts.contains("e2e_fixture_hygiene"));
     assert!(!core.contains("e2e_fixture_hygiene"));
 

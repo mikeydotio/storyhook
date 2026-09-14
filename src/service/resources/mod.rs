@@ -14,6 +14,9 @@ pub use tmux::ResourcePane;
 /// Explicit discovery inputs crossing the CLI/daemon boundary.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceOptions {
+    /// Resolve Git and terminal location only; never select or authorize a pane.
+    #[serde(default)]
+    pub location_only: bool,
     /// Exact lease supplied by an existing lifecycle owner.
     pub lease_json: Option<String>,
     /// Additional legacy window/branch naming convention.
@@ -48,6 +51,8 @@ pub struct ResourceCandidate {
 /// Complete read-only result; ambiguity is evidence, never a chosen target.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResourceReport {
+    /// True when only location was observed and pane identity requires a separate check.
+    pub location_only: bool,
     /// Canonical project slug.
     pub project: String,
     /// Canonical story id.
@@ -338,6 +343,7 @@ fn resolve(
         .map(|name| format!("worktree-{name}"))
         .collect();
     let mut report = ResourceReport {
+        location_only: options.location_only,
         project: project.into(),
         story_id: id.into(),
         status: "absent".into(),
@@ -656,6 +662,11 @@ fn resolve(
         .as_deref()
         .map(git::canonical)
         .transpose()?;
+    // Notification chooses an exact process from every pane on this server.
+    // Active-pane selection belongs to the ordinary cleanup/capture contract.
+    if options.location_only {
+        return Ok(report);
+    }
     if let Some(socket) = &report.socket_path {
         names.insert(report.window_name.clone());
         match tmux::panes(socket, &names) {

@@ -14,6 +14,7 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
     || {
         let mut m = BTreeMap::new();
 
+        m.insert("ste", include_str!("help/ste.txt"));
         m.insert("continuation", r#"story continuation capabilities --json
 story continuation request <id> --stdin --json
 story continuation status <id> --json
@@ -686,6 +687,31 @@ Related:
   story unclaim — Hand a claim back
   story move    — Move a story between states without claiming semantics
   story show    — Read a story in full
+"#,
+        );
+
+        m.insert(
+            "reset",
+            r#"story reset <id> [--force]
+
+Release an open ordinary story's claim, close its owned tmux window, remove
+its owned worktree, and return it to Todo. Branches, commits, story content,
+and relationships are preserved. Closed stories and epics cannot be reset.
+
+Dirty or locked worktrees are refused unless --force is explicit. Force can
+permanently discard uncommitted files. It never overrides ownership checks,
+removes the primary or caller's checkout, or interrupts an active verifier.
+Run reset from outside the target worktree and its tmux window.
+
+Absent resources are already clean. If cleanup fails partway, story show
+reports the retained reset reservation and diagnostics. Retry story reset
+<id> after resolving that error; repeat --force only if you still authorize
+losing worktree changes. Dispatch and lifecycle changes remain unavailable
+until the reservation finishes. Comments remain available during recovery.
+
+Examples:
+  story reset SH-42
+  story reset SH-42 --force
 "#,
         );
 
@@ -1968,8 +1994,7 @@ reason without moving state at all, use `story block <id> "<text>"`.
 
 When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
-free-text comment, exactly like today, with no restrictions on its
-content.
+free-text comment. New comments must pass the checks in `story help ste`.
 
 A story in `verifying` is owned by the central verifier. Moving it to
 `done` by hand overrides that verification and requires the comment:
@@ -2127,6 +2152,9 @@ Related:
 
 Add a timestamped comment to a story. Comments are append-only and
 form part of the audit trail.
+
+New comments must pass the STE checks. Run `story help ste` for the rules.
+On failure, repair the text and submit the command again.
 
 When to use:
   To record progress notes, decisions, blockers, or context that

@@ -377,6 +377,8 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             &std::env::var_os("STORY_CALLBACK_HOME").expect("fixture home"),
         ));
         let candidate = VerificationCandidate {
+            blocked_by: Vec::new(),
+            landing_pending: false,
             project: ProjectId::new(1),
             project_slug: std::env::var("STORY_CALLBACK_PROJECT").expect("fixture project"),
             story_id: std::env::var("STORY_CALLBACK_ID").expect("fixture story"),
@@ -442,6 +444,8 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
     let unrelated_socket = socket_dir.join("unrelated");
     let _default_server = server(&default_socket);
     let _unrelated_server = server(&unrelated_socket);
+    let identity =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib/agent_identity.py");
     for socket in [&default_socket, &unrelated_socket] {
         tmux(
             socket,
@@ -462,6 +466,28 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
         tmux(
             socket,
             &["set-option", "-w", "-t", "@1", "automatic-rename", "off"],
+        );
+        let pane = tmux(socket, &["display-message", "-p", "-t", "@1", "#{pane_id}"]);
+        let pid = tmux(
+            socket,
+            &["display-message", "-p", "-t", "@1", "#{pane_pid}"],
+        );
+        let mut register = Command::new("python3");
+        register
+            .arg(&identity)
+            .args(["register", &project_slug, &id, &id])
+            .arg(&worktree)
+            .args([pane.trim(), pid.trim(), "codex"])
+            .current_dir(project.path())
+            .env("TMUX", format!("{},0,0", socket.display()));
+        let output = ChildGuard::spawn_with_output(&mut register)
+            .expect("fixture agent registration")
+            .wait_with_output_within(STORY_COMMAND_DEADLINE, || "registration stalled".into());
+        assert!(
+            output.status.success(),
+            "fixture registration: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     let inherited_tmux = tmux(

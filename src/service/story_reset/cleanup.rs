@@ -1,6 +1,7 @@
 //! Forced cleanup retains identity checks; force only waives recoverability.
 use crate::error::AppError;
 use crate::service::resources::{ResourceReport, git, tmux};
+use crate::service::workspace_lock::{self, WorkspaceLock};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -41,8 +42,12 @@ pub(super) fn validate(
         .arg(repository)
         .arg(common.trim())
         .arg(report.worktree.as_deref().unwrap_or(Path::new("")));
-    let captured = crate::process::run_captured(guard, crate::service::engine::TMUX_TIMEOUT)
-        .map_err(|error| refuse(format!("installed artifact guard: {}", error.detail())))?;
+    let captured = crate::process::run_captured_quiescent(
+        guard,
+        crate::service::engine::TMUX_TIMEOUT,
+        crate::process::TerminationPolicy::Kill,
+    )
+    .map_err(|error| refuse(format!("installed artifact guard: {}", error.detail())))?;
     if !captured.status.success() {
         return Err(refuse(format!(
             "installed artifact guard: {}",
@@ -123,6 +128,7 @@ pub(super) fn remove(
     paths: &[crate::store::ResetPathIdentity],
     caller: &Path,
     env: &crate::env::Environment,
+    workspace: Option<&WorkspaceLock>,
 ) -> Result<(), AppError> {
     super::identity::validate(paths)?;
     validate(report, caller, env)?;
@@ -147,9 +153,15 @@ pub(super) fn remove(
                 .arg("-S")
                 .arg(socket)
                 .args(["kill-window", "-t", &expected.window_id]);
-            let output =
-                crate::process::run_captured(command, crate::service::engine::TMUX_TIMEOUT)
-                    .map_err(|e| refuse(format!("closing tmux window: {}", e.detail())))?;
+            if let Some(workspace) = workspace {
+                workspace.command(&mut command);
+            }
+            let output = crate::process::run_captured_quiescent(
+                command,
+                crate::service::engine::TMUX_TIMEOUT,
+                crate::process::TerminationPolicy::Kill,
+            )
+            .map_err(|e| refuse(format!("closing tmux window: {}", e.detail())))?;
             if !output.status.success() {
                 return Err(refuse(format!(
                     "tmux kill-window {}: {}",
@@ -177,9 +189,10 @@ pub(super) fn remove(
             let path = worktree
                 .to_str()
                 .ok_or_else(|| refuse("worktree path is not UTF-8"))?;
-            git::text(
+            workspace_lock::git(
                 repository,
                 &["worktree", "remove", "--force", "--force", "--", path],
+                workspace,
             )?;
         }
         if git::inventory(repository)?
@@ -193,7 +206,7 @@ pub(super) fn remove(
     super::identity::validate(paths)?;
     if let Some(branch) = &report.branch {
         if git::branch_exists(repository, branch)? {
-            git::text(repository, &["branch", "-D", "--", branch])?;
+            workspace_lock::git(repository, &["branch", "-D", "--", branch], workspace)?;
         }
         if git::branch_exists(repository, branch)? {
             return Err(refuse("local branch remains"));

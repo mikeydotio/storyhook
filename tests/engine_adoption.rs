@@ -5,18 +5,38 @@ use storyhook::error::AppError;
 use storyhook::service::engine::adoption::{AdoptedIdentity, DispatchInspector, InspectedDispatch};
 use storyhook::service::engine::{EngineService, StartRequest};
 use storyhook::service::{NewStoryInput, StoryService};
-use storyhook::store::{EngineAgent, EngineScope, ReadOps, Store};
+use storyhook::store::{EngineAgent, EngineScope, ReadOps, Store, WriteOps};
 use storyhook_test_support::{FakeDispatcher, ServiceFixture};
+
+fn fixture() -> ServiceFixture {
+    let fixture = ServiceFixture::new();
+    let repo = fixture.cwd().canonicalize().unwrap();
+    let init = storyhook::env::git_env::command(&repo)
+        .args(["init", "--initial-branch=main"])
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&repo)))
+        .unwrap();
+    fixture
+}
 
 struct Inspector;
 impl DispatchInspector for Inspector {
-    fn inspect(&self, _: &Path, project: &str, story: &str) -> Result<InspectedDispatch, AppError> {
+    fn inspect(
+        &self,
+        checkout: &Path,
+        project: &str,
+        story: &str,
+    ) -> Result<InspectedDispatch, AppError> {
         Ok(InspectedDispatch {
             lease: StoryCleanupLease {
                 version: 1,
                 project_slug: project.into(),
                 story_id: story.into(),
-                repository_path: "/checkouts/fixture".into(),
+                repository_path: checkout.into(),
                 worktree_path: format!("/worktrees/{story}").into(),
                 branch: format!("worktree-{story}"),
                 tmux: TmuxCleanupTarget {
@@ -66,7 +86,7 @@ fn claimed(fixture: &ServiceFixture) -> String {
 
 #[test]
 fn atomic_adoption_and_retry_do_not_dispatch_or_change_the_claim() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -96,7 +116,7 @@ fn atomic_adoption_and_retry_do_not_dispatch_or_change_the_claim() {
 
 #[test]
 fn capacity_failure_and_duplicate_ids_leave_every_lane_untouched() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -120,7 +140,7 @@ fn capacity_failure_and_duplicate_ids_leave_every_lane_untouched() {
 
 #[test]
 fn non_claimed_and_blocked_work_is_refused_before_inspection() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -158,7 +178,7 @@ fn an_inspection_failure_rolls_back_the_entire_batch() {
             }
         }
     }
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -178,7 +198,7 @@ fn an_inspection_failure_rolls_back_the_entire_batch() {
 #[test]
 fn adopted_handoff_and_unclaim_release_only_the_binding() {
     for destination in ["verifying", "todo", "done"] {
-        let fixture = ServiceFixture::new();
+        let fixture = fixture();
         let fake = FakeDispatcher::new([storyhook_test_support::DispatcherStep::WindowAlive {
             window: "%1".into(),
             alive: false,
@@ -203,7 +223,7 @@ fn adopted_handoff_and_unclaim_release_only_the_binding() {
 
 #[test]
 fn concurrent_adopters_cannot_overfill_one_lane() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -254,7 +274,7 @@ fn concurrent_adopters_cannot_overfill_one_lane() {
 #[test]
 fn changed_story_or_capacity_during_inspection_cannot_commit_stale_ownership() {
     for shrink in [false, true] {
-        let fixture = ServiceFixture::new();
+        let fixture = fixture();
         let fake = FakeDispatcher::default();
         let ctx = fixture.ctx();
         let service = EngineService::new(&ctx, &fake);
@@ -320,7 +340,7 @@ fn changed_story_or_capacity_during_inspection_cannot_commit_stale_ownership() {
 #[test]
 fn manual_no_auto_is_explicitly_eligible_but_human_only_is_not() {
     for (label, allowed) in [("no-auto", true), ("human-only", false)] {
-        let fixture = ServiceFixture::new();
+        let fixture = fixture();
         let fake = FakeDispatcher::default();
         let ctx = fixture.ctx();
         let service = EngineService::new(&ctx, &fake);
@@ -345,7 +365,7 @@ fn manual_no_auto_is_explicitly_eligible_but_human_only_is_not() {
 
 #[test]
 fn identical_retry_remains_idempotent_after_capacity_is_lowered() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
@@ -366,7 +386,7 @@ fn identical_retry_remains_idempotent_after_capacity_is_lowered() {
 
 #[test]
 fn epic_scope_and_dependencies_are_enforced() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     storyhook::service::ConfigService::new(&ctx)
@@ -423,7 +443,7 @@ fn epic_scope_and_dependencies_are_enforced() {
 
 #[test]
 fn blocked_adopted_work_is_quarantined_and_restart_preserves_ownership() {
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::new([
         storyhook_test_support::DispatcherStep::WindowAlive {
             window: "%1".into(),
@@ -491,7 +511,7 @@ fn adoption_cli_and_wire_preserve_ids_and_refuse_missing_operands() {
 fn stop_now_resets_adopted_work_but_preserves_adopted_verification() {
     use storyhook::store::{EngineLaneState, EngineRunState, StoryNo};
     use storyhook_test_support::{DispatcherCall, DispatcherStep};
-    let fixture = ServiceFixture::new();
+    let fixture = fixture();
     let fake = FakeDispatcher::new([
         DispatcherStep::ResetFailure("retain adopted ownership".into()),
         DispatcherStep::Reset,
@@ -558,5 +578,57 @@ fn stop_now_resets_adopted_work_but_preserves_adopted_verification() {
             .read(|tx| tx.story(ctx.project(), StoryNo::new(2)))
             .unwrap(),
         verifier_before
+    );
+}
+
+#[test]
+fn adoption_waits_for_workspace_ownership_and_retires_prior_pending_effects() {
+    use fs4::FileExt;
+    use storyhook::store::{BlockAction, DeliveryStatus, StoryNo};
+    let fixture = fixture();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = start(&service, 1);
+    let id = claimed(&fixture);
+    fixture
+        .store()
+        .write(|tx| {
+            tx.enqueue_block_delivery(fixture.project(), StoryNo::new(1), BlockAction::Interrupt)
+        })
+        .unwrap();
+    let directory = fixture.cwd().join(".git/storyhook/workspace-locks");
+    std::fs::create_dir_all(&directory).unwrap();
+    let owner = std::fs::File::create(directory.join(format!("{id}.lock"))).unwrap();
+    owner.lock_exclusive().unwrap();
+    let error = service
+        .adopt(&run, std::slice::from_ref(&id), &Inspector)
+        .unwrap_err();
+    assert!(error.to_string().contains("workspace is busy"), "{error}");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run))
+            .unwrap()
+            .iter()
+            .all(|lane| lane.story_id.is_none())
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.block_deliveries(fixture.project()))
+            .unwrap()[0]
+            .status,
+        DeliveryStatus::Pending
+    );
+    drop(owner);
+    service.adopt(&run, &[id], &Inspector).unwrap();
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.block_deliveries(fixture.project()))
+            .unwrap()[0]
+            .status,
+        DeliveryStatus::Superseded
     );
 }

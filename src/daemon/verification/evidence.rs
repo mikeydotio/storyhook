@@ -177,6 +177,8 @@ mod tests {
             verifying_since: Some(STARTED.into()),
             verifying_generation: Some(GlobalSeq::new(7)),
             blocking_revision: None,
+            blocked_by: Vec::new(),
+            landing_pending: false,
             checkout: "/tmp/unused-retry-checkout".into(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),

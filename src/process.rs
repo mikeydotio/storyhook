@@ -63,6 +63,8 @@ pub(crate) enum CaptureError {
     Track(String),
     Timeout(TimeoutTermination),
     Cancelled,
+    /// Cleanup was requested, but remaining processes still own external effects.
+    Unsettled(String),
 }
 
 impl CaptureError {
@@ -70,7 +72,7 @@ impl CaptureError {
     pub(crate) fn detail(&self) -> String {
         match self {
             Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
-            Self::Track(error) => error.clone(),
+            Self::Track(error) | Self::Unsettled(error) => error.clone(),
             Self::Cancelled => "the operator cancelled verification".to_string(),
             Self::Timeout(_) => "the process timed out".to_string(),
         }
@@ -111,6 +113,29 @@ pub(crate) fn run_captured_with_termination(
     run_captured_with_registration(command, timeout, termination, |_| Ok(()))
 }
 
+/// Captures a helper only after its complete process group has stopped.
+/// A successful leader cannot acknowledge work that surviving children can still change.
+pub(crate) fn run_captured_quiescent(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        termination,
+        None,
+        CaptureWait {
+            quiescent: true,
+            ..CaptureWait::default()
+        },
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a command with capture while retaining a caller-owned registration
 /// guard for the child's complete lifetime.
 pub(crate) fn run_captured_with_registration<G>(
@@ -120,9 +145,15 @@ pub(crate) fn run_captured_with_registration<G>(
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, None, None, register, || {
-        Ok(deadline.saturating_duration_since(Instant::now()))
-    })
+    run_captured_until(
+        command,
+        termination,
+        None,
+        CaptureWait::default(),
+        None,
+        register,
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
     .map_err(|failure| failure.error)
 }
 
@@ -139,7 +170,7 @@ pub(crate) fn run_captured_cancellable<G>(
         command,
         termination,
         None,
-        None,
+        CaptureWait::default(),
         Some(cancellation),
         register,
         || Ok(deadline.saturating_duration_since(Instant::now())),
@@ -167,7 +198,10 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
         command,
         termination,
         None,
-        Some(poll),
+        CaptureWait {
+            poll: Some(poll),
+            ..CaptureWait::default()
+        },
         Some(cancellation),
         register,
         || deadline.remaining(),
@@ -194,7 +228,7 @@ pub(crate) fn run_captured_with_input(
         command,
         TerminationPolicy::Kill,
         Some(input),
-        None,
+        CaptureWait::default(),
         None,
         |_| Ok(()),
         || Ok(deadline.saturating_duration_since(Instant::now())),
@@ -202,11 +236,17 @@ pub(crate) fn run_captured_with_input(
     .map_err(|failure| failure.error)
 }
 
+#[derive(Default)]
+struct CaptureWait {
+    poll: Option<Duration>,
+    quiescent: bool,
+}
+
 fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
     input: Option<File>,
-    poll: Option<Duration>,
+    wait: CaptureWait,
     cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
@@ -216,11 +256,12 @@ fn run_captured_until<G>(
     }
     let poll = if cancellation.is_some() {
         Some(
-            poll.unwrap_or(Duration::from_millis(100))
+            wait.poll
+                .unwrap_or(Duration::from_millis(100))
                 .min(Duration::from_millis(100)),
         )
     } else {
-        poll
+        wait.poll
     };
     let source = crate::daemon::activity::command_source(&command);
     crate::daemon::activity::configure(&mut command);
@@ -265,7 +306,10 @@ fn run_captured_until<G>(
         if cancellation.is_some_and(Cancellation::is_cancelled) {
             terminate_timed_out(&mut child, pid, termination);
             drop(observer);
-            return Err(CaptureFailure::after(CaptureError::Cancelled, stdout_file));
+            return Err(CaptureFailure::after(
+                settled_error(pid, termination, wait.quiescent, CaptureError::Cancelled),
+                stdout_file,
+            ));
         }
         let budget = match remaining() {
             Ok(budget) => budget,
@@ -273,12 +317,30 @@ fn run_captured_until<G>(
                 terminate_timed_out(&mut child, pid, termination);
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    CaptureError::Wait(error),
+                    settled_error(pid, termination, wait.quiescent, CaptureError::Wait(error)),
                     stdout_file,
                 ));
             }
         };
         match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
+            Ok(Some(_)) if wait.quiescent && process_group_is_live(pid) => {
+                if budget.is_zero() {
+                    let outcome = terminate_timed_out(&mut child, pid, termination);
+                    drop(observer);
+                    return Err(CaptureFailure::after(
+                        settled_error(
+                            pid,
+                            termination,
+                            wait.quiescent,
+                            CaptureError::Timeout(outcome),
+                        ),
+                        stdout_file,
+                    ));
+                }
+                // The leader may be reaped while inherited children still own
+                // effects and append output. Keep capture and caller ownership live.
+                thread::sleep(budget.min(Duration::from_millis(10)));
+            }
             Ok(Some(status)) => break status,
             Ok(None) if !budget.is_zero() => continue,
             Ok(None) => {
@@ -288,11 +350,16 @@ fn run_captured_until<G>(
                     &source,
                     "event",
                     &context,
-                    "process timed out; group terminated",
+                    "process timed out; group cleanup requested",
                 );
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    CaptureError::Timeout(outcome),
+                    settled_error(
+                        pid,
+                        termination,
+                        wait.quiescent,
+                        CaptureError::Timeout(outcome),
+                    ),
                     stdout_file,
                 ));
             }
@@ -301,7 +368,7 @@ fn run_captured_until<G>(
                 let _ = child.wait();
                 drop(observer);
                 return Err(CaptureFailure::after(
-                    CaptureError::Wait(error),
+                    settled_error(pid, termination, wait.quiescent, CaptureError::Wait(error)),
                     stdout_file,
                 ));
             }
@@ -320,6 +387,33 @@ fn run_captured_until<G>(
         stdout: read_capture(stdout_file),
         stderr: read_capture(stderr_file),
     })
+}
+
+fn settled_error(
+    pid: u32,
+    termination: TerminationPolicy,
+    quiescent: bool,
+    error: CaptureError,
+) -> CaptureError {
+    if !quiescent {
+        return error;
+    }
+    let grace = match termination {
+        TerminationPolicy::Kill => Duration::ZERO,
+        TerminationPolicy::TerminateThenKill { grace } => grace,
+    };
+    let deadline = Instant::now() + grace;
+    while process_group_is_live(pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if process_group_is_live(pid) {
+        CaptureError::Unsettled(format!(
+            "helper process group {pid} remains after termination; retain ownership until recovery proves quiescence; {}",
+            error.detail()
+        ))
+    } else {
+        error
+    }
 }
 
 fn terminate_timed_out(
@@ -446,6 +540,25 @@ pub(crate) fn read_capture(mut file: File) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiescent_capture_rejects_success_while_descendants_survive_the_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "trap '' TERM; sleep 30 & printf '{\"ok\":true}'"]);
+        let result = run_captured_quiescent(
+            command,
+            Duration::from_millis(100),
+            TerminationPolicy::TerminateThenKill {
+                grace: Duration::from_millis(100),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(CaptureError::Timeout(
+                TimeoutTermination::KilledAfterTerminate
+            ))
+        ));
+    }
 
     #[test]
     fn registration_accepts_only_proven_exit_states() {

@@ -43,8 +43,10 @@ pub enum CompletedVerification {
         /// Configured gate command.
         gate: String,
     },
-    /// The guarded merge already landed before outer cleanup failed.
-    Merged {
+    /// The exact head and tree passed, but cleanup withheld landing permission.
+    Certified {
+        /// Exact submitted head.
+        head: String,
         /// Exact merged tree.
         tree: String,
         /// Guarded merge diagnosis.
@@ -110,6 +112,7 @@ pub(super) fn interrupted_outcome(
         tree: String,
         detail: String,
         log: Option<String>,
+        head: Option<String>,
         cleanup_failure: Option<VerificationCleanupFailure>,
     }
     let answer: Answer = serde_json::from_slice(stdout).ok()?;
@@ -135,7 +138,8 @@ pub(super) fn interrupted_outcome(
                 }
             }
         }
-        "merged" => CompletedVerification::Merged {
+        "certified" => CompletedVerification::Certified {
+            head: answer.head.filter(|head| !head.trim().is_empty())?,
             tree: answer.tree,
             detail: answer.detail,
             gate: gate.display(),
@@ -177,34 +181,33 @@ pub(super) fn record<S: Store>(
     verdict: CompletedVerification,
     cleanup: VerificationCleanupFailure,
 ) -> Result<GenerationWrite<TickResult>, AppError> {
-    let (comment, merged) = match verdict {
+    let comment = match verdict {
         CompletedVerification::TestsFailed {
             tree,
             log,
             detail,
             gate,
-        } => (
-            format!(
-                "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Cleanup must finish before remediation dispatch.\n\n{detail}"
-            ),
-            false,
+        } => format!(
+            "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Cleanup must finish before remediation dispatch.\n\n{}",
+            crate::text_lint::quote_evidence(&detail)
         ),
         CompletedVerification::GatePassed {
             tree,
             log,
             detail,
             gate,
-        } => (
-            format!(
-                "CENTRAL VERIFICATION GATE PASSED — command `{gate}` exited successfully on merge tree `{tree}`. Full log: `{log}`. This records execution only; no pull request was landed.\n\n{detail}"
-            ),
-            false,
+        } => format!(
+            "CENTRAL VERIFICATION GATE PASSED — command `{gate}` exited successfully on merge tree `{tree}`. Full log: `{log}`. This records execution only. No pull request was landed.\n\n{}",
+            crate::text_lint::quote_evidence(&detail)
         ),
-        CompletedVerification::Merged { tree, detail, gate } => (
-            format!(
-                "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {pull_request} landed. {detail}"
-            ),
-            true,
+        CompletedVerification::Certified {
+            head,
+            tree,
+            detail,
+            gate,
+        } => format!(
+            "CENTRAL VERIFICATION CERTIFIED — head `{head}` and merge tree `{tree}` passed `{gate}`. Cleanup must finish before landing pull request {pull_request}.\n\n{}",
+            crate::text_lint::quote_evidence(&detail)
         ),
     };
     let diagnosis = format!(
@@ -220,13 +223,7 @@ pub(super) fn record<S: Store>(
             .as_deref()
             .unwrap_or("path not reported by wrapper")
     );
-    match queue.record_generation_completed(
-        ctx,
-        candidate,
-        merged.then_some(pull_request),
-        &comment,
-        Some(&diagnosis),
-    )? {
+    match queue.record_generation_completed(ctx, candidate, &comment, Some(&diagnosis))? {
         GenerationWrite::Applied(Some(incident)) => {
             fire_verification_halted(ctx, candidate, &incident)?;
             Ok(GenerationWrite::Applied(TickResult::Halted))
@@ -242,6 +239,22 @@ pub(super) fn record<S: Store>(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn certify_boundary_refuses_unguarded_merged_results_even_after_capture_failure() {
+        let gate = GateCommand::parse("true").unwrap();
+        let wire = serde_json::json!({"result":"merged","tree":"tree","detail":"claimed merge"});
+        assert!(serde_json::from_value::<WireOutcome>(wire.clone()).is_err());
+        assert!(
+            interrupted_outcome(
+                wire.to_string().as_bytes(),
+                &gate,
+                "cancelled",
+                Path::new("/source")
+            )
+            .is_none()
+        );
+    }
 
     #[test]
     fn interrupted_capture_rejects_partial_or_malformed_completion() {
@@ -285,9 +298,9 @@ mod tests {
 
     #[test]
     fn wire_preserves_each_completed_result_and_cleanup_diagnosis() {
-        for result in ["tests-failed", "gate-passed", "merged"] {
+        for result in ["tests-failed", "gate-passed", "certified"] {
             let wire = serde_json::json!({
-                "result": result, "tree": "tree", "log": "/tmp/log", "detail": "named result",
+                "result": result, "head": "head", "tree": "tree", "log": "/tmp/log", "detail": "named result",
                 "cleanup_failure": { "phase": "restoration", "detail": "live writers",
                     "owner": "/tmp/owner", "worktree": "/tmp/verifier", "disposition": "permanent" }
             });
@@ -304,7 +317,7 @@ mod tests {
                 (result, verdict),
                 ("tests-failed", CompletedVerification::TestsFailed { .. })
                     | ("gate-passed", CompletedVerification::GatePassed { .. })
-                    | ("merged", CompletedVerification::Merged { .. })
+                    | ("certified", CompletedVerification::Certified { .. })
             ));
         }
     }

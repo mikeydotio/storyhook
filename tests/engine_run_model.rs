@@ -677,6 +677,17 @@ fn cleanup_lease(story: &str, worktree: &Path) -> StoryCleanupLease {
 }
 
 fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str, worktree: &str) {
+    // Positive reset paths acquire the leased repository's real Git-common lock.
+    let repository = fixture.cwd().canonicalize().unwrap();
+    let initialized = storyhook::env::git_env::command(&repository)
+        .args(["init", "--initial-branch=main"])
+        .output()
+        .unwrap();
+    assert!(initialized.status.success(), "{initialized:?}");
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&repository)))
+        .unwrap();
     let mut lane = fixture
         .store()
         .read(|tx| tx.engine_lanes(run_id))
@@ -688,7 +699,9 @@ fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str, workt
     lane.story_id = Some(story.to_string());
     lane.window_name = Some(format!("story-{story}"));
     lane.worktree_path = Some(worktree.to_string());
-    lane.cleanup_lease = Some(cleanup_lease(story, Path::new(worktree)));
+    let mut lease = cleanup_lease(story, Path::new(worktree));
+    lease.repository_path = repository;
+    lane.cleanup_lease = Some(lease);
     lane.dispatched_at = Some(FIXTURE_NOW.to_string());
     fixture
         .store()

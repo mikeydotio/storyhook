@@ -73,6 +73,9 @@ impl ReferencedBy {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
+    /// Incomplete reset authority and diagnostics, absent in ordinary operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<crate::service::reset::ResetReservation>,
     pub story: StorySnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived_relationships: Vec<StoryRelation>,
@@ -1073,6 +1076,15 @@ pub fn render_error(error: &AppError, json: bool) -> String {
         // joined — so a caller reading it is unaffected, and a caller wanting
         // `field`/`persisted`/`rebuilt` reads them instead of regexing a
         // 1.68MB string for them.
+        if let AppError::TextLint(detail) = error {
+            return format!(
+                "{}\n",
+                serde_json::json!({
+                    "result": "error", "error": error.to_string(), "exit_code": error.exit_code(),
+                    "kind": "text_lint", "story_id": detail.story, "findings": detail.findings,
+                })
+            );
+        }
         if let AppError::Integrity(detail) = error {
             return format!(
                 "{}\n",
@@ -2100,6 +2112,9 @@ fn render_story(view: &StoryView) -> String {
     }
     if let Some(description) = &story.description {
         body.push_str(&format!("description: {description}\n"));
+    }
+    if let Some(reset) = &view.reset {
+        body.push_str(&format!("reset: {}\n", reset.detail));
     }
     if let Some(awaiting) = &story.awaiting {
         body.push_str(&format!("awaiting: {awaiting}\n"));

@@ -13,6 +13,17 @@ fn story(f: &ServiceFixture, title: &str) -> String {
         .unwrap()
         .id
 }
+fn initialize_checkout(f: &ServiceFixture) {
+    let output = storyhook::env::git_env::command(f.cwd())
+        .args(["init", "-b", "main"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    use storyhook::store::WriteOps;
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+}
 fn deliveries(f: &ServiceFixture) -> Vec<BlockDelivery> {
     f.store()
         .read(|tx| tx.block_deliveries(f.project()))
@@ -144,6 +155,7 @@ fn failed_and_missing_agent_deliveries_are_recorded_without_replay_or_resume() {
         ("not json", DeliveryStatus::Uncertain),
     ] {
         let f = ServiceFixture::new();
+        initialize_checkout(&f);
         f.store()
             .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
             .unwrap();
@@ -154,12 +166,12 @@ fn failed_and_missing_agent_deliveries_are_recorded_without_replay_or_resume() {
         let svc = StoryService::new(&ctx);
         svc.set_state(&id, "in-progress", None, None, None).unwrap();
         svc.set_awaiting(&id, "hold").unwrap();
-        svc.clear_awaiting(&id).unwrap();
         assert!(
             storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&script))
                 .unwrap()
         );
         assert_eq!(deliveries(&f)[0].status, expected);
+        svc.clear_awaiting(&id).unwrap();
         // Resume must refuse before invoking any helper if the interrupt had no target.
         assert!(
             storyhook::daemon::block_delivery::process_one(
@@ -185,6 +197,9 @@ fn delivery_reports_missing_checkout_without_undoing_block() {
         .write(|tx| tx.set_checkout_path(f.project(), None))
         .unwrap();
     let id = story(&f, "Unreached agent");
+    StoryService::new(&f.ctx())
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
     StoryService::new(&f.ctx())
         .set_awaiting(&id, "repair")
         .unwrap();
@@ -221,6 +236,7 @@ fn delivery_reports_missing_checkout_without_undoing_block() {
 fn recovery_records_uncertain_delivery_and_never_replays_it() {
     use storyhook::store::{DeliveryStatus, WriteOps};
     let f = ServiceFixture::new();
+    initialize_checkout(&f);
     let id = story(&f, "Interrupted delivery");
     StoryService::new(&f.ctx())
         .set_state(&id, "in-progress", None, None, None)
@@ -250,6 +266,7 @@ fn recovery_records_uncertain_delivery_and_never_replays_it() {
 fn delivered_interrupt_binds_the_exact_resume_prompt_to_its_target() {
     use storyhook::store::{DeliveryStatus, WriteOps};
     let f = ServiceFixture::new();
+    initialize_checkout(&f);
     let id = story(&f, "Resume exact session");
     f.store()
         .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
@@ -271,12 +288,14 @@ fi
     let svc = StoryService::new(&ctx);
     svc.set_state(&id, "in-progress", None, None, None).unwrap();
     svc.set_awaiting(&id, "repair").unwrap();
-    svc.clear_awaiting(&id).unwrap();
-    for _ in 0..2 {
+    for pass in 0..2 {
         assert!(
             storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&script))
                 .unwrap()
         );
+        if pass == 0 {
+            svc.clear_awaiting(&id).unwrap();
+        }
     }
     assert_eq!(
         std::fs::read_to_string(f.cwd().join("prompt")).unwrap(),
@@ -291,6 +310,7 @@ fi
 
 #[test]
 fn cli_block_and_unblock_reach_the_daemon_delivery_worker() {
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
     use storyhook_test_support::TestEnv;
     let env = TestEnv::isolated();
@@ -301,10 +321,21 @@ fn cli_block_and_unblock_reach_the_daemon_delivery_worker() {
         }
     }
     let _stop = Stop(&env);
+    // A helper must query the daemon's own CLI, even when its environment
+    // names another build. Otherwise that CLI can replace the serving daemon.
+    let decoy = env.home().join("ambient-story");
+    std::fs::write(
+        &decoy,
+        "#!/bin/sh\nprintf wrong > ambient-story-called\nexit 72\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
     let script = env.home().join("notify.sh");
     std::fs::write(
         &script,
         r#"DISPATCH_PROTOCOL=5
+printf '%s' "$STORY_BIN" > helper-story-bin
+"$STORY_BIN" --project "$2" show "$4" --json > helper-story-read.json 2> helper-story-error || exit 23
 if [ "$5" = --interrupt ]; then
   printf sent > native-interrupt
   printf '{"ok":true,"target":"daemon-session","display":"native interrupt acknowledged"}'
@@ -319,11 +350,14 @@ fi
     env.story(env.home())
         .args(["daemon", "start"])
         .env("STORYHOOK_DISPATCH_SCRIPT", &script)
+        .env("STORY_BIN", &decoy)
         .assert()
         .success();
+    let original_daemon = env.daemon().expect("the fixture daemon is running");
     let p = env
         .project()
         .prefix("BLK")
+        .git()
         .seed_story("Daemon delivery")
         .build();
     p.story()
@@ -334,9 +368,25 @@ fi
         .args(["block", "BLK-1", "temporary repair"])
         .assert()
         .success();
+    let interrupt_deadline = Instant::now() + Duration::from_secs(8);
+    while !p.path().join("native-interrupt").exists() {
+        assert!(
+            !p.path().join("ambient-story-called").exists(),
+            "block delivery invoked the ambient CLI instead of its daemon's executable"
+        );
+        assert!(
+            Instant::now() < interrupt_deadline,
+            "daemon never claimed the block episode"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     p.story().args(["unblock", "BLK-1"]).assert().success();
     let deadline = Instant::now() + Duration::from_secs(8);
     while !p.path().join("resume-prompt").exists() {
+        assert!(
+            !p.path().join("ambient-story-called").exists(),
+            "block delivery invoked the ambient CLI instead of its daemon's executable"
+        );
         assert!(
             Instant::now() < deadline,
             "daemon never delivered the queued effects"
@@ -344,6 +394,16 @@ fi
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(p.path().join("native-interrupt").exists());
+    assert_eq!(
+        std::fs::read_to_string(p.path().join("helper-story-bin")).unwrap(),
+        original_daemon.exe.to_string_lossy(),
+        "the helper queried the executable that owns the daemon"
+    );
+    let queried: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(p.path().join("helper-story-read.json")).unwrap())
+            .expect("the helper completed a real CLI request");
+    assert_eq!(queried["story"]["story"]["id"], "BLK-1");
+    assert_eq!(env.daemon().unwrap().pid, original_daemon.pid);
     assert_eq!(
         std::fs::read_to_string(p.path().join("resume-prompt")).unwrap(),
         storyhook::service::block_delivery::UNBLOCK_PROMPT
@@ -372,6 +432,9 @@ fn recovery_with_nothing_interrupted_opens_no_write_transaction() {
         let f = ServiceFixture::new();
         if seeded {
             let id = story(&f, "Settled hold");
+            StoryService::new(&f.ctx())
+                .set_state(&id, "in-progress", None, None, None)
+                .unwrap();
             StoryService::new(&f.ctx())
                 .set_awaiting(&id, "repair")
                 .unwrap();
@@ -413,6 +476,9 @@ fn an_idle_delivery_pass_opens_no_write_transaction() {
         .write(|tx| tx.set_checkout_path(f.project(), None))
         .unwrap();
     let id = story(&f, "Settled");
+    StoryService::new(&f.ctx())
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
     StoryService::new(&f.ctx())
         .set_awaiting(&id, "repair")
         .unwrap();
@@ -456,6 +522,7 @@ fn recovery_still_writes_when_a_delivery_was_interrupted() {
     use storyhook::store::fault::{FaultAction, arm};
     use storyhook::store::{DeliveryStatus, FaultPoint, WriteOps};
     let f = ServiceFixture::new();
+    initialize_checkout(&f);
     let id = story(&f, "Interrupted delivery");
     StoryService::new(&f.ctx())
         .set_state(&id, "in-progress", None, None, None)
@@ -492,4 +559,37 @@ fn recovery_still_writes_when_a_delivery_was_interrupted() {
 
     storyhook::daemon::block_delivery::recover(f.store(), f.env()).unwrap();
     assert_eq!(deliveries(&f)[0].status, DeliveryStatus::Uncertain);
+}
+
+#[test]
+fn helper_diagnostic_is_literal_evidence_and_does_not_strand_delivery() {
+    use storyhook::store::{DeliveryStatus, WriteOps};
+    let f = ServiceFixture::new();
+    initialize_checkout(&f);
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+    let detail = "The provider couldn't verify this process because its executable identity changed while the terminal notification was waiting for the recorded server to reply.\nDo not retry it automatically.";
+    let reply = serde_json::json!({"ok":false,"reason":"pane-changed","display":detail});
+    let script = f.cwd().join("notify.sh");
+    std::fs::write(&script, format!("cat <<'REPLY'\n{reply}\nREPLY\n")).unwrap();
+    let id = story(&f, "Preserve provider evidence");
+    StoryService::new(&f.ctx())
+        .set_state(&id, "in-progress", None, None, None)
+        .unwrap();
+    StoryService::new(&f.ctx())
+        .set_awaiting(&id, "hold")
+        .unwrap();
+    assert!(
+        storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&script)).unwrap()
+    );
+    let delivery = &deliveries(&f)[0];
+    assert_eq!(delivery.status, DeliveryStatus::Unreached);
+    assert_eq!(delivery.detail, detail);
+    let snapshot = StoryService::new(&f.ctx()).clear_awaiting(&id).unwrap();
+    assert!(snapshot.comments.iter().any(|comment| {
+        comment
+            .text
+            .contains(&storyhook::text_lint::quote_evidence(detail))
+    }));
 }

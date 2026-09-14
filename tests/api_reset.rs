@@ -52,6 +52,19 @@ fn reset_requires_auth_and_confirmation_then_polls_a_scoped_durable_receipt() {
         .send_json(serde_json::json!({"confirmation":"wrong"}))
         .unwrap();
     assert_eq!(wrong.status(), 422);
+    for payload in [
+        serde_json::json!({}),
+        serde_json::json!({"force": true}),
+        serde_json::json!({"confirmation": story.id, "force": true}),
+    ] {
+        let refused = agent
+            .post(&url)
+            .header("X-Storyhook-Token", &auth)
+            .header("X-Storyhook", "1")
+            .send_json(payload)
+            .unwrap();
+        assert_eq!(refused.status(), 422);
+    }
     assert!(
         fixture
             .store()

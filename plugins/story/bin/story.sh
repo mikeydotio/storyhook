@@ -167,6 +167,7 @@ SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOUR
 STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
 source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 source "$STORY_PLUGIN_ROOT/lib/resources.sh"
+source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -1201,7 +1202,7 @@ cleanup_dispatch_git() {
 rollback_dispatch_attempt() {
   local stopped stop_error
   DISPATCH_ROLLBACK_CLAIMED="$reused_claim"
-  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" 2>&1) || true
+  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" "${launch_start:-}" 2>&1) || true
   if [ "$(printf '%s' "$stopped" | jq -r '.ok // false' 2>/dev/null || printf false)" != true ]; then
     stop_error=$(printf '%s' "$stopped" | jq -r '.error // "no termination result"' 2>/dev/null) || stop_error="${stopped:-no termination result}"
     DISPATCH_CLEANUP_NOTE="WARNING: startup cleanup could not be confirmed: $stop_error; claim and Git resources were preserved"
@@ -1580,6 +1581,17 @@ continuation_preflight() {
     || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
 }
 
+# Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
+# inherited by preparation children; no explicit unlock can strand an orphan.
+reserve_dispatch_workspace() {
+  [ -z "$DRY_RUN" ] || return 0
+  reserve_story_workspace "$id"
+  show_json=$(story_cli show "$id" --json) || fail "cannot revalidate $id after workspace admission"
+  [ "$(printf '%s' "$show_json" | jq -r '.story.reset // empty')" = "" ] \
+    || fail "$id has an unfinished reset; retry story reset before dispatch"
+  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+}
+
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
@@ -1763,6 +1775,7 @@ cmd_dispatch() {
   fi
   enter_checkout
   local dir="$PROJECT_ROOT"
+  if [ -n "$id" ]; then reserve_dispatch_workspace; fi
 
   # Origin's default branch, resolved ONCE for every mode (SH-691): the
   # resume inventory below asks whether the expected branch is protected,
@@ -2003,6 +2016,11 @@ cmd_dispatch() {
     id=$(printf '%s' "$next_json" | jq -r '.story.story.id')
     title=$(printf '%s' "$next_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$next_json" | jq -r '.story.story.state // ""')
+    if [ -z "$DRY_RUN" ]; then
+      local claimed_state="$state"
+      reserve_dispatch_workspace
+      [ "$state" = "$claimed_state" ] || fail "$id changed after claim; dispatch refused before preparing resources"
+    fi
     # Dry-run's `$next_json` came from the non-claiming read, so `.state` is
     # already the pre-claim value and `.claimed_from` was never asked for;
     # the real claim's `.claimed_from` is what the story actually came from.
@@ -2358,6 +2376,10 @@ cmd_dispatch() {
     return 0
   fi
 
+  if ! supersede_block_deliveries "$id"; then
+    fail "$BLOCK_DELIVERY_ERROR. No replacement session was launched.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+  fi
+
   # Step 7: idempotently gitignore the per-story worktree CONTAINER dir,
   # BEFORE the worktree materializes. Best-effort — never flips ok to false.
   local gitignore_result="already-ignored"
@@ -2452,7 +2474,7 @@ cmd_dispatch() {
   local session_created=false
   if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
      && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
-    if ! tmux new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
+    if ! python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to create tmux session \`$TARGET_SESSION\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
@@ -2538,7 +2560,7 @@ cmd_dispatch() {
       rm -f "$worktree_path/.claude/dispatch-sentinel.json"
     fi
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
-    if ! tmux respawn-pane ${respawn_flag:+"$respawn_flag"} -c "$worktree_path" \
+    if ! python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" respawn-pane ${respawn_flag:+"$respawn_flag"} -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
          -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
          -t "$pane" "$respawn_command" 2>/dev/null; then
@@ -2556,7 +2578,7 @@ cmd_dispatch() {
     new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
-    pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
+    pane=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-window "${new_window_args[@]}" "$launch_cmd" \; \
              set-window-option -t "$set_target" remain-on-exit on \; \
              set-window-option -t "$set_target" automatic-rename off \; \
              set-window-option -t "$set_target" allow-rename off \; \
@@ -2579,6 +2601,14 @@ cmd_dispatch() {
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
   local DISPATCH_ROLLBACK_CLAIMED="$reused_claim" DISPATCH_ROLLBACK_NOTE=""
+  local launch_process launch_start
+  if ! launch_process=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → could not capture its launch process: $(printf '%s' "$launch_process" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+  launch_start=$(printf '%s' "$launch_process" | jq -r '.identity.start')
 
   # Publish the durable-cleanup handoff before any gate that can leave this
   # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
@@ -2625,6 +2655,18 @@ cmd_dispatch() {
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
+
+  # The ready launch owns this exact pane/PID. Registration is required before
+  # the story charter, so a failed metadata write cannot strand remediation.
+  local identity_result dispatch_identity
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" register \
+      "$PROJECT_SLUG" "$id" "$wname" "$worktree_path" "$pane" "$pane_pid" "$AGENT" "$launch_start"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → could not register its agent identity: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+  dispatch_identity=$(printf '%s' "$identity_result" | jq -c '.identity')
 
   # Claude selected plan mode in its launch argv. Current Codex exposes a real
   # Plan mode through Shift+Tab, and the footer is the confirmation boundary.
@@ -2692,6 +2734,13 @@ cmd_dispatch() {
     fi
   elif [ -n "$auto" ] && [ "$prompt_builtin" = true ]; then
     auto_note="$auto_note Native context continuation unavailable: the runtime adapter is not installed."
+  fi
+
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$dispatch_identity"); then
+    rollback_dispatch_attempt
+    refuse_with "pane-identity-unavailable" \
+      "[story] $id → its registered identity changed before handoff: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
@@ -3508,35 +3557,49 @@ cmd_notify() {
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  local wname pane buffer provider server
+  local wname pane buffer provider server identity_result identity detail
   require_story
-  resolve_project || fail "$CHECKOUT_ERROR"
-  load_story_resources "$id"
+  resolve_project || refuse "pane-query-failed" "$CHECKOUT_ERROR"
+  # Native discovery establishes the repository, worktree and recorded server;
+  # only process identity may choose a destination among that window's panes.
+  load_story_resources "$id" "${STORYHOOK_NOTIFY_LEASE_V1:-}" true
   id="$RESOURCE_ID"
   wname="$RESOURCE_WINDOW"
-  server="${TMUX:-}"
-  server="${server%%,*}"
-  server="${server:-default (TMUX_TMPDIR=${TMUX_TMPDIR:-/tmp})}"
-  if ! pane=$(resource_find_pane 2>&1); then
-    refuse "pane-query-failed" "could not query tmux window \`$wname\` on server \`$server\`: $pane; verification diagnostics remain on $id."
+  [ -n "$RESOURCE_REPOSITORY" ] || refuse "pane-query-failed" "no repository location was resolved for $id"
+  cd "$RESOURCE_REPOSITORY" || refuse "pane-query-failed" "cannot enter $RESOURCE_REPOSITORY"
+  reserve_story_workspace "$id"
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" resolve "$PROJECT_SLUG" "$id" "$wname" "$RESOURCE_REPORT"); then
+    detail=$(printf '%s' "$identity_result" | jq -r '.display')
+    # Keep the complete refusal vocabulary here for the daemon contract test.
+    case "$(printf '%s' "$identity_result" | jq -r '.reason')" in
+      pane-unavailable) refuse "pane-unavailable" "$detail" ;;
+      pane-dead) refuse "pane-dead" "$detail" ;;
+      pane-changed) refuse "pane-changed" "$detail" ;;
+      pane-provider-unknown) refuse "pane-provider-unknown" "$detail" ;;
+      *) refuse "pane-query-failed" "$detail" ;;
+    esac
   fi
-  [ -n "$pane" ] \
-    || refuse "pane-unavailable" "no live tmux window named \`$wname\` on queried server \`$server\`; verification diagnostics remain on $id."
-  provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null || printf '')
-  case "$provider" in
-  claude | codex) configure_agent "$provider" ;;
-  *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
-  esac
-  # A pane whose process has exited under remain-on-exit still answers the
-  # provider option and a FROZEN #{pane_current_command} (pane_is_dead's doc),
-  # so it passes both gates above and pane_runs below. Ask tmux the one
-  # question that distinguishes it, first: the verifier re-dispatches on this
-  # refusal (SH-650), and must never read a corpse as `delivery-failed`, the
-  # refusal that means the agent IS live and a respawn would kill it.
-  ! pane_is_dead "$pane" \
-    || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
-  pane_runs "$pane" \
-    || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
+  identity=$(printf '%s' "$identity_result" | jq -c '.identity')
+  if [ "$(printf '%s' "$identity_result" | jq -r '.requires_adoption // false')" = true ]; then
+    if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
+      refuse "pane-provider-unknown" "delayed interruption or resumption requires an existing exact session registration; no session was adopted."
+    fi
+    if ! supersede_block_deliveries "$id"; then
+      refuse "pane-query-failed" "$BLOCK_DELIVERY_ERROR. No session was adopted or notified."
+    fi
+    if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" adopt "$identity"); then
+      refuse "pane-changed" "agent identity changed before adoption: $(printf '%s' "$identity_result" | jq -r '.display')"
+    fi
+    identity=$(printf '%s' "$identity_result" | jq -c '.identity')
+  fi
+  pane=$(printf '%s' "$identity" | jq -r '.pane')
+  provider=$(printf '%s' "$identity" | jq -r '.provider')
+  server=$(printf '%s' "$identity" | jq -r '.socket')
+  configure_agent "$provider"
+  # Delivery uses the same captured server as the identity check, including
+  # a leased non-default socket. This local value cannot leak to the caller.
+  local TMUX="$server,0,0"
+  export TMUX
 
   if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
     target=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" target "$pane" "$provider" 2>&1) \
@@ -3546,6 +3609,10 @@ cmd_notify() {
   fi
   if [ "$message" = --interrupt ]; then
     revalidate_story_resources
+    reserve_story_workspace "$id"
+    if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+      refuse "pane-changed" "agent identity changed before interruption: $(printf '%s' "$identity_result" | jq -r '.display')"
+    fi
     diagnostic=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" interrupt "$pane" "$provider" "$target" 2>&1) \
       || refuse "interruption-failed" "native interruption/owned gate cleanup was not acknowledged for $id: $diagnostic"
     jq -n --arg id "$id" --arg target "$target" \
@@ -3554,9 +3621,18 @@ cmd_notify() {
   fi
 
   revalidate_story_resources
+  reserve_story_workspace "$id"
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+    refuse "pane-changed" "agent identity changed before delivery: $(printf '%s' "$identity_result" | jq -r '.display')"
+  fi
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
+  revalidate_story_resources
+  reserve_story_workspace "$id"
+  if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+    refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
+  fi
   tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null \
     || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
   jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
@@ -5203,6 +5279,9 @@ cmd_reset() {
   fi
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
+  if [ -z "$DRY_RUN" ]; then
+    reserve_story_workspace "$id"
+  fi
 
   # Refusals first, most-absolute first, before anything at all is mutated.
   if [ "$CMP_WINDOW_STATUS" = "self" ]; then
@@ -5237,6 +5316,9 @@ cmd_reset() {
   fi
 
   revalidate_story_resources
+  if [ -z "$DRY_RUN" ] && ! supersede_block_deliveries "$id"; then
+    fail "$BLOCK_DELIVERY_ERROR. Reset did not release the story or remove its resources."
+  fi
   _release_story reset "$id"
   local unclaimed=false conflict=""
   case "$REL_RESULT" in

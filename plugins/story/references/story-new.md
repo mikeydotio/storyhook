@@ -63,6 +63,10 @@ where / when / extent, repro steps, and the last known good state.
 
 ## 6. Confirm
 
+Write the title and description in ASD-STE100. Read `story help ste` for the
+supported checks. If filing returns `text_lint`, repair the named fields and
+retry. Preserve the meaning and literal evidence. A title can be a fragment.
+
 Ask exactly one confirmation question showing the drafted title and body:
 **File it** / **Edit first** / **Cancel**.
 

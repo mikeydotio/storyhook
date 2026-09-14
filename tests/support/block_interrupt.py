@@ -10,13 +10,14 @@ import sys
 import time
 
 repo, scratch = map(Path, sys.argv[1:3])
+project_slug = sys.argv[3]
 tmux = shutil.which("tmux")
 assert tmux, "tmux is required; this regression must not skip"
 socket = scratch / "tmux.sock"
 bindir = scratch / "bin"
 bindir.mkdir()
 wrapper = bindir / "tmux"
-wrapper.write_text(f"#!/bin/sh\nif [ \"$1\" = -S ]; then shift 2; fi\nif [ -f {shlex.quote(str(scratch / 'refuse-native'))} ] && [ \"$1\" = send-keys ]; then echo 'native delivery refused by fixture' >&2; exit 42; fi\nexec {shlex.quote(tmux)} -S {shlex.quote(str(socket))} \"$@\"\n")
+wrapper.write_text(f"#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -u) shift ;; -S) shift 2 ;; *) break ;; esac; done\nif [ -f {shlex.quote(str(scratch / 'refuse-native'))} ] && [ \"$1\" = send-keys ]; then echo 'native delivery refused by fixture' >&2; exit 42; fi\nexec {shlex.quote(tmux)} -u -S {shlex.quote(str(socket))} \"$@\"\n")
 wrapper.chmod(0o755)
 env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
            STORYHOOK_LOCK_DIR=str(scratch / "locks"),
@@ -89,6 +90,16 @@ try:
         assert refused.get("reason") == "pane-provider-unknown", refused
         assert alive(writer) and not (scratch / "native").exists()
         run("tmux", "set-window-option", "-t", "test:SH-1", "@storyhook-agent", identity, check=True)
+        # A managed launch publishes an exact process incarnation after its
+        # readiness signal. A window tag alone cannot authorize Python as a
+        # provider; exercise the same production registration door as dispatch.
+        identity_helper = repo / "plugins/story/lib/agent_identity.py"
+        captured = json.loads(run(sys.executable, str(identity_helper), "capture", str(agent), check=True).stdout)
+        pane = run("tmux", "display-message", "-p", "-t", "test:SH-1", "#{pane_id}", check=True).stdout.strip()
+        registered = json.loads(run(sys.executable, str(identity_helper), "register", project_slug,
+                                    "SH-1", "SH-1", str(scratch), pane, str(agent), identity,
+                                    captured["identity"]["start"], check=True).stdout)
+        assert registered.get("ok"), registered
         probe = ("import subprocess,sys; "
                  f"s=subprocess.run(['ps','-o','stat=','-p','{writer}'],capture_output=True,text=True).stdout.strip(); "
                  "sys.exit(71 if s and not s.startswith('Z') else 0)")
@@ -131,7 +142,7 @@ try:
         wait_for(lambda: "python" in run("tmux", "display-message", "-p", "-t", "test:SH-1", "#{pane_current_command}").stdout.lower(), "replacement provider did not start")
         stale = json.loads(run("bash", str(helper), "notify", "SH-1", "resume",
                               "--expected-target", answer["target"]).stdout)
-        assert stale.get("reason") == "target-changed", stale
+        assert stale.get("reason") == "pane-changed" and not stale.get("ok"), stale
         run("tmux", "kill-server", check=True)
         wait_for(lambda: run("tmux", "has-session", "-t", "test").returncode != 0, "test tmux server did not close")
 finally:

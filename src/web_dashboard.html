@@ -5548,6 +5548,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * an announcement every second (SH-549). */
   function verificationDescription(verification) {
     if (!verification) return "";
+    if (verification.status === "held") return "Verification held · open blockers: " + verification.blockers.join(", ");
+    if (verification.status === "landingpending") return "Landing pending · confirming merge outcome";
     if (verification.status === "queued") {
       var queued = ["Queued"];
       if (verification.wait_seconds !== undefined && verification.wait_seconds !== null) {
@@ -10956,6 +10958,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return pill;
   }
 
+  // Keep generated DOM separate from live attributes such as roving tabindex.
+  // Weak keys release snapshots when their old list slots are removed.
+  var listSlotSnapshots = new WeakMap();
+
+  /** List layouts have fixed ordered slots; optional values stay inside them.
+   * Compare each slot's generated output so changing a date or Details value
+   * cannot detach an unchanged focused control in another slot. */
+  function reconcileListSlots(parent, candidateParent) {
+    var candidates = Array.prototype.slice.call(candidateParent.children);
+    candidates.forEach(function(candidate, index) {
+      var previous = parent.children[index];
+      var rendered = previous && listSlotSnapshots.get(previous);
+      if (rendered && rendered.isEqualNode(candidate)) return;
+      listSlotSnapshots.set(candidate, candidate.cloneNode(true));
+      if (previous) {
+        parent.insertBefore(candidate, previous);
+        detach(previous);
+      }
+      else parent.appendChild(candidate);
+    });
+    while (parent.children.length > candidates.length) detach(parent.lastElementChild);
+  }
+
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
@@ -10968,21 +10993,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     );
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
 
-    /* SH-425: build the candidate cells off-tree and destroy the live row's
-       children only when their rendered output actually changed. The list used
-       to clear every reused row on every render, even when a comment or another
-       story's mutation changed nothing this row displays. Besides needless DOM
-       churn, that discarded focus inside `.row-actions-btn`; SH-401's press gate
-       protects a primary pointer gesture, but it deliberately does not turn a
-       no-op render into a reason to replace an unchanged subtree.
-
-       Compare the output rather than a hand-built input fingerprint, matching
-       populateCard's SH-399 rule: this renderer reaches through helpers into
-       metadata and other state (`buildTypeBadge`, `buildStatePill`,
-       `priorityDot`, `labelChips`, `memberName`, `nextRank`), so its argument is
-       not its complete input. Move the detached children with appendChild so
-       their listeners survive; never parse the stored serialization back into
-       the live row. */
+    /* SH-425: build cells off-tree and retain unchanged cells with their listeners.
+       Output includes metadata and helper state, so it is the comparison key.
+       Exact timestamp metadata can change without changing the Actions cell. */
     var next = el("tr", {}, []);
     var badge = buildTypeBadge(st.story_type);
     next.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
@@ -11011,12 +11024,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, [emojiIcon("actions")]);
     next.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
 
-    var rendered = next.innerHTML;
-    if (row.dataset.rendered !== rendered) {
-      clear(row);
-      while (next.firstChild) row.appendChild(next.firstChild);
-      row.dataset.rendered = rendered;
-    }
+    reconcileListSlots(row, next);
   }
 
   /** Keyed mobile-list reconcile. The title button, rather than the `<li>`,
@@ -11150,12 +11158,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     appendMobileDetail(details, "Full Auto", engineLaneDesc || "—");
     next.appendChild(details);
 
-    var rendered = next.innerHTML;
-    if (item.dataset.rendered !== rendered) {
-      clear(item);
-      while (next.firstChild) item.appendChild(next.firstChild);
-      item.dataset.rendered = rendered;
-    }
+    reconcileListSlots(item, next);
   }
 
   /** Briefly highlights a row that either just appeared or has a field
@@ -11394,7 +11397,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       } else {
         candidate.dataset.drawerRendered = rendered;
         chosen = candidate;
-        if (previous) parent.replaceChild(chosen, previous);
+        if (previous) {
+          parent.insertBefore(chosen, previous);
+          detach(previous);
+        }
         else {
           parent.insertBefore(chosen, cursor);
           inPosition = true;
@@ -15794,10 +15800,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           e.preventDefault();
           return;
         }
-        if (overlayStack[overlayStack.length - 1] === "reset-modal") {
-          closeResetModal();
-          return;
-        }
         // The Stop confirmation is dismissible until its mutation starts.
         // While outstanding, its controls and every dismissal path remain
         // locked around the one uncancelable request.
@@ -15821,6 +15823,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Close can be outstanding over the story drawer. It is the topmost
         // surface, so Escape belongs to it alone; while its uncancelable request
         // is in flight `closeCloseModal()` deliberately keeps it open.
+        if (overlayStack[overlayStack.length - 1] === "reset-modal") {
+          closeResetModal();
+          return;
+        }
         if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
           return;

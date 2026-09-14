@@ -1,4 +1,5 @@
 import { expect as baseExpect, test as base } from "@playwright/test";
+import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
 import type {
   APIRequestContext,
   APIResponse,
@@ -739,6 +740,7 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
     hasText: title,
   });
   const id = (await card.getAttribute("data-id"))!;
+  await waitForDisplayedStoryBlockDeliveries(page, id);
   // A card can contain live story-reference links. Click its exact title so
   // a narrow layout cannot put the card's geometric centre on one of them.
   await card.getByText(title, { exact: true }).click();
@@ -774,6 +776,7 @@ export async function deleteBlockedStory(
     hasText: title,
   });
   const id = (await card.getAttribute("data-id"))!;
+  await waitForDisplayedStoryBlockDeliveries(page, id);
   // See deleteStory(): target the card body, never a nested story reference.
   await card.getByText(title, { exact: true }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
@@ -1363,6 +1366,24 @@ export async function storiesInProject(
  */
 const fixtureBaselines = new Map<string, Set<string>>();
 
+/** Wait for every real delivery to settle before issuing a cleanup mutation.
+ * A completed move is not a completed notification. The normal assertion
+ * deadline bounds this read-only wait; DELETE is sent once, after the barrier. */
+export async function waitForStoryBlockDeliveries(project: string, id: string): Promise<void> {
+  const storePath = requiredEnv("STORYHOOK_STORE_PATH");
+  const barrier = new BlockDeliveryBarrier(project, id);
+  await expect.poll(() => barrier.observe(readBlockDeliverySnapshot(storePath, project, id)), {
+    message: `cleanup waits for durable block-delivery completion for ${project}/${id}`,
+  }).toEqual([]);
+}
+
+/** Scope a drawer cleanup to the exact project recorded in the page's URL. */
+export async function waitForDisplayedStoryBlockDeliveries(page: Page, id: string): Promise<void> {
+  const project = new URL(page.url()).searchParams.get("project");
+  if (!project) throw new Error("cleanup page has no project identity");
+  await waitForStoryBlockDeliveries(project, id);
+}
+
 /**
  * Registers an `afterEach` that deletes, through the API, every story the
  * spec left behind in `projectName` — anything not in the fixture the run
@@ -1428,6 +1449,7 @@ export function cleanUpCreatedStories(projectName: string): void {
       const before = remaining.length;
       refusals = [];
       for (const story of remaining) {
+        await waitForStoryBlockDeliveries(slug, story.id);
         const deleted = await request.delete(storyUrl(story.id), {
           headers,
           data: { force: true },

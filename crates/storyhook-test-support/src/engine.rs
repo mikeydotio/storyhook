@@ -142,7 +142,11 @@ impl Dispatcher for FakeDispatcher {
         }
     }
 
-    fn reset(&self, request: storyhook::store::EngineReset) -> Result<DispatchOutcome, AppError> {
+    fn reset(
+        &self,
+        request: storyhook::store::EngineReset,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
         match self.next(DispatcherCall::Reset(request.clone())) {
             DispatcherStep::Reset => Ok(DispatchOutcome::from_payload(serde_json::json!({
                 "ok": true, "token": request.token, "lease": request.lease,

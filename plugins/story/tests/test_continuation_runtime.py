@@ -6,10 +6,14 @@ import tempfile
 import os
 import shutil
 import subprocess
+import sys
 import time
 import unittest
 
-spec = importlib.util.spec_from_file_location('continuation_runtime', Path(__file__).resolve().parents[1] / 'lib' / 'continuation_runtime.py')
+LIB = Path(__file__).resolve().parents[1] / 'lib'
+# Match direct script execution: sibling helpers resolve from the bundled lib.
+sys.path.insert(0, str(LIB))
+spec = importlib.util.spec_from_file_location('continuation_runtime', LIB / 'continuation_runtime.py')
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
 

@@ -1433,6 +1433,51 @@ pub(super) fn verification_enabled(
     )
 }
 
+/// Reads reset journals once per project rather than once per rendered card.
+pub(super) fn story_resets(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<BTreeMap<StoryNo, String>, StoreError> {
+    let table = if crate::store::migrate::has_columns(
+        conn,
+        "story_reset_reservations",
+        &["project_id", "story_no", "reservation"],
+    )? {
+        "story_reset_reservations"
+    } else if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('story_resets') WHERE name='reservation')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        crate::store::migrate::has_columns(
+            conn,
+            "story_resets",
+            &["project_id", "story_no", "reservation"],
+        )?;
+        "story_resets"
+    } else {
+        return Ok(BTreeMap::new());
+    };
+    let mut statement = sql(
+        conn.prepare(&format!(
+            "SELECT story_no, reservation FROM {table} WHERE project_id = ?1"
+        )),
+        "preparing native reset read",
+    )?;
+    let rows = sql(
+        statement.query_map([project.get()], |row| {
+            Ok((
+                StoryNo::new(row.get::<_, i64>(0)?),
+                row.get::<_, String>(1)?,
+            ))
+        }),
+        "reading reset reservations",
+    )?;
+    Ok(collect(rows, "decoding reset reservations")?
+        .into_iter()
+        .collect())
+}
+
 /// Reads typed recovery evidence; corrupt receipts fail with project context.
 pub(super) fn verification_recovery(
     conn: &Connection,

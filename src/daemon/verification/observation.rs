@@ -25,6 +25,11 @@ fn current(store: &impl Store, candidate: &VerificationCandidate) -> Result<bool
             current.is_some_and(|c| {
                 c.verifying_generation == candidate.verifying_generation
                     && c.blocking_revision == candidate.blocking_revision
+                    && c.blocked_by.is_empty()
+                    && !c.landing_pending
+                    && c.pull_request == candidate.pull_request
+                    && c.checkout == candidate.checkout
+                    && c.project_slug == candidate.project_slug
             })
         })
         .map_err(|error| {

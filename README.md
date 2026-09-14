@@ -416,6 +416,7 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
+story reset <id> [--force]
 story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
 story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
 story engine adopt <id> [<id> ...] [--run <id>]
@@ -508,6 +509,16 @@ the same label on write, removal, filtering, and queue exclusion.
 Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
+
+### Native story reset
+
+`story reset <id>` stops the story's active work and returns it to `todo`.
+It preserves local branches and any request for human input. A locked worktree
+or uncommitted changes require `--force` to remove the worktree. A retry must
+supply `--force` again when that consent is required.
+
+The dashboard's reset action has a separate contract: it requires the exact
+story ID, deletes the owned worktree and branch, and clears awaiting input.
 
 ### Workspace cleanup
 

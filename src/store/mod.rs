@@ -70,6 +70,7 @@ pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
 pub mod ids;
+pub mod landing;
 pub mod migrate;
 pub mod rebuild;
 pub mod sqlite;
@@ -89,6 +90,7 @@ mod verification_recovery;
 pub use error::StoreError;
 pub use fault::{DELIVERY_BACKSTOP, FaultPoint};
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
+pub use landing::LandingIntent;
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
 #[cfg(feature = "test-seam")]
 pub use rebuild::folds;
@@ -263,6 +265,8 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Every unresolved external merge authorization across projects.
+    fn landing_intents(&self) -> Result<Vec<LandingIntent>, StoreError>;
     /// Durable context handoffs in creation order.
     fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
@@ -316,6 +320,12 @@ pub trait ReadOps {
 
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
+
+    /// Durable unfinished reset operations, keyed by story number.
+    fn story_resets(
+        &self,
+        project: ProjectId,
+    ) -> Result<std::collections::BTreeMap<StoryNo, String>, StoreError>;
 
     /// Every project's verifier incident, ordered by project — for the
     /// surfaces that report across projects (the progress publisher).
@@ -543,6 +553,11 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Inserts immutable external merge authority, refusing a second unresolved attempt.
+    fn insert_landing_intent(&mut self, intent: &LandingIntent) -> Result<(), StoreError>;
+
+    /// Resolves exactly the supplied intent; a stale identity cannot release a newer attempt.
+    fn remove_landing_intent(&mut self, intent: &LandingIntent) -> Result<bool, StoreError>;
     /// Inserts generation-bound context intent atomically with its story comment.
     fn insert_continuation(&mut self, record: &Continuation) -> Result<(), StoreError>;
     /// Writes the next revision only if the expected revision still owns the row.
@@ -621,6 +636,14 @@ pub trait WriteOps: ReadOps {
         &mut self,
         project: ProjectId,
         enabled: bool,
+    ) -> Result<(), StoreError>;
+
+    /// Stores or clears an unfinished reset within the caller's transaction.
+    fn put_legacy_story_reset(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        reservation: Option<&str>,
     ) -> Result<(), StoreError>;
 
     /// Registers a git origin as belonging to this project.

@@ -226,7 +226,7 @@ pub fn run_check<S: Store>(
                         events.push(StoryEvent::StoryCommentAdded {
                             at: now.clone(),
                             text: format!(
-                                "{VERIFICATION_UNCERTIFIED_MERGE_PREFIX} pull request {} was merged outside central verification while this story was verifying; its merge tree carries no receipt from this verifier. The story stays in `verifying`: the verifier's next attempt classifies the merged pull request, or complete it by hand with `story move {id} done \"<reason>\"`.",
+                                "{VERIFICATION_UNCERTIFIED_MERGE_PREFIX} pull request {} merged outside central verification. This story was verifying. Its merge tree carries no receipt from this verifier. The story stays in `verifying`. The verifier's next attempt classifies the merged pull request. To complete it by hand, run `story move {id} done \"<reason>\"`.",
                                 link.url
                             ),
                         });

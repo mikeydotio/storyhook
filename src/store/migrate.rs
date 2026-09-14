@@ -426,7 +426,25 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0043_story_resets.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 44,
+        name: "launch_compatibility",
+        sql: include_str!("schema/0044_launch_compatibility.sql"),
+        foreign_keys_off: false,
+    },
 ];
+
+mod lineage;
+
+/// Whether a historical schema provides a table with the required columns.
+/// Missing tables are unsupported capabilities; mismatched tables are corruption.
+pub(crate) fn has_columns(
+    conn: &Connection,
+    table: &str,
+    expected: &[&str],
+) -> Result<bool, StoreError> {
+    lineage::has_columns(conn, table, expected)
+}
 
 /// The newest schema version this binary understands.
 #[must_use]
@@ -485,6 +503,12 @@ pub fn run(
         });
     }
 
+    let canonical = migrations
+        .get(43)
+        .is_some_and(|m| m.name == "launch_compatibility");
+    if canonical {
+        lineage::inspect(conn)?;
+    }
     let pending: Vec<&Migration> = migrations
         .iter()
         .filter(|m| m.version > from_version)
@@ -500,15 +524,30 @@ pub fn run(
 
     // Nothing to lose backing up a database that has no schema yet. Every
     // other case gets a verified copy before a single statement runs.
-    let backup = if from_version == 0 {
+    // The divergent tail takes its backup while its write reservation prevents
+    // another released binary from changing lineage after the copy.
+    let deferred_backup = canonical && (37..44).contains(&from_version);
+    let mut backup = if from_version == 0 || deferred_backup {
         None
     } else {
         Some(back_up(conn, backup_dir, from_version)?)
     };
 
     let mut applied = Vec::with_capacity(pending.len());
+    let mut tail_applied = false;
     for migration in pending {
         fire(FaultPoint::MidMigration)?;
+        if canonical && (38..=44).contains(&migration.version) {
+            if !tail_applied {
+                let (tail, snapshot) = lineage::upgrade(conn, backup_dir, deferred_backup)?;
+                applied.extend(tail);
+                if let Some(snapshot) = snapshot {
+                    backup = Some(snapshot);
+                }
+                tail_applied = true;
+            }
+            continue;
+        }
         // A migration another process applied first is not this one's work to
         // report: `applied` is what *this* call changed, and a report claiming
         // otherwise would make a concurrent `story project init` look like it migrated

@@ -107,6 +107,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
     cancellation: Cancellation,
     output: crate::service::gate_output::OutputObserver,
@@ -257,6 +258,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                workspace: None,
                 active: active.clone(),
                 cancellation: cancellation.clone(),
                 output: crate::service::gate_output::OutputObserver::default(),
@@ -372,8 +374,10 @@ pub enum VerificationOutcome {
     },
     /// The operator cancelled the owned attempt; queued work remains recoverable.
     Cancelled,
-    /// The exact merge tree passed and the guarded merge landed.
-    Merged {
+    /// The exact head and merge tree passed; no merge has been requested.
+    Certified {
+        /// Exact submitted commit certified by the gate.
+        head: String,
         tree: String,
         detail: String,
         /// The gate command that certified the tree, as one line (SH-649) —
@@ -400,6 +404,18 @@ pub enum VerificationOutcome {
         /// Whether retrying unchanged can recover.
         disposition: VerificationFailureDisposition,
     },
+}
+
+/// External outcome of one durably admitted merge attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case")]
+pub enum LandingOutcome {
+    /// GitHub's merge commit contains exactly the certified tree.
+    Merged { detail: String },
+    /// The supervised process exited before sending any merge request.
+    NotAttempted { detail: String },
+    /// The request may still complete; authority must remain fenced.
+    Uncertain { detail: String },
 }
 
 /// Why a leased submission did not leave one open pull request (SH-647).
@@ -470,6 +486,7 @@ pub enum AgentPresence {
 /// its own — the SH-226 rule against typing into an unverified pane applies
 /// with more force to respawning over one. `pane-query-failed` is tmux not
 /// answering (SH-626: a probe that could not run has not answered no), and
+/// `pane-changed` is conflicting live identity, not proof of absence (SH-677).
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
 /// gate, so the agent is presumed live.
 pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 11] = [
@@ -480,7 +497,7 @@ pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 11] = [
     ("pane-unavailable", AgentPresence::Absent),
     ("pane-provider-unknown", AgentPresence::NotAbsent),
     ("pane-dead", AgentPresence::Absent),
-    ("pane-changed", AgentPresence::Absent),
+    ("pane-changed", AgentPresence::NotAbsent),
     ("delivery-failed", AgentPresence::NotAbsent),
     ("target-changed", AgentPresence::NotAbsent),
     ("interruption-failed", AgentPresence::NotAbsent),
@@ -531,12 +548,24 @@ pub trait VerificationActuator: Send + Sync {
         &self,
         candidate: &VerificationCandidate,
     ) -> Result<SubmittedPullRequest, SubmissionFailure>;
-    /// Verifies and, on green, lands one submitted PR.
+    /// Certifies one submitted PR without requesting a merge.
     fn verify(
         &self,
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
     ) -> VerificationOutcome;
+    /// Uses durable authority to request one exact merge.
+    fn land(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome;
+    /// Observes an uncertain attempt without sending another merge request.
+    fn recover_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome;
     /// Verifies with the current attempt's cancellation handle. Synchronous
     /// adapters may finish normally; subprocess adapters must honor the signal
     /// and settle owned children before returning.
@@ -684,6 +713,100 @@ impl ShellVerificationActuator {
         super::verifier_bundle::verify_script(&self.env)
     }
 
+    fn run_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+        recover: bool,
+    ) -> LandingOutcome {
+        let run = || -> Result<LandingOutcome, AppError> {
+            let link = candidate
+                .pull_request
+                .as_ref()
+                .map_err(|problem| AppError::Validation(problem.message()))?;
+            if let Some(problem) = checkout_repository_problem(&intent.checkout, link) {
+                return Err(AppError::Validation(problem));
+            }
+            let script = self.verifier_script()?;
+            let journal = journal_path(&self.env, candidate);
+            let marker = journal.with_file_name(format!("landing-{}.attempted", intent.id));
+            let mut command = Command::new("bash");
+            apply_verification_allowlist(&mut command);
+            command
+                .arg(script)
+                .arg("--landing")
+                .arg(if recover { "recover" } else { "attempt" })
+                .arg(&intent.pull_request)
+                .arg(&intent.certification.head)
+                .arg(&intent.certification.tree)
+                .arg(marker)
+                .current_dir(&intent.checkout)
+                .envs(self.env.child_vars())
+                .env(
+                    "STORYHOOK_VERIFIER_MIRROR",
+                    if self.env.verifier_mirror_enabled() {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                )
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GH_PROMPT_DISABLED", "1")
+                .stdin(Stdio::null());
+            let request_id = verification_request_id(candidate);
+            let captured = if recover {
+                self.run_control_command(
+                    command,
+                    "verifier",
+                    &request_id,
+                    candidate.project,
+                    "landing recovery",
+                )?
+            } else {
+                command.env("STORYHOOK_GATE_PROGRESS", &journal);
+                if let Some(workspace) = self.activity.workspace_for(candidate.project) {
+                    workspace.command(&mut command);
+                }
+                run_captured_with_progress_and_registration(
+                    command,
+                    self.verification_idle_timeout,
+                    TerminationPolicy::TerminateThenKill {
+                        grace: self.termination_grace,
+                    },
+                    &journal,
+                    &self.activity.cancellation_for(candidate.project),
+                    |pid| {
+                        self.owned_processes
+                            .register("verifier", pid, Some(&request_id))
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    AppError::Storage(format!(
+                        "landing process did not conclusively finish: {}; captured output: {}",
+                        error.error.detail(),
+                        String::from_utf8_lossy(&error.stdout)
+                    ))
+                })?
+            };
+            if !captured.status.success() {
+                return Err(AppError::Storage(format!(
+                    "landing process failed: {}",
+                    String::from_utf8_lossy(&captured.stderr)
+                )));
+            }
+            serde_json::from_slice(&captured.stdout).map_err(|error| {
+                AppError::Storage(format!(
+                    "invalid landing outcome: {error}; {}",
+                    String::from_utf8_lossy(&captured.stderr)
+                ))
+            })
+        };
+        run().unwrap_or_else(|error| LandingOutcome::Uncertain {
+            detail: error.to_string(),
+        })
+    }
+
     fn helper_path(&self) -> Result<PathBuf, AppError> {
         if let Some(path) = &self.helper_path {
             return Ok(path.clone());
@@ -701,12 +824,15 @@ impl ShellVerificationActuator {
 
     fn run_control_command(
         &self,
-        command: Command,
+        mut command: Command,
         role: &str,
         request_id: &str,
         project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
+        if let Some(workspace) = self.activity.workspace_for(project) {
+            workspace.command(&mut command);
+        }
         run_captured_cancellable(
             command,
             self.control_timeout,
@@ -758,6 +884,11 @@ impl ShellVerificationActuator {
             .stdin(Stdio::null());
         if let Some(extra) = extra {
             command.arg(extra);
+        }
+        if verb == "notify"
+            && let Some(lease) = &candidate.cleanup_lease
+        {
+            command.env("STORYHOOK_NOTIFY_LEASE_V1", serde_json::to_string(lease)?);
         }
         let output = self.run_control_command(
             command,
@@ -1002,6 +1133,20 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    fn land(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, false)
+    }
+    fn recover_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, true)
+    }
     fn verify(
         &self,
         candidate: &VerificationCandidate,
@@ -1128,7 +1273,11 @@ impl VerificationActuator for ShellVerificationActuator {
                 format!("project={} {}", candidate.project_slug, candidate.story_id),
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal)
-            .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt_id);
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt_id)
+            .env("STORYHOOK_CERTIFY_ONLY", "1");
+        if let Some(workspace) = self.activity.workspace_for(candidate.project) {
+            workspace.command(&mut command);
+        }
         let request_id = verification_request_id(candidate);
         let capture = run_captured_with_progress_and_registration(
             command,
@@ -1181,6 +1330,12 @@ impl VerificationActuator for ShellVerificationActuator {
             Err(CaptureError::Track(error)) => {
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!("could not track verify-pr.sh: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
+            Err(CaptureError::Unsettled(error)) => {
+                return VerificationOutcome::InfrastructureFailure {
+                    detail: format!("verify-pr.sh cleanup did not quiesce: {error}"),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
             }
@@ -1278,6 +1433,7 @@ impl VerificationActuator for ShellVerificationActuator {
             &options,
             &self.env,
             Some(&self.activity.cancellation_for(candidate.project)),
+            self.activity.workspace_for(candidate.project).as_deref(),
         )?;
         match outcome.state {
             DispatchOutcomeState::Ok => Ok(()),
@@ -1367,7 +1523,8 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
-    Merged {
+    Certified {
+        head: String,
         tree: String,
         detail: String,
         cleanup_failure: Option<VerificationCleanupFailure>,
@@ -1402,20 +1559,23 @@ impl WireOutcome {
     /// source, and the script only ever ran what it was handed.
     fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
         match self {
-            WireOutcome::Merged {
+            WireOutcome::Certified {
+                head,
                 tree,
                 detail,
                 cleanup_failure,
             } => match cleanup_failure {
                 Some(cleanup) => cleanup::outcome(
-                    CompletedVerification::Merged {
+                    CompletedVerification::Certified {
+                        head,
                         tree,
                         detail,
                         gate: gate.display(),
                     },
                     cleanup,
                 ),
-                None => VerificationOutcome::Merged {
+                None => VerificationOutcome::Certified {
+                    head,
                     tree,
                     detail,
                     gate: gate.display(),
@@ -1479,7 +1639,8 @@ pub enum TickResult {
     Idle,
     /// One story completed; the caller may immediately ask for the next.
     Completed,
-    /// One story returned to its agent; the caller may drain the next.
+    /// This attempt released its story through return, withdrawal, or a dependency hold.
+    /// The caller may immediately drain the next runnable story.
     Returned,
     /// The highest-priority candidate waits on external infrastructure.
     RetryLater,
@@ -1588,6 +1749,51 @@ where
 {
     let queue = VerificationQueue::new(store);
     let ordered = queue.ordered_for(project)?;
+    for intent in store.read(|tx| tx.landing_intents())? {
+        let Some(candidate) = ordered
+            .iter()
+            .find(|c| c.project == intent.project && c.story_id == intent.story_id)
+        else {
+            continue;
+        };
+        let lifecycle_entry = inflight.enter();
+        let started_at = env.now();
+        name_verification(&lifecycle_entry, candidate, &started_at);
+        let Some(active) = activity.try_acquire(store, candidate, started_at)? else {
+            return Ok(TickResult::Stopped);
+        };
+        let outcome = actuator.recover_landing(candidate, &intent);
+        super::activity::emit(
+            if matches!(outcome, LandingOutcome::Merged { .. }) {
+                "INFO"
+            } else {
+                "ERROR"
+            },
+            "verifier",
+            "event",
+            &format!("project={} {}", candidate.project_slug, candidate.story_id),
+            &format!("landing {} recovery: {outcome:?}", intent.id),
+        );
+        if let LandingOutcome::Merged { detail } = outcome {
+            let ctx = Ctx::new(
+                store,
+                candidate.project,
+                candidate.checkout.clone(),
+                env.clone(),
+            )
+            .no_hooks(true);
+            queue.complete_landing(&ctx, &intent, &detail)?;
+            drop(active);
+            drop(lifecycle_entry);
+            match actuator.reap(candidate) {
+                Ok(()) => record_cleanup_complete(&ctx, candidate)?,
+                Err(error) => record_cleanup_required(&ctx, candidate, &error)?,
+            }
+            return Ok(TickResult::Completed);
+        }
+        // Even an OPEN response cannot exclude an earlier request still in flight.
+    }
+    let ordered = queue.ordered_for(project)?;
     let incident = store.read(|tx| tx.verification_incident(project))?;
     let incident_candidate = incident.as_ref().and_then(|incident| {
         ordered
@@ -1614,7 +1820,19 @@ where
             return Ok(TickResult::Halted);
         }
     }
-    let Some(mut candidate) = incident_candidate.or_else(|| ordered.first().cloned()) else {
+    // Infrastructure recovery owns the project's queue and failure budget.
+    // A dependency hold cannot erase that incident or authorize another attempt.
+    if incident_candidate
+        .as_ref()
+        .is_some_and(|c| !c.blocked_by.is_empty() || c.landing_pending)
+    {
+        return Ok(TickResult::RetryLater);
+    }
+    let Some(mut candidate) = incident_candidate.or_else(|| {
+        ordered
+            .into_iter()
+            .find(|c| c.blocked_by.is_empty() && !c.landing_pending)
+    }) else {
         let Some(candidate) = queue.next_cleanup_for(project)? else {
             return Ok(TickResult::Idle);
         };
@@ -1663,6 +1881,13 @@ where
             AuthorityRefresh::Current => {}
             AuthorityRefresh::Replaced => continue,
             AuthorityRefresh::Released => return Ok(TickResult::Returned),
+        }
+        if !candidate.blocked_by.is_empty() {
+            // A dependency hold releases execution ownership while the submission stays visible.
+            return Ok(TickResult::Returned);
+        }
+        if candidate.landing_pending {
+            return Ok(TickResult::RetryLater);
         }
         let ctx = Ctx::new(
             store,
@@ -1762,17 +1987,12 @@ where
             )?;
             continue;
         };
-        if active.is_cancelled()
-            && !matches!(
-                outcome,
-                VerificationOutcome::Merged { .. } | VerificationOutcome::CleanupFailed { .. }
-            )
-        {
+        if active.is_cancelled() && !matches!(outcome, VerificationOutcome::CleanupFailed { .. }) {
             record_generation_interrupted(&queue, &ctx, env, &candidate, &active.active)?;
             return Ok(TickResult::Stopped);
         }
         super::activity::emit(
-            if matches!(outcome, VerificationOutcome::Merged { .. }) {
+            if matches!(outcome, VerificationOutcome::Certified { .. }) {
                 "INFO"
             } else {
                 "ERROR"
@@ -1789,6 +2009,13 @@ where
             AuthorityRefresh::Released => return Ok(TickResult::Returned),
         }
 
+        if queue.ordered_for(project)?.iter().any(|c| {
+            c.project == candidate.project
+                && c.story_id == candidate.story_id
+                && !c.blocked_by.is_empty()
+        }) {
+            return Ok(TickResult::Returned);
+        }
         match outcome {
             VerificationOutcome::CleanupFailed { verdict, cleanup } => {
                 match cleanup::record(
@@ -1807,30 +2034,54 @@ where
                 record_generation_interrupted(&queue, &ctx, env, &candidate, &active.active)?;
                 return Ok(TickResult::Stopped);
             }
-            VerificationOutcome::Merged { tree, detail, gate } => {
-                let green_comment = format!(
-                    "{VERIFICATION_GREEN_PREFIX} merge tree `{tree}` passed `{gate}` and pull request {} landed. {detail}",
-                    pull_request.url
-                );
-                if matches!(
-                    queue.record_generation_completed(
-                        &ctx,
-                        &candidate,
-                        Some(&pull_request.url),
-                        &green_comment,
-                        None,
-                    )?,
-                    GenerationWrite::Superseded
-                ) {
-                    match refresh_authority(
-                        &queue,
-                        &mut active,
-                        &lifecycle_entry,
-                        env,
-                        &mut candidate,
-                    )? {
-                        AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
-                        AuthorityRefresh::Released => return Ok(TickResult::Returned),
+            VerificationOutcome::Certified {
+                head,
+                tree,
+                detail,
+                gate,
+            } => {
+                use crate::service::landing::{LandingAdmission, VerifiedSubmission};
+                let intent = match queue.begin_landing(
+                    &ctx,
+                    &candidate,
+                    &VerifiedSubmission { head, tree, gate },
+                )? {
+                    LandingAdmission::Admitted(intent) => intent,
+                    LandingAdmission::Held(_) => return Ok(TickResult::Returned),
+                    LandingAdmission::Pending(_) => return Ok(TickResult::RetryLater),
+                    LandingAdmission::Superseded => continue,
+                };
+                match actuator.land(&candidate, &intent) {
+                    LandingOutcome::Merged {
+                        detail: landing_detail,
+                    } => {
+                        queue.complete_landing(
+                            &ctx,
+                            &intent,
+                            &format!("{detail} {landing_detail}"),
+                        )?;
+                    }
+                    LandingOutcome::NotAttempted { detail } => {
+                        queue.release_unattempted_landing(&intent)?;
+                        StoryService::new(&ctx).comment(
+                            &candidate.story_id,
+                            &format!(
+                                "CENTRAL LANDING RETRY\n\n{}",
+                                crate::text_lint::quote_evidence(&detail)
+                            ),
+                        )?;
+                        return Ok(TickResult::RetryLater);
+                    }
+                    LandingOutcome::Uncertain { detail } => {
+                        StoryService::new(&ctx).comment(
+                            &candidate.story_id,
+                            &format!(
+                                "CENTRAL LANDING PENDING — intent {} remains fenced.\n\n{}",
+                                intent.id,
+                                crate::text_lint::quote_evidence(&detail)
+                            ),
+                        )?;
+                        return Ok(TickResult::RetryLater);
                     }
                 }
                 // Reaping is cleanup for work whose durable outcome is already
@@ -1850,9 +2101,10 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; {}.\n\n{detail}",
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history. Run new and impacted tests. Commit the work. Move {} back to verifying. {}.\n\n{}",
                         candidate.story_id,
-                        push_promise(&candidate, false)
+                        push_promise(candidate.cleanup_lease.is_some(), false),
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                     &active.cancellation,
                 )?;
@@ -1896,9 +2148,10 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; {}.",
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — repair the submission from the story's worktree. Move {} back to verifying. {}.\n\n{}",
                         candidate.story_id,
-                        push_promise(&candidate, true)
+                        push_promise(candidate.cleanup_lease.is_some(), true),
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                     &active.cancellation,
                 )?;
@@ -1918,9 +2171,10 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; {}.\n\n{detail}",
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree. Run new and impacted tests. Commit the work. Move {} back to verifying. {}.\n\n{}",
                         candidate.story_id,
-                        push_promise(&candidate, false)
+                        push_promise(candidate.cleanup_lease.is_some(), false),
+                        crate::text_lint::quote_evidence(&detail)
                     ),
                     &active.cancellation,
                 )?;
@@ -1950,10 +2204,10 @@ where
 /// The diagnosis for a story that entered `verifying` with no lease (SH-647):
 /// the verifier has no branch to push, and the agent's own charter names the
 /// one thing that fixes it.
-const UNLEASED_SUBMISSION: &str = "verification could not submit this story: it entered \
-`verifying` from outside its dispatched worktree, so no cleanup lease names a branch to push \
-and no pull request is linked. From inside the story's worktree, commit the work and run \
-`story move <id> verifying` again; the verifier pushes the branch and opens the pull request.";
+const UNLEASED_SUBMISSION: &str = "Verification could not submit this story. It entered \
+`verifying` from outside its dispatched worktree. No cleanup lease names a branch to push. \
+No pull request is linked. From inside the story's worktree, commit the work. Run \
+`story move <id> verifying` again. The verifier pushes the branch and opens the pull request.";
 
 /// The trailing clause of a post-verify repair return (SH-653), naming what
 /// actually happens to a "commit, then move back to verifying" fix.
@@ -1971,19 +2225,19 @@ and no pull request is linked. From inside the story's worktree, commit the work
 /// tick cannot keep, and a livelock once the published head does not merge.
 /// Naming that honestly here does not change whether verification runs, only
 /// what an unleased candidate is told about the return it just received.
-fn push_promise(candidate: &VerificationCandidate, and_links_pull_request: bool) -> &'static str {
-    match (candidate.cleanup_lease.is_some(), and_links_pull_request) {
+fn push_promise(has_cleanup_lease: bool, and_links_pull_request: bool) -> &'static str {
+    match (has_cleanup_lease, and_links_pull_request) {
         (true, false) => "the verifier pushes",
         (true, true) => "the verifier pushes and links the pull request",
         (false, false) => {
-            "this generation has no cleanup lease, so nothing will push it — \
-commit from inside the story's dispatched worktree and move it to verifying again there so \
+            "this generation has no cleanup lease, so nothing will push it. \
+Commit from inside the story's dispatched worktree. Move it to verifying again there so \
 the verifier can push"
         }
         (false, true) => {
-            "this generation has no cleanup lease, so nothing will push or link \
-it — commit from inside the story's dispatched worktree and move it to verifying again there \
-so the verifier can push and link the pull request"
+            "this generation has no cleanup lease, so nothing will push or link it. \
+Commit from inside the story's dispatched worktree. Move it to verifying again there. \
+The verifier can then push and link the pull request"
         }
     }
 }
@@ -2040,9 +2294,9 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
             {
                 {
                     let diagnosis = format!(
-                        "verification found pull request {} open for this story's branch, but the \
-                         story links {} instead; unlink one (`story unlink-pr`) or close it, then \
-                         run `story move {} verifying` again",
+                        "Verification found pull request {} open for this story's branch. The \
+                         story links {} instead. Unlink one (`story unlink-pr`) or close it. Then \
+                         run `story move {} verifying` again.",
                         pull_request.url, linked.url, candidate.story_id
                     );
                     return Ok(return_for_repair(
@@ -2144,6 +2398,9 @@ fn candidate_authority(
     match current {
         Some(current)
             if current.verifying_generation == candidate.verifying_generation
+                && current.pull_request == candidate.pull_request
+                && current.checkout == candidate.checkout
+                && current.project_slug == candidate.project_slug
                 && current.blocking_revision == candidate.blocking_revision =>
         {
             Ok(CandidateAuthority::Current(Box::new(current)))
@@ -2278,7 +2535,8 @@ fn record_cleanup_required(
         ctx,
         candidate,
         &format!(
-            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done, but automatic reap failed: {error}"
+            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done. Automatic reap failed.\n\n{}",
+            crate::text_lint::quote_evidence(&error.to_string())
         ),
     )
 }
@@ -2332,8 +2590,9 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
         ctx,
         candidate,
         &format!(
-            "{VERIFICATION_RESUME_PREFIX} {absent}. Re-dispatching {} into its own window and worktree with the resume clause.",
-            candidate.story_id
+            "{VERIFICATION_RESUME_PREFIX} re-dispatching {} into its own window and worktree with the resume clause.\n\n{}",
+            candidate.story_id,
+            crate::text_lint::quote_evidence(&absent)
         ),
     )?;
     let plan = resume_plan(ctx.store(), candidate)?;
@@ -2375,14 +2634,16 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
             ctx,
             candidate,
             &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards: {detail} ({reason}). It stands as the comment above this one."
+                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
+                crate::text_lint::quote_evidence(&format!("{detail} ({reason})"))
             ),
         )?,
         Err(error) => comment_once(
             ctx,
             candidate,
             &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards: {error}. It stands as the comment above this one."
+                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
+                crate::text_lint::quote_evidence(&error.to_string())
             ),
         )?,
     }
@@ -2546,11 +2807,7 @@ fn record_generation_withdrawn<S: Store>(
         .verifying_generation
         .map(|generation| generation.get().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let body = format!(
-        "{VERIFICATION_WITHDRAWN_PREFIX} the verification attempt for pull request {} (generation {generation}) was cancelled{}{position} because {reason}. The gate judged nothing: this is neither a red nor a green verdict, and no receipt was written for its merge tree. The verifier moved on to the next queued story.",
-        pull_request.url,
-        if position.is_empty() { "" } else { " " },
-    );
+    let body = withdrawal_comment(&pull_request.url, &generation, &reason, &position);
     let wrote = queue.record_generation_withdrawn(ctx, candidate, &body)?;
     super::activity::emit(
         "INFO",
@@ -2578,10 +2835,7 @@ fn record_generation_interrupted<S: Store>(
 ) -> Result<(), AppError> {
     let now = ctx.now();
     let position = attempt_position(env, candidate, active, &now);
-    let body = format!(
-        "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED{}{position}\nThe verifier was stopped (operator stop or daemon shutdown) while this attempt ran. The gate judged nothing; the attempt restarts from the beginning when the verifier resumes.\n",
-        if position.is_empty() { "" } else { " " },
-    );
+    let body = interruption_comment(&now, &position);
     let incident = ctx
         .store()
         .read(|tx| tx.verification_incident(candidate.project))?;
@@ -2593,6 +2847,21 @@ fn record_generation_interrupted<S: Store>(
         incident.as_ref(),
     )?;
     Ok(())
+}
+
+fn withdrawal_comment(url: &str, generation: &str, reason: &str, position: &str) -> String {
+    format!(
+        "{VERIFICATION_WITHDRAWN_PREFIX} pull request {url} (generation {generation}) was cancelled.\n\nThe gate judged nothing. No receipt was written for its merge tree. The verifier moved on to the next queued story.\n\nReason:\n{}\n\nAttempt position:\n{}",
+        crate::text_lint::quote_evidence(reason),
+        crate::text_lint::quote_evidence(position),
+    )
+}
+
+fn interruption_comment(now: &str, position: &str) -> String {
+    format!(
+        "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED\nThe verifier was stopped while this attempt ran. The gate judged nothing. The attempt restarts from the beginning when the verifier resumes.\n\nAttempt position:\n{}",
+        crate::text_lint::quote_evidence(position),
+    )
 }
 
 fn comment_once(
@@ -2884,6 +3153,58 @@ fn poll_project_verification(
                     && !stop.load(Ordering::Relaxed)
                 {}
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+
+    #[test]
+    fn every_lease_and_link_remediation_instruction_passes_authoring_policy() {
+        for leased in [false, true] {
+            for link in [false, true] {
+                let text = format!(
+                    "Move SH-1 back to verifying. {}.",
+                    push_promise(leased, link)
+                );
+                crate::text_lint::validate_events(
+                    "SH-1",
+                    &[crate::domain::StoryEvent::StoryCommentAdded {
+                        at: "now".into(),
+                        text: text.clone(),
+                    }],
+                )
+                .unwrap();
+                assert_eq!(text.contains("no cleanup lease"), !leased);
+                assert_eq!(text.contains("the verifier pushes"), leased);
+            }
+        }
+    }
+
+    #[test]
+    fn withdrawal_and_interruption_preserve_external_evidence_under_authoring_policy() {
+        let evidence = "Don't utilize this diagnostic as authored prose.\n```external\nIt's a deliberately long stage name with more than twenty words that must remain evidence while the actual authored explanation passes its policy.\n```";
+        for body in [
+            withdrawal_comment(
+                "https://github.com/acme/widgets/pull/1",
+                "123",
+                evidence,
+                evidence,
+            ),
+            interruption_comment("2026-09-14T00:00:00Z", evidence),
+        ] {
+            crate::text_lint::validate_events(
+                "SH-1",
+                &[crate::domain::StoryEvent::StoryCommentAdded {
+                    at: "now".into(),
+                    text: body.clone(),
+                }],
+            )
+            .unwrap();
+            assert!(body.contains(&crate::text_lint::quote_evidence(evidence)));
+            assert!(body.contains("judged nothing"));
         }
     }
 }

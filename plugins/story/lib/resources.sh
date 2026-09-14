@@ -1,6 +1,7 @@
 # Existing-resource observations come from the native reader. Provider launch
 # configuration must never choose what a lifecycle command inspects or removes.
 RESOURCE_SOCKET=""
+RESOURCE_LOCATION_ONLY=false
 RESOURCE_CALLER_TMUX="${TMUX:-}"
 RESOURCE_CALLER_SOCKET="$RESOURCE_CALLER_TMUX"
 RESOURCE_CALLER_SOCKET="${RESOURCE_CALLER_SOCKET%%,*}"
@@ -17,7 +18,7 @@ tmux() {
 }
 
 load_story_resources() {
-  local id="$1" lease="${2:-}" result state legacy_socket
+  local id="$1" lease="${2:-}" location_only="${3:-false}" result state legacy_socket
   if legacy_socket=$(command tmux display-message -p '#{socket_path}' 2>/dev/null); then
     case "$legacy_socket" in /*) ;; *) legacy_socket="" ;; esac
   else
@@ -27,6 +28,7 @@ load_story_resources() {
     case "$RESOURCE_CALLER_SOCKET" in /*) ;; *) RESOURCE_CALLER_SOCKET="$legacy_socket" ;; esac
   fi
   local -a args=(resources "$id" --json)
+  [ "$location_only" != true ] || args+=(--location-only)
   [ -z "$legacy_socket" ] || args+=(--tmux-socket "$legacy_socket")
   [ -z "$lease" ] || args+=(--lease-json "$lease")
   [ -z "${WINDOW_NAME_TPL:-}" ] || args+=(--window-name "$(resolve_wname "$id")")
@@ -55,6 +57,7 @@ load_story_resources() {
   RESOURCE_PANE=$(printf '%s' "$result" | jq -r '.resources.pane.pane_id // empty')
   RESOURCE_REPORT=$(printf '%s' "$result" | jq -c '.resources')
   RESOURCE_LEASE="$lease"
+  RESOURCE_LOCATION_ONLY="$location_only"
   if [ -n "$RESOURCE_SOCKET" ]; then
     export TMUX="$RESOURCE_SOCKET,0,0"
   elif [ -n "$RESOURCE_CALLER_TMUX" ]; then
@@ -86,9 +89,12 @@ resource_is_self() {
 revalidate_story_resources() {
   local identity before after pane_before pane_after
   identity='{repository,worktree,branch,socket_path,pane}'
+  if [ "$RESOURCE_LOCATION_ONLY" = true ]; then
+    identity='{location_only,repository,worktree,branch,socket_path,window_name}'
+  fi
   before=$(printf '%s' "$RESOURCE_REPORT" | jq -c "$identity")
   pane_before=$(resource_find_pane) || refuse "resource-query-failed" "cannot recheck story window before mutation"
-  load_story_resources "$RESOURCE_ID" "$RESOURCE_LEASE"
+  load_story_resources "$RESOURCE_ID" "$RESOURCE_LEASE" "$RESOURCE_LOCATION_ONLY"
   after=$(printf '%s' "$RESOURCE_REPORT" | jq -c "$identity")
   pane_after=$(resource_find_pane) || refuse "resource-query-failed" "cannot recheck story window before mutation"
   [ "$before" = "$after" ] && [ "$pane_before" = "$pane_after" ] \

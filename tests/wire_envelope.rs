@@ -104,6 +104,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
 
 fn view(story: StorySnapshot) -> StoryView {
     StoryView {
+        reset: None,
         story,
         derived_relationships: Vec::new(),
         referenced_by: ReferencedBy::default(),
@@ -121,6 +122,7 @@ fn view(story: StorySnapshot) -> StoryView {
 /// would show up.
 fn maximal_view() -> StoryView {
     StoryView {
+        reset: None,
         story: StorySnapshot {
             assignee: Some("ada-lovelace".to_string()),
             awaiting: Some("SH-9 to land".to_string()),
@@ -434,6 +436,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "resources",
             Response::Resources(Box::new(storyhook::service::resources::ResourceReport {
+                location_only: false,
                 project: "fixture".into(),
                 story_id: "SH-7".into(),
                 status: "absent".into(),
@@ -1096,6 +1099,7 @@ fn error_corpus() -> Vec<AppError> {
     vec![
         AppError::Usage("unknown flag `--typo`".to_string()),
         AppError::Validation("invalid priority `urgent`".to_string()),
+        text_lint_error(),
         AppError::NotFound("story `SH-99` not found".to_string()),
         AppError::LockTimeout("another process holds the project lock".to_string()),
         AppError::DeadlineExceeded(
@@ -1144,6 +1148,21 @@ fn error_corpus() -> Vec<AppError> {
     ]
 }
 
+fn text_lint_error() -> AppError {
+    let fixture = storyhook_test_support::ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = storyhook::service::StoryService::new(&ctx);
+    let story = service
+        .create(&storyhook::service::NewStoryInput {
+            title: "Test text checks".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    service
+        .comment(&story.id, "Do not utilize it.")
+        .unwrap_err()
+}
+
 /// An exhaustive `match`, so a further `AppError` variant stops this file
 /// compiling until it has a wire form and a corpus row. The same guard
 /// `tests/error_contract.rs` uses for the exit-code table.
@@ -1151,6 +1170,7 @@ fn variant_name(error: &AppError) -> &'static str {
     match error {
         AppError::Usage(_) => "Usage",
         AppError::Validation(_) => "Validation",
+        AppError::TextLint(_) => "TextLint",
         AppError::NotFound(_) => "NotFound",
         AppError::LockTimeout(_) => "LockTimeout",
         AppError::DeadlineExceeded(_) => "DeadlineExceeded",
@@ -1172,7 +1192,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        11,
+        12,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -1262,6 +1282,7 @@ fn error_variants_travel_under_a_kind_tag() {
         vec![
             "usage",
             "validation",
+            "text_lint",
             "not_found",
             "lock_timeout",
             "deadline_exceeded",
@@ -1899,6 +1920,20 @@ fn invocation_corpus() -> Vec<Invocation> {
         // All three `UnclaimComment` states cross the wire, and `Default`
         // most of all: unlike a claim's, it is *meant* to arrive unresolved
         // and be composed by the store (SH-483).
+        Invocation::SupersedeBlockDeliveries { id: "SH-42".into() },
+        Invocation::Reset {
+            id: "SH-42".into(),
+            force: false,
+            caller: Default::default(),
+        },
+        Invocation::Reset {
+            id: "SH-42".into(),
+            force: true,
+            caller: storyhook::service::reset::ResetCaller {
+                pane: Some("%4".into()),
+                socket: Some("/tmp/reset-socket".into()),
+            },
+        },
         Invocation::Unclaim {
             id: "SH-1".to_string(),
             comment: UnclaimComment::Default,
@@ -2021,6 +2056,8 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "Next",
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
+        Invocation::Reset { .. } => "Reset",
+        Invocation::SupersedeBlockDeliveries { .. } => "SupersedeBlockDeliveries",
         Invocation::Engine { .. } => "Engine",
         Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
@@ -2095,7 +2132,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        73,
+        75,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -145,6 +145,8 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
 /// while the story sits in `verifying` — is recorded as a fact and never
 /// completes the story. Nothing certified the merge tree; completing it is
 /// either the verifier's own verdict or an operator's recorded override.
+/// The generated notice must pass the ordinary authoring policy (SH-718).
+/// Its old compound sentences rejected the merge event in the same transaction.
 #[test]
 fn check_records_an_uncertified_merge_on_a_verifying_story_without_closing_it() {
     let fixture = ServiceFixture::new();
@@ -165,6 +167,8 @@ fn check_records_an_uncertified_merge_on_a_verifying_story_without_closing_it() 
         message.contains("left verifying"),
         "the check names what it did not do: {message}"
     );
+    run_check(&ctx, &fake, Some(id.as_str()))
+        .expect("a second poll does not repeat the merge notice");
 
     let project = fixture.project();
     let story_no = storyhook::store::StoryNo::parse_id("SH", &id).unwrap();
