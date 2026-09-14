@@ -12,6 +12,7 @@ pub(crate) fn refuse_reserved(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<(), AppError> {
+    super::super::story_reset::refuse_reserved(tx, project, story)?;
     if let Some(reset) = tx.engine_reset(project, story)? {
         return Err(AppError::Validation(format!(
             "story `{}` reset in progress: run `{}` lane {} owns operation {}; retry Stop Now to finish cleanup",
@@ -220,6 +221,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             let prefix = project_prefix(tx, project)?;
             let id = lane.story_id.as_deref().expect("occupied lane");
             let (number, row) = resolve_story(tx, project, &prefix, id)?;
+            super::super::story_reset::refuse_reserved(tx, project, number)?;
             if let Some(reset) = tx.engine_reset(project, number)? {
                 if reset.run_id != lane.run_id
                     || reset.lane_index != lane.lane_index

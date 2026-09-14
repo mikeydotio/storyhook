@@ -34,6 +34,7 @@ mod block_delivery;
 mod continuation;
 mod engine_reset;
 pub(crate) mod read;
+mod story_reset;
 pub(crate) mod write;
 
 use std::collections::BTreeMap;
@@ -56,7 +57,7 @@ use crate::store::types::{
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
-use crate::store::{EngineReset, ReadOps, Store, WriteOps, WriteWithSnapshot};
+use crate::store::{EngineReset, ReadOps, Store, StoryReset, WriteOps, WriteWithSnapshot};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -878,6 +879,14 @@ macro_rules! impl_read_ops {
                 read::verification_incidents(&self.conn)
             }
 
+            fn story_reset(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<StoryReset>, StoreError> {
+                story_reset::read(&self.conn, project, story)
+            }
+
             fn engine_reset(
                 &self,
                 project: ProjectId,
@@ -1095,6 +1104,10 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::update_engine_run(&self.conn, run)
     }
 
+    fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError> {
+        story_reset::put(&self.conn, reset)
+    }
+
     fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
         engine_reset::put(&self.conn, reset)
     }
@@ -1104,6 +1117,24 @@ impl WriteOps for SqliteWriteTx<'_> {
     }
 
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
+        if let Some(run) = self.engine_run(&lane.run_id)?
+            && let Some(project) = self.project_by_slug(&run.project_slug)?
+            && let Some(current) = self
+                .engine_lanes(&lane.run_id)?
+                .into_iter()
+                .find(|current| current.lane_index == lane.lane_index)
+            && let Some(id) = &current.story_id
+            && let Ok(no) = StoryNo::parse_id(&project.prefix, id)
+            && self
+                .story_reset(project.id, no)?
+                .is_some_and(|reset| !reset.completed)
+            && !(current.state == crate::store::EngineLaneState::Dispatching
+                && lane.story_id == current.story_id)
+        {
+            return Err(StoreError::Invariant(format!(
+                "reset owns engine lane for {id}"
+            )));
+        }
         write::put_engine_lane(&self.conn, lane)
     }
 
@@ -1192,6 +1223,8 @@ impl WriteOps for SqliteWriteTx<'_> {
         project: ProjectId,
         story: StoryNo,
     ) -> Result<PurgedStory, StoreError> {
+        crate::service::story_reset::refuse_reserved(self, project, story)?;
+
         write::purge_story(&self.conn, project, story)
     }
 
