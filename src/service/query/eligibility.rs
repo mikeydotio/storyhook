@@ -17,6 +17,8 @@ pub enum EligibilityReason {
     Closed,
     /// The story is not in the configured active state.
     Inactive,
+    /// An unfinished reset owns the story and its worker.
+    Resetting,
     /// An explicit awaiting reason requires resolution.
     Awaiting,
     /// The domain readiness predicate reports an unmet blocker.
@@ -50,6 +52,8 @@ impl<R: ReadOps> QueryService<'_, R> {
         })?;
         let reason = if story.superstate != SuperState::Open {
             EligibilityReason::Closed
+        } else if self.reset_ids()?.contains(id) {
+            EligibilityReason::Resetting
         } else if story.state != active.slug {
             EligibilityReason::Inactive
         } else if story.awaiting.is_some() {

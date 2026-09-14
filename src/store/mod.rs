@@ -64,7 +64,7 @@ pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub mod conformance;
 mod story_reset;
-pub use story_reset::{ResetLane, StoryReset};
+pub use story_reset::{ResetLane, ResetPathIdentity, StoryReset};
 mod engine_reset;
 pub use engine_reset::EngineReset;
 pub mod error;

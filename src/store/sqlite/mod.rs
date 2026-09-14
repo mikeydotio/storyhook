@@ -1129,10 +1129,28 @@ impl WriteOps for SqliteWriteTx<'_> {
                 .story_reset(project.id, no)?
                 .is_some_and(|reset| !reset.completed)
             && !(current.state == crate::store::EngineLaneState::Dispatching
-                && lane.story_id == current.story_id)
+                && (lane.story_id == current.story_id
+                    || lane.state == crate::store::EngineLaneState::Idle))
         {
             return Err(StoreError::Invariant(format!(
                 "reset owns engine lane for {id}"
+            )));
+        }
+        if let Some(id) = &lane.story_id
+            && let Some(run) = self.engine_run(&lane.run_id)?
+            && let Some(project) = self.project_by_slug(&run.project_slug)?
+            && let Ok(no) = StoryNo::parse_id(&project.prefix, id)
+            && self
+                .story_reset(project.id, no)?
+                .is_some_and(|reset| !reset.completed)
+            && !self.engine_lanes(&lane.run_id)?.iter().any(|current| {
+                current.lane_index == lane.lane_index
+                    && current.state == crate::store::EngineLaneState::Dispatching
+                    && current.story_id == lane.story_id
+            })
+        {
+            return Err(StoreError::Invariant(format!(
+                "reset prevents engine adoption of {id}"
             )));
         }
         write::put_engine_lane(&self.conn, lane)
@@ -1195,6 +1213,9 @@ impl WriteOps for SqliteWriteTx<'_> {
         project: ProjectId,
         path: Option<&Path>,
     ) -> Result<(), StoreError> {
+        if self.checkout_path(project)?.as_deref() != path {
+            story_reset::refuse_project(&self.conn, project)?;
+        }
         write::set_checkout_path(&self.conn, project, path)
     }
 
@@ -1211,10 +1232,17 @@ impl WriteOps for SqliteWriteTx<'_> {
     }
 
     fn set_prefix(&mut self, project: ProjectId, new_prefix: &str) -> Result<(), StoreError> {
+        if self
+            .project(project)?
+            .is_some_and(|current| current.prefix != new_prefix)
+        {
+            story_reset::refuse_project(&self.conn, project)?;
+        }
         write::set_prefix(&self.conn, project, new_prefix)
     }
 
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
+        story_reset::refuse_project(&self.conn, project)?;
         write::delete_project(&self.conn, project)
     }
 

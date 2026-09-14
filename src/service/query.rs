@@ -270,6 +270,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// counts of hidden stories that carry that label, not every hidden
     /// story in the project. A hard-deleted story has no row to filter.
     pub fn list(&self, filters: &ListFilters) -> Result<ListOutcome, AppError> {
+        let reserved = self.reset_ids()?;
         let mut views = self.story_views(false)?;
         let stories = view_map(&views);
 
@@ -307,12 +308,16 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         }
         if filters.blocked {
             views.retain(|view| {
-                view.story.superstate == SuperState::Open && !is_ready(&view.story, &stories)
+                view.story.superstate == SuperState::Open
+                    && (reserved.contains(&view.story.id) || !is_ready(&view.story, &stories))
             });
         }
         if filters.ready {
             let active = self.active_state()?;
-            views.retain(|view| is_claimable(&view.story, &stories, active.as_ref()));
+            views.retain(|view| {
+                !reserved.contains(&view.story.id)
+                    && is_claimable(&view.story, &stories, active.as_ref())
+            });
         }
         if filters.drafts {
             views.retain(|view| view.story.draft);
@@ -454,18 +459,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let excluded_labels = filters
             .exclude_label
             .map_or_else(Vec::new, label_csv_values);
-        let reserved: std::collections::BTreeSet<String> = self
-            .tx
-            .stories(self.project, &StoryQuery::all())?
-            .into_iter()
-            .filter_map(
-                |row| match self.tx.story_reset(self.project, row.story_no) {
-                    Ok(Some(reset)) if !reset.completed => Some(Ok(row.snapshot.id)),
-                    Ok(_) => None,
-                    Err(error) => Some(Err(error)),
-                },
-            )
-            .collect::<Result<_, _>>()?;
+        let reserved = self.reset_ids()?;
         let views: Vec<_> = views
             .into_iter()
             .filter(|view| !reserved.contains(&view.story.id))
@@ -485,6 +479,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
     /// `story summary` — the project's rollup plus its top five ready stories.
     pub fn summary(&self) -> Result<SummaryView, AppError> {
+        let reserved = self.reset_ids()?;
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let mut summary = rollup(&views, &stories);
@@ -492,7 +487,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let active = self.active_state()?;
         let mut ready: Vec<StoryView> = views
             .into_iter()
-            .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
+            .filter(|view| {
+                !reserved.contains(&view.story.id)
+                    && is_claimable(&view.story, &stories, active.as_ref())
+            })
             .collect();
         sort_ready(&mut ready, &stories);
         summary.ready_count = ready.len();
@@ -504,6 +502,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// The whole project in the shape `story report` and the web dashboard
     /// both consume: the rollup, every view, and the ready/blocked id sets.
     pub fn report_data(&self) -> Result<ReportData, AppError> {
+        let reserved = self.reset_ids()?;
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let mut summary = rollup(&views, &stories);
@@ -513,9 +512,11 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let mut blocked_ids = Vec::new();
         for view in &views {
             if view.story.superstate == SuperState::Open {
-                if is_claimable(&view.story, &stories, active.as_ref()) {
+                if !reserved.contains(&view.story.id)
+                    && is_claimable(&view.story, &stories, active.as_ref())
+                {
                     ready_ids.push(view.story.id.clone());
-                } else if !is_ready(&view.story, &stories) {
+                } else if reserved.contains(&view.story.id) || !is_ready(&view.story, &stories) {
                     blocked_ids.push(view.story.id.clone());
                 }
                 // Neither: an open, unblocked story someone has already
@@ -530,7 +531,12 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // agree.)
         summary.ready_count = ready_ids.len();
 
-        let next_ids = execution_queue(&views, &stories, active.as_ref(), None, None, &[])
+        let available: Vec<_> = views
+            .iter()
+            .filter(|view| !reserved.contains(&view.story.id))
+            .cloned()
+            .collect();
+        let next_ids = execution_queue(&available, &stories, active.as_ref(), None, None, &[])
             .into_iter()
             .map(|view| view.story.id)
             .collect();
@@ -663,6 +669,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// which prints it as-is regardless of the global `--json`/`--quiet`
     /// flags, the same fix the export wave made for `story export` (SH-66).
     pub fn context(&self, json: bool) -> Result<String, AppError> {
+        let reserved = self.reset_ids()?;
         let views = self.story_views(false)?;
         let stories = view_map(&views);
 
@@ -682,14 +689,18 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let mut blocked: Vec<&StoryView> = views
             .iter()
             .filter(|view| {
-                view.story.superstate == SuperState::Open && !is_ready(&view.story, &stories)
+                view.story.superstate == SuperState::Open
+                    && (reserved.contains(&view.story.id) || !is_ready(&view.story, &stories))
             })
             .collect();
         blocked.sort_by_key(|view| domain::story_number(&view.story.id));
         let active = self.active_state()?;
         let mut ready: Vec<&StoryView> = views
             .iter()
-            .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
+            .filter(|view| {
+                !reserved.contains(&view.story.id)
+                    && is_claimable(&view.story, &stories, active.as_ref())
+            })
             .collect();
         ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &stories));
         let ready_count = ready.len();
@@ -861,6 +872,22 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             body.push_str("No changes in the specified period.\n");
         }
         Ok(body)
+    }
+
+    /// Operational ownership excludes a story without rewriting its metadata.
+    fn reset_ids(&self) -> Result<BTreeSet<String>, AppError> {
+        self.tx
+            .stories(self.project, &StoryQuery::all())?
+            .into_iter()
+            .filter_map(
+                |row| match self.tx.story_reset(self.project, row.story_no) {
+                    Ok(Some(reset)) if !reset.completed => Some(Ok(row.snapshot.id)),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                },
+            )
+            .collect::<Result<_, _>>()
+            .map_err(AppError::from)
     }
 
     // --- internals ---------------------------------------------------------

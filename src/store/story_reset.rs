@@ -20,6 +20,9 @@ pub struct StoryReset {
     pub lanes: Vec<ResetLane>,
     /// Pinned resource identity after outstanding dispatch has settled.
     pub resources: Option<ResourceReport>,
+    /// Filesystem objects pinned with the resource report.
+    #[serde(default)]
+    pub paths: Vec<ResetPathIdentity>,
     /// Whether absence has been proved and finalization committed.
     pub completed: bool,
     /// Latest failed attempt, retained until an explicit retry.
@@ -33,4 +36,17 @@ pub struct ResetLane {
     pub run_id: String,
     /// Lane index within the run.
     pub lane_index: u32,
+}
+
+/// A filesystem object that must retain its identity throughout cleanup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetPathIdentity {
+    /// Canonical resource path.
+    pub path: std::path::PathBuf,
+    /// Filesystem device at reservation.
+    pub device: u64,
+    /// Inode at reservation.
+    pub inode: u64,
+    /// Cleanup is allowed to remove this object.
+    pub removable: bool,
 }

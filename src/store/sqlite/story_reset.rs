@@ -7,6 +7,10 @@ pub(super) fn read(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<Option<StoryReset>, StoreError> {
+    // Historical migration fixtures legitimately predate standalone reservations.
+    if crate::store::migrate::schema_version(conn)? < 43 {
+        return Ok(None);
+    }
     let json: Option<String> = conn
         .query_row(
             "SELECT record_json FROM story_resets WHERE project_id=?1 AND story_no=?2",
@@ -25,17 +29,16 @@ pub(super) fn read(
 pub(super) fn put(conn: &Connection, reset: &StoryReset) -> Result<(), StoreError> {
     if let Some(current) = read(conn, reset.project, reset.story)?
         && !current.completed
-    {
-        if current.token != reset.token
+        && (current.token != reset.token
             || current.story_id != reset.story_id
             || current.original_state != reset.original_state
             || current.lanes != reset.lanes
+            || (current.resources.is_some() && current.paths != reset.paths)
             || (current.resources.is_some()
                 && serde_json::to_value(&current.resources).ok()
-                    != serde_json::to_value(&reset.resources).ok())
-        {
-            return Err(StoreError::Invariant("story reset identity changed".into()));
-        }
+                    != serde_json::to_value(&reset.resources).ok()))
+    {
+        return Err(StoreError::Invariant("story reset identity changed".into()));
     }
     let json = serde_json::to_string(reset)
         .map_err(|e| StoreError::Invariant(format!("encoding story reset: {e}")))?;
@@ -47,4 +50,21 @@ pub(super) fn put(conn: &Connection, reset: &StoryReset) -> Result<(), StoreErro
             "story reset ownership changed".into(),
         ))
     }
+}
+
+/// Prevents project identity transfer while reset owns any of its resources.
+pub(super) fn refuse_project(conn: &Connection, project: ProjectId) -> Result<(), StoreError> {
+    if crate::store::migrate::schema_version(conn)? < 43 {
+        return Ok(());
+    }
+    let story: Option<String> = conn.query_row(
+        "SELECT json_extract(record_json, '$.story_id') FROM story_resets WHERE project_id=?1 AND json_extract(record_json, '$.completed')=0 LIMIT 1",
+        [project.get()], |row| row.get(0)
+    ).optional().map_err(|e| StoreError::from_sqlite(e, "checking project reset ownership"))?;
+    if let Some(story) = story {
+        return Err(StoreError::Invariant(format!(
+            "reset owns project resources for {story}; finish Reset first"
+        )));
+    }
+    Ok(())
 }

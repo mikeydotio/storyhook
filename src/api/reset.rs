@@ -82,10 +82,20 @@ impl ResetController {
         let ctx = self.context(project)?;
         let mut running = self.running.lock().expect("reset registry");
         if running.len() >= super::dispatch::MAX_RUNNING {
-            return Ok(text_reply(
-                429,
-                "Too many resets are running; retry when one finishes",
-            ));
+            let duplicate = self.store.read(|tx| {
+                let prefix = crate::service::project_prefix(tx, ctx.project())?;
+                let no = crate::store::StoryNo::parse_id(&prefix, id)
+                    .map_err(|_| crate::store::StoreError::NotFound(format!("story {id}")))?;
+                Ok(tx
+                    .story_reset(ctx.project(), no)?
+                    .is_some_and(|reset| !reset.completed && running.contains(&reset.token)))
+            })?;
+            if !duplicate {
+                return Ok(text_reply(
+                    429,
+                    "Too many resets are running; retry when one finishes",
+                ));
+            }
         }
         let reset = StoryResetService::new(&ctx).reserve(id, &request.confirmation)?;
         let start = running.insert(reset.token.clone());
@@ -182,4 +192,90 @@ pub(crate) fn intercept(
         _ => Ok(text_reply(405, "Method not allowed")),
     };
     Some(result.unwrap_or_else(|error| error_reply(&error)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_capacity_duplicates_reuse_the_handle_and_restart_reports_interruption() {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let env = Environment::at(fixture.env().home());
+        let controller = Arc::new(
+            ResetController::open(
+                &env,
+                VerificationActivity::default(),
+                Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
+            )
+            .unwrap(),
+        );
+        let ctx = controller.context("fixture").unwrap();
+        let story = crate::service::StoryService::new(&ctx)
+            .create(&crate::service::NewStoryInput {
+                title: "Duplicate reset".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let reset = StoryResetService::new(&ctx)
+            .reserve(&story.id, &story.id)
+            .unwrap();
+        assert_eq!(controller.envelope(&reset)["reset"]["state"], "error");
+        assert!(
+            controller.envelope(&reset)["reset"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("interrupted")
+        );
+        {
+            let mut running = controller.running.lock().unwrap();
+            running.insert(reset.token.clone());
+            for index in 1..super::super::dispatch::MAX_RUNNING {
+                running.insert(format!("other-{index}"));
+            }
+        }
+        let reply = controller
+            .start(
+                "fixture",
+                &story.id,
+                &serde_json::json!({"confirmation":story.id}).to_string(),
+                &Arc::new(super::super::dispatch::DispatchRegistry::new()),
+                &crate::daemon::bus::ChangeBus::new(),
+            )
+            .unwrap();
+        assert_eq!(reply.status, 202);
+        let body: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
+        assert_eq!(body["reset"]["handle"], reset.token);
+        assert_eq!(body["reset"]["state"], "running");
+        let other = crate::service::StoryService::new(&ctx)
+            .create(&crate::service::NewStoryInput {
+                title: "Over capacity".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let denied = controller
+            .start(
+                "fixture",
+                &other.id,
+                &serde_json::json!({"confirmation":other.id}).to_string(),
+                &Arc::new(super::super::dispatch::DispatchRegistry::new()),
+                &crate::daemon::bus::ChangeBus::new(),
+            )
+            .unwrap();
+        assert_eq!(denied.status, 429);
+        assert!(
+            controller
+                .store
+                .read(|tx| tx.story_reset(ctx.project(), crate::store::StoryNo::new(2)))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            StoryResetService::new(&ctx)
+                .get(&story.id, &reset.token)
+                .unwrap()
+                .token,
+            reset.token
+        );
+    }
 }

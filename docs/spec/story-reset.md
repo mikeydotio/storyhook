@@ -10,7 +10,8 @@ stories are ineligible.
 The shared card menu opens a typed-ID confirmation dialog. Cancel has initial
 focus. No mutation occurs before confirmation. The dashboard captures the
 project and story for the operation, prevents repeat submission, polls its
-handle, and displays failures without reporting optimistic success.
+handle, and displays failures without reporting optimistic success. The menu
+scrolls within the viewport when its actions exceed the available height.
 
 ## Lifecycle
 
@@ -23,16 +24,21 @@ same project and story. States are `running`, `ok`, and `error`.
 The daemon persists the reset before external cleanup and handles it outside
 the fixed store dispatcher pool. A per-operation file lock serializes retries
 across processes. The reservation prevents claiming, conflicting transitions,
-verification admission, and engine lane reassignment. Existing dispatch must
+verification admission, engine lane reassignment, and identity changes or deletion of the owning
+project. Ready lists, dashboard ordering, and continuation eligibility all
+exclude reserved stories. Existing dispatch must
 settle before discovery; only the selected verifier is cancelled and joined.
 
-ResourceService pins exact resource identities. Cleanup shares native Git/tmux
+ResourceService pins exact resource identities. Device/inode observations also
+pin the common Git directory, worktree directory, and private Git directory,
+so a retry refuses a replacement even when its path and branch are unchanged. Cleanup shares native Git/tmux
 observations, lease validation, bounded process capture, and the installed
 artifact guard with existing lifecycle operations. Force waives only local
 work preservation: protected branches, ambiguous resources, replaced windows,
 invalid leases, installed artifacts, and the caller's own worktree remain
 protected. A project with no checkout and no durable resource evidence has
-no local cleanup to perform.
+no local cleanup to perform. Local-only repositories need no remote; when an
+origin exists its authoritative default branch remains protected.
 
 Only proven resource absence permits one transaction to return the story to
 `todo`, release its selected engine lane, clear a verifier incident belonging

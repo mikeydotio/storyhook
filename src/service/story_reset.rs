@@ -1,5 +1,6 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
+mod identity;
 
 use super::{Ctx, StoryService, append_and_fold, project_prefix, resolve_open_story};
 use crate::domain::{StoryEvent, SuperState};
@@ -100,6 +101,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 original_state: row.state,
                 lanes,
                 resources: None,
+                paths: Vec::new(),
                 completed: false,
                 failure: None,
             };
@@ -164,11 +166,13 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 let report = super::resources::ResourceService::new(self.ctx)
                     .resolve(id, &Default::default())?;
                 cleanup::validate(&report, self.ctx.cwd(), self.ctx.env())?;
+                reset.paths = identity::capture(&report)?;
                 reset.resources = Some(report);
                 self.ctx.store().write(|tx| tx.put_story_reset(&reset))?;
             }
             cleanup::remove(
                 reset.resources.as_ref().expect("pinned resources"),
+                &reset.paths,
                 self.ctx.cwd(),
                 self.ctx.env(),
             )?;
@@ -202,7 +206,8 @@ impl<'a, S: Store> StoryResetService<'a, S> {
 
             for owner in &reset.lanes {
                 if let Some(lane) = tx.engine_lanes(&owner.run_id)?.into_iter().find(|lane| lane.lane_index == owner.lane_index) {
-                    if lane.story_id.as_deref() != Some(&reset.story_id) { return Err(StoreError::Invariant("reset engine lane owner changed".into())); }
+                    // An already-started dispatch may fail and release its lane while reset waits.
+                    if lane.story_id.as_deref() != Some(&reset.story_id) { continue; }
                     let mut idle = super::engine::idle_lane(&owner.run_id, owner.lane_index, &now);
                     idle.outcome = Some("story-reset".into());
                     super::engine::put_or_retire_idle_lane(tx, &idle)?;

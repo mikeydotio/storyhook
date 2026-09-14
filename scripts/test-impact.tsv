@@ -174,3 +174,4 @@ story_reset	src/store/schema/0043_story_resets.sql
 story_reset	src/store/sqlite/story_reset.rs
 story_reset	src/service/resources/mod.rs
 story_reset	src/service/query.rs
+story_reset	src/service/story_reset/identity.rs
