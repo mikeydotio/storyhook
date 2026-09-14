@@ -341,7 +341,9 @@ fn web_start_returns_fast_under_a_wedged_tailscale_and_never_overclaims() {
         "the alias must name its replacement without presenting verified loopback \
          as a pending tailnet answer (SH-722); got stderr: {stderr}"
     );
-    let info = env.daemon().expect("the daemon published its local endpoint");
+    let info = env
+        .daemon()
+        .expect("the daemon published its local endpoint");
     storyhook::daemon::lifecycle::hello(&info).expect("the reported local daemon must answer");
 
     env.story(dir.path())
