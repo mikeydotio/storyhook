@@ -168,6 +168,7 @@ STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
 source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
+source "$STORY_PLUGIN_ROOT/lib/submission-git.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -4705,7 +4706,7 @@ cmd_submit_leased() {
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
   local default
-  default=$(default_branch 2>&1) \
+  default=$(default_branch submission_git 2>&1) \
     || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: origin's default branch could not be established, so there is no base to open $canonical_id's pull request against: $(printf '%s' "$default" | tr '\n' ' ')"
   ! is_protected_branch "$branch" "$default" \
     || submit_refuse repair "protected-branch" "story.sh submit: leased branch \`$branch\` is protected; a story lane never submits the default branch itself."
@@ -4720,8 +4721,11 @@ cmd_submit_leased() {
       "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
   fi
 
-  local head_oid
-  freshen_base_ref "$default"
+  local head_oid fetch_out
+  # Submission needs current base evidence; cleanup's best-effort refresh
+  # cannot distinguish an unreachable base from an already-submitted tip.
+  fetch_out=$(submission_git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" 2>&1) \
+    || submit_refuse infrastructure "base-fetch-failed" "story.sh submit: fetching origin/$default for $canonical_id failed: $fetch_out"
   head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
   if git -C "$worktree" merge-base --is-ancestor "$head_oid" "refs/remotes/origin/$default" 2>/dev/null; then
@@ -4729,12 +4733,12 @@ cmd_submit_leased() {
   fi
 
   local remote_before remote_after push_out push_rc=0 pushed=false
-  remote_before=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  remote_before=$(submission_remote_head "$worktree" "$branch" 2>&1) \
+    || submit_refuse infrastructure "remote-read-failed" "story.sh submit: reading origin/$branch before pushing $canonical_id failed: $remote_before"
   if [ "$remote_before" != "$head_oid" ]; then
-    # HTTPS on purpose: an SSH remote needs an agent or a 1Password approval
-    # the daemon cannot give. GIT_TERMINAL_PROMPT=0 comes from the daemon, so a
-    # missing credential fails here rather than hanging for the daemon's life.
-    push_out=$(git -C "$worktree" -c 'url.https://github.com/.insteadOf=git@github.com:' \
+    # Reads and writes share one credential boundary: a successful anonymous
+    # read says nothing about whether the subsequent push can authenticate.
+    push_out=$(submission_git -C "$worktree" \
       push origin "refs/heads/$branch:refs/heads/$branch" 2>&1) || push_rc=$?
     if [ "$push_rc" -ne 0 ]; then
       case "$push_out" in
@@ -4746,7 +4750,8 @@ cmd_submit_leased() {
     fi
     pushed=true
   fi
-  remote_after=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  remote_after=$(submission_remote_head "$worktree" "$branch" 2>&1) \
+    || submit_refuse infrastructure "remote-read-failed" "story.sh submit: reading origin/$branch after pushing $canonical_id failed: $remote_after"
   [ "$remote_after" = "$head_oid" ] \
     || submit_refuse infrastructure "push-unverified" "story.sh submit: origin/$branch is at \`${remote_after:-<absent>}\` after the push, not the worktree HEAD \`$head_oid\`."
 
