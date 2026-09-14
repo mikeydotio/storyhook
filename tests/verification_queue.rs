@@ -1838,6 +1838,51 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     assert!(actuator.reaped.lock().unwrap().is_empty());
 }
 
+/// SH-653: an unleased candidate is never refused before `observation::verify`
+/// runs merely for already carrying a linked pull request — `submitted()`'s
+/// own shape (operator-linked, no worktree, no lease) is SH-647's supported
+/// submission path and must keep being verified. What changes is only the
+/// text of a post-verify CONFLICT/RED/INVALID SUBMISSION return: it must
+/// never promise "the verifier pushes" to a generation that carries no lease
+/// and therefore cannot push anything, the exact false promise a
+/// hand-restored worktree exposed live on this story.
+#[test]
+fn a_conflict_on_an_unleased_candidate_never_promises_a_push_it_cannot_make() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "unleased conflicted", Priority::High, PR_ONE);
+    assert_eq!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .unwrap()
+            .cleanup_lease,
+        None,
+        "submitted() must stay unleased: that is the exact shape under test"
+    );
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    });
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
+        TickResult::Returned
+    );
+    let row = story_row(&fixture, &id);
+    let conflict = &row.snapshot.comments.last().unwrap().text;
+    assert!(conflict.contains("CONFLICT"), "{conflict}");
+    assert!(
+        conflict.contains("no cleanup lease"),
+        "an unleased return must say so: {conflict}"
+    );
+    assert!(
+        !conflict.contains("the verifier pushes"),
+        "must not promise a push this generation cannot make: {conflict}"
+    );
+}
+
 struct SequencedActuator {
     outcomes: Mutex<VecDeque<VerificationOutcome>>,
     verified: Mutex<Vec<String>>,
