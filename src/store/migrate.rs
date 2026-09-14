@@ -432,6 +432,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0044_launch_compatibility.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 45,
+        name: "dropped_cleanup",
+        sql: include_str!("schema/0045_dropped_cleanup.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

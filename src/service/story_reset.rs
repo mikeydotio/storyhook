@@ -1,6 +1,6 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
-mod identity;
+pub(crate) mod identity;
 
 use super::executor_lock::ExecutorLock;
 use super::workspace_lock::WorkspaceLock;
@@ -17,6 +17,15 @@ pub(crate) fn refuse_reserved(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<(), StoreError> {
+    if let Some(cleanup) = tx.dropped_cleanup(project, story)?
+        && !cleanup.released
+    {
+        return Err(AppError::Validation(format!(
+            "dropped cleanup {} owns {}; retry story cleanup first",
+            cleanup.token, cleanup.lease.story_id
+        ))
+        .into());
+    }
     if let Some(reset) = tx.story_reset(project, story)?
         && !reset.completed
     {
