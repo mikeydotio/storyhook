@@ -1300,7 +1300,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    z-index 50: above the app workspace, below every modal (51), since the
    delete modal a menu item can open must be able to cover it. */
 .ctxmenu {
-  position: fixed; min-width: 12rem; max-height: 20rem; overflow-y: auto;
+  position: fixed; min-width: 12rem; max-height: min(20rem, calc(100dvh - 16px)); overflow-y: auto;
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg); padding: 0.375rem; z-index: 50;
 }
@@ -2058,6 +2058,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
+<div class="backdrop" id="reset-modal-backdrop" data-overlay="reset-modal" hidden></div>
+<div class="modal" id="reset-modal" tabindex="-1" aria-hidden="true" role="alertdialog" aria-modal="true" aria-labelledby="reset-modal-header" aria-describedby="reset-modal-summary">
+  <div class="modal-header" id="reset-modal-header">Reset story</div>
+  <div class="modal-body">
+    <p id="reset-modal-summary"></p>
+    <div class="field"><label for="reset-confirmation">Type the story ID to confirm</label><input id="reset-confirmation" type="text" autocomplete="off" spellcheck="false"></div>
+    <div class="modal-error" id="reset-modal-error" role="status" aria-live="polite"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="reset-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-danger-solid" id="reset-modal-submit">Reset story</button>
+  </div>
+</div>
+
 <div class="backdrop" id="delete-modal-backdrop" data-overlay="delete-modal" hidden></div>
 <div class="modal" id="delete-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="delete-modal-header">
   <div class="modal-header" id="delete-modal-header">Delete story</div>
@@ -2790,6 +2804,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // by OUTCOME, not by mode: a success toasts and clears itself, a failure
     // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
+    resets: Object.create(null),
     // Durable rows for --auto dispatches that did NOT succeed, newest first
     // -- see `addDispatchHistoryRow`/`buildDispatchHistoryRow`. Not persisted
     // across a reload: it exists to survive a self-clearing notice's own
@@ -6780,6 +6795,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         submenu: { ariaLabel: "Set priority", items: priorityMenuItems(st) }
       },
       { separator: true },
+      isClosed || st.story_type === "epic" ? null : {
+        label: "Reset…", danger: true,
+        disabled: !!state.pending[st.id] || !!state.resets[state.repoId + "/" + st.id],
+        disabledReason: state.resets[state.repoId + "/" + st.id] ? "A reset is already in progress for this story" : null,
+        onSelect: function() { openResetModal(st.id, st.title, invoker); }
+      },
       canCloseStory(st) ? {
         label: "Drop",
         disabled: !!state.pending[st.id],
@@ -15345,6 +15366,76 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     moveStory(id, "done", true, undefined, reason);
   }
 
+  // Captured identity keeps a delayed reset result scoped to its original project.
+  var resetModal = null;
+
+  function openResetModal(id, title, invoker) {
+    var project = state.repoId;
+    var key = project + "/" + id;
+    if (state.resets[key]) return;
+    resetModal = { id: id, project: project, key: key, base: repoApiBase(project), busy: false };
+    $("reset-confirmation").value = "";
+    $("reset-modal-error").textContent = "";
+    $("reset-modal-summary").textContent = "Reset " + id + " — " + title + "? This stops its worker and returns it to todo. Its worktree, local branch, and all uncommitted or unpushed work will be permanently removed. Remote branches and pull requests remain. Type " + id + " exactly to confirm.";
+    setResetBusy(false);
+    showBackdrop("reset-modal-backdrop");
+    $("reset-modal").classList.add("open");
+    $("reset-modal").setAttribute("aria-hidden", "false");
+    activateOverlay("reset-modal", "reset-modal-cancel");
+    if (invoker) overlayReturnFocus["reset-modal"] = invoker;
+  }
+
+  function setResetBusy(busy) {
+    if (resetModal) resetModal.busy = busy;
+    ["reset-modal-submit", "reset-modal-cancel", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
+    $("reset-modal").setAttribute("aria-busy", String(busy));
+  }
+
+  function closeResetModal() {
+    if (!resetModal || resetModal.busy) return;
+    resetModal = null;
+    hideBackdrop("reset-modal-backdrop");
+    $("reset-modal").classList.remove("open");
+    $("reset-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("reset-modal");
+  }
+
+  function submitResetStory() {
+    var target = resetModal;
+    if (!target || target.busy || state.resets[target.key]) return;
+    if ($("reset-confirmation").value !== target.id) {
+      $("reset-modal-error").textContent = "Type " + target.id + " exactly to confirm.";
+      return;
+    }
+    state.resets[target.key] = true;
+    setResetBusy(true);
+    $("reset-modal-error").textContent = "Resetting " + target.id + "…";
+    var endpoint = target.base + "/story/" + encodeURIComponent(target.id) + "/reset";
+    function observe(response) {
+      var result = response && response.reset;
+      if (!result || result.story !== target.id || !result.handle) throw new Error("Invalid reset response for " + target.id);
+      if (result.state === "ok") return;
+      if (result.state === "error") throw new Error(result.detail || "Reset failed; retry to finish cleanup.");
+      if (result.state !== "running") throw new Error("Unknown reset state for " + target.id);
+      return new Promise(function(resolve) { setTimeout(resolve, 1000); }).then(function() {
+        return api("GET", endpoint + "/" + encodeURIComponent(result.handle), null);
+      }).then(observe);
+    }
+    api("POST", endpoint, { confirmation: target.id }).then(observe).then(function() {
+      delete state.resets[target.key];
+      if (resetModal === target) { setResetBusy(false); closeResetModal(); }
+      toast(target.id + " reset to todo", "success");
+      if (state.repoId === target.project) fetchData();
+    }).catch(function(error) {
+      delete state.resets[target.key];
+      if (resetModal === target) {
+        setResetBusy(false);
+        $("reset-modal-error").textContent = describeMutationFailure(error);
+      } else toast(describeMutationFailure(error), "error");
+      if (state.repoId === target.project) fetchData();
+    });
+  }
+
   /** The story id the delete modal (SH-197) is currently open for, or
    * `null`. Compared against `state.drawerId` in `submitDeleteStory` so the
    * drawer only closes when the deleted story is the one it's showing --
@@ -15646,6 +15737,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("verify-override-backdrop").addEventListener("click", closeVerifyOverrideModal);
     $("verify-override-submit").addEventListener("click", submitVerifyOverride);
     bindEnterSubmit($("verify-override-reason"), submitVerifyOverride);
+    $("reset-modal-cancel").addEventListener("click", closeResetModal);
+    $("reset-modal-backdrop").addEventListener("click", closeResetModal);
+    $("reset-modal-submit").addEventListener("click", submitResetStory);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-close-instead").addEventListener("click", closeInsteadOfDelete);
@@ -15691,6 +15785,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Escape cannot alter either this dialog or a surface behind it.
         if (overlayStack[overlayStack.length - 1] === "engine-alert-modal") {
           e.preventDefault();
+          return;
+        }
+        if (overlayStack[overlayStack.length - 1] === "reset-modal") {
+          closeResetModal();
           return;
         }
         // The Stop confirmation is dismissible until its mutation starts.

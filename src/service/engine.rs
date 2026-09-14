@@ -1396,6 +1396,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .story_id
                     .clone()
                     .expect("a non-idle lane holds a story");
+                if let Ok(no) = crate::store::StoryNo::parse_id(&prefix, &story)
+                    && tx
+                        .story_reset(project, no)?
+                        .is_some_and(|reset| !reset.completed)
+                {
+                    continue;
+                }
                 let row = optional_lane_story(tx, project, &prefix, &story)?;
                 facts.push((lane, row));
             }
@@ -2324,7 +2331,7 @@ fn pty_output_after(probe: &WindowProbe, recorded_at: Option<&str>) -> Option<St
 /// The progress pair is cleared along with the story: an idle lane holds no
 /// story to have progressed, and carrying the previous occupant's seq forward
 /// would let the next story inherit a stall clock it never started (SH-465).
-fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
+pub(super) fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     EngineLaneRecord {
         adopted_identity: None,
         run_id: run_id.to_string(),
@@ -2490,7 +2497,7 @@ fn occupied_run_lane_count(lanes: &[EngineLaneRecord]) -> usize {
         .count()
 }
 
-fn put_or_retire_idle_lane(
+pub(super) fn put_or_retire_idle_lane(
     tx: &mut impl WriteOps,
     lane: &EngineLaneRecord,
 ) -> Result<(), StoreError> {

@@ -173,6 +173,33 @@ impl VerificationActivity {
             .map(|slot| slot.active.clone())
     }
 
+    /// Cancels only this story and waits until its owned subprocesses have exited.
+    pub(crate) fn cancel_story_and_wait(
+        &self,
+        project: ProjectId,
+        story: &str,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
+        loop {
+            {
+                let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+                match slots
+                    .get(&project)
+                    .filter(|slot| slot.active.story_id == story)
+                {
+                    None => return Ok(()),
+                    Some(slot) => slot.cancellation.cancel(),
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(AppError::Validation(format!(
+                    "reset waiting for verifier of {story} to stop; retry reset"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Every project's owned generation, ordered by project.
     #[must_use]
     pub fn active_all(&self) -> Vec<ActiveVerification> {
